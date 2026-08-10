@@ -5,6 +5,7 @@ import {
   AssistantToolPreference,
 } from '../../types/assistant.types'
 import type { McpTool } from '../../types/mcp.types'
+import { isInjectedBridgeToolName } from '../mcp/injectionBridge'
 import { JS_SANDBOX_TOOL_NAME } from '../mcp/jsSandboxTool'
 import {
   BASH_TOOL_NAME,
@@ -192,6 +193,13 @@ export const getDefaultApprovalModeForTool = (
   try {
     const { serverName, toolName: parsedToolName } = parseToolName(toolName)
     if (serverName !== getLocalFileToolServerName()) {
+      return 'require_approval'
+    }
+
+    if (isInjectedBridgeToolName(parsedToolName)) {
+      // Third-party injected tools run arbitrary external code inside the
+      // Obsidian process. Default to explicit approval; users can grant
+      // per-conversation allowance after approving once.
       return 'require_approval'
     }
 

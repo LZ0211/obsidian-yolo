@@ -1,3 +1,5 @@
+import { isInjectedBridgeToolName } from '../mcp/injectionBridge'
+
 export type BuiltinToolUiMeta = {
   labelKey: string
   descKey?: string
@@ -195,6 +197,11 @@ const BUILTIN_TOOL_CATEGORY_MAP: Record<string, BuiltinToolCategory> = {
 export const getBuiltinToolCategory = (
   toolName: string,
 ): BuiltinToolCategory | null => {
+  if (isInjectedBridgeToolName(toolName)) {
+    // Third-party injected tools are external code inside the process —
+    // group them with the other external capabilities in the tools modal.
+    return 'external'
+  }
   return BUILTIN_TOOL_CATEGORY_MAP[toolName] ?? null
 }
 

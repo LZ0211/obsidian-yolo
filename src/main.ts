@@ -65,6 +65,7 @@ import {
   setLLMDebugCaptureEnabled,
 } from './core/llm/debugCapture'
 import { clearRequestTransportMemory } from './core/llm/requestTransport'
+import { installYoloInjectionBridge } from './core/mcp/injectionBridge'
 import type {
   LocalMcpServerRuntime,
   LocalMcpServerState,
@@ -342,6 +343,7 @@ export default class YoloPlugin extends Plugin {
   private readonly managedModulePathChangeListeners = new Set<() => void>()
   private localMcpServer: LocalMcpServerRuntime | null = null
   private localMcpSettingsUnsubscribe: (() => void) | null = null
+  private injectionBridgeUninstall: (() => void) | null = null
   private liteSkillRegistryDispose: (() => void) | null = null
   private webviewSelectionBridge: WebviewSelectionBridge | null = null
   private writeAssistController: WriteAssistController | null = null
@@ -2193,6 +2195,16 @@ export default class YoloPlugin extends Plugin {
   async onload() {
     this.isUnloaded = false
     this.cliRuntimeCapabilityError = null
+    // YOLO itself is the injection target: other plugins can register tools
+    // at any time (even after YOLO onload). Registration/unregistration
+    // invalidates the MCP available-tools cache, so the next agent run sees
+    // the new tools. Sync callback: only invalidates when a manager already
+    // exists — getAvailableTools rebuilds from getLocalFileTools() anyway.
+    this.injectionBridgeUninstall = installYoloInjectionBridge({
+      onToolsChanged: () => {
+        this.mcpManager?.invalidateAvailableToolsCache()
+      },
+    })
     this.actionToastController = mountActionToast()
     this.initializeModuleSystem()
     this.initializeRuntimeComponentSystem()
@@ -2713,6 +2725,8 @@ export default class YoloPlugin extends Plugin {
 
   onunload() {
     this.isUnloaded = true
+    this.injectionBridgeUninstall?.()
+    this.injectionBridgeUninstall = null
     clearAllChatGPTOAuthServices()
     this.disposeCliRuntimeCoordinator()
     this.liteSkillRegistryDispose?.()

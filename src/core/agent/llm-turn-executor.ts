@@ -33,6 +33,7 @@ import {
 } from '../llm/debugCapture'
 import { ProviderRequestError } from '../llm/providerErrors'
 import type { ResponseDeliveryMode } from '../llm/responseDeliveryMode'
+import { isInjectedBridgeToolName } from '../mcp/injectionBridge'
 import {
   LOCAL_FILE_TOOL_SHORT_NAMES,
   getLocalFileToolServerName,
@@ -492,7 +493,10 @@ export class AgentLlmTurnExecutor {
     if (toolName.includes(McpManager.TOOL_NAME_DELIMITER)) {
       return toolName
     }
-    if (!AgentLlmTurnExecutor.LOCAL_TOOL_NAMES.has(toolName)) {
+    if (
+      !AgentLlmTurnExecutor.LOCAL_TOOL_NAMES.has(toolName) &&
+      !isInjectedBridgeToolName(toolName)
+    ) {
       return toolName
     }
     return this.qualifyLocalToolName(toolName)

@@ -11,6 +11,11 @@ import {
 
 import { upsertEditReviewSnapshot } from '../../database/json/chat/editReviewSnapshotStore'
 import { buildPdfPageImageCacheKey } from '../../database/json/chat/imageCacheStore'
+import {
+  callInjectedBridgeTool,
+  getInjectedBridgeTools,
+  isInjectedBridgeToolName,
+} from './injectionBridge'
 import { validateAttachmentPath } from '../bot/attachment-security'
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import type {
@@ -1266,6 +1271,7 @@ export function getLocalFileTools(options?: {
         required: ['path'],
       },
     },
+    ...getInjectedBridgeTools(),
   ]
 }
 
@@ -4409,6 +4415,19 @@ export async function callLocalFileTool({
       }
 
       default:
+        if (isInjectedBridgeToolName(normalizeLocalToolName(toolName))) {
+          const result = await callInjectedBridgeTool(
+            normalizeLocalToolName(toolName),
+            args,
+          )
+          return {
+            status: ToolCallResponseStatus.Success,
+            text:
+              typeof result === 'string'
+                ? result
+                : JSON.stringify(result, null, 2),
+          }
+        }
         throw new Error(`Unknown local file tool: ${toolName}`)
     }
   } catch (error) {

@@ -923,6 +923,15 @@ export class McpManager {
    * local-file-tool server name, or collides with an already-registered
    * in-process server or a currently configured remote MCP server.
    */
+  /**
+   * Invalidate the available-tools cache. Call after the built-in local tool
+   * set changes at runtime (e.g. third-party plugins registering tools through
+   * `window.__yoloBridge__`).
+   */
+  public invalidateAvailableToolsCache(): void {
+    this.availableToolsCache.clear()
+  }
+
   public registerInProcessServer(
     serverName: string,
     server: InProcessToolServer,
