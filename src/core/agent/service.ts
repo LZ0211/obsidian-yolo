@@ -4,6 +4,7 @@ import type { YoloSettings } from '../../settings/schema/setting.types'
 import {
   ChatConversationCompactionLike,
   ChatConversationCompactionState,
+  AgentFileChange,
   ChatMessage,
   ChatSubagentResultMessage,
   ChatTerminalCommandResultMessage,
@@ -38,6 +39,7 @@ import {
 } from './bash/command-classifier'
 import type { BashTaskRecord } from './bash/types'
 import { DEFAULT_BRANCH_ID } from './branch'
+import type { AgentFileChangeTracker } from './agentFileChangeTracker'
 import { CitationRegistry } from './citationRegistry'
 import { NativeAgentRuntime } from './native-runtime'
 import { PromptSourceWatcher } from './promptSourceWatcher'
@@ -192,6 +194,8 @@ type AgentServiceOptions = {
     status: AgentRunStatus
     touchUpdatedAt?: boolean
   }) => Promise<void>
+  /** Tracks file changes made during a run (workspace-scoped). */
+  fileChangeTracker?: AgentFileChangeTracker
 }
 
 export type AgentReplaceConversationMessagesReason =
@@ -2057,6 +2061,19 @@ export class AgentService {
     const runContext: AgentRunContext = { citationRegistry }
     runEntry.lastRunContext = runContext
 
+    // Workspace-scoped file change tracking: changes made during this run are
+    // collected (and git-diff enriched when a backend is available), bounded
+    // to the run's workspace access policy.
+    const fileChangeRunToken = this.options.fileChangeTracker?.beginRun({
+      workspaceAccessPolicy: input.workspaceAccessPolicy,
+    })
+    const finishFileChangeTracking = (): Promise<AgentFileChange[]> => {
+      if (!fileChangeRunToken || !this.options.fileChangeTracker) {
+        return Promise.resolve([])
+      }
+      return this.options.fileChangeTracker.finishRun(fileChangeRunToken)
+    }
+
     const runtimeInput: AgentRuntimeRunInput = {
       ...input,
       runContext,
@@ -2174,6 +2191,7 @@ export class AgentService {
       }
     } finally {
       unsubscribe()
+      void finishFileChangeTracking()
       const currentRunEntry = this.runEntriesByKey.get(runKey)
       if (currentRunEntry && currentRunEntry.runToken === runToken) {
         currentRunEntry.runToken = null

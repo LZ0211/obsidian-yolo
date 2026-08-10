@@ -2,6 +2,7 @@ import { type Extension } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import {
   Editor,
+  FileSystemAdapter,
   MarkdownView,
   Notice,
   Platform,
@@ -25,6 +26,7 @@ import { ConfirmModal } from './components/modals/ConfirmModal'
 import { mountUpdateToast } from './components/UpdateToast'
 import { CHAT_VIEW_TYPE } from './constants'
 import { BAKED_PLUGIN_VERSION } from './constants/bakedVersion'
+import { AgentFileChangeTracker } from './core/agent/agentFileChangeTracker'
 import type { YoloAgentApi, YoloAgentApiService } from './core/agent/agent-api'
 import type {
   AgentConversationRunSummary,
@@ -1213,9 +1215,34 @@ export default class YoloPlugin extends Plugin {
           }
           const { persistConversationMessages } =
             createAgentConversationPersistence(this.app, () => this.settings)
+          const getAlwaysExcludedPaths = () => [getYoloBaseDir(this.settings)]
+          let fileChangeTracker: AgentFileChangeTracker | undefined
+          if (
+            Platform.isDesktopApp &&
+            this.app.vault.adapter instanceof FileSystemAdapter
+          ) {
+            const { ShadowGitDiffBackend } = await import(
+              './core/agent/git-diff/shadowGitDiffBackend'
+            )
+            const { AgentGitDiffEnricher } = await import(
+              './core/agent/git-diff/agentGitDiffEnricher'
+            )
+            const gitDiffBackend = new ShadowGitDiffBackend({
+              vaultPath: this.app.vault.adapter.getBasePath(),
+            })
+            fileChangeTracker = new AgentFileChangeTracker({
+              gitDiffEnricher: new AgentGitDiffEnricher(gitDiffBackend),
+              getAlwaysExcludedPaths,
+            })
+          } else {
+            fileChangeTracker = new AgentFileChangeTracker({
+              getAlwaysExcludedPaths,
+            })
+          }
           const service = new AgentService({
             getSettings: () => this.settings,
             persistConversationMessages,
+            fileChangeTracker,
           })
           const watcher = service.getPromptSourceWatcher()
           const h = watcher.buildVaultHandlers()

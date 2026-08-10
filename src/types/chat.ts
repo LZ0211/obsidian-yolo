@@ -12,6 +12,21 @@ export type PromptSnapshotRef = {
   hash: string
 }
 
+export type AgentFileChangeKind = 'created' | 'modified' | 'deleted' | 'renamed'
+
+export type AgentGitFileDiff = {
+  additions: number
+  deletions: number
+  binary?: boolean
+}
+
+export type AgentFileChange = {
+  kind: AgentFileChangeKind
+  path: string
+  oldPath?: string
+  gitDiff?: AgentGitFileDiff
+}
+
 export type ChatSelectedSkill = {
   /**
    * Canonical skill name (the frontmatter `name`, trim-only, case-sensitive).
