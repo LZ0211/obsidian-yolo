@@ -16,4 +16,6 @@ export type ConversationOverrideSettings = {
   stream?: boolean | null
   useWebSearch?: boolean | null
   useUrlContext?: boolean | null
+  /** Per-conversation working directory (must be inside the agent's workspace home). */
+  workingDirectory?: string | null
 }

@@ -104,6 +104,8 @@ export type ChatUserInputProps = {
   onReasoningChange?: (level: ReasoningLevel) => void
   showReasoningSelect?: boolean
   runtimeControls?: ReactNode
+  /** Per-conversation working directory control, rendered in the left toolbar. */
+  workingDirectoryControl?: ReactNode
   showPlaceholder?: boolean
   // Compact mode: hide controls for historical messages
   compact?: boolean
@@ -185,6 +187,7 @@ const ChatUserInput = forwardRef<ChatUserInputRef, ChatUserInputProps>(
       onReasoningChange,
       showReasoningSelect = true,
       runtimeControls,
+      workingDirectoryControl,
       showPlaceholder = true,
       compact = false,
       hideBadgeMentionables = false,
@@ -919,6 +922,7 @@ const ChatUserInput = forwardRef<ChatUserInputRef, ChatUserInputProps>(
           {!compact && controlLayout === 'inline' && (
             <div className="yolo-chat-user-input-controls">
               <div className="yolo-chat-user-input-controls__left">
+                {workingDirectoryControl}
                 <FileUploadButton
                   onUpload={(files) => coreRef.current?.uploadFiles(files)}
                 />
@@ -938,6 +942,7 @@ const ChatUserInput = forwardRef<ChatUserInputRef, ChatUserInputProps>(
 
           {!compact && controlLayout === 'composer-toolbar' && (
             <div className="yolo-chat-user-input-send-row">
+              {workingDirectoryControl}
               <FileUploadButton
                 onUpload={(files) => coreRef.current?.uploadFiles(files)}
               />

@@ -27,6 +27,11 @@ import { resolveAssistantModelId } from '../../core/agent/assistant-model'
 import { getLatestAssistantContextUsage } from '../../core/agent/compaction'
 import { DEFAULT_ASSISTANT_ID } from '../../core/agent/default-assistant'
 import { findUnifiedAgentById } from '../../core/agent/workspaceAgentResolver'
+import { toDisplayPath } from '../../core/paths/displayPath'
+import { normalizePathSlashes } from '../../core/paths/normalizePath'
+import { resolveConversationFileScope } from '../../core/workspace/conversationFileScope'
+import { FolderPickerModal } from '../settings/modals/FolderPickerModal'
+import { ConversationWorkingDirectoryControl } from './chat-input/ConversationWorkingDirectoryControl'
 import {
   type ChatRuntimeId,
   type CliRuntimeScope,
@@ -526,6 +531,61 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     () => resolveAssistantTimeContextEnabled(selectedAssistant, settings),
     [selectedAssistant, settings],
   )
+
+  // Per-conversation working directory: falls back to the assistant's
+  // workspace home; an explicit override must stay inside that home.
+  const conversationWorkingDirectory = useMemo(
+    () =>
+      resolveConversationFileScope(
+        selectedAssistant?.workspaceAccessPolicy,
+        conversationOverrides?.workingDirectory ?? undefined,
+      ).workingDirectory,
+    [conversationOverrides?.workingDirectory, selectedAssistant],
+  )
+  const workspaceHome = useMemo(
+    () =>
+      selectedAssistant?.workspaceAccessPolicy?.enabled
+        ? (selectedAssistant.workspaceAccessPolicy.workspaceRoot ?? '/')
+        : '',
+    [selectedAssistant],
+  )
+  const workingDirectoryControl = useMemo(() => {
+    const isLocked = workspaceHome === ''
+    const pickWorkingDirectory = () => {
+      new FolderPickerModal(
+        app,
+        app.vault,
+        [conversationWorkingDirectory],
+        false,
+        (picked) => {
+          const normalized = normalizePathSlashes(picked)
+          setConversationOverrides((current) => ({
+            ...(current ?? {}),
+            workingDirectory: normalized,
+          }))
+        },
+        workspaceHome,
+      ).open()
+    }
+    return (
+      <ConversationWorkingDirectoryControl
+        value={conversationWorkingDirectory}
+        displayValue={toDisplayPath(conversationWorkingDirectory, workspaceHome)}
+        locked={isLocked}
+        onChange={() =>
+          setConversationOverrides((current) => ({
+            ...(current ?? {}),
+            workingDirectory: null,
+          }))
+        }
+        onOpenPicker={pickWorkingDirectory}
+      />
+    )
+  }, [
+    app,
+    conversationWorkingDirectory,
+    workspaceHome,
+  ])
 
   // Per-conversation model id (do NOT write back to global settings)
   const [conversationModelId, setConversationModelId] = useState<string>(() => {
@@ -1521,6 +1581,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
         enableSkills
         skipImageModelCapabilityCheck={isCliRuntimeActive}
         skillEntries={isCliRuntimeActive ? cliSkillEntries : undefined}
+        workingDirectoryControl={workingDirectoryControl}
         modelId={conversationModelId}
         onModelChange={handleMainInputModelChange}
         showModelControl={!isCliRuntimeActive}
