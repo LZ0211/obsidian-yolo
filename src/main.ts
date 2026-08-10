@@ -2364,11 +2364,20 @@ export default class YoloPlugin extends Plugin {
       .catch((error: unknown) => {
         console.error('[YOLO] Agent service warmup failed:', error)
       })
-    void this.warmupAgentService()
-      .then(() => this.startBotService())
-      .catch((error: unknown) => {
-        console.error('[YOLO] Bot service startup failed:', error)
-      })
+    // Only construct the bot service when the user has actually enabled bots
+    // and at least one platform — the service itself is a no-op otherwise.
+    const botsSettings = this.settings.bots
+    if (
+      Platform.isDesktop &&
+      botsSettings.enabled &&
+      botsSettings.platforms.some((platform) => platform.enabled)
+    ) {
+      void this.warmupAgentService()
+        .then(() => this.startBotService())
+        .catch((error: unknown) => {
+          console.error('[YOLO] Bot service startup failed:', error)
+        })
+    }
     this.register(() => {
       shouldStartAgentNotifications = false
       this.agentNotificationCoordinator?.stop()
