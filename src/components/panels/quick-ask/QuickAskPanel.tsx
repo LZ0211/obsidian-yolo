@@ -18,6 +18,7 @@ import { useApp } from '../../../contexts/app-context'
 import { useLanguage } from '../../../contexts/language-context'
 import { useMcp } from '../../../contexts/mcp-context'
 import { useSettings } from '../../../contexts/settings-context'
+import { getUnifiedAgentList } from '../../../core/agent/workspaceAgentResolver'
 import { resolveAssistantTimeContextEnabled } from '../../../core/agent/assistant-capabilities'
 import { getEnabledAssistantToolNames } from '../../../core/agent/tool-preferences'
 import { materializeTextEditPlan } from '../../../core/edits/textEditEngine'
@@ -237,7 +238,7 @@ export function QuickAskPanel({
   const { createOrUpdateConversationImmediately, generateConversationTitle } =
     useChatHistory()
 
-  const assistants = settings.assistants || []
+  const assistants = getUnifiedAgentList(settings)
   const currentAssistantId = settings.quickAskAssistantId
 
   // State

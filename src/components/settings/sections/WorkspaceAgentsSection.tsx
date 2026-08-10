@@ -11,9 +11,12 @@ import {
 } from '../../../settings/schema/setting.types'
 import type { Assistant } from '../../../types/assistant.types'
 import { ObsidianSetting } from '../../common/ObsidianSetting'
+import { ObsidianTextArea } from '../../common/ObsidianTextArea'
+import { ObsidianTextInput } from '../../common/ObsidianTextInput'
 import { ObsidianToggle } from '../../common/ObsidianToggle'
 import { SimpleSelect } from '../../common/SimpleSelect'
 
+import { WorkspaceAgentSkillOverridesModal } from '../modals/WorkspaceAgentSkillOverridesModal'
 import { WorkspaceAgentToolOverridesModal } from '../modals/WorkspaceAgentToolOverridesModal'
 import { WorkspaceAgentScopeEditor } from './WorkspaceAgentScopeEditor'
 
@@ -35,6 +38,9 @@ export function WorkspaceAgentsSection({ app }: { app: App }) {
   const { settings, setSettings } = useSettings()
   const [editingId, setEditingId] = useState<string | null>(null)
   const [toolOverridesAgentId, setToolOverridesAgentId] = useState<
+    string | null
+  >(null)
+  const [skillOverridesAgentId, setSkillOverridesAgentId] = useState<
     string | null
   >(null)
   const agents = settings.workspaceAgents ?? []
@@ -198,6 +204,52 @@ export function WorkspaceAgentsSection({ app }: { app: App }) {
 
             {isEditing ? (
               <div className="yolo-workspace-agents-item-editor">
+                <ObsidianSetting
+                  name={t('settings.workspaceAgents.agentName', 'Name')}
+                >
+                  <ObsidianTextInput
+                    value={agent.name}
+                    onChange={(name) =>
+                      updateAgent(agent.id, (current) => ({
+                        ...current,
+                        name,
+                        updatedAt: Date.now(),
+                      }))
+                    }
+                    placeholder={t(
+                      'settings.workspaceAgents.agentNamePlaceholder',
+                      'Agent name',
+                    )}
+                  />
+                </ObsidianSetting>
+                <ObsidianSetting
+                  name={t(
+                    'settings.workspaceAgents.promptOverride',
+                    'Prompt override',
+                  )}
+                  desc={t(
+                    'settings.workspaceAgents.promptOverrideDesc',
+                    'Overrides the template system prompt. Empty inherits the template.',
+                  )}
+                >
+                  <ObsidianTextArea
+                    value={agent.behaviorOverrides?.systemPromptOverride ?? ''}
+                    onChange={(prompt) =>
+                      updateAgent(agent.id, (current) => ({
+                        ...current,
+                        behaviorOverrides: {
+                          ...(current.behaviorOverrides ?? {}),
+                          systemPromptOverride: prompt || undefined,
+                        },
+                        updatedAt: Date.now(),
+                      }))
+                    }
+                    placeholder={t(
+                      'settings.workspaceAgents.promptOverridePlaceholder',
+                      'Inherit from template',
+                    )}
+                  />
+                </ObsidianSetting>
                 <WorkspaceAgentScopeEditor
                   app={app}
                   vault={app.vault}
@@ -211,19 +263,34 @@ export function WorkspaceAgentsSection({ app }: { app: App }) {
                   }
                 />
                 {template ? (
-                  <button
-                    type="button"
-                    className="yolo-workspace-agents-tool-overrides-button"
-                    onClick={() => setToolOverridesAgentId(agent.id)}
-                  >
-                    <Wrench size={14} />
-                    <span>
-                      {t(
-                        'settings.workspaceAgents.toolOverridesButton',
-                        'Tool overrides',
-                      )}
-                    </span>
-                  </button>
+                  <div className="yolo-workspace-agents-item-actions-row">
+                    <button
+                      type="button"
+                      className="yolo-workspace-agents-tool-overrides-button"
+                      onClick={() => setToolOverridesAgentId(agent.id)}
+                    >
+                      <Wrench size={14} />
+                      <span>
+                        {t(
+                          'settings.workspaceAgents.toolOverridesButton',
+                          'Tool overrides',
+                        )}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="yolo-workspace-agents-tool-overrides-button"
+                      onClick={() => setSkillOverridesAgentId(agent.id)}
+                    >
+                      <Wrench size={14} />
+                      <span>
+                        {t(
+                          'settings.workspaceAgents.skillOverridesButton',
+                          'Skill overrides',
+                        )}
+                      </span>
+                    </button>
+                  </div>
                 ) : null}
               </div>
             ) : null}
@@ -248,6 +315,38 @@ export function WorkspaceAgentsSection({ app }: { app: App }) {
         return (
           <div className="yolo-workspace-agents-tool-overrides-modal">
             <WorkspaceAgentToolOverridesModal
+              template={template}
+              value={target.behaviorOverrides}
+              onChange={(nextOverrides) => {
+                updateAgent(target.id, (current) => ({
+                  ...current,
+                  behaviorOverrides: nextOverrides,
+                  updatedAt: Date.now(),
+                }))
+              }}
+              onClose={close}
+            />
+          </div>
+        )
+      })() : null}
+
+      {skillOverridesAgentId !== null ? (() => {
+        const target = agents.find(
+          (agent) => agent.id === skillOverridesAgentId,
+        )
+        const template = target
+          ? (settings.assistants ?? []).find(
+              (candidate) => candidate.id === target.templateId,
+            )
+          : undefined
+        if (!target || !template) {
+          setSkillOverridesAgentId(null)
+          return null
+        }
+        const close = () => setSkillOverridesAgentId(null)
+        return (
+          <div className="yolo-workspace-agents-skill-overrides-modal">
+            <WorkspaceAgentSkillOverridesModal
               template={template}
               value={target.behaviorOverrides}
               onChange={(nextOverrides) => {

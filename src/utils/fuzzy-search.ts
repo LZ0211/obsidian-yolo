@@ -1,11 +1,44 @@
 import fuzzysort from 'fuzzysort'
 import { App, TFile, TFolder } from 'obsidian'
 
+import { isReadablePath } from '../core/agent/workspaceScope'
 import { isWithinYoloUserDataRoot } from '../core/paths/yoloPaths'
+import type { WorkspaceAccessPolicy } from '../types/assistant.types'
 import { MentionableFile, MentionableFolder } from '../types/mentionable'
 
 import { IMAGE_FILE_EXTENSIONS } from './llm/image'
 import { calculateFileDistance, getOpenFiles } from './obsidian'
+
+function normalizeScopePath(path: string): string {
+  return path.replace(/[\\/]+/g, '/').replace(/^\/+|\/+$/g, '')
+}
+
+function isFolderVisibleInScope(
+  folderPath: string,
+  workspaceAccessPolicy?: WorkspaceAccessPolicy,
+): boolean {
+  if (!workspaceAccessPolicy?.enabled) return true
+  const normalizedFolder = normalizeScopePath(folderPath)
+  if (isReadablePathSafe(normalizedFolder, workspaceAccessPolicy)) return true
+  return [
+    workspaceAccessPolicy.workspaceRoot,
+    ...workspaceAccessPolicy.readExtraIncludes,
+  ].some((includePath) => {
+    const include = normalizeScopePath(includePath)
+    return include !== '' && include.startsWith(normalizedFolder + '/')
+  })
+}
+
+function isReadablePathSafe(
+  path: string,
+  workspaceAccessPolicy?: WorkspaceAccessPolicy,
+): boolean {
+  try {
+    return isReadablePath(path, workspaceAccessPolicy)
+  } catch {
+    return false
+  }
+}
 
 type FuzzySearchSettingsLike = {
   yolo?: {
@@ -144,11 +177,15 @@ export function fuzzySearchFolders(
   app: App,
   query: string,
   settings?: FuzzySearchSettingsLike | null,
+  workspaceAccessPolicy?: WorkspaceAccessPolicy,
 ): MentionableFolder[] {
   const allFolders = app.vault
     .getAllFolders()
     .filter((folder) => folder.path.length > 0)
     .filter((folder) => !isWithinYoloUserDataRoot(folder.path, settings))
+    .filter((folder) =>
+      isFolderVisibleInScope(folder.path, workspaceAccessPolicy),
+    )
 
   if (!query.trim()) {
     return allFolders
@@ -182,6 +219,7 @@ export function fuzzySearch(
   app: App,
   query: string,
   settings?: FuzzySearchSettingsLike | null,
+  workspaceAccessPolicy?: WorkspaceAccessPolicy,
 ): SearchableMentionable[] {
   const currentFile = app.workspace.getActiveFile()
   const openFiles = getOpenFiles(app)
@@ -192,6 +230,7 @@ export function fuzzySearch(
       MENTION_SEARCHABLE_EXTENSIONS.has(file.extension.toLowerCase()),
     )
     .filter((file) => !isWithinYoloUserDataRoot(file.path, settings))
+    .filter((file) => isReadablePathSafe(file.path, workspaceAccessPolicy))
 
   const allFilesWithMetadata: SearchItem[] = allSupportedFiles.map((file) => ({
     type: 'file',
@@ -211,6 +250,9 @@ export function fuzzySearch(
   const allFolders = app.vault
     .getAllFolders()
     .filter((folder) => !isWithinYoloUserDataRoot(folder.path, settings))
+    .filter((folder) =>
+      isFolderVisibleInScope(folder.path, workspaceAccessPolicy),
+    )
   const allFoldersWithMetadata: SearchItem[] = allFolders.map((folder) => ({
     type: 'folder',
     path: folder.path,

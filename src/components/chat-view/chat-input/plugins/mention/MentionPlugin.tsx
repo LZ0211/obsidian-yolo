@@ -32,6 +32,7 @@ import type { JSX as ReactJSX } from 'react/jsx-runtime'
 
 import { PROVIDER_PRESET_INFO } from '../../../../../constants'
 import { useApp } from '../../../../../contexts/app-context'
+import { isReadablePath } from '../../../../../core/agent/workspaceScope'
 import { toDisplayPath } from '../../../../../core/paths/displayPath'
 import { useLanguage } from '../../../../../contexts/language-context'
 import { useSettings } from '../../../../../contexts/settings-context'
@@ -457,16 +458,41 @@ export default function NewMentionsPlugin({
   const app = useApp()
   const { settings } = useSettings()
 
-  // The active assistant's workspace home directory: mention subtitles render
+  // The active assistant's workspace home directory: mention search is
+  // scoped to the home + read-extra includes, and subtitles render
   // home-relative (`~/...`) when a workspace policy is enabled.
-  const workspaceRoot = useMemo(() => {
+  const workspaceAccessPolicy = useMemo(() => {
     const activeAssistant = assistants.find(
       (assistant) => assistant.id === currentAssistantId,
     )
     const policy = activeAssistant?.workspaceAccessPolicy
-    if (!policy?.enabled) return ''
-    return policy.workspaceRoot ?? ''
+    return policy?.enabled ? policy : undefined
   }, [assistants, currentAssistantId])
+  const workspaceRoot = workspaceAccessPolicy?.workspaceRoot ?? ''
+
+  const isMentionableInScope = useCallback(
+    (mentionable: Mentionable): boolean => {
+      if (!workspaceAccessPolicy?.enabled) return true
+      if (mentionable.type === 'file') {
+        return isReadablePath(mentionable.file.path, workspaceAccessPolicy)
+      }
+      if (mentionable.type === 'folder') {
+        if (isReadablePath(mentionable.folder.path, workspaceAccessPolicy)) {
+          return true
+        }
+        return [
+          workspaceAccessPolicy.workspaceRoot,
+          ...workspaceAccessPolicy.readExtraIncludes,
+        ].some((includePath) => {
+          const include = includePath.replace(/^\/+|\/+$/g, '')
+          const folder = mentionable.folder.path.replace(/^\/+|\/+$/g, '')
+          return include !== '' && include.startsWith(folder + '/')
+        })
+      }
+      return true
+    },
+    [workspaceAccessPolicy],
+  )
 
   const [queryString, setQueryString] = useState<string | null>(null)
   const [menuScope, setMenuScope] = useState<MentionMenuScope>('root')
@@ -526,8 +552,8 @@ export default function NewMentionsPlugin({
 
   const results = useMemo(() => {
     if (queryString == null) return []
-    return searchResultByQuery(queryString)
-  }, [queryString, searchResultByQuery])
+    return searchResultByQuery(queryString).filter(isMentionableInScope)
+  }, [isMentionableInScope, queryString, searchResultByQuery])
 
   const modelMentionables = useMemo<MentionableModel[]>(
     () =>
@@ -662,11 +688,14 @@ export default function NewMentionsPlugin({
         // 优先用 searchFoldersByQuery（覆盖全 vault folder 树）；
         // 未提供时回退到 results 里 folder 类型的 fallback（与重构前一致），
         // drill-down 与 hover 预览复用同一路径，保证数据一致。
-        const folderMentionables: MentionableFolder[] = searchFoldersByQuery
-          ? searchFoldersByQuery(subQuery)
-          : results.filter(
-              (result): result is MentionableFolder => result.type === 'folder',
-            )
+        const folderMentionables: MentionableFolder[] = (
+          searchFoldersByQuery
+            ? searchFoldersByQuery(subQuery)
+            : results.filter(
+                (result): result is MentionableFolder =>
+                  result.type === 'folder',
+              )
+        ).filter(isMentionableInScope)
         return folderMentionables.map(
           (mentionable) =>
             new MentionTypeaheadOption({
