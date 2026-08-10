@@ -1859,3 +1859,52 @@ describe('AgentService subagent approval routing', () => {
     expect(ok).toBe(false)
   })
 })
+
+describe('AgentService file change tracking wiring', () => {
+  it('attaches tracked file changes to the latest assistant message after a run', async () => {
+    const fileChanges = [
+      {
+        kind: 'modified',
+        path: '04-专利/a.md',
+        gitDiff: { additions: 2, deletions: 1 },
+      },
+    ]
+    const fileChangeTracker = {
+      beginRun: jest.fn().mockReturnValue('token-1'),
+      finishRun: jest.fn().mockResolvedValue(fileChanges),
+    }
+    const service = new AgentService({
+      fileChangeTracker: fileChangeTracker as never,
+    })
+    const abortController = new AbortController()
+
+    const runPromise = service.run({
+      conversationId: 'conversation-file-change',
+      loopConfig: {
+        enableTools: true,
+        maxAutoIterations: 100,
+        includeBuiltinTools: true,
+      },
+      input: {
+        conversationId: 'conversation-file-change',
+        messages: [createStreamingMessages()[0]],
+        abortSignal: abortController.signal,
+      } as never,
+    })
+
+    const runtime = runtimeInstances[0]
+    runtime.emitSnapshot(createStreamingMessages())
+    runtime.resolveRun()
+    await runPromise
+
+    expect(fileChangeTracker.beginRun).toHaveBeenCalledWith({
+      workspaceAccessPolicy: undefined,
+    })
+    expect(fileChangeTracker.finishRun).toHaveBeenCalledWith('token-1')
+    const state = service.getState('conversation-file-change')
+    const assistantMessage = state.messages.find(
+      (message) => message.role === 'assistant',
+    )
+    expect(assistantMessage?.metadata?.fileChanges).toEqual(fileChanges)
+  })
+})
