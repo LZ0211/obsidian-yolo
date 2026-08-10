@@ -80,20 +80,56 @@ export const it: DeepPartial<TranslationKeys> = {
     },
     runtimeSelector: {
       modeAccessibleLabel: 'Modalità chat',
-      chatLabel: 'Agent',
       cliLabel: 'CLI',
+      yoloLabel: 'YOLO',
       chatDescription: 'Chat integrata di YOLO',
-      cliDescription: 'Usa CLI per attività',
+      cliDescription: 'Claude Code o Codex su questo dispositivo',
       accessibleLabel: 'Provider CLI: {runtime}',
       menuLabel: 'Provider CLI',
       claudeCodeLabel: 'Claude Code',
-      claudeCodeShortLabel: 'CC',
       claudeCodeDescription: 'Claude Code su questo dispositivo',
       codexLabel: 'Codex',
       codexDescription: 'Codex su questo dispositivo',
+      chatLabel: 'Agent',
+      exitCli: 'Esci da CLI',
+    },
+    cliSessions: {
+      sectionLabel: 'Sessioni CLI',
+      title: 'Sessioni CLI locali',
+      loading: 'Caricamento delle sessioni CLI…',
+      empty: 'Nessuna sessione Claude Code o Codex trovata',
+      current: 'Attuale',
+      pin: 'Fissa in YOLO',
+      unpin: 'Rimuovi il fissaggio in YOLO',
+      forgetFromYolo: 'Dimentica da YOLO',
+      retryProvider: 'Riprova {provider}',
+      loadError: 'Impossibile caricare le sessioni CLI: {message}',
+      pinError: 'Impossibile aggiornare il fissaggio: {message}',
+      forgetConfirmTitle: 'Dimenticare la sessione CLI da YOLO?',
+      forgetConfirmMessage:
+        'Vengono rimossi solo i metadati di YOLO. La trascrizione CLI nativa non verrà eliminata.',
+      forgetConfirmAction: 'Dimentica da YOLO',
+      forgetError: 'Impossibile dimenticare la sessione CLI: {message}',
+      recordError:
+        "L'azione CLI è riuscita, ma YOLO non ha potuto ricordare la sessione: {message}",
+      runStatus: 'In esecuzione',
+      newSession: 'Nuova sessione',
+      pickerTitle: 'Apri sessione',
+      sessions: 'Sessioni',
+      loadingSessions: 'Caricamento sessioni…',
+      emptySessions:
+        'Nessuna sessione registrata. Inizia una conversazione per crearne una.',
+      renameSession: 'Rinomina sessione',
+      renamePlaceholder: 'Nome sessione',
+      deleteSession: 'Elimina sessione',
+      deleteConfirm: 'Confermi eliminazione?',
+      yoloRunActive:
+        'Interrompi la risposta YOLO corrente prima di aprire una sessione CLI.',
     },
     chatList: {
       searchPlaceholder: 'Cerca conversazioni',
+      searchLoading: 'Ricerca conversazioni...',
+      searchError: 'Ricerca conversazioni non riuscita',
       empty: 'Nessuna conversazione',
       noTaskConversations: 'Nessuna conversazione di attività',
       historySections: 'Categorie di conversazioni',
@@ -105,12 +141,12 @@ export const it: DeepPartial<TranslationKeys> = {
       current: 'Attuale',
       pinConversation: 'Fissa',
       unpinConversation: 'Rimuovi fissaggio',
+      cliConversations: 'Conversazioni CLI locali',
       retryTitle: 'Riprova titolo',
       archived: 'Archiviate',
       hideArchived: 'Nascondi archiviate',
       exportConversation: 'Esporta conversazione nel vault',
       moreActions: 'Altre azioni',
-      confirmDelete: 'Clicca di nuovo per eliminare',
     },
     chat: {
       exportSuccess: 'Chat esportata in {path}',
@@ -193,6 +229,117 @@ export const it: DeepPartial<TranslationKeys> = {
       modules: 'Moduli',
       others: 'Altro',
     },
+    bots: {
+      globalTitle: 'Globale',
+      enable: 'Abilita piattaforma bot',
+      enableDesc: 'Avvia o interrompi tutte le connessioni bot configurate',
+      whitelist: 'Abilita whitelist',
+      whitelistDesc:
+        'Consenti solo i messaggi di utenti/gruppi esplicitamente autorizzati per piattaforma',
+      groupChat: 'Abilita chat di gruppo',
+      groupChatDesc:
+        'Consenti ai bot di rispondere nelle conversazioni di gruppo (richiede il gruppo nella lista consentita)',
+      adminUsers: 'Utenti amministratori',
+      adminUsersDesc:
+        'ID mittente della piattaforma che possono eseguire /reset e comandi di gestione. Separati da virgola.',
+      platformsTitle: 'Piattaforme',
+      platformsDesc:
+        'Gestisci le connessioni delle piattaforme bot. Ogni piattaforma esegue un adapter separato.',
+      addPlatform: '+ Aggiungi piattaforma',
+      noPlatforms: 'Nessuna piattaforma bot configurata.',
+      stop: 'Ferma',
+      start: 'Avvia',
+      sessionsTitle: 'Sessioni',
+      sessionsDesc: 'Mappature delle sessioni bot verso le conversazioni',
+      noSessions: 'Nessuna sessione bot.',
+      lastActive: 'Ultima attività',
+      archived: 'archiviata',
+      openChat: 'Apri chat',
+      unarchive: 'Ripristina',
+      archive: 'Archivia',
+      deletePlatformTitle: 'Elimina piattaforma bot',
+      deletePlatformMessage:
+        'Rimuovere "{name}"? Questa azione non può essere annullata.',
+      addPlatformTitle: 'Aggiungi piattaforma bot',
+      editPlatformTitle: 'Modifica piattaforma bot: {name}',
+      defaultAssistant: 'Predefinito',
+      pickerTitle: 'Aggiungi piattaforma bot',
+      form: {
+        name: 'Nome',
+        nameDesc: 'Un’etichetta per identificare questa configurazione bot.',
+        assistant: 'Associa Agent',
+        assistantDesc:
+          'Quale assistente gestisce i messaggi da questa piattaforma.',
+        enabled: 'Abilitato',
+        enabledDesc: 'Avvia il bot al salvataggio delle impostazioni.',
+        botToken: 'Bot Token',
+        botTokenDesc:
+          'Ottienilo da @BotFather su Telegram. Salvato in chiaro nelle impostazioni del plugin.',
+        hideToken: 'Nascondi token',
+        showToken: 'Mostra token',
+        whitelist: 'Whitelist',
+        whitelistDesc: 'Consenti solo utenti e gruppi elencati.',
+        allowedUsers: 'Utenti consentiti',
+        allowedUsersDesc: 'ID mittente della piattaforma, separati da virgola.',
+        allowedGroups: 'Gruppi consentiti',
+        allowedGroupsDesc:
+          'ID gruppo/chat della piattaforma, separati da virgola.',
+        startupPolicy: 'Politica messaggi all’avvio',
+        startupPolicyDesc:
+          'Come gestire i messaggi ricevuti mentre il bot era offline.',
+        startupPolicySkip: 'Salta in sospeso',
+        startupPolicyConsume: 'Elabora in sospeso',
+        pollingInterval: 'Intervallo di polling',
+        pollingIntervalDesc:
+          'Millisecondi tra le richieste di long-poll (min 1000).',
+        loginStatus: 'Stato accesso',
+        loggedInAs: 'Accesso effettuato come {botId}',
+        notLoggedIn: 'Non ancora effettuato l’accesso',
+        scanQrCode: 'Scansiona codice QR',
+        scanQrCodeConfirmed:
+          'Accesso WeChat riuscito. Clicca Salva per mantenere queste credenziali.',
+        scanQrCodePrompt: 'Scansiona con WeChat',
+        scanQrCodeScanned: 'Scansionato — conferma l’accesso sul telefono.',
+        scanQrCodeWaiting:
+          'Apri WeChat e scansiona questo codice per accedere.',
+        scanQrCodeExpired:
+          'Codice QR scaduto. Clicca di nuovo su "Scansiona codice QR" per ottenerne uno nuovo.',
+        scanQrCodeError: 'Accesso QR non riuscito:',
+        pollTimeout: 'Timeout polling',
+        pollTimeoutDesc: 'Millisecondi per ogni richiesta di long-poll.',
+        dingtalkStreamModeOnly:
+          'È supportata solo la modalità Stream — crea un robot in modalità Stream nella DingTalk Open Platform e incolla qui sotto il suo Robot Code / Client ID (AppKey) / Client Secret (AppSecret).',
+        robotCode: 'Robot Code',
+        robotCodeDesc:
+          'Dalla pagina di configurazione del robot nella DingTalk Open Platform',
+        clientId: 'Client ID',
+        clientIdDesc: "AppKey dell'app robot",
+        clientSecret: 'Client Secret',
+        clientSecretDesc:
+          "AppSecret dell'app robot. Salvato in chiaro nelle impostazioni del plugin.",
+        streamMode: 'Modalità stream',
+        streamModeDesc:
+          'Deve restare attiva — la modalità webhook push non è supportata',
+        appId: 'App ID',
+        appIdDesc:
+          'Dalla pagina di configurazione app della Feishu/Lark Open Platform',
+        appSecret: 'App Secret',
+        appSecretDesc:
+          "App Secret dell'app Feishu/Lark. Salvato in chiaro nelle impostazioni del plugin.",
+      },
+      picker: {
+        telegramLabel: 'Telegram',
+        telegramDesc: 'Bot API · polling lungo',
+        weixinLabel: 'WeChat',
+        weixinDesc: 'Account personale · interfaccia ClawBot ufficiale',
+        dingtalkLabel: 'DingTalk',
+        dingtalkDesc: 'Robot aziendale · modalità stream',
+        feishuLabel: 'Feishu',
+        feishuDesc: 'Lark Open Platform · modalità socket',
+      },
+    },
+
+
     supportYolo: {
       name: 'Supporta il progetto',
       desc: 'Se trovi utile questo plugin, considera di supportarne lo sviluppo!',
@@ -1270,6 +1417,48 @@ export const it: DeepPartial<TranslationKeys> = {
       retryNow: 'Riprova ora',
       waitingRetry: 'In attesa di un nuovo tentativo...',
       cancelIndex: 'Annulla',
+      rerankModel: 'Modello di rerank',
+      rerankModelDesc:
+        'Opzionale. Modello per riordinare i risultati di ricerca. Lascia vuoto per saltare il rerank.',
+      none: 'Nessuno',
+      noRerank: 'Nessun rerank',
+      manageEmbeddingDatabaseDesc:
+        'Controlla le statistiche embedding per modello e rimuovi i dati indice storici quando serve.',
+      databaseExplorer: 'Database RAG',
+      backendCardTitle: 'Backend RAG',
+      searchMaintenance: {
+        title: 'Manutenzione ricerca',
+        desc: 'Pulisci l’indice corrente o rimuovi la cronologia delle relazioni.',
+        clearCurrent: 'Pulisci indice corrente',
+        purgeHistory: 'Rimuovi cronologia relazioni',
+        clearComplete:
+          'Indice corrente pulito; la cronologia è stata conservata.',
+        clearFailed: 'Impossibile pulire l’indice corrente.',
+        purgePrompt:
+          'Inserisci {{confirmation}} per confermare la rimozione della cronologia delle relazioni.',
+        purgeConfirmationMismatch:
+          'Il testo di conferma non corrisponde. Nessun dato è stato rimosso.',
+        purgeComplete: 'Cronologia delle relazioni rimossa.',
+        purgeFailed: 'Impossibile rimuovere la cronologia delle relazioni.',
+      },
+      deleteIndexActiveModelOnly:
+        "È possibile eliminare solo l'indice del modello embedding attivo.",
+      totalEmbeddings: 'Embedding totali',
+      databaseSizeMb: 'Dimensione (MB)',
+      webRuntimeTitle: 'Web runtime',
+      webRuntimeDesc:
+        'Configura il punto di ingresso nel browser e l’indirizzo di ascolto del web runtime integrato.',
+      webRuntimeEnabled: 'Abilita web runtime',
+      webRuntimeEnabledDesc:
+        'Consente di avviare la UI web e il server API integrati dalle impostazioni del plugin.',
+      webRuntimeHost: 'Host',
+      webRuntimeHostDesc:
+        'Usa 127.0.0.1 per accesso solo locale. Qualsiasi host non di loopback espone il server alla rete.',
+      webRuntimePort: 'Porta',
+      webRuntimePortDesc:
+        'Porta usata dal web runtime. Intervallo valido: da 1 a 65535.',
+      webRuntimeNetworkWarning:
+        'Il server è accessibile dalla rete. Assicurati che il bearer token sia impostato e che il firewall consenta connessioni in ingresso sulla porta {{port}}.',
     },
     mcp: {
       title: 'Strumenti personalizzati (MCP)',

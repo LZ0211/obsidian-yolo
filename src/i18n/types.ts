@@ -73,20 +73,52 @@ export type TranslationKeys = {
     }
     runtimeSelector: {
       modeAccessibleLabel: string
-      chatLabel: string
       cliLabel: string
+      yoloLabel: string
       chatDescription: string
       cliDescription: string
       accessibleLabel: string
       menuLabel: string
       claudeCodeLabel: string
-      claudeCodeShortLabel: string
       claudeCodeDescription: string
       codexLabel: string
       codexDescription: string
+      chatLabel?: string
+      exitCli?: string
+    }
+    cliSessions: {
+      sectionLabel: string
+      title: string
+      loading: string
+      empty: string
+      current: string
+      pin: string
+      unpin: string
+      forgetFromYolo: string
+      retryProvider: string
+      loadError: string
+      pinError: string
+      forgetConfirmTitle: string
+      forgetConfirmMessage: string
+      forgetConfirmAction: string
+      forgetError: string
+      recordError: string
+      runStatus?: string
+      newSession?: string
+      pickerTitle?: string
+      sessions?: string
+      loadingSessions?: string
+      emptySessions?: string
+      renameSession?: string
+      renamePlaceholder?: string
+      deleteSession?: string
+      deleteConfirm?: string
+      yoloRunActive: string
     }
     chatList?: {
       searchPlaceholder?: string
+      searchLoading?: string
+      searchError?: string
       empty?: string
       noTaskConversations?: string
       historySections?: string
@@ -98,16 +130,14 @@ export type TranslationKeys = {
       current?: string
       pinConversation?: string
       unpinConversation?: string
+      cliConversations?: string
       retryTitle?: string
       archived?: string
       hideArchived?: string
       exportConversation?: string
       moreActions?: string
-      confirmDelete?: string
     }
     chat?: {
-      fileChanges?: string
-      fileChangeBinary?: string
       exportSuccess?: string
       exportError?: string
     }
@@ -180,6 +210,99 @@ export type TranslationKeys = {
       others: string
       bots?: string
     }
+    bots?: {
+      header?: string
+      desc?: string
+      globalTitle?: string
+      enable?: string
+      enableDesc?: string
+      whitelist?: string
+      whitelistDesc?: string
+      groupChat?: string
+      groupChatDesc?: string
+      adminUsers?: string
+      adminUsersDesc?: string
+      platformsTitle?: string
+      platformsDesc?: string
+      addPlatform?: string
+      noPlatforms?: string
+      stop?: string
+      start?: string
+      sessionsTitle?: string
+      sessionsDesc?: string
+      noSessions?: string
+      lastActive?: string
+      archived?: string
+      openChat?: string
+      unarchive?: string
+      archive?: string
+      deletePlatformTitle?: string
+      deletePlatformMessage?: string
+      addPlatformTitle?: string
+      editPlatformTitle?: string
+      defaultAssistant?: string
+      pickerTitle?: string
+      form?: {
+        name?: string
+        nameDesc?: string
+        assistant?: string
+        assistantDesc?: string
+        enabled?: string
+        enabledDesc?: string
+        botToken?: string
+        botTokenDesc?: string
+        hideToken?: string
+        showToken?: string
+        whitelist?: string
+        whitelistDesc?: string
+        allowedUsers?: string
+        allowedUsersDesc?: string
+        allowedGroups?: string
+        allowedGroupsDesc?: string
+        startupPolicy?: string
+        startupPolicyDesc?: string
+        startupPolicySkip?: string
+        startupPolicyConsume?: string
+        pollingInterval?: string
+        pollingIntervalDesc?: string
+        loginStatus?: string
+        loggedInAs?: string
+        notLoggedIn?: string
+        scanQrCode?: string
+        scanQrCodeConfirmed?: string
+        scanQrCodePrompt?: string
+        scanQrCodeScanned?: string
+        scanQrCodeWaiting?: string
+        scanQrCodeExpired?: string
+        scanQrCodeError?: string
+        pollTimeout?: string
+        pollTimeoutDesc?: string
+        dingtalkStreamModeOnly?: string
+        robotCode?: string
+        robotCodeDesc?: string
+        clientId?: string
+        clientIdDesc?: string
+        clientSecret?: string
+        clientSecretDesc?: string
+        streamMode?: string
+        streamModeDesc?: string
+        appId?: string
+        appIdDesc?: string
+        appSecret?: string
+        appSecretDesc?: string
+      }
+      picker?: {
+        telegramLabel?: string
+        telegramDesc?: string
+        weixinLabel?: string
+        weixinDesc?: string
+        dingtalkLabel?: string
+        dingtalkDesc?: string
+        feishuLabel?: string
+        feishuDesc?: string
+      }
+    }
+
     supportYolo: {
       name: string
       desc: string
@@ -1121,6 +1244,107 @@ export type TranslationKeys = {
       retryNow?: string
       waitingRetry?: string
       cancelIndex?: string
+      rerankModel?: string
+      rerankModelDesc?: string
+      none?: string
+      noRerank?: string
+      indexPaused?: string
+      chunkOverlap?: string
+      chunkOverlapDesc?: string
+      queryEmbeddingConfigError?: string
+      queryEmbeddingRateLimitError?: string
+      manageEmbeddingDatabaseDesc?: string
+      databaseExplorer?: string
+      backendCardTitle?: string
+      searchMaintenance?: {
+        title?: string
+        desc?: string
+        clearCurrent?: string
+        purgeHistory?: string
+        clearComplete?: string
+        clearFailed?: string
+        purgePrompt?: string
+        purgeConfirmationMismatch?: string
+        purgeComplete?: string
+        purgeFailed?: string
+      }
+      deleteIndexActiveModelOnly?: string
+      totalEmbeddings?: string
+      databaseSizeMb?: string
+      webRuntimeTitle?: string
+      webRuntimeDesc?: string
+      webRuntimeEnabled?: string
+      webRuntimeEnabledDesc?: string
+      webRuntimeHost?: string
+      webRuntimeHostDesc?: string
+      webRuntimePort?: string
+      webRuntimePortDesc?: string
+      webRuntimeNetworkWarning?: string
+      filesProgress?: string
+      chunksProgress?: string
+      inspectCardTitle?: string
+      inspectCardDesc?: string
+      inspectExecutionMode?: string
+      inspectPersistenceMode?: string
+      inspectStoragePath?: string
+      inspectCounts?: string
+      inspectNamespaceModel?: string
+      inspectLatestIndex?: string
+      inspectLatestQuery?: string
+      inspectWarning?: string
+      inspectError?: string
+      inspectDiagnostic?: string
+      inspectFailedFiles?: string
+      log?: {
+        title?: string
+        subtitle?: string
+        openTitle?: string
+        openDesc?: string
+        openButton?: string
+        showRibbonIcon?: string
+        showRibbonIconDesc?: string
+        refresh?: string
+        clearLogs?: string
+        clearConfirmTitle?: string
+        clearConfirmMessage?: string
+        clearConfirmButton?: string
+        deleteTrace?: string
+        deleteConfirmTitle?: string
+        deleteConfirmMessage?: string
+        deleteConfirmButton?: string
+        empty?: string
+        loading?: string
+        queryText?: string
+        evidence?: string
+        timingBreakdown?: string
+        diagnostic?: string
+        recoveryAction?: string
+        loadFailure?: string
+        clearFailure?: string
+        deleteFailure?: string
+        retry?: string
+        close?: string
+        cancel?: string
+        unknown?: string
+        notAvailable?: string
+        statusSuccess?: string
+        statusWarning?: string
+        statusError?: string
+        statusEmpty?: string
+        statusAborted?: string
+        diagnosticsDisabledNote?: string
+        ragUnconfiguredNote?: string
+        noActiveIndexNote?: string
+        traceListTitle?: string
+        traceDetailTitle?: string
+        evidenceCount?: string
+        indexedFiles?: string
+        chunks?: string
+        model?: string
+        dimension?: string
+        warning?: string
+        error?: string
+      }
     }
     mcp: {
       title: string
