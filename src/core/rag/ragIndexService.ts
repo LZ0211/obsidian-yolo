@@ -45,6 +45,7 @@ type RagIndexRunOptions = {
 }
 
 export type RagIndexRunSnapshot = {
+  phase?: 'vector' | 'lexical'
   runId: string | null
   trigger: RagIndexRunTrigger | null
   retryPolicy: RagIndexRetryPolicy

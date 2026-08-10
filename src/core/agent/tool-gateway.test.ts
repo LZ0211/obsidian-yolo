@@ -1200,10 +1200,10 @@ describe('AgentToolGateway', () => {
       workspaceAccessPolicy: {
         enabled: true,
         workspaceRoot: '',
-        readExtraIncludes: ['Notes'],
+        readExtraIncludes: [],
         readExcludes: [],
-        writeExcludes: [],
-        },
+        writeExcludes: ['Private'],
+      },
     })
 
     const message = gateway.createToolMessage({

@@ -1,4 +1,5 @@
 const errorModalCtor = jest.fn()
+
 jest.mock('../../../components/modals/ErrorModal', () => ({
   ErrorModal: class {
     constructor(...args: unknown[]) {
@@ -11,8 +12,7 @@ jest.mock('../../../components/modals/ErrorModal', () => ({
 }))
 
 // Run the embed fn once with no real backoff delays. Faithful for these tests:
-// success returns the value; failure rethrows immediately (the chunk-level
-// retry policy itself is not what these reconcile-level tests exercise).
+// success returns the value; failure rethrows immediately.
 jest.mock('exponential-backoff', () => ({
   backOff: (fn: () => Promise<unknown>) => fn(),
 }))
@@ -23,63 +23,25 @@ jest.mock('../../../utils/pdf/extractPdfText', () => ({
   extractPdfText: jest.fn(),
 }))
 
-import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter'
+// Mock the markdown splitter so tests can assert call args, while still
+// delegating to the real implementation by default (other tests in this
+// file rely on actual chunking behavior).
+jest.mock('../../../core/rag/markdownChunkSplitter', () => {
+  const actual = jest.requireActual('../../../core/rag/markdownChunkSplitter')
+  return {
+    splitMarkdownIntoChunks: jest.fn(
+      (text: string, chunkSize: number, chunkOverlap: number) =>
+        actual.splitMarkdownIntoChunks(text, chunkSize, chunkOverlap),
+    ),
+  }
+})
 
-import { sha256HexPrefix16 } from '../../../utils/common/content-hash'
+import { splitMarkdownIntoChunks } from '../../../core/rag/markdownChunkSplitter'
+import { hashProjectionSource } from '../../../core/search/index/projectionSegmenter'
+import type { VectorStore } from '../../../database/modules/rag/VectorStore'
+import { extractPdfText } from '../../../utils/pdf/extractPdfText'
 
 import { VectorManager } from './VectorManager'
-
-type ManagerInternals = {
-  repository: Record<string, jest.Mock>
-}
-
-const setupManager = (
-  files: Array<{ path: string; mtime: number; content: string }>,
-  existingRows: Array<{
-    id: number
-    path: string
-    mtime: number
-    content_hash: string | null
-    metadata: { startLine: number; endLine: number; page?: number }
-  }>,
-  inserted: { rows: unknown[] } = { rows: [] },
-) => {
-  const fileObjects = files.map((f) => ({
-    path: f.path,
-    extension: 'md',
-    stat: { mtime: f.mtime, size: f.content.length },
-  }))
-  const fileContent = new Map(files.map((f) => [f.path, f.content]))
-  const app = {
-    vault: {
-      getFiles: jest.fn().mockReturnValue(fileObjects),
-      cachedRead: jest.fn(
-        async (file: { path: string }) => fileContent.get(file.path) ?? '',
-      ),
-    },
-  }
-  const manager = new VectorManager(app as never, {} as never)
-  const mtimeMap = new Map(existingRows.map((r) => [r.path, r.mtime]))
-  const repository = {
-    getFileMtimes: jest.fn().mockResolvedValue(mtimeMap),
-    listChunksForPaths: jest.fn(async (_modelId: string, paths: string[]) => {
-      const set = new Set(paths)
-      return existingRows.filter((r) => set.has(r.path))
-    }),
-    deleteVectorsByIds: jest.fn().mockResolvedValue(undefined),
-    deleteVectorsByPaths: jest.fn().mockResolvedValue(undefined),
-    bumpMtimeByIds: jest.fn().mockResolvedValue(undefined),
-    insertVectors: jest.fn(async (rows: unknown[]) => {
-      inserted.rows.push(...rows)
-    }),
-    truncateModel: jest.fn().mockResolvedValue(undefined),
-  }
-  ;(manager as unknown as ManagerInternals).repository =
-    repository as unknown as ManagerInternals['repository']
-  manager.setSaveCallback(async () => undefined)
-  manager.setVacuumCallback(async () => undefined)
-  return { manager, repository, app, inserted }
-}
 
 const embeddingModel = {
   id: 'test-model',
@@ -87,11 +49,83 @@ const embeddingModel = {
   getEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3]),
 } as never
 
+type VectorStoreWithIndexedFiles = Omit<VectorStore, 'getIndexedFiles'> &
+  Required<Pick<VectorStore, 'getIndexedFiles'>>
+
+const fakeVectorStore = (): jest.Mocked<VectorStoreWithIndexedFiles> => ({
+  open: jest.fn(),
+  close: jest.fn(),
+  listNamespaces: jest.fn(),
+  getIndexedFiles: jest.fn(),
+  replaceFile: jest.fn(),
+  replaceFiles: jest.fn(),
+  deleteFile: jest.fn(),
+  deleteFiles: jest.fn(),
+  clearNamespace: jest.fn(),
+  vacuum: jest.fn(),
+  getStatus: jest.fn(),
+  search: jest.fn(),
+  searchDetailed: jest.fn(),
+  getStats: jest.fn(),
+  getFileReadiness: jest.fn(),
+})
+
 const baseConfig = {
   chunkSize: 1000,
+  chunkOverlap: 50,
   includePatterns: [],
   excludePatterns: [],
   indexPdf: false,
+}
+
+function createVectorStoreManager(
+  vectorStore: jest.Mocked<VectorStore>,
+  files: Array<{
+    path: string
+    extension?: string
+    mtime: number
+    content?: string
+    size?: number
+  }>,
+) {
+  const fileContent = new Map(
+    files.map((file) => [file.path, file.content ?? '']),
+  )
+  const app = {
+    vault: {
+      getFiles: jest.fn().mockReturnValue(
+        files.map((file) => ({
+          path: file.path,
+          extension: file.extension ?? 'md',
+          stat: {
+            mtime: file.mtime,
+            size: file.size ?? file.content?.length ?? 0,
+          },
+        })),
+      ),
+      cachedRead: jest.fn(
+        async (file: { path: string }) => fileContent.get(file.path) ?? '',
+      ),
+    },
+  }
+
+  const manager = new VectorManager(app as never, {} as never, {
+    vectorStore,
+    settings: {
+      embeddingModels: [
+        {
+          id: 'test-model',
+          providerId: 'openai',
+          model: 'text-embedding-3-large',
+          dimension: 3,
+        },
+      ],
+    } as never,
+  })
+  manager.setSaveCallback(async () => undefined)
+  manager.setVacuumCallback(async () => undefined)
+
+  return { manager, app }
 }
 
 describe('VectorManager.reconcile', () => {
@@ -101,259 +135,404 @@ describe('VectorManager.reconcile', () => {
       jest.fn().mockResolvedValue([0.1, 0.2, 0.3])
   })
 
-  it('embeds new files when index is empty', async () => {
-    const { manager, repository, inserted } = setupManager(
-      [{ path: 'a.md', mtime: 100, content: 'hello world' }],
-      [],
-    )
-    const result = await manager.reconcile(embeddingModel, baseConfig, {
-      scope: { kind: 'all' },
-    })
-    expect(result).toEqual({
-      permanentFailedPaths: [],
-      chunkifyFailedPaths: [],
-    })
-    expect(errorModalCtor).not.toHaveBeenCalled()
-    expect(repository.insertVectors).toHaveBeenCalledTimes(1)
-    expect(repository.deleteVectorsByIds).not.toHaveBeenCalled()
-    expect(inserted.rows.length).toBeGreaterThan(0)
-  })
+  it('with VectorStore, changed files call replaceFile with chunks and embeddings', async () => {
+    const vectorStore = fakeVectorStore()
+    vectorStore.getIndexedFiles.mockResolvedValue(new Map())
+    const { manager } = createVectorStoreManager(vectorStore, [
+      { path: 'notes/a.md', mtime: 100, content: 'alpha\nbeta' },
+    ])
 
-  it('returns chunkifyFailedPaths (no throw, no modal) when a file fails to chunkify', async () => {
-    const { manager, repository, app } = setupManager(
-      [
-        { path: 'good.md', mtime: 100, content: 'hello world' },
-        { path: 'bad.md', mtime: 100, content: 'will throw' },
-      ],
-      [],
-    )
-    // Make reading bad.md throw a non-abort error so chunkify fails for it only.
-    app.vault.cachedRead = jest.fn(async (file: { path: string }) => {
-      if (file.path === 'bad.md') {
-        throw new Error('I/O error')
-      }
-      return 'hello world'
-    })
-
-    const result = await manager.reconcile(embeddingModel, baseConfig, {
-      scope: { kind: 'all' },
-    })
-
-    expect(result).toEqual({
-      permanentFailedPaths: [],
-      chunkifyFailedPaths: ['bad.md'],
-    })
-    expect(errorModalCtor).not.toHaveBeenCalled()
-    // bad.md is excluded from the diff → its (absent) rows are not deleted, and
-    // good.md is still embedded.
-    expect(repository.insertVectors).toHaveBeenCalled()
-  })
-
-  it('skips unchanged files (mtime equal) without re-embedding', async () => {
-    const { manager, repository } = setupManager(
-      [{ path: 'a.md', mtime: 100, content: 'hello' }],
-      [
-        {
-          id: 1,
-          path: 'a.md',
-          mtime: 100,
-          content_hash: 'h',
-          metadata: { startLine: 1, endLine: 1 },
-        },
-      ],
-    )
     await manager.reconcile(embeddingModel, baseConfig, {
       scope: { kind: 'all' },
     })
-    expect(repository.insertVectors).not.toHaveBeenCalled()
-    expect(repository.deleteVectorsByIds).not.toHaveBeenCalled()
-  })
 
-  it('deletes vectors for files removed from the vault (scope=all)', async () => {
-    const { manager, repository } = setupManager(
-      [],
-      [
-        {
-          id: 7,
-          path: 'gone.md',
-          mtime: 100,
-          content_hash: 'h',
-          metadata: { startLine: 1, endLine: 1 },
-        },
-      ],
+    expect(vectorStore.getIndexedFiles).toHaveBeenCalledTimes(1)
+    expect(vectorStore.replaceFile).toHaveBeenCalledTimes(1)
+    const [, fileWrite] = vectorStore.replaceFile.mock.calls[0]
+    expect(fileWrite.path).toBe('notes/a.md')
+    expect(fileWrite.mtime).toBe(100)
+    expect(fileWrite.contentHash).toEqual(expect.any(String))
+    expect(fileWrite.chunks).toHaveLength(1)
+    expect(fileWrite.chunks[0].chunkId).toContain(
+      fileWrite.chunks[0].contentHash,
     )
-    await manager.reconcile(embeddingModel, baseConfig, {
-      scope: { kind: 'all' },
+    expect(fileWrite.chunks[0]).toMatchObject({
+      path: 'notes/a.md',
+      text: 'alpha\nbeta',
+      embedding: [0.1, 0.2, 0.3],
+      location: {
+        lineStart: 1,
+        lineEnd: 2,
+      },
     })
-    expect(repository.deleteVectorsByIds).toHaveBeenCalledWith([7])
-    expect(repository.insertVectors).not.toHaveBeenCalled()
   })
 
-  it('deletes vectors for files newly excluded by patterns', async () => {
-    const { manager, repository } = setupManager(
-      [{ path: 'docs/a.md', mtime: 100, content: 'hello' }],
-      [
-        {
-          id: 9,
-          path: 'docs/a.md',
-          mtime: 100,
-          content_hash: 'h',
-          metadata: { startLine: 1, endLine: 1 },
-        },
-      ],
-    )
+  it('with VectorStore, invokes markdown splitter with configured chunkSize/chunkOverlap', async () => {
+    const splitterSpy = splitMarkdownIntoChunks as jest.Mock
+    splitterSpy.mockClear()
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(new Map())
+    const { manager } = createVectorStoreManager(ragStore, [
+      { path: 'notes/a.md', mtime: 100, content: 'hello world' },
+    ])
+
     await manager.reconcile(
       embeddingModel,
-      { ...baseConfig, excludePatterns: ['docs/**'] },
+      { ...baseConfig, chunkOverlap: 77 },
       { scope: { kind: 'all' } },
     )
-    expect(repository.deleteVectorsByIds).toHaveBeenCalledWith([9])
-    expect(repository.insertVectors).not.toHaveBeenCalled()
+
+    expect(splitterSpy).toHaveBeenCalled()
+    const lastCall = splitterSpy.mock.calls.at(-1)!
+    expect(lastCall[1]).toBe(1000) // chunkSize
+    expect(lastCall[2]).toBe(77) // chunkOverlap
   })
 
-  it('limits effects to scope=paths and ignores rows outside that scope', async () => {
-    const { manager, repository } = setupManager(
-      [
-        { path: 'a.md', mtime: 200, content: 'updated' },
-        { path: 'b.md', mtime: 100, content: 'unchanged' },
-      ],
-      [
-        {
-          id: 1,
-          path: 'a.md',
-          mtime: 100,
-          content_hash: 'old',
-          metadata: { startLine: 1, endLine: 1 },
-        },
-        {
-          id: 2,
-          path: 'b.md',
-          mtime: 100,
-          content_hash: 'h',
-          metadata: { startLine: 1, endLine: 1 },
-        },
-      ],
-    )
-    await manager.reconcile(embeddingModel, baseConfig, {
-      scope: { kind: 'paths', paths: ['a.md'] },
+  it('with VectorStore, multiple changed files are embedded concurrently and written serially', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(new Map())
+    const { manager } = createVectorStoreManager(ragStore, [
+      { path: 'notes/a.md', mtime: 100, content: 'alpha' },
+      { path: 'notes/b.md', mtime: 200, content: 'beta' },
+    ])
+
+    let resolveEmbeddings: (() => void) | null = null
+    const embeddingsReleased = new Promise<void>((resolve) => {
+      resolveEmbeddings = resolve
     })
-    // Only a.md should be touched. b.md (out of scope) untouched.
-    const deleted = repository.deleteVectorsByIds.mock.calls.flatMap(
-      (call) => call[0] as number[],
+    const startedContents: string[] = []
+    ;(embeddingModel as unknown as { getEmbedding: jest.Mock }).getEmbedding =
+      jest.fn(async (content: string) => {
+        startedContents.push(content)
+        await embeddingsReleased
+        return [0.1, 0.2, 0.3]
+      })
+
+    const reconcilePromise = manager.reconcile(
+      embeddingModel,
+      { ...baseConfig, embeddingConcurrency: 10 },
+      { scope: { kind: 'all' } },
     )
-    expect(deleted).toEqual([1])
-    expect(repository.insertVectors).toHaveBeenCalledTimes(1)
+
+    for (
+      let attempt = 0;
+      attempt < 20 && startedContents.length < 2;
+      attempt++
+    ) {
+      await Promise.resolve()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    expect(startedContents.sort()).toEqual(['alpha', 'beta'])
+    expect(ragStore.replaceFile).not.toHaveBeenCalled()
+
+    expect(resolveEmbeddings).not.toBeNull()
+    resolveEmbeddings!()
+    await reconcilePromise
+
+    expect(ragStore.replaceFile).toHaveBeenCalledTimes(2)
+    expect(
+      ragStore.replaceFile.mock.calls
+        .map(([, fileWrite]) => fileWrite.path)
+        .sort(),
+    ).toEqual(['notes/a.md', 'notes/b.md'])
   })
 
-  it('truncates the model when truncate=true and embeds everything fresh', async () => {
-    const { manager, repository } = setupManager(
-      [{ path: 'a.md', mtime: 100, content: 'hello' }],
-      [
-        {
-          id: 1,
-          path: 'a.md',
-          mtime: 100,
-          content_hash: 'h',
-          metadata: { startLine: 1, endLine: 1 },
-        },
-      ],
+  it('with VectorStore, waits for active workers and queued writes after a fatal worker failure', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(new Map())
+    const { manager } = createVectorStoreManager(ragStore, [
+      { path: 'notes/a.md', mtime: 100, content: 'alpha' },
+      { path: 'notes/b.md', mtime: 200, content: 'beta' },
+    ])
+
+    let releaseBeta: (() => void) | null = null
+    const betaReleased = new Promise<void>((resolve) => {
+      releaseBeta = resolve
+    })
+    let resolveBetaStarted: (() => void) | null = null
+    const betaStarted = new Promise<void>((resolve) => {
+      resolveBetaStarted = resolve
+    })
+    ;(embeddingModel as unknown as { getEmbedding: jest.Mock }).getEmbedding =
+      jest.fn(async (content: string) => {
+        if (content === 'alpha') {
+          throw Object.assign(new Error('service unavailable'), { status: 503 })
+        }
+        resolveBetaStarted?.()
+        await betaReleased
+        return [0.1, 0.2, 0.3]
+      })
+
+    let settled = false
+    let reconcileError: unknown
+    const reconcilePromise = manager
+      .reconcile(embeddingModel, baseConfig, { scope: { kind: 'all' } })
+      .catch((error: unknown) => {
+        reconcileError = error
+      })
+      .finally(() => {
+        settled = true
+      })
+
+    await betaStarted
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (ragStore.deleteFile.mock.calls.length > 0) break
+      await Promise.resolve()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    expect(ragStore.deleteFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'embedding',
+        model: 'text-embedding-3-large',
+      }),
+      'notes/a.md',
     )
+    await Promise.resolve()
+    await Promise.resolve()
+    const settledBeforeBetaRelease = settled
+
+    releaseBeta!()
+    await reconcilePromise
+
+    expect(settledBeforeBetaRelease).toBe(false)
+    expect(reconcileError).toMatchObject({ name: 'RagIndexIncompleteError' })
+    expect(ragStore.replaceFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'embedding',
+        model: 'text-embedding-3-large',
+      }),
+      expect.objectContaining({ path: 'notes/b.md' }),
+    )
+  })
+
+  it('with VectorStore, changed files do not call the save callback', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(new Map())
+    const { manager } = createVectorStoreManager(ragStore, [
+      { path: 'notes/a.md', mtime: 100, content: 'alpha' },
+    ])
+    const saveCallback = jest.fn().mockResolvedValue(undefined)
+    manager.setSaveCallback(saveCallback)
+
     await manager.reconcile(embeddingModel, baseConfig, {
       scope: { kind: 'all' },
-      truncate: true,
     })
-    expect(repository.truncateModel).toHaveBeenCalledWith('test-model')
-    // After truncate, mtime map is empty so the file is treated as new.
-    expect(repository.insertVectors).toHaveBeenCalledTimes(1)
+
+    expect(saveCallback).not.toHaveBeenCalled()
   })
 
-  it('treats a single-path delete as a file-removal event', async () => {
-    const { manager, repository } = setupManager(
-      [],
-      [
-        {
-          id: 5,
-          path: 'a.md',
-          mtime: 100,
-          content_hash: 'h',
-          metadata: { startLine: 1, endLine: 1 },
-        },
-      ],
+  it('with VectorStore, starts sync progress from files with vector ready', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(
+      new Map([
+        ['ready.md', { mtime: 100, contentHash: 'ready-hash' }],
+        ['vector-only.md', { mtime: 100, contentHash: 'vector-only-hash' }],
+      ]),
     )
+    ;(ragStore.getFileReadiness as jest.Mock).mockResolvedValue(
+      new Map([
+        ['ready.md', { path: 'ready.md', vectorReady: true }],
+        ['vector-only.md', { path: 'vector-only.md', vectorReady: true }],
+        ['new.md', { path: 'new.md', vectorReady: false }],
+      ]),
+    )
+    const { manager } = createVectorStoreManager(ragStore, [
+      { path: 'ready.md', mtime: 100, content: 'ready' },
+      { path: 'vector-only.md', mtime: 100, content: 'vector only' },
+      { path: 'new.md', mtime: 200, content: 'new' },
+    ])
+    const onProgress = jest.fn()
+
     await manager.reconcile(embeddingModel, baseConfig, {
-      scope: { kind: 'paths', paths: ['a.md'] },
+      scope: { kind: 'all' },
+      onProgress,
     })
-    expect(repository.deleteVectorsByIds).toHaveBeenCalledWith([5])
+
+    expect(onProgress).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        totalFiles: 3,
+        completedFiles: 2,
+      }),
+    )
+    expect(ragStore.replaceFile).toHaveBeenCalledTimes(1)
+    expect(ragStore.replaceFile.mock.calls[0][1].path).toBe('new.md')
   })
 
-  it('skips 0-byte files so they do not flicker as "new" forever', async () => {
-    // Regression: empty files would chunkify into 0 chunks and never write a
-    // DB row, which made mtime-based partition flag them as new on every
-    // sync — visible to the user as a stray file flashing through the
-    // progress UI when they only changed unrelated settings.
-    const fileObjects = [
-      { path: 'empty.md', extension: 'md', stat: { mtime: 100, size: 0 } },
-    ]
-    const app = {
-      vault: {
-        getFiles: jest.fn().mockReturnValue(fileObjects),
-        cachedRead: jest.fn(),
-      },
-    }
-    const manager = new VectorManager(app as never, {} as never)
-    const repository = {
-      getFileMtimes: jest.fn().mockResolvedValue(new Map()),
-      listChunksForPaths: jest.fn().mockResolvedValue([]),
-      deleteVectorsByIds: jest.fn().mockResolvedValue(undefined),
-      bumpMtimeByIds: jest.fn().mockResolvedValue(undefined),
-      insertVectors: jest.fn().mockResolvedValue(undefined),
-      truncateModel: jest.fn().mockResolvedValue(undefined),
-    }
-    ;(manager as unknown as { repository: typeof repository }).repository =
-      repository
-    manager.setSaveCallback(async () => undefined)
-    manager.setVacuumCallback(async () => undefined)
+  it('with VectorStore, reports sync progress baseline even when vector index is unchanged', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(
+      new Map([
+        ['ready.md', { mtime: 100, contentHash: 'ready-hash' }],
+        ['vector-only.md', { mtime: 100, contentHash: 'vector-only-hash' }],
+      ]),
+    )
+    ;(ragStore.getFileReadiness as jest.Mock).mockResolvedValue(
+      new Map([
+        ['ready.md', { path: 'ready.md', vectorReady: true }],
+        ['vector-only.md', { path: 'vector-only.md', vectorReady: true }],
+      ]),
+    )
+    const { manager } = createVectorStoreManager(ragStore, [
+      { path: 'ready.md', mtime: 100, content: 'ready' },
+      { path: 'vector-only.md', mtime: 100, content: 'vector only' },
+    ])
+    const onProgress = jest.fn()
+
+    await manager.reconcile(embeddingModel, baseConfig, {
+      scope: { kind: 'all' },
+      onProgress,
+    })
+
+    expect(onProgress).toHaveBeenCalledTimes(1)
+    expect(onProgress).toHaveBeenCalledWith(
+      expect.objectContaining({
+        totalFiles: 2,
+        completedFiles: 2,
+      }),
+    )
+    expect(ragStore.replaceFile).not.toHaveBeenCalled()
+  })
+
+  it('with VectorStore, removed files call deleteFile', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(
+      new Map([['gone.md', { mtime: 100, contentHash: 'gone-hash' }]]),
+    )
+    const { manager } = createVectorStoreManager(ragStore, [])
+
+    await manager.reconcile(embeddingModel, baseConfig, {
+      scope: { kind: 'all' },
+    })
+
+    expect(ragStore.deleteFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'embedding',
+        model: 'text-embedding-3-large',
+      }),
+      'gone.md',
+    )
+  })
+
+  it('with VectorStore, skips 0-byte files so they do not flicker as new forever', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(new Map())
+    const { manager, app } = createVectorStoreManager(ragStore, [
+      { path: 'empty.md', mtime: 100, size: 0 },
+    ])
 
     await manager.reconcile(embeddingModel, baseConfig, {
       scope: { kind: 'all' },
     })
 
     expect(app.vault.cachedRead).not.toHaveBeenCalled()
-    expect(repository.insertVectors).not.toHaveBeenCalled()
-    expect(repository.deleteVectorsByIds).not.toHaveBeenCalled()
+    expect(ragStore.replaceFile).not.toHaveBeenCalled()
+    expect(ragStore.deleteFile).not.toHaveBeenCalled()
   })
 
-  it('does not delete existing vectors when chunkify throws (transient I/O error)', async () => {
-    // Regression: a failed cachedRead must NOT be interpreted as "file is empty
-    // → delete its actual rows". Otherwise a transient error wipes the user's
-    // index. The retry path will pick up these files on the next reconcile.
-    const { manager, repository, app } = setupManager(
-      [{ path: 'a.md', mtime: 200, content: 'updated' }],
-      [
-        {
-          id: 1,
-          path: 'a.md',
-          mtime: 100,
-          content_hash: 'h',
-          metadata: { startLine: 1, endLine: 1 },
-        },
-      ],
+  it('with VectorStore, chunkify failure returns chunkifyFailedPaths and preserves old index', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(
+      new Map([['notes/a.md', { mtime: 50, contentHash: 'old-hash' }]]),
     )
-    ;(app.vault.cachedRead as jest.Mock).mockRejectedValueOnce(
-      new Error('disk hiccup'),
-    )
-    await manager.reconcile(embeddingModel, baseConfig, {
-      scope: { kind: 'all' },
+    const { manager, app } = createVectorStoreManager(ragStore, [
+      { path: 'notes/a.md', mtime: 100, size: 10 },
+    ])
+    app.vault.cachedRead.mockRejectedValue(new Error('disk hiccup'))
+
+    await expect(
+      manager.reconcile(embeddingModel, baseConfig, { scope: { kind: 'all' } }),
+    ).resolves.toEqual({
+      permanentFailedPaths: [],
+      chunkifyFailedPaths: ['notes/a.md'],
     })
-    expect(repository.deleteVectorsByIds).not.toHaveBeenCalled()
-    expect(repository.insertVectors).not.toHaveBeenCalled()
+
+    expect(ragStore.deleteFile).not.toHaveBeenCalled()
+    expect(ragStore.replaceFile).not.toHaveBeenCalled()
   })
 
-  it('rolls back a file with a transient embedding failure and throws RagIndexIncompleteError', async () => {
-    const { manager, repository } = setupManager(
-      [{ path: 'a.md', mtime: 100, content: 'hello world' }],
-      [],
+  it('with VectorStore, PDF extraction failure returns chunkifyFailedPaths and does not replace the file with empty chunks', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(
+      new Map([['notes/a.pdf', { mtime: 50, contentHash: 'old-hash' }]]),
     )
+    ;(extractPdfText as jest.Mock).mockRejectedValueOnce(
+      new Error('pdf parser crashed'),
+    )
+    const { manager } = createVectorStoreManager(ragStore, [
+      { path: 'notes/a.pdf', extension: 'pdf', mtime: 100, size: 1024 },
+    ])
+
+    try {
+      await expect(
+        manager.reconcile(
+          embeddingModel,
+          { ...baseConfig, indexPdf: true },
+          { scope: { kind: 'all' } },
+        ),
+      ).resolves.toEqual({
+        permanentFailedPaths: [],
+        chunkifyFailedPaths: ['notes/a.pdf'],
+      })
+
+      expect(extractPdfText).toHaveBeenCalledTimes(1)
+      expect(ragStore.deleteFile).not.toHaveBeenCalled()
+      expect(ragStore.replaceFile).not.toHaveBeenCalled()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('with VectorStore, successful PDF extraction publishes projection source once', async () => {
+    ;(extractPdfText as jest.Mock).mockResolvedValueOnce({
+      pages: [
+        { page: 1, text: 'Page one' },
+        { page: 2, text: 'Page two' },
+      ],
+    })
+    const onPdfTextExtracted = jest.fn().mockResolvedValue(undefined)
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(new Map())
+    const { manager } = createVectorStoreManager(ragStore, [
+      { path: 'notes/a.pdf', extension: 'pdf', mtime: 100, size: 1024 },
+    ])
+
+    await manager.reconcile(
+      embeddingModel,
+      { ...baseConfig, indexPdf: true },
+      {
+        scope: { kind: 'all' },
+        onPdfTextExtracted,
+      },
+    )
+
+    expect(extractPdfText).toHaveBeenCalledTimes(1)
+    const expectedContentHash = hashProjectionSource({
+      kind: 'pdf',
+      pages: [
+        { page: 1, text: 'Page one' },
+        { page: 2, text: 'Page two' },
+      ],
+    })
+    expect(onPdfTextExtracted).toHaveBeenCalledWith({
+      path: 'notes/a.pdf',
+      contentHash: expectedContentHash,
+      sourceParserVersion: expect.any(String),
+      pages: [
+        { page: 1, text: 'Page one' },
+        { page: 2, text: 'Page two' },
+      ],
+    })
+  })
+
+  it('with VectorStore, transient embedding failure rolls back the file and throws RagIndexIncompleteError', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(new Map())
+    const { manager } = createVectorStoreManager(ragStore, [
+      { path: 'notes/a.md', mtime: 100, content: 'alpha' },
+    ])
     ;(embeddingModel as unknown as { getEmbedding: jest.Mock }).getEmbedding =
       jest
         .fn()
@@ -365,27 +544,26 @@ describe('VectorManager.reconcile', () => {
       manager.reconcile(embeddingModel, baseConfig, { scope: { kind: 'all' } }),
     ).rejects.toMatchObject({ name: 'RagIndexIncompleteError' })
 
-    expect(repository.deleteVectorsByPaths).toHaveBeenCalledWith('test-model', [
-      'a.md',
-    ])
-    expect(repository.insertVectors).not.toHaveBeenCalled()
+    expect(ragStore.deleteFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'embedding',
+        model: 'text-embedding-3-large',
+      }),
+      'notes/a.md',
+    )
+    expect(ragStore.replaceFile).not.toHaveBeenCalled()
   })
 
-  it('rolls back a file with mixed transient + permanent failures (no silent gap)', async () => {
-    // A file that splits into multiple chunks: one chunk hits a transient
-    // failure, another a permanent one. The whole file must be rolled back so
-    // the transient gap is not frozen by the surviving permanent/success rows.
-    const longContent = `${'A'.repeat(900)}\n\n${'B'.repeat(900)}\n\n${'C'.repeat(900)}`
-    const { manager, repository } = setupManager(
-      [{ path: 'a.md', mtime: 100, content: longContent }],
-      [],
-    )
+  it('with VectorStore, permanent-only embedding failure returns permanentFailedPaths without rollback', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(new Map())
+    const content = `${'A'.repeat(900)}\n\n${'B'.repeat(900)}`
+    const { manager } = createVectorStoreManager(ragStore, [
+      { path: 'notes/a.md', mtime: 100, content },
+    ])
     ;(embeddingModel as unknown as { getEmbedding: jest.Mock }).getEmbedding =
-      jest.fn(async (content: string) => {
-        if (content.includes('A')) {
-          throw Object.assign(new Error('network error'), { status: 503 })
-        }
-        if (content.includes('B')) {
+      jest.fn(async (chunkContent: string) => {
+        if (chunkContent.includes('A')) {
           throw Object.assign(new Error('bad request'), { status: 400 })
         }
         return [0.1, 0.2, 0.3]
@@ -393,244 +571,150 @@ describe('VectorManager.reconcile', () => {
 
     await expect(
       manager.reconcile(embeddingModel, baseConfig, { scope: { kind: 'all' } }),
-    ).rejects.toMatchObject({ name: 'RagIndexIncompleteError' })
-
-    expect(repository.deleteVectorsByPaths).toHaveBeenCalledWith('test-model', [
-      'a.md',
-    ])
-  })
-
-  it('keeps successful chunks and does not throw for permanent-only failures', async () => {
-    const longContent = `${'A'.repeat(900)}\n\n${'B'.repeat(900)}`
-    const { manager, repository, inserted } = setupManager(
-      [{ path: 'a.md', mtime: 100, content: longContent }],
-      [],
-    )
-    ;(embeddingModel as unknown as { getEmbedding: jest.Mock }).getEmbedding =
-      jest.fn(async (content: string) => {
-        if (content.includes('A')) {
-          throw Object.assign(new Error('bad request'), { status: 400 })
-        }
-        return [0.1, 0.2, 0.3]
-      })
-
-    const result = await manager.reconcile(embeddingModel, baseConfig, {
-      scope: { kind: 'all' },
-    })
-
-    // Permanent-only failure → returned (not thrown, no modal) so the UI layer
-    // can surface it by trigger.
-    expect(result).toEqual({
-      permanentFailedPaths: ['a.md'],
+    ).resolves.toEqual({
+      permanentFailedPaths: ['notes/a.md'],
       chunkifyFailedPaths: [],
     })
-    expect(errorModalCtor).not.toHaveBeenCalled()
-    expect(repository.deleteVectorsByPaths).not.toHaveBeenCalled()
-    // The successful (B) chunk is kept.
-    expect(repository.insertVectors).toHaveBeenCalled()
-    expect(inserted.rows.length).toBeGreaterThan(0)
+
+    expect(ragStore.deleteFile).not.toHaveBeenCalled()
+    expect(ragStore.replaceFile).toHaveBeenCalledTimes(1)
   })
 
-  it('throws a transient RagIndexIncompleteError (not a generic Error) on full outage', async () => {
-    const { manager, repository } = setupManager(
-      [{ path: 'a.md', mtime: 100, content: 'hello world' }],
-      [],
-    )
-    ;(embeddingModel as unknown as { getEmbedding: jest.Mock }).getEmbedding =
-      jest
-        .fn()
-        .mockRejectedValue(
-          Object.assign(new Error('fetch failed'), { code: 'ENOTFOUND' }),
-        )
-
-    await expect(
-      manager.reconcile(embeddingModel, baseConfig, { scope: { kind: 'all' } }),
-    ).rejects.toMatchObject({ name: 'RagIndexIncompleteError' })
-
-    expect(repository.deleteVectorsByPaths).toHaveBeenCalledWith('test-model', [
-      'a.md',
+  it('with VectorStore, truncate calls clearNamespace', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(new Map())
+    const { manager } = createVectorStoreManager(ragStore, [
+      { path: 'notes/a.md', mtime: 100, content: 'hello' },
     ])
-  })
 
-  it('does not roll back or throw when a whole batch fails transiently on attempt 1 but succeeds on attempt 2', async () => {
-    // Regression (source fix 1): the inner `while (attempt < 2)` retry must
-    // discard attempt 1's failure records once attempt 2 succeeds. A single
-    // chunk that throws a transient error on its first embed call and succeeds
-    // on the second must end up inserted, with no rollback and no throw.
-    const { manager, repository, inserted } = setupManager(
-      [{ path: 'a.md', mtime: 100, content: 'hello world' }],
-      [],
-    )
-    let calls = 0
-    ;(embeddingModel as unknown as { getEmbedding: jest.Mock }).getEmbedding =
-      jest.fn(async () => {
-        calls += 1
-        if (calls === 1) {
-          // Transient on the first attempt only.
-          throw Object.assign(new Error('service unavailable'), { status: 503 })
-        }
-        return [0.1, 0.2, 0.3]
-      })
-
-    await expect(
-      manager.reconcile(embeddingModel, baseConfig, { scope: { kind: 'all' } }),
-    ).resolves.toEqual({ permanentFailedPaths: [], chunkifyFailedPaths: [] })
-
-    expect(repository.deleteVectorsByPaths).not.toHaveBeenCalled()
-    expect(repository.insertVectors).toHaveBeenCalledTimes(1)
-    expect(inserted.rows.length).toBe(1)
-  })
-
-  it('throws (no silent success) when an entire batch fails permanently and later batches are left unprocessed', async () => {
-    // Regression (source fix 2): with embeddingConcurrency=1 each chunk is its
-    // own batch. The first batch fails purely permanently (invalid API key),
-    // so the loop breaks (wholeBatchFailed) and the second file's batch is
-    // never attempted. The run MUST throw so it is recorded as failed, and the
-    // partial "the rest is indexed" warning modal MUST be suppressed.
-    const { manager, repository, inserted } = setupManager(
-      [
-        { path: 'a.md', mtime: 100, content: 'first file' },
-        { path: 'b.md', mtime: 100, content: 'second file' },
-      ],
-      [],
-    )
-    ;(embeddingModel as unknown as { getEmbedding: jest.Mock }).getEmbedding =
-      jest
-        .fn()
-        .mockRejectedValue(
-          Object.assign(new Error('invalid api key'), { status: 400 }),
-        )
-
-    await expect(
-      manager.reconcile(
-        embeddingModel,
-        { ...baseConfig, embeddingConcurrency: 1 },
-        { scope: { kind: 'all' } },
-      ),
-    ).rejects.toThrow(/Embedding halted/)
-
-    // Permanent-only failure → no rollback delete.
-    expect(repository.deleteVectorsByPaths).not.toHaveBeenCalled()
-    // Nothing was successfully embedded.
-    expect(inserted.rows.length).toBe(0)
-    // The data layer must never construct a modal — error surfacing is the UI
-    // layer's job. For an incomplete (wholeBatchFailed) run the throw above is
-    // the only signal; no partial "rest is indexed" report is emitted.
-    expect(errorModalCtor).not.toHaveBeenCalled()
-  })
-
-  it('rolls back a permanent-failed file too when another file in the same run has a transient failure', async () => {
-    // Cross-file regression (source fix 2): in one reconcile pass file A hits a
-    // transient failure (→ rollback + RagIndexIncompleteError retry) while file
-    // B has a PERMANENT failure on one chunk but other chunks succeed. Because
-    // the run is incomplete and will retry, B's partially-successful rows must
-    // be rolled back together with A's — otherwise B's surviving success rows
-    // would stamp the current mtime and let B be silently skipped on the retry,
-    // freezing the permanent gap. Assert deleteVectorsByPaths receives BOTH A
-    // and B, and the thrown error's rolledBackPaths carries both.
-    //
-    // B's content splits into multiple chunks so its permanent failure can
-    // coexist with at least one success (keeping validRows.length > 0 so the
-    // batch is NOT treated as wholeBatchFailed).
-    const bContent = `${'X'.repeat(900)}\n\n${'Y'.repeat(900)}`
-    const { manager, repository } = setupManager(
-      [
-        { path: 'a.md', mtime: 100, content: 'transient file' },
-        { path: 'b.md', mtime: 100, content: bContent },
-      ],
-      [],
-    )
-    ;(embeddingModel as unknown as { getEmbedding: jest.Mock }).getEmbedding =
-      jest.fn(async (content: string) => {
-        // File A's single chunk → transient (503).
-        if (content.includes('transient file')) {
-          throw Object.assign(new Error('service unavailable'), { status: 503 })
-        }
-        // File B's first chunk → permanent (400); B's other chunk(s) succeed.
-        if (content.includes('X')) {
-          throw Object.assign(new Error('bad request'), { status: 400 })
-        }
-        return [0.1, 0.2, 0.3]
-      })
-
-    let thrown: unknown
-    await manager
-      .reconcile(embeddingModel, baseConfig, { scope: { kind: 'all' } })
-      .catch((error: unknown) => {
-        thrown = error
-      })
-
-    // Incomplete run → throws RagIndexIncompleteError (transient retry).
-    expect(thrown).toMatchObject({ name: 'RagIndexIncompleteError' })
-
-    // BOTH the transient file (A) and the permanent-but-partially-successful
-    // file (B) are rolled back — no silent gap left on B.
-    expect(repository.deleteVectorsByPaths).toHaveBeenCalledTimes(1)
-    const [model, paths] = repository.deleteVectorsByPaths.mock.calls[0] as [
-      string,
-      string[],
-    ]
-    expect(model).toBe('test-model')
-    expect([...paths].sort()).toEqual(['a.md', 'b.md'])
-
-    // The error's rolledBackPaths also carries both files.
-    expect(
-      [...(thrown as { rolledBackPaths: string[] }).rolledBackPaths].sort(),
-    ).toEqual(['a.md', 'b.md'])
-  })
-
-  it('deletes ALL rows for a transiently-rolled-back file, including a reused (bumpMtime) row', async () => {
-    // A file that splits into two chunks. Its first chunk matches an existing
-    // DB row (same line range + content hash) at a STALE mtime → planReconcile
-    // reuses it and bumps its mtime in step 7. The second chunk is new and hits
-    // a transient embedding failure → the file is rolled back. The rollback
-    // must call deleteVectorsByPaths so the reused/bumped row is removed too;
-    // otherwise it would survive carrying the fresh mtime and freeze the gap.
-    const content = `${'A'.repeat(900)}\n\n${'B'.repeat(900)}`
-    const splitter = RecursiveCharacterTextSplitter.fromLanguage('markdown', {
-      chunkSize: 1000,
+    await manager.reconcile(embeddingModel, baseConfig, {
+      scope: { kind: 'all' },
+      truncate: true,
     })
-    const docs = await splitter.createDocuments([content])
-    expect(docs.length).toBe(2)
-    const firstDoc = docs[0]
-    const firstHash = await sha256HexPrefix16(firstDoc.pageContent)
 
-    // Seed the existing row to match the FIRST desired chunk's identity and
-    // content hash, but with a stale mtime so it is reused via bumpMtime.
-    const { manager, repository } = setupManager(
-      [{ path: 'a.md', mtime: 200, content }],
-      [
+    expect(ragStore.clearNamespace).toHaveBeenCalledTimes(1)
+  })
+
+  it('with VectorStore, similarity search maps hits to the legacy row shape', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.search.mockResolvedValue({
+      hits: [
         {
-          id: 42,
-          path: 'a.md',
-          mtime: 100,
-          content_hash: firstHash,
-          metadata: {
-            startLine: firstDoc.metadata.loc.lines.from as number,
-            endLine: firstDoc.metadata.loc.lines.to as number,
+          id: 'chunk-1',
+          chunkId: 'chunk-1',
+          path: 'notes/a.md',
+          excerpt: 'matched text',
+          score: 0.91,
+          source: 'vector',
+          location: {
+            lineStart: 4,
+            lineEnd: 6,
+            page: 2,
+          },
+          metadataJson: {
+            startLine: 4,
+            endLine: 6,
+            page: 2,
           },
         },
       ],
+      recallCount: 1,
+      recallLimit: 10,
+    })
+
+    const manager = new VectorManager({} as never, {} as never, {
+      vectorStore: ragStore,
+      settings: {
+        embeddingModels: [
+          {
+            id: 'test-model',
+            providerId: 'openai',
+            model: 'text-embedding-3-large',
+            dimension: 3,
+          },
+        ],
+      } as never,
+    })
+
+    const result = await manager.performSimilaritySearch(
+      [0.1, 0.2, 0.3],
+      embeddingModel,
+      {
+        minSimilarity: 0.5,
+        limit: 3,
+        scope: { files: ['notes/a.md'], folders: [] },
+      },
     )
-    ;(embeddingModel as unknown as { getEmbedding: jest.Mock }).getEmbedding =
-      jest.fn(async (chunkContent: string) => {
-        if (chunkContent.includes('B')) {
-          throw Object.assign(new Error('service unavailable'), { status: 503 })
-        }
-        return [0.1, 0.2, 0.3]
-      })
 
-    await expect(
-      manager.reconcile(embeddingModel, baseConfig, { scope: { kind: 'all' } }),
-    ).rejects.toMatchObject({ name: 'RagIndexIncompleteError' })
+    expect(ragStore.search).toHaveBeenCalledTimes(1)
+    expect(result.rows).toEqual([
+      expect.objectContaining({
+        id: 1,
+        path: 'notes/a.md',
+        content: 'matched text',
+        similarity: 0.91,
+        model: 'test-model',
+        dimension: 3,
+        metadata: {
+          startLine: 4,
+          endLine: 6,
+          page: 2,
+        },
+      }),
+    ])
+    expect(result.trace).toBeUndefined()
+  })
 
-    // Reuse path was exercised (the matching row's mtime was bumped)...
-    expect(repository.bumpMtimeByIds).toHaveBeenCalledWith([
-      { id: 42, mtime: 200 },
-    ])
-    // ...and the whole-path delete swept it up on rollback.
-    expect(repository.deleteVectorsByPaths).toHaveBeenCalledWith('test-model', [
-      'a.md',
-    ])
+  it('performSimilaritySearch uses detailed vector timings when VectorStore.searchDetailed is available', async () => {
+    const ragStore = fakeVectorStore()
+    ;(ragStore.searchDetailed as jest.Mock).mockResolvedValue({
+      hits: [
+        {
+          id: 'chunk-1',
+          chunkId: 'chunk-1',
+          path: 'notes/a.md',
+          excerpt: 'matched text',
+          score: 0.91,
+          source: 'vector',
+          location: { lineStart: 4, lineEnd: 6, page: 2 },
+          metadataJson: { startLine: 4, endLine: 6, page: 2 },
+        },
+      ],
+      timingsMs: {
+        coarseSearch: 12,
+        loadFullVectors: 8,
+        rerankSimilarity: 3,
+      },
+    })
+    const manager = new VectorManager({} as never, {} as never, {
+      vectorStore: ragStore,
+      settings: {
+        embeddingModels: [
+          {
+            id: 'test-model',
+            providerId: 'openai',
+            model: 'text-embedding-3-large',
+            dimension: 3,
+          },
+        ],
+      } as never,
+    })
+
+    const result = await manager.performSimilaritySearch(
+      [0.1, 0.2, 0.3],
+      embeddingModel,
+      {
+        minSimilarity: 0.5,
+        limit: 3,
+      },
+    )
+
+    expect(ragStore.searchDetailed as jest.Mock).toHaveBeenCalledTimes(1)
+    expect(ragStore.search).not.toHaveBeenCalled()
+    expect(result.trace).toEqual({
+      coarseSearchMs: 12,
+      loadFullVectorsMs: 8,
+      rerankSimilarityMs: 3,
+    })
   })
 })

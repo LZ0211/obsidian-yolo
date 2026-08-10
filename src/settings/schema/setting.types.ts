@@ -13,6 +13,7 @@ import {
 } from '../../types/assistant.types'
 import { chatModelSchema } from '../../types/chat-model.types'
 import { embeddingModelSchema } from '../../types/embedding-model.types'
+import { rerankModelSchema } from '../../types/rerank-model.types'
 import {
   mcpServerConfigSchema,
   mcpServerToolOptionsSchema,
@@ -37,9 +38,11 @@ const resilientArraySchema = <T extends z.ZodTypeAny>(itemSchema: T) =>
 const ragOptionsSchema = z.object({
   enabled: z.boolean().catch(true),
   chunkSize: z.number().catch(1000),
+  chunkOverlap: z.number().catch(50),
   thresholdTokens: z.number().catch(20000),
   minSimilarity: z.number().catch(0.0),
   limit: z.number().catch(10),
+  rerankEnabled: z.boolean().catch(true),
   /**
    * Max parallel embedding requests during indexing. Lower this when the
    * embedding provider returns 429 / rate-limit errors (e.g. Azure S0 tier
@@ -57,7 +60,8 @@ const ragOptionsSchema = z.object({
   includePatterns: z.array(z.string()).catch([]),
   /** When true, index `.pdf` files for RAG (text extraction). */
   indexPdf: z.boolean().catch(true),
-  // auto update options
+  diagnosticsEnabled: z.boolean().catch(true),
+  showRagLogRibbonIcon: z.boolean().catch(true),
   autoUpdateEnabled: z.boolean().catch(true),
   autoUpdateIntervalHours: z.number().catch(0),
   lastAutoUpdateAt: z.number().catch(0),
@@ -476,6 +480,17 @@ export const botsSettingsSchema = z.object({
 })
 export type BotsSettings = z.infer<typeof botsSettingsSchema>
 
+export const ragBackendSettingsSchema = z.preprocess(
+  (value) =>
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? value
+      : {},
+  z.object({
+    indexedNamespaceId: z.string().optional(),
+    rebuildRequired: z.boolean().catch(false),
+  }),
+)
+
 export const yoloSettingsSchema = z.object({
   // Version
   version: z.literal(SETTINGS_SCHEMA_VERSION).catch(SETTINGS_SCHEMA_VERSION),
@@ -485,8 +500,10 @@ export const yoloSettingsSchema = z.object({
   chatModels: resilientArraySchema(chatModelSchema),
 
   embeddingModels: resilientArraySchema(embeddingModelSchema),
+  rerankModels: resilientArraySchema(rerankModelSchema),
 
   chatModelId: z.string().catch(''), // model for default chat feature
+  rerankModelId: z.string().catch(''),
   chatTitleModelId: z.string().catch(''), // model for automatic conversation naming
   embeddingModelId: z.string().catch(''), // model for embedding
 
@@ -513,18 +530,23 @@ export const yoloSettingsSchema = z.object({
   ragOptions: ragOptionsSchema.catch({
     enabled: true,
     chunkSize: 1000,
+    chunkOverlap: 50,
     thresholdTokens: 20000,
     minSimilarity: 0.0,
     limit: 10,
+    rerankEnabled: true,
     embeddingConcurrency: 10,
     excludePatterns: [],
     excludeYoloBaseDir: true,
     includePatterns: [],
     indexPdf: true,
+    diagnosticsEnabled: true,
+    showRagLogRibbonIcon: true,
     autoUpdateEnabled: true,
     autoUpdateIntervalHours: 0,
     lastAutoUpdateAt: 0,
   }),
+  ragBackendSettings: ragBackendSettingsSchema,
 
   // MCP configuration
   mcp: z

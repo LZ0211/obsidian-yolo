@@ -1,4 +1,4 @@
-import type { VectorSelect } from '../../core/runtime-components'
+import type { SimilaritySearchResult } from '../../database/modules/vector/VectorManager'
 import DotLoader from '../common/DotLoader'
 
 export type QueryProgressState =
@@ -14,15 +14,14 @@ export type QueryProgressState =
     }
   | {
       type: 'querying-done'
-      queryResult: (VectorSelect & {
-        similarity: number
-      })[]
+      queryResult: SimilaritySearchResult[]
     }
   | {
       type: 'idle'
     }
 
 export type IndexProgress = {
+  phase?: 'vector' | 'lexical'
   completedChunks: number
   totalChunks: number
   totalFiles: number

@@ -2267,7 +2267,7 @@ export async function callLocalFileTool({
     // The gateway performs the same check up front for UI Rejected status,
     // but we re-validate here so manual-approval / direct-call code paths
     // cannot bypass the constraint.
-    if (workspaceAccessPolicy?.enabled) {
+    if (workspaceAccessPolicy?.enabled && toolName !== 'fs_read') {
       const exemptPaths = allowedSkillPaths
         ? buildAllowedSkillPathSet(allowedSkillPaths)
         : undefined
@@ -2296,13 +2296,17 @@ export async function callLocalFileTool({
     // same invisibility now that the root is a normal, visible folder.
     // Reported as a plain not-found, matching a genuine miss, so nothing
     // about "this path is specially hidden" leaks to the model.
-    const offendingUserDataPath = findPathWithinExcludedRoot(
-      toolName,
-      args,
-      (path) => isWithinYoloUserDataRoot(path, settings),
-    )
-    if (offendingUserDataPath !== null) {
-      throw new Error(`File not found: ${offendingUserDataPath}`)
+    // fs_read is exempt here — its raw `paths` entries may be wikilinks,
+    // and per-resolved-file enforcement lives in the read loop below.
+    if (toolName !== 'fs_read') {
+      const offendingUserDataPath = findPathWithinExcludedRoot(
+        toolName,
+        args,
+        (path) => isWithinYoloUserDataRoot(path, settings),
+      )
+      if (offendingUserDataPath !== null) {
+        throw new Error(`File not found: ${offendingUserDataPath}`)
+      }
     }
 
     const name = toolName as LocalFileToolName

@@ -182,8 +182,28 @@ import {
   checkForUpdate,
   normalizePluginVersion,
 } from './core/update/updateChecker'
+import { DatabaseMaintenanceController } from './core/maintenance/DatabaseMaintenanceController'
+import { createLazySqliteMaintenanceBackend } from './core/maintenance/DatabaseMaintenanceBackends'
+import {
+  MAINTENANCE_BACKEND_KIND,
+  MAINTENANCE_JOB_KIND,
+  type MaintenanceBackendKind,
+} from './core/maintenance/types'
+import { openSqliteRuntime } from './database/sqlite/sqliteNativeRuntime'
+import {
+  countSqliteTableRows,
+  inspectSqliteDatabase,
+  runReadOnlySql,
+} from './database/sqlite/sqliteDatabaseExplorer'
+import type { RetrievalTrace } from './core/rag/retrievalTraceTypes'
+import type { VectorBackendStatus } from './database/modules/rag/VectorStore'
+import {
+  buildFailedRetrievalInspectStatus,
+  composeRetrievalInspectStatus,
+} from './core/rag/retrievalInspectStatus'
+import type { RetrievalInspectStatus } from './core/rag/retrievalTraceTypes'
+import { RAGLogModal } from './components/settings/modals/RAGLogModal'
 import type { DatabaseManager } from './database/DatabaseManager'
-import { PGLiteAbortedException } from './database/exception'
 import { ChatManager } from './database/json/chat/ChatManager'
 import type { BotService } from './core/bot/bot-service'
 import { deserializeChatMessage } from './hooks/useChatHistory'
@@ -193,8 +213,6 @@ import type {
   ReconcileResult,
   VectorManager,
 } from './database/modules/vector/VectorManager'
-import type { PGliteRuntimeManager } from './database/runtime/PGliteRuntimeManager'
-import { PGLITE_RUNTIME_VERSION } from './database/runtime/pgliteRuntimeMetadata'
 import {
   ChatLeafPlacement,
   ChatLeafSessionManager,
@@ -285,9 +303,6 @@ export default class YoloPlugin extends Plugin {
   dbManager: DatabaseManager | null = null
   private dbManagerInitPromise: Promise<DatabaseManager> | null = null
   private timeoutIds: ReturnType<typeof setTimeout>[] = [] // Use ReturnType instead of number
-  private pgliteRuntimeManager: PGliteRuntimeManager | null = null
-  private pgliteRuntimeManagerInitPromise: Promise<PGliteRuntimeManager> | null =
-    null
   private isContinuationInProgress = false
   private activeAbortControllers: Set<AbortController> = new Set()
   private tabCompletionController: TabCompletionController | null = null
@@ -319,6 +334,10 @@ export default class YoloPlugin extends Plugin {
   private learningLegacyInstallMigration: (() => Promise<void>) | null = null
   private rawLearningLegacySettings: unknown = undefined
   private botService: BotService | null = null
+  private readonly databaseMaintenanceControllers = new Map<
+    Exclude<MaintenanceBackendKind, 'sessions'>,
+    DatabaseMaintenanceController
+  >()
   private learningModuleSettingsHandoffReady = false
   private readonly managedModulePathChangeListeners = new Set<() => void>()
   private localMcpServer: LocalMcpServerRuntime | null = null
@@ -634,35 +653,6 @@ export default class YoloPlugin extends Plugin {
     }
   }
 
-  async getPGliteRuntimeManager(): Promise<PGliteRuntimeManager> {
-    if (!this.pgliteRuntimeManager) {
-      this.pgliteRuntimeManagerInitPromise ??= (async () => {
-        try {
-          const { PGliteRuntimeManager } = await import(
-            './database/runtime/PGliteRuntimeManager'
-          )
-          if (this.isUnloaded) {
-            throw new Error('[YOLO] Plugin unloaded during PGlite warmup')
-          }
-          this.pgliteRuntimeManager = new PGliteRuntimeManager({
-            app: this.app,
-            pluginId: this.manifest.id,
-            pluginDir: this.manifest.dir
-              ? normalizePath(this.manifest.dir)
-              : undefined,
-            runtimeVersion: PGLITE_RUNTIME_VERSION,
-          })
-          return this.pgliteRuntimeManager
-        } catch (error) {
-          this.pgliteRuntimeManagerInitPromise = null
-          throw error
-        }
-      })()
-    }
-
-    return this.pgliteRuntimeManager ?? this.pgliteRuntimeManagerInitPromise!
-  }
-
   private getQuickAskController(): QuickAskController {
     if (!this.quickAskController) {
       this.quickAskController = new QuickAskController({
@@ -972,9 +962,8 @@ export default class YoloPlugin extends Plugin {
       this.ragCoordinator = new RagCoordinator({
         app: this.app,
         getSettings: () => this.settings,
-        ensureRuntimeReady: async () =>
-          (await this.getPGliteRuntimeManager()).ensureReady(),
         getDbManager: () => this.getDbManager(),
+        t: (key: string, fallback?: string) => this.t(key, fallback),
       })
     }
     return this.ragCoordinator
@@ -3963,6 +3952,108 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
     await this.getChatViewNavigator().addImageToChat(image)
   }
 
+
+  async getVectorBackendStatus(): Promise<VectorBackendStatus> {
+    const dbManager = await this.getDbManager()
+    const store = dbManager.getVectorStore()
+    if (!store) throw new Error('RAG backend is not available.')
+    return store.getStatus()
+  }
+
+  openRagLogModal(): void {
+    new RAGLogModal(this.app, this).open()
+  }
+
+  async getRetrievalInspectStatus(): Promise<RetrievalInspectStatus> {
+    const configuredModel = this.settings.embeddingModels.find(
+      (item) => item.id === this.settings.embeddingModelId,
+    )
+    try {
+      const backendStatus = await this.getVectorBackendStatus()
+      const dbManager = await this.getDbManager()
+      const store = dbManager.getVectorStore()
+      const latestTrace =
+        (await dbManager.getRetrievalTraceStore()?.getLatestTrace()) ?? null
+      const backendStats = store ? await store.getStats().catch(() => null) : null
+      const indexSnapshot = this.getRagIndexService().getSnapshot()
+      return composeRetrievalInspectStatus({
+        backendStatus,
+        backendStats,
+        indexSnapshot,
+        latestTrace,
+        modelId: configuredModel?.model ?? configuredModel?.id,
+        embeddingDimension: configuredModel?.dimension,
+      })
+    } catch (error) {
+      return buildFailedRetrievalInspectStatus({
+        error,
+        indexSnapshot: this.getRagIndexService().getSnapshot(),
+        modelId: configuredModel?.model ?? configuredModel?.id,
+        embeddingDimension: configuredModel?.dimension,
+      })
+    }
+  }
+
+  async listRetrievalTraces(limit?: number): Promise<RetrievalTrace[]> {
+    const store = (await this.getDbManager()).getRetrievalTraceStore()
+    return store ? store.listTraces(limit) : []
+  }
+
+  async deleteRetrievalTrace(queryId: string): Promise<void> {
+    const store = (await this.getDbManager()).getRetrievalTraceStore()
+    if (store) await store.deleteTrace(queryId)
+  }
+
+  async clearRetrievalTraces(): Promise<void> {
+    const store = (await this.getDbManager()).getRetrievalTraceStore()
+    if (store) await store.clearTraces()
+  }
+
+  getDatabaseMaintenanceController(
+    kind: Exclude<MaintenanceBackendKind, 'sessions'>,
+  ): DatabaseMaintenanceController {
+    const existing = this.databaseMaintenanceControllers.get(kind)
+    if (existing) return existing
+    const controller = new DatabaseMaintenanceController({
+      backend: createLazySqliteMaintenanceBackend({
+        kind,
+        open: async (signal) => {
+          if (signal?.aborted) {
+            throw new DOMException('Maintenance cancelled', 'AbortError')
+          }
+          if (kind !== MAINTENANCE_BACKEND_KIND.RAG) {
+            throw new Error('Database is unavailable.')
+          }
+          const status = await this.getVectorBackendStatus()
+          if (!status.storagePath) {
+            throw new Error('RAG database is unavailable.')
+          }
+          const runtime = openSqliteRuntime({ dbPath: status.storagePath })
+          return {
+            inspect: (options) => inspectSqliteDatabase(runtime, options),
+            count: (table) => countSqliteTableRows(runtime, table),
+            query: (source, rowLimit) => runReadOnlySql(runtime, source, rowLimit),
+            dispose: () => runtime.close(),
+          }
+        },
+        runJob: async (command, signal, onProgress) => {
+          if (signal.aborted) {
+            throw new DOMException('Maintenance cancelled', 'AbortError')
+          }
+          if (command.kind !== MAINTENANCE_JOB_KIND.VACUUM) {
+            throw new Error(`Unsupported maintenance job: ${command.kind}`)
+          }
+          onProgress({ completed: 0, message: 'Running VACUUM...' })
+          const dbManager = await this.getDbManager()
+          await dbManager.getVectorStore()?.vacuum()
+          onProgress({ completed: 1, total: 1 })
+        },
+      }),
+    })
+    this.databaseMaintenanceControllers.set(kind, controller)
+    return controller
+  }
+
   async getDbManager(): Promise<DatabaseManager> {
     if (this.dbManager) {
       return this.dbManager
@@ -3971,25 +4062,15 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
     if (!this.dbManagerInitPromise) {
       this.dbManagerInitPromise = (async () => {
         try {
-          const runtime = await (
-            await this.getPGliteRuntimeManager()
-          ).ensureReady()
           const { DatabaseManager } = await import('./database/DatabaseManager')
           this.dbManager = await DatabaseManager.create(
             this.app,
-            runtime.dir,
             this.settings,
             this.manifest.dir ? normalizePath(this.manifest.dir) : undefined,
           )
           return this.dbManager
         } catch (error) {
           this.dbManagerInitPromise = null
-          if (error instanceof PGLiteAbortedException) {
-            const { InstallerUpdateRequiredModal } = await import(
-              './components/modals/InstallerUpdateRequiredModal'
-            )
-            new InstallerUpdateRequiredModal(this.app).open()
-          }
           throw error
         }
       })()
@@ -4382,7 +4463,7 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
         console.error(`[YOLO] Runtime component "${id}" failed`, error)
       },
     })
-    service.registerQuiesceParticipant('pglite-engine', async () => {
+    service.registerQuiesceParticipant('rag', async () => {
       this.ragIndexService?.cancelActiveRun()
       await this.ragIndexService?.waitForIdle()
       this.ragCoordinator?.cleanup()

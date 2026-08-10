@@ -19,23 +19,15 @@ export class DuplicateTemplateException extends DatabaseException {
   }
 }
 
-export class PGLiteAbortedException extends DatabaseException {
-  constructor(message = 'PGLite aborted during runtime') {
-    super(message)
-    this.name = 'PGLiteAbortedException'
-  }
-}
-
 /**
- * Raised when persisting the PGlite snapshot to the vault fails — typically
- * `dumpDataDir('gzip')` running out of memory on large vector libraries (see
- * issue #408). Swallowing this would let the index UI report 100% complete
- * while the database is, in fact, not flushed; surfacing it is what lets the
- * RAG run state move to `failed` and the user see actionable feedback.
+ * Raised when persisting the vector database fails. Historically the PGlite
+ * snapshot dump could OOM on large vector libraries (issue #408); swallowing
+ * the error would let the index UI report 100% complete while the database
+ * was, in fact, not flushed. Surfacing it moves the RAG run state to `failed`.
  *
  * Classified as `permanent` for retry-policy purposes — retrying immediately
- * is unlikely to help (the snapshot is just as big), and we don't want to
- * thrash the user with auto-retries on an OOM condition.
+ * is unlikely to help, and we don't want to thrash the user with auto-retries
+ * on an OOM condition.
  */
 export class DatabaseSaveFailedError extends DatabaseException {
   readonly cause: unknown

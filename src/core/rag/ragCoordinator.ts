@@ -5,33 +5,40 @@ import { YoloSettings } from '../../settings/schema/setting.types'
 
 import { RAGEngine } from './ragEngine'
 
+export type RagWarmupState =
+  | 'not_started'
+  | 'initializing'
+  | 'ready'
+  | 'unavailable'
+
 type RagCoordinatorDeps = {
   app: App
   getSettings: () => YoloSettings
-  ensureRuntimeReady: () => Promise<{ version: string; dir: string }>
   getDbManager: () => Promise<DatabaseManager>
+  t: (key: string, fallback?: string) => string
 }
 
 export class RagCoordinator {
   private readonly app: App
   private readonly getSettings: () => YoloSettings
-  private readonly ensureRuntimeReady: () => Promise<{
-    version: string
-    dir: string
-  }>
   private readonly getDbManager: () => Promise<DatabaseManager>
+  private readonly t: (key: string, fallback?: string) => string
 
   private ragEngine: RAGEngine | null = null
   private ragEngineInitPromise: Promise<RAGEngine> | null = null
+  private closed = false
 
   constructor(deps: RagCoordinatorDeps) {
     this.app = deps.app
     this.getSettings = deps.getSettings
-    this.ensureRuntimeReady = deps.ensureRuntimeReady
     this.getDbManager = deps.getDbManager
+    this.t = deps.t
   }
 
   async getRagEngine(): Promise<RAGEngine> {
+    if (this.closed) {
+      throw new Error('RAG coordinator is stopped')
+    }
     if (this.ragEngine) {
       return this.ragEngine
     }
@@ -39,12 +46,13 @@ export class RagCoordinator {
     if (!this.ragEngineInitPromise) {
       this.ragEngineInitPromise = (async () => {
         try {
-          await this.ensureRuntimeReady()
           const dbManager = await this.getDbManager()
           this.ragEngine = new RAGEngine(
             this.app,
             this.getSettings(),
             dbManager.getVectorManager(),
+            this.t,
+            dbManager.getRetrievalTraceStore(),
           )
           return this.ragEngine
         } catch (error) {
@@ -57,11 +65,27 @@ export class RagCoordinator {
     return this.ragEngineInitPromise
   }
 
+  getReadyRagEngine(): RAGEngine | null {
+    return this.closed ? null : this.ragEngine
+  }
+
+  getWarmupState(): RagWarmupState {
+    if (this.closed) return 'unavailable'
+    if (this.ragEngine) return 'ready'
+    if (this.ragEngineInitPromise) return 'initializing'
+    return 'not_started'
+  }
+
+  async warmRagEngine(): Promise<RAGEngine> {
+    return await this.getRagEngine()
+  }
+
   updateSettings(settings: YoloSettings) {
     this.ragEngine?.setSettings(settings)
   }
 
   cleanup() {
+    this.closed = true
     this.ragEngine?.cleanup()
     this.ragEngine = null
     this.ragEngineInitPromise = null

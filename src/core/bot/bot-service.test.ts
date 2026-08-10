@@ -185,16 +185,19 @@ function makeHarness(botsSettingsOverrides: Partial<BotsSettings> = {}) {
     getSettings,
     saveSettings,
     registerSettingsListener,
-    createConversation: (title: string) =>
-      conversationGateway.dispatch({
+    createConversation: (title: string) => {
+      const conversationId = `conv-${nextConversationId}`
+      const settled = conversationGateway.dispatch({
         type: 'create_conversation',
-        conversationId: 'ignored',
+        conversationId,
         title: { kind: 'named', value: title },
-      } as never).settled.then((r: { status: string }) =>
+      } as never).settled
+      return settled.then((r: { status: string }) =>
         r.status === 'accepted' || r.status === 'already_applied'
-          ? `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+          ? conversationId
           : Promise.reject(new Error('create failed')),
-      ),
+      )
+    },
     loadConversation: findById,
     createAdapter,
     getAgentService,

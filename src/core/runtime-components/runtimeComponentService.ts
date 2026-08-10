@@ -67,7 +67,7 @@ export class RuntimeComponentService {
   private readonly listeners = new Set<() => void>()
   private readonly transitions = new Map<RuntimeComponentId, Promise<void>>()
   private readonly participants = new Map<
-    RuntimeComponentId,
+    string,
     Set<RuntimeComponentQuiesceParticipant>
   >()
   private readonly retryTimers = new Map<
@@ -95,7 +95,7 @@ export class RuntimeComponentService {
       intentStore: RuntimeComponentIntentStore
       deviceStateStore: RuntimeComponentDeviceStateStore
       scheduleIdle?(callback: () => void): () => void
-      reportError?(id: RuntimeComponentId, error: unknown): void
+      reportError?(id: string, error: unknown): void
     }>,
   ) {
     for (const descriptor of options.registry.components) {
@@ -251,7 +251,7 @@ export class RuntimeComponentService {
   }
 
   registerQuiesceParticipant(
-    id: RuntimeComponentId,
+    id: string,
     participant: RuntimeComponentQuiesceParticipant,
   ): () => void {
     const values = this.participants.get(id) ?? new Set()
@@ -285,7 +285,7 @@ export class RuntimeComponentService {
     this.retryTimers.clear()
     for (const id of this.records.keys()) this.options.runtime.beginQuiesce(id)
     void this.options.runtime.dispose().catch((error) => {
-      this.options.reportError?.('pglite-engine', error)
+      this.options.reportError?.('runtime', error)
     })
   }
 

@@ -1,3 +1,8 @@
+// Jest runs test code in a CJS module scope where `require` is module-local.
+// Desktop-only loaders (desktopNodeModule.ts) probe a global `require`; expose
+// it so node:* module loading (node:sqlite etc.) works under Jest.
+;(globalThis as { require?: unknown }).require = require
+
 import { encode } from 'gpt-tokenizer/encoding/cl100k_base'
 
 import {

@@ -64,6 +64,15 @@ export abstract class BaseLLMProvider<P extends LLMProvider> {
     options?: { dimensions?: number },
   ): Promise<number[]>
 
+  async rerank(
+    _model: string,
+    _query: string,
+    _documents: string[],
+    _options?: { topN?: number; signal?: AbortSignal },
+  ): Promise<Array<{ index: number; relevanceScore: number }>> {
+    throw new Error('Rerank is not supported by this provider')
+  }
+
   protected applyCustomModelParameters<T extends Record<string, unknown>>(
     model: ChatModel,
     request: T,

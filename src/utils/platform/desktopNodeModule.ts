@@ -19,5 +19,8 @@ const getDesktopRequire = (): NodeModuleLoader => {
   throw new Error('Node.js modules are unavailable in this Obsidian runtime.')
 }
 
-export const loadDesktopNodeModule = async <T>(specifier: string): Promise<T> =>
+export const loadDesktopNodeModuleSync = <T>(specifier: string): T =>
   getDesktopRequire()(specifier) as T
+
+export const loadDesktopNodeModule = async <T>(specifier: string): Promise<T> =>
+  loadDesktopNodeModuleSync<T>(specifier)

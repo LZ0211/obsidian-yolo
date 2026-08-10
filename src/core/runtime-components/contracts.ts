@@ -1,7 +1,6 @@
 export type RuntimeComponentId =
   | 'tokenizer'
   | 'pdf-engine'
-  | 'pglite-engine'
   | 'bash-engine'
 
 export type TokenizerComponentApi = Readonly<{
@@ -54,84 +53,6 @@ export type VectorMetaData = {
   endLine: number
   page?: number
 }
-
-export type VectorInsert = {
-  id?: number
-  path: string
-  mtime: number
-  content: string
-  content_hash?: string | null
-  model: string
-  dimension: number
-  embedding?: number[] | null
-  metadata: VectorMetaData
-}
-
-export type VectorSelect = {
-  id: number
-  path: string
-  mtime: number
-  content: string
-  content_hash: string | null
-  model: string
-  dimension: number
-  metadata: VectorMetaData
-}
-
-export type VectorStore = Readonly<{
-  getFileMtimes(modelId: string): Promise<Readonly<Record<string, number>>>
-  listChunksForPaths(
-    modelId: string,
-    paths: string[],
-  ): Promise<
-    Array<
-      Pick<VectorSelect, 'id' | 'path' | 'mtime' | 'content_hash' | 'metadata'>
-    >
-  >
-  deleteVectorsByIds(ids: number[]): Promise<void>
-  deleteVectorsByPaths(modelId: string, paths: string[]): Promise<void>
-  bumpMtimeByIds(updates: Array<{ id: number; mtime: number }>): Promise<void>
-  insertVectors(data: VectorInsert[]): Promise<void>
-  truncateModel(modelId: string): Promise<void>
-  clearVectorsByModelIds(modelIds: string[]): Promise<void>
-  performSimilaritySearch(
-    queryVector: number[],
-    embeddingModel: { id: string; dimension: number },
-    options: {
-      minSimilarity: number
-      limit: number
-      scope?: { files: string[]; folders: string[] }
-    },
-  ): Promise<Array<VectorSelect & { similarity: number }>>
-  getEmbeddingStats(): Promise<
-    Array<{ model: string; rowCount: number; totalDataBytes: number }>
-  >
-}>
-
-export type PgliteRuntimeResources = Readonly<{
-  fsBundle: Blob
-  pgliteWasmModule: WebAssembly.Module
-  initdbWasmModule: WebAssembly.Module
-  vectorExtensionBlob: Blob
-  vectorExtensionBundlePath: URL
-}>
-
-export type PgliteEngineSession = Readonly<{
-  vectorStore: VectorStore
-  migrationChanged: boolean
-  cleanupLegacyStaging(): Promise<number>
-  vacuum(): Promise<void>
-  dump(): Promise<Blob>
-  close(): Promise<void>
-}>
-
-export type PgliteEngineComponentApi = Readonly<{
-  createSession(options: {
-    resources: PgliteRuntimeResources
-    snapshot?: Blob
-  }): Promise<PgliteEngineSession>
-  dispose(): Promise<void>
-}>
 
 /**
  * Minimal filesystem surface the bash-engine component needs from its host.
@@ -271,7 +192,6 @@ export type BashEngineComponentApi = Readonly<{
 export type RuntimeComponentApiMap = {
   tokenizer: TokenizerComponentApi
   'pdf-engine': PdfEngineComponentApi
-  'pglite-engine': PgliteEngineComponentApi
   'bash-engine': BashEngineComponentApi
 }
 

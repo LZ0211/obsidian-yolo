@@ -4,14 +4,16 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { RECOMMENDED_MODELS_FOR_EMBEDDING } from '../../../constants'
 import { useLanguage } from '../../../contexts/language-context'
 import { useSettings } from '../../../contexts/settings-context'
+import { MAINTENANCE_JOB_KIND } from '../../../core/maintenance/types'
 import { getYoloBaseDir } from '../../../core/paths/yoloPaths'
 import {
   RagIndexBusyError,
   type RagIndexRunSnapshot,
 } from '../../../core/rag/ragIndexService'
-import type { PGliteRuntimeStatus } from '../../../database/runtime/PGliteRuntimeManager'
-import { PGLITE_RUNTIME_VERSION } from '../../../database/runtime/pgliteRuntimeMetadata'
+import type { RetrievalInspectStatus } from '../../../core/rag/retrievalTraceTypes'
+import type { VectorBackendStatus } from '../../../database/modules/rag/VectorStore'
 import YoloPlugin from '../../../main'
+import type { YoloSettings } from '../../../settings/schema/setting.types'
 import { findFilesMatchingPatterns } from '../../../utils/glob-utils'
 import {
   folderPathsToIncludePatterns,
@@ -26,12 +28,12 @@ import {
 import { ObsidianSetting } from '../../common/ObsidianSetting'
 import { ObsidianTextInput } from '../../common/ObsidianTextInput'
 import { ObsidianToggle } from '../../common/ObsidianToggle'
-import { ConfirmModal } from '../../modals/ConfirmModal'
 import { IndexProgressRing } from '../IndexProgressRing'
 import { FolderSelectionList } from '../inputs/FolderSelectionList'
-import { EmbeddingDbManageModal } from '../modals/EmbeddingDbManageModal'
 import { ExcludedFilesModal } from '../modals/ExcludedFilesModal'
 import { IncludedFilesModal } from '../modals/IncludedFilesModal'
+
+const RAG_UPDATE_ERROR = 'Failed to update RAG settings.'
 
 type RAGSectionProps = {
   app: App
@@ -42,6 +44,116 @@ type IndexJob = {
   mode: 'rebuild' | 'sync'
   successNotice?: string
   failureNotice: string
+}
+
+type RagSettingsBase = {
+  ragOptions: YoloSettings['ragOptions']
+  ragBackendSettings: YoloSettings['ragBackendSettings']
+}
+
+type RagSettingsPatch<TSettings extends RagSettingsBase = YoloSettings> =
+  Partial<Omit<TSettings, 'ragOptions' | 'ragBackendSettings'>> & {
+    ragOptions?: Partial<TSettings['ragOptions']>
+    ragBackendSettings?: Partial<TSettings['ragBackendSettings']>
+  }
+
+export type RetrievalInspectRow = {
+  label: string
+  value: string
+}
+
+export const isRagLogRibbonVisible = (settings: {
+  ragOptions: { showRagLogRibbonIcon?: boolean }
+}): boolean => settings.ragOptions.showRagLogRibbonIcon !== false
+
+export const mergeRagSettingsPatch = <TSettings extends RagSettingsBase>(
+  settings: TSettings,
+  patch: RagSettingsPatch<TSettings>,
+): TSettings => ({
+  ...settings,
+  ...patch,
+  ragOptions:
+    patch.ragOptions == null
+      ? settings.ragOptions
+      : {
+          ...settings.ragOptions,
+          ...patch.ragOptions,
+        },
+  ragBackendSettings:
+    patch.ragBackendSettings == null
+      ? settings.ragBackendSettings
+      : {
+          ...settings.ragBackendSettings,
+          ...patch.ragBackendSettings,
+        },
+})
+
+export const buildRetrievalInspectRows = (
+  status: RetrievalInspectStatus,
+  t: (key: string, fallback?: string) => string,
+): RetrievalInspectRow[] => {
+  const totalMs =
+    status.latestTrace && typeof status.latestTrace.timingsMs.total === 'number'
+      ? String(status.latestTrace.timingsMs.total)
+      : status.latestTrace?.finishedAt && status.latestTrace.startedAt
+        ? String(status.latestTrace.finishedAt - status.latestTrace.startedAt)
+        : '—'
+  const latestQueryValue = status.latestTrace
+    ? `${totalMs} ms / ${status.latestTrace.evidence.length} evidence`
+    : '—'
+
+  return [
+    {
+      label: t('settings.rag.inspectExecutionMode', 'Execution mode'),
+      value: status.executionMode,
+    },
+    {
+      label: t('settings.rag.inspectPersistenceMode', 'Persistence mode'),
+      value: status.persistenceMode,
+    },
+    {
+      label: t('settings.rag.inspectStoragePath', 'Storage path'),
+      value: status.storagePath || '—',
+    },
+    {
+      label: t('settings.rag.inspectCounts', 'Indexed files / chunks'),
+      value: `${status.indexedFileCount} / ${status.chunkCount}`,
+    },
+    {
+      label: t('settings.rag.inspectNamespaceModel', 'Namespace / model / dim'),
+      value: `${status.namespaceId ?? '—'} / ${status.modelId ?? '—'} / ${
+        status.embeddingDimension ?? '—'
+      }`,
+    },
+    {
+      label: t('settings.rag.inspectLatestIndex', 'Latest index'),
+      value: status.lastIndexStatus?.status ?? '—',
+    },
+    {
+      label: t('settings.rag.inspectLatestQuery', 'Latest query'),
+      value: latestQueryValue,
+    },
+    {
+      label: t('settings.rag.inspectWarning', 'Warning'),
+      value: status.warningCodes[0] ?? '—',
+    },
+    {
+      label: t('settings.rag.inspectError', 'Error'),
+      value: status.errorCode ?? '—',
+    },
+    {
+      label: t('settings.rag.inspectDiagnostic', 'Diagnostic'),
+      value: status.diagnostic
+        ? `${status.diagnostic.recoveryAction ?? '—'} · ${
+            status.diagnostic.message ?? '—'
+          }`
+        : '—',
+    },
+    {
+      label: t('settings.rag.inspectFailedFiles', 'Failed files'),
+      value: String(status.lastIndexStatus?.failedFiles.length ?? 0),
+    },
+  ]
 }
 
 const snapshotToProgress = (
@@ -56,6 +168,7 @@ const snapshotToProgress = (
   }
 
   return {
+    phase: snapshot.phase,
     completedChunks: snapshot.completedChunks ?? 0,
     totalChunks: snapshot.totalChunks ?? 0,
     totalFiles: snapshot.totalFiles ?? 0,
@@ -63,6 +176,47 @@ const snapshotToProgress = (
     currentFile: snapshot.currentFile,
     waitingForRateLimit: snapshot.waitingForRateLimit,
   }
+}
+
+export const getProgressPercent = (progress: IndexProgress | null): number => {
+  if (!progress) return 0
+  const calculate = (completed: number, total: number): number => {
+    if (total <= 0) return 0
+    const ratio = Math.max(0, completed) / total
+    if (completed < total)
+      return Math.min(99.99, Math.floor(ratio * 10_000) / 100)
+    return 100
+  }
+  if ((progress.totalFiles ?? 0) > 0) {
+    return calculate(progress.completedFiles ?? 0, progress.totalFiles)
+  }
+  if ((progress.totalChunks ?? 0) > 0) {
+    return calculate(progress.completedChunks, progress.totalChunks)
+  }
+  return 0
+}
+
+export const formatProgressPercent = (percent: number): string =>
+  Math.max(0, Math.min(100, percent)).toFixed(2)
+
+const getProgressSummary = (
+  progress: IndexProgress | null,
+  t: (key: string, fallback?: string) => string,
+): string | null => {
+  if (!progress) return null
+  if ((progress.totalFiles ?? 0) > 0) {
+    return `${progress.completedFiles ?? 0}/${progress.totalFiles} ${t(
+      'settings.rag.filesProgress',
+      'files',
+    )}`
+  }
+  if ((progress.totalChunks ?? 0) > 0) {
+    return `${progress.completedChunks}/${progress.totalChunks} ${t(
+      'settings.rag.chunksProgress',
+      'chunks',
+    )}`
+  }
+  return null
 }
 
 function RAGCard({
@@ -109,22 +263,22 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
     null,
   )
   const [fileAnimationKey, setFileAnimationKey] = useState(0)
-  const [isCheckingPgliteResources, setIsCheckingPgliteResources] =
-    useState(false)
-  const [isRunningPgliteAction, setIsRunningPgliteAction] = useState(false)
-  const [pgliteResourceStatus, setPgliteResourceStatus] =
-    useState<PGliteRuntimeStatus | null>(null)
+  const [isVacuumingRagBackend, setIsVacuumingRagBackend] = useState(false)
+  const [ragBackendStatus, setRagBackendStatus] =
+    useState<VectorBackendStatus | null>(null)
   const isRagEnabled = settings.ragOptions.enabled ?? true
-  const isAutoUpdateEnabled = settings.ragOptions.autoUpdateEnabled ?? true
   const isIndexPdfEnabled = settings.ragOptions.indexPdf ?? true
+  const isRagLogRibbonEnabled = isRagLogRibbonVisible(settings)
   const isIndexing = indexRunSnapshot.status === 'running'
   const progressSource = useMemo(
     () => snapshotToProgress(indexRunSnapshot),
     [indexRunSnapshot],
   )
-  const ragUpdateError = 'Failed to update RAG settings.'
   const [chunkSizeInput, setChunkSizeInput] = useState(
     String(settings.ragOptions.chunkSize),
+  )
+  const [chunkOverlapInput, setChunkOverlapInput] = useState(
+    String(settings.ragOptions.chunkOverlap ?? 50),
   )
   const [minSimilarityInput, setMinSimilarityInput] = useState(
     String(settings.ragOptions.minSimilarity),
@@ -138,26 +292,25 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
   const [showAdvancedRagSettings, setShowAdvancedRagSettings] = useState(false)
   const [permanentFailuresExpanded, setPermanentFailuresExpanded] =
     useState(false)
-  const syncInputsRef = useRef<{
-    enabled: boolean
-    embeddingModelId: string
-    chunkSize: number
-    indexPdf: boolean
-    includePatternsKey: string
-    excludePatternsKey: string
-    yoloExcludeKey: string
-  } | null>(null)
-  const scheduledIndexJobRef = useRef<IndexJob | null>(null)
-  const queuedIndexJobRef = useRef<IndexJob | null>(null)
-  const scheduledIndexJobTimerRef = useRef<number | null>(null)
   const fileAnimationTimerRef = useRef<number | null>(null)
   const fileSwitchTimerRef = useRef<number | null>(null)
   const pendingCurrentFileRef = useRef<string | null>(null)
   const lastFileSwitchAtRef = useRef(0)
+  const settingsRef = useRef(settings)
+  const settingsUpdateQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const didCheckBackendRef = useRef(false)
+
+  useEffect(() => {
+    settingsRef.current = settings
+  }, [settings])
 
   useEffect(() => {
     setChunkSizeInput(String(settings.ragOptions.chunkSize))
   }, [settings.ragOptions.chunkSize])
+
+  useEffect(() => {
+    setChunkOverlapInput(String(settings.ragOptions.chunkOverlap ?? 50))
+  }, [settings.ragOptions.chunkOverlap])
 
   useEffect(() => {
     setMinSimilarityInput(String(settings.ragOptions.minSimilarity))
@@ -174,67 +327,61 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
   }, [settings.ragOptions.embeddingConcurrency])
 
   const applySettingsUpdate = useCallback(
-    (nextSettings: typeof settings, errorMessage: string = ragUpdateError) => {
-      void (async () => {
-        try {
-          await setSettings(nextSettings)
-        } catch (error: unknown) {
-          console.error('[YOLO] ' + errorMessage, error)
-          new Notice(errorMessage)
+    (patch: RagSettingsPatch, errorMessage: string = RAG_UPDATE_ERROR) => {
+      const runUpdate = async () => {
+        const nextSettings = mergeRagSettingsPatch(settingsRef.current, patch)
+        const saved = await setSettings(nextSettings)
+        if (saved !== false) {
+          settingsRef.current = nextSettings
         }
-      })()
+      }
+
+      const queuedUpdate = settingsUpdateQueueRef.current.then(
+        runUpdate,
+        runUpdate,
+      )
+      settingsUpdateQueueRef.current = queuedUpdate.then(
+        () => undefined,
+        () => undefined,
+      )
+
+      void queuedUpdate.catch((error: unknown) => {
+        console.error('[YOLO] ' + errorMessage, error)
+        new Notice(errorMessage)
+      })
     },
     [setSettings],
   )
 
-  const refreshPgliteResourceStatus = useCallback(async () => {
-    setIsCheckingPgliteResources(true)
-
+  const refreshRagBackendStatus = useCallback(async () => {
     try {
-      // Must stay lightweight: getStatus uses readCurrentFile (small JSON) +
-      // hasAllRuntimeFiles (exists() only). Do NOT introduce readBinary / SHA here.
-      const runtimeManager = await plugin.getPGliteRuntimeManager()
-      const result = await runtimeManager.getStatus()
-      setPgliteResourceStatus(result)
+      const result = await plugin.getVectorBackendStatus()
+      setRagBackendStatus(result)
     } catch (error: unknown) {
-      console.error('Failed to inspect PGlite resources', error)
-      const runtimeManager = await plugin.getPGliteRuntimeManager()
-      setPgliteResourceStatus({
-        kind: 'failed',
-        expectedVersion: PGLITE_RUNTIME_VERSION,
-        dir: runtimeManager.getRuntimeRootDir(),
-        checkedAt: Date.now(),
-        reason: error instanceof Error ? error.message : String(error),
+      console.error('Failed to inspect RAG backend', error)
+      setRagBackendStatus({
+        backend: 'sqlite',
+        readiness: 'open_failed',
+        rebuildRequired: settings.ragBackendSettings.rebuildRequired,
+        storagePath: '',
+        executionMode: 'unsupported',
+        persistenceMode: 'unsupported',
+        recoveryAction: 'inspect_runtime_log',
       })
-    } finally {
-      setIsCheckingPgliteResources(false)
     }
-  }, [plugin])
+  }, [plugin, settings.ragBackendSettings.rebuildRequired])
 
   useEffect(() => {
-    void refreshPgliteResourceStatus()
-  }, [refreshPgliteResourceStatus])
-
-  useEffect(() => {
-    if (
-      pgliteResourceStatus?.kind !== 'downloading' &&
-      !isRunningPgliteAction
-    ) {
+    // Skip the initial mount to avoid an eager DB connection.
+    if (!didCheckBackendRef.current) {
+      didCheckBackendRef.current = true
       return
     }
-
-    const intervalId = window.setInterval(() => {
-      void refreshPgliteResourceStatus()
-    }, 500)
-
-    return () => {
-      window.clearInterval(intervalId)
+    if (indexRunSnapshot.status === 'running') {
+      return
     }
-  }, [
-    isRunningPgliteAction,
-    pgliteResourceStatus?.kind,
-    refreshPgliteResourceStatus,
-  ])
+    void refreshRagBackendStatus()
+  }, [indexRunSnapshot.status, refreshRagBackendStatus])
 
   const parseIntegerInput = (value: string) => {
     const trimmed = value.trim()
@@ -362,23 +509,10 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
   }, [])
 
   const ringPercent = useMemo(() => {
-    // After a sync that only deleted rows (e.g. user removed an include
-    // folder), the run reports totalChunks=0 with status='completed'. Treat
-    // that as 100% so the UI shows "索引已完成" instead of a stale 0%.
-    if (
-      !isIndexing &&
-      indexRunSnapshot.status === 'completed' &&
-      (progressSource?.totalChunks ?? 0) === 0
-    ) {
+    if (!isIndexing && indexRunSnapshot.status === 'completed') {
       return 100
     }
-    if (!progressSource || progressSource.totalChunks <= 0) {
-      return 0
-    }
-    const pct = Math.round(
-      (progressSource.completedChunks / progressSource.totalChunks) * 100,
-    )
-    return Math.max(0, Math.min(100, pct))
+    return getProgressPercent(progressSource)
   }, [indexRunSnapshot.status, isIndexing, progressSource])
 
   const maintenanceStatusLine = useMemo(() => {
@@ -395,18 +529,24 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
       if (displayedCurrentFile) {
         return displayedCurrentFile
       }
-      if (!progressSource.totalChunks) {
+      if (
+        (progressSource.totalFiles ?? 0) <= 0 &&
+        (progressSource.totalChunks ?? 0) <= 0
+      ) {
         return t('settings.rag.preparingProgress', 'Preparing index...')
       }
-      return `${ringPercent}% ${t('settings.rag.indexing', 'Indexing...')}`
+      return `${formatProgressPercent(ringPercent)}% ${t('settings.rag.indexing', 'Indexing...')}`
     }
-    if (indexRunSnapshot.status === 'retry_scheduled') {
-      const base = t('settings.rag.waitingRetry', '等待重试中...')
-      return indexRunSnapshot.failureMessage
-        ? `${base} · ${indexRunSnapshot.failureMessage}`
-        : base
+    if (ragBackendStatus?.rebuildRequired) {
+      return t('settings.rag.notIndexedYet', 'Not indexed yet')
     }
     if (indexRunSnapshot.status === 'failed') {
+      if (indexRunSnapshot.failureKind === 'aborted') {
+        const summary = getProgressSummary(progressSource, t)
+        return summary
+          ? `${summary} · ${t('settings.rag.indexPaused', 'Paused')}`
+          : t('settings.rag.indexPaused', 'Paused')
+      }
       const prefix = indexRunSnapshot.failureHttpStatus
         ? `HTTP ${indexRunSnapshot.failureHttpStatus} · `
         : ''
@@ -425,10 +565,10 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
       return t('settings.rag.notIndexedYet', 'Not indexed yet')
     }
     if (ringPercent >= 100) {
-      return `${ringPercent}% ${t('settings.rag.indexComplete', 'Index complete')}`
+      return `${formatProgressPercent(ringPercent)}% ${t('settings.rag.indexComplete', 'Index complete')}`
     }
     if (ringPercent > 0) {
-      return `${ringPercent}% ${t(
+      return `${formatProgressPercent(ringPercent)}% ${t(
         'settings.rag.indexIncomplete',
         'Last index did not finish',
       )}`
@@ -436,9 +576,11 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
     return t('settings.rag.notIndexedYet', 'Not indexed yet')
   }, [
     indexRunSnapshot.failureHttpStatus,
+    indexRunSnapshot.failureKind,
     indexRunSnapshot.failureMessage,
     indexRunSnapshot.status,
     isIndexing,
+    ragBackendStatus?.rebuildRequired,
     displayedCurrentFile,
     progressSource,
     ringPercent,
@@ -458,8 +600,8 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
       }
       return 'indexing'
     }
-    if (indexRunSnapshot.status === 'retry_scheduled') {
-      return 'retry-scheduled'
+    if (ragBackendStatus?.rebuildRequired) {
+      return 'rebuild-required'
     }
     if (indexRunSnapshot.status === 'failed') {
       return 'failed'
@@ -468,6 +610,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
   }, [
     indexRunSnapshot.status,
     isIndexing,
+    ragBackendStatus?.rebuildRequired,
     displayedCurrentFile,
     progressSource,
     ringPercent,
@@ -475,7 +618,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
 
   const isAnimatingCurrentFile = Boolean(isIndexing && displayedCurrentFile)
   const maintenanceStatusPrefix = isAnimatingCurrentFile
-    ? `${ringPercent}%`
+    ? `${formatProgressPercent(ringPercent)}%`
     : null
 
   // Files that completed but could not be indexed permanently. Surfaced as a
@@ -483,10 +626,13 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
   // for the background path) until the next clean completion clears the field.
   const permanentFailedPaths = useMemo(
     () =>
-      !isIndexing && indexRunSnapshot.status === 'completed'
+      !ragBackendStatus?.rebuildRequired &&
+      !isIndexing &&
+      indexRunSnapshot.status === 'completed'
         ? (indexRunSnapshot.permanentFailedPaths ?? [])
         : [],
     [
+      ragBackendStatus?.rebuildRequired,
       isIndexing,
       indexRunSnapshot.status,
       indexRunSnapshot.permanentFailedPaths,
@@ -513,149 +659,74 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
     yoloBaseDir,
   ])
 
-  const pgliteStatusLabel = useMemo(() => {
-    if (isCheckingPgliteResources && pgliteResourceStatus === null) {
-      return t('settings.rag.pgliteStateChecking', 'Checking')
-    }
-    switch (pgliteResourceStatus?.kind) {
-      case 'missing':
-        return t('settings.rag.pgliteStateMissing', 'Not downloaded')
-      case 'downloading':
-        return t('settings.rag.pgliteStateDownloading', 'Downloading')
-      case 'ready':
-        return t('settings.rag.pgliteStateReady', 'Ready')
-      case 'failed':
-        return t('settings.rag.pgliteStateFailed', 'Failed')
-      default:
-        return t('settings.rag.pgliteStateUnchecked', 'Not recorded')
-    }
-  }, [isCheckingPgliteResources, pgliteResourceStatus, t])
+  // Allow maintenance actions when status is unknown (null) so the user can
+  // click a button and trigger a lazy backend check. Only block actions when
+  // the backend is known to be not-ready.
+  const canRunIndexMaintenance =
+    ragBackendStatus === null || ragBackendStatus.readiness === 'ready'
 
-  const pgliteStatusTone =
-    pgliteResourceStatus?.kind === 'ready'
-      ? 'is-ready'
-      : pgliteResourceStatus?.kind === 'missing' ||
-          pgliteResourceStatus?.kind === 'downloading'
-        ? 'is-warning'
-        : 'is-danger'
+  const ensureBackendChecked = useCallback(async (): Promise<boolean> => {
+    if (ragBackendStatus !== null) return ragBackendStatus.readiness === 'ready'
+    didCheckBackendRef.current = true
+    await refreshRagBackendStatus()
+    // After refresh, ragBackendStatus is updated via setState, but the closure
+    // captures the old value. Return a best-effort signal; the re-render will
+    // gate subsequent clicks.
+    return true
+  }, [ragBackendStatus, refreshRagBackendStatus])
 
-  const canUseIndexMaintenance = pgliteResourceStatus?.kind === 'ready'
-  const pglitePrimaryActionLabel =
-    pgliteResourceStatus?.kind === 'ready'
-      ? t('settings.rag.pgliteRedownload', 'Download again')
-      : t('settings.rag.pgliteDownload', 'Download resources')
-  const pgliteSummaryText =
-    pgliteResourceStatus?.kind === 'ready'
-      ? t(
-          'settings.rag.pgliteSummaryReady',
-          'PGlite runtime resources are ready and can be used for indexing and embedding database management.',
-        )
-      : pgliteResourceStatus?.kind === 'downloading'
-        ? t(
-            'settings.rag.pgliteSummaryDownloading',
-            'PGlite runtime resources are being prepared. Once the download finishes, indexing and embedding database management will become available.',
-          )
-        : pgliteResourceStatus?.kind === 'failed'
-          ? t(
-              'settings.rag.pgliteSummaryFailed',
-              'PGlite runtime preparation failed. Retry downloading or remove the local cache before using knowledge base features again.',
-            )
-          : t(
-              'settings.rag.pgliteSummaryMissing',
-              'PGlite runtime resources have not been prepared yet. The plugin will auto-download them on first knowledge base use, and you can also prepare them here manually.',
-            )
-  const pgliteDownloadProgress =
-    pgliteResourceStatus?.kind === 'downloading' &&
-    pgliteResourceStatus.totalFiles > 0
-      ? Math.round(
-          (Math.max(0, pgliteResourceStatus.currentFileIndex - 1) /
-            pgliteResourceStatus.totalFiles) *
-            100,
-        )
-      : null
-  const pgliteDownloadDetail =
-    pgliteResourceStatus?.kind === 'downloading'
-      ? `${t('settings.rag.pgliteDownloadingFile', 'Downloading')}: ${
-          pgliteResourceStatus.currentFile ??
-          t('settings.rag.pgliteDownloadingUnknownFile', 'runtime file')
-        } (${pgliteResourceStatus.currentFileIndex}/${
-          pgliteResourceStatus.totalFiles
-        })`
-      : null
-  const pgliteFailureReason =
-    pgliteResourceStatus?.kind === 'failed' ? pgliteResourceStatus.reason : null
-  const runPgliteAction = useCallback(() => {
-    setIsRunningPgliteAction(true)
-
+  const runRagVacuum = useCallback(() => {
+    setIsVacuumingRagBackend(true)
     void (async () => {
       try {
-        const runtimeManager = await plugin.getPGliteRuntimeManager()
-        if (pgliteResourceStatus?.kind === 'ready') {
-          new Notice(
-            t(
-              'notices.downloadingPglite',
-              'Downloading PGlite runtime assets. This may take a moment...',
-            ),
-          )
-          await runtimeManager.redownload()
-        } else {
-          await refreshPgliteResourceStatus()
-          new Notice(
-            t(
-              'notices.downloadingPglite',
-              'Downloading PGlite runtime assets. This may take a moment...',
-            ),
-          )
-          await runtimeManager.ensureReady()
+        const result = await plugin
+          .getDatabaseMaintenanceController('rag')
+          .startJob({
+            kind: MAINTENANCE_JOB_KIND.VACUUM,
+            operationKey: 'rag:vacuum',
+          })
+        if (result.status === 'failed') {
+          throw result.error instanceof Error
+            ? result.error
+            : new Error('RAG vacuum failed.')
         }
-        await refreshPgliteResourceStatus()
+        if (result.status === 'cancelled') return
+        new Notice(t('settings.rag.vacuumComplete', '索引 Vacuum 完成。'))
+        await refreshRagBackendStatus()
       } catch (error: unknown) {
-        console.error('Failed to run PGlite runtime action', error)
+        console.error('Failed to vacuum RAG backend', error)
         new Notice(
           error instanceof Error
             ? error.message
-            : t(
-                'notices.pgliteUnavailable',
-                'PGlite runtime is unavailable. Please retry downloading the runtime assets.',
-              ),
-          5000,
+            : t('settings.rag.vacuumFailed', '索引 Vacuum 失败。'),
         )
-        await refreshPgliteResourceStatus()
       } finally {
-        setIsRunningPgliteAction(false)
+        setIsVacuumingRagBackend(false)
       }
     })()
-  }, [pgliteResourceStatus?.kind, plugin, refreshPgliteResourceStatus, t])
+  }, [plugin, refreshRagBackendStatus, t])
 
   const runIndexJob = useCallback(
     async ({ mode, successNotice, failureNotice }: IndexJob) => {
       try {
-        const result = await plugin.runRagIndex({
-          mode,
-          scope: { kind: 'all' },
-          trigger: 'manual',
-          // Both rebuild and sync get transient retry so an interrupted
-          // resume can itself be resumed next launch.
-          retryPolicy: 'transient',
-        })
-        await plugin.setSettings({
-          ...plugin.settings,
-          ragOptions: {
-            ...plugin.settings.ragOptions,
-            lastAutoUpdateAt: Date.now(),
-          },
-        })
-        const skippedCount = result.permanentFailedPaths.length
-        if (skippedCount > 0) {
-          // Partial success: some files could never be embedded and were kept
-          // with whatever indexed (they will not be retried). Surface it once
-          // here instead of the plain success notice.
-          new Notice(
-            t(
-              'notices.indexedWithSkipped',
-              '索引完成，{{count}} 个文件无法索引',
-            ).replace('{{count}}', String(skippedCount)),
-          )
+        const kind =
+          mode === 'rebuild'
+            ? MAINTENANCE_JOB_KIND.FULL_REBUILD
+            : MAINTENANCE_JOB_KIND.UPDATE_CHANGED_SOURCES
+        const result = await plugin
+          .getDatabaseMaintenanceController('rag')
+          .startJob({
+            kind,
+            operationKey: `rag:${kind}`,
+            scope: { kind: 'all' },
+          })
+        if (result.status === 'failed') {
+          throw result.error instanceof Error
+            ? result.error
+            : new Error(failureNotice)
+        }
+        if (result.status === 'cancelled') {
+          new Notice(t('notices.indexCancelled', '索引已取消'))
         } else if (successNotice) {
           new Notice(successNotice)
         }
@@ -675,105 +746,6 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
     },
     [plugin, t],
   )
-
-  const scheduleIndexJob = useCallback(
-    (job: IndexJob, delayMs = 800) => {
-      scheduledIndexJobRef.current = job
-      if (scheduledIndexJobTimerRef.current !== null) {
-        window.clearTimeout(scheduledIndexJobTimerRef.current)
-      }
-      scheduledIndexJobTimerRef.current = window.setTimeout(() => {
-        scheduledIndexJobTimerRef.current = null
-        const scheduledJob = scheduledIndexJobRef.current
-        scheduledIndexJobRef.current = null
-        if (!scheduledJob) return
-        if (isIndexing) {
-          queuedIndexJobRef.current = scheduledJob
-          return
-        }
-        void runIndexJob(scheduledJob)
-      }, delayMs)
-    },
-    [isIndexing, runIndexJob],
-  )
-
-  useEffect(() => {
-    return () => {
-      if (scheduledIndexJobTimerRef.current !== null) {
-        window.clearTimeout(scheduledIndexJobTimerRef.current)
-      }
-    }
-  }, [])
-
-  useEffect(() => {
-    if (isIndexing) return
-    const queuedJob = queuedIndexJobRef.current
-    if (!queuedJob) return
-    queuedIndexJobRef.current = null
-    void runIndexJob(queuedJob)
-  }, [isIndexing, runIndexJob])
-
-  useEffect(() => {
-    const nextSyncInputs = {
-      enabled: isRagEnabled,
-      embeddingModelId: settings.embeddingModelId,
-      chunkSize: settings.ragOptions.chunkSize,
-      indexPdf: settings.ragOptions.indexPdf ?? true,
-      includePatternsKey: JSON.stringify(settings.ragOptions.includePatterns),
-      excludePatternsKey: JSON.stringify(settings.ragOptions.excludePatterns),
-      // Treat the dynamic YOLO chip as part of the exclude config: toggling
-      // the flag or moving `yolo.baseDir` shifts the indexable file set.
-      yoloExcludeKey: settings.ragOptions.excludeYoloBaseDir ? yoloBaseDir : '',
-    }
-    const previousSyncInputs = syncInputsRef.current
-    syncInputsRef.current = nextSyncInputs
-
-    if (!previousSyncInputs) {
-      return
-    }
-
-    if (!nextSyncInputs.enabled || !nextSyncInputs.embeddingModelId) {
-      scheduledIndexJobRef.current = null
-      queuedIndexJobRef.current = null
-      if (scheduledIndexJobTimerRef.current !== null) {
-        window.clearTimeout(scheduledIndexJobTimerRef.current)
-        scheduledIndexJobTimerRef.current = null
-      }
-      return
-    }
-
-    // Any config change is handled by a single `sync` reconcile. The
-    // reconciler computes desired vs. actual itself, so changes to patterns,
-    // chunkSize, indexPdf, embeddingModel, or first-time enable all converge
-    // through the same idempotent path — no special-casing per field.
-    const changed =
-      previousSyncInputs.enabled !== nextSyncInputs.enabled ||
-      previousSyncInputs.embeddingModelId !== nextSyncInputs.embeddingModelId ||
-      previousSyncInputs.chunkSize !== nextSyncInputs.chunkSize ||
-      previousSyncInputs.indexPdf !== nextSyncInputs.indexPdf ||
-      previousSyncInputs.includePatternsKey !==
-        nextSyncInputs.includePatternsKey ||
-      previousSyncInputs.excludePatternsKey !==
-        nextSyncInputs.excludePatternsKey ||
-      previousSyncInputs.yoloExcludeKey !== nextSyncInputs.yoloExcludeKey
-    if (changed) {
-      scheduleIndexJob({
-        mode: 'sync',
-        failureNotice: t('notices.indexUpdateFailed'),
-      })
-    }
-  }, [
-    isRagEnabled,
-    scheduleIndexJob,
-    settings.embeddingModelId,
-    settings.ragOptions.chunkSize,
-    settings.ragOptions.indexPdf,
-    settings.ragOptions.excludePatterns,
-    settings.ragOptions.includePatterns,
-    settings.ragOptions.excludeYoloBaseDir,
-    yoloBaseDir,
-    t,
-  ])
 
   const conflictInfo = useMemo(() => {
     const inc = includeFolders
@@ -830,6 +802,33 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
       .filter((group): group is ObsidianDropdownOptionGroup => group !== null)
   }, [settings.embeddingModels, settings.providers, t])
 
+  const rerankModelOptionGroups = useMemo<ObsidianDropdownOptionGroup[]>(() => {
+    const providerOrder = settings.providers.map((p) => p.id)
+    const providerIdsInModels = Array.from(
+      new Set(settings.rerankModels.map((model) => model.providerId)),
+    )
+    const orderedProviderIds = [
+      ...providerOrder.filter((id) => providerIdsInModels.includes(id)),
+      ...providerIdsInModels.filter((id) => !providerOrder.includes(id)),
+    ]
+
+    return orderedProviderIds
+      .map<ObsidianDropdownOptionGroup | null>((providerId) => {
+        const groupModels = settings.rerankModels.filter(
+          (model) => model.providerId === providerId,
+        )
+        if (groupModels.length === 0) return null
+        return {
+          label: providerId,
+          options: groupModels.map((model) => ({
+            value: model.id,
+            label: model.name || model.model || model.id,
+          })),
+        }
+      })
+      .filter((group): group is ObsidianDropdownOptionGroup => group !== null)
+  }, [settings.rerankModels, settings.providers, t])
+
   return (
     <div className="yolo-settings-section">
       <div className="yolo-settings-header">
@@ -842,56 +841,40 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
         )}
       </div>
       <div className="yolo-rag-layout">
-        <RAGCard
-          title={t('settings.rag.resourceCardTitle', 'PGlite 资源')}
-          description={t(
-            'settings.rag.resourceCardDesc',
-            '管理知识库运行所需的数据库运行时资源。',
-          )}
-          actions={
+        <RAGCard title={t('settings.rag.backendCardTitle', 'RAG 后端')}>
+          <ObsidianSetting
+            name={t('settings.rag.log.openTitle', 'RAG 日志')}
+            desc={t('settings.rag.log.openDesc', '查看最近的检索日志。')}
+            className="yolo-settings-card"
+          >
             <ObsidianButton
-              text={pglitePrimaryActionLabel}
-              onClick={() => runPgliteAction()}
-              disabled={
-                isCheckingPgliteResources ||
-                isRunningPgliteAction ||
-                pgliteResourceStatus?.kind === 'downloading'
-              }
+              text={t('settings.rag.log.openButton', '打开')}
+              onClick={() => plugin.openRagLogModal()}
             />
-          }
-        >
-          <div className="yolo-rag-resource-summary">
-            <span className={`yolo-rag-status-pill ${pgliteStatusTone}`}>
-              {pgliteStatusLabel}
-            </span>
-          </div>
+          </ObsidianSetting>
 
-          {pgliteDownloadDetail ? (
-            <div className="yolo-rag-inline-status">
-              <div className="yolo-rag-inline-status-text">
-                {pgliteDownloadDetail}
-              </div>
-              <div className="yolo-rag-inline-progress" aria-hidden="true">
-                <div
-                  className="yolo-rag-inline-progress-bar"
-                  style={{ width: `${pgliteDownloadProgress ?? 0}%` }}
-                />
-              </div>
-            </div>
-          ) : null}
-
-          {pgliteFailureReason ? (
-            <div className="yolo-rag-inline-status yolo-rag-inline-status--error">
-              <div className="yolo-rag-inline-status-title">
-                {t('settings.rag.pgliteInlineErrorTitle', '下载失败')}
-              </div>
-              <div className="yolo-rag-inline-status-text">
-                {pgliteFailureReason}
-              </div>
-            </div>
-          ) : null}
-
-          <div className="yolo-muted-note">{pgliteSummaryText}</div>
+          <ObsidianSetting
+            name={t(
+              'settings.rag.log.showRibbonIcon',
+              '显示 RAG 日志侧边栏图标',
+            )}
+            desc={t(
+              'settings.rag.log.showRibbonIconDesc',
+              '在左侧边栏显示 RAG 日志快捷入口。',
+            )}
+            className="yolo-settings-card"
+          >
+            <ObsidianToggle
+              value={isRagLogRibbonEnabled}
+              onChange={(value) => {
+                applySettingsUpdate({
+                  ragOptions: {
+                    showRagLogRibbonIcon: value,
+                  },
+                })
+              }}
+            />
+          </ObsidianSetting>
         </RAGCard>
 
         <RAGCard
@@ -919,32 +902,8 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                   return
                 }
                 applySettingsUpdate({
-                  ...settings,
                   ragOptions: {
-                    ...settings.ragOptions,
                     enabled: value,
-                  },
-                })
-              }}
-            />
-          </ObsidianSetting>
-
-          <ObsidianSetting
-            name={t('settings.rag.autoUpdate', '自动更新索引')}
-            desc={t(
-              'settings.rag.autoUpdateDesc',
-              '开启后会在文档发生变化时于后台自动增量更新索引。',
-            )}
-            className="yolo-settings-card"
-          >
-            <ObsidianToggle
-              value={isAutoUpdateEnabled}
-              onChange={(value) => {
-                applySettingsUpdate({
-                  ...settings,
-                  ragOptions: {
-                    ...settings.ragOptions,
-                    autoUpdateEnabled: value,
                   },
                 })
               }}
@@ -963,9 +922,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
               value={isIndexPdfEnabled}
               onChange={(value) => {
                 applySettingsUpdate({
-                  ...settings,
                   ragOptions: {
-                    ...settings.ragOptions,
                     indexPdf: value,
                   },
                 })
@@ -982,22 +939,88 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
               value={settings.embeddingModelId}
               groupedOptions={embeddingModelOptionGroups}
               onChange={(value) => {
-                applySettingsUpdate({
-                  ...settings,
-                  embeddingModelId: value,
-                })
+                applySettingsUpdate({ embeddingModelId: value })
               }}
             />
           </ObsidianSetting>
 
-          {!canUseIndexMaintenance && isRagEnabled && (
-            <div className="yolo-muted-note">
-              {t(
-                'settings.rag.maintenanceUnavailableHint',
-                '请先在上方准备好 PGlite 资源，再执行索引维护或嵌入数据库管理。',
-              )}
-            </div>
+          {rerankModelOptionGroups.length > 0 && (
+            <>
+              <ObsidianSetting
+                name={t('settings.rag.rerankEnabled', '启用重排序')}
+                desc={t(
+                  'settings.rag.rerankEnabledDesc',
+                  '关闭后直接使用向量检索结果，不再调用重排序模型。',
+                )}
+                className="yolo-settings-card"
+              >
+                <ObsidianToggle
+                  value={settings.ragOptions.rerankEnabled !== false}
+                  onChange={(rerankEnabled) =>
+                    applySettingsUpdate({ ragOptions: { rerankEnabled } })
+                  }
+                />
+              </ObsidianSetting>
+              <ObsidianSetting
+                name={t('settings.rag.rerankModel', 'Rerank model')}
+                desc={t(
+                  'settings.rag.rerankModelDesc',
+                  'Optional. Model for re-ranking search results. Leave empty to skip rerank.',
+                )}
+                className="yolo-settings-card"
+              >
+                <ObsidianDropdown
+                  value={settings.rerankModelId}
+                  groupedOptions={[
+                    {
+                      label: t('settings.rag.none', 'None'),
+                      options: [
+                        {
+                          value: '',
+                          label: t('settings.rag.noRerank', 'No rerank'),
+                        },
+                      ],
+                    },
+                    ...rerankModelOptionGroups,
+                  ]}
+                  onChange={(value) => {
+                    applySettingsUpdate({ rerankModelId: value })
+                  }}
+                />
+              </ObsidianSetting>
+            </>
           )}
+
+          <ObsidianSetting
+            name={t('settings.rag.manageEmbeddingDatabase', '管理嵌入数据库')}
+            desc={t(
+              'settings.rag.manageEmbeddingDatabaseDesc',
+              '查看当前嵌入库的模型统计，并按需删除历史索引数据。',
+            )}
+            className="yolo-settings-card"
+          >
+            <ObsidianButton
+              text={t('settings.rag.manage', '管理')}
+              disabled={!canRunIndexMaintenance}
+              onClick={() => {
+                void import('../modals/SqliteDatabaseExplorerModal').then(
+                  ({ SqliteDatabaseExplorerModal }) =>
+                    new SqliteDatabaseExplorerModal(app, plugin, 'rag').open(),
+                )
+              }}
+            />
+          </ObsidianSetting>
+
+          {!canRunIndexMaintenance &&
+            ragBackendStatus !== null &&
+            isRagEnabled && (
+              <div className="yolo-muted-note">
+                {t(
+                  'settings.rag.maintenanceUnavailableHint',
+                  'RAG 后端尚未就绪。请先处理上方后端状态，再执行索引维护。',
+                )}
+              </div>
+            )}
 
           {isRagEnabled && (
             <>
@@ -1043,109 +1066,66 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
               >
                 <div className="yolo-flex-row-gap-8 yolo-rag-maintenance-actions">
                   <ObsidianButton
-                    text={t('settings.rag.manage')}
-                    disabled={!canUseIndexMaintenance}
+                    text={t('settings.rag.updateIndex', '更新索引')}
+                    disabled={isIndexing || !canRunIndexMaintenance}
                     onClick={() => {
-                      new EmbeddingDbManageModal(app, plugin).open()
+                      void ensureBackendChecked().then(() =>
+                        runIndexJob({
+                          mode: 'sync',
+                          successNotice: t(
+                            'notices.continueComplete',
+                            '继续索引完成',
+                          ),
+                          failureNotice: t(
+                            'notices.indexUpdateFailed',
+                            '更新索引失败',
+                          ),
+                        }),
+                      )
                     }}
                   />
-                  {(() => {
-                    const status = indexRunSnapshot.status
-                    const isInterrupted =
-                      status === 'retry_scheduled' || status === 'failed'
-                    let primaryLabel: string
-                    let primaryMode: 'rebuild' | 'sync'
-                    let primarySuccess: string
-                    let primaryFailure: string
-                    if (status === 'retry_scheduled') {
-                      primaryLabel = t(
-                        'settings.rag.continueIndexNow',
-                        '立即继续',
+                  <ObsidianButton
+                    text={t('settings.rag.rebuildIndex', '重建索引')}
+                    disabled={isIndexing || !canRunIndexMaintenance}
+                    onClick={() => {
+                      void ensureBackendChecked().then(() =>
+                        runIndexJob({
+                          mode: 'rebuild',
+                          successNotice: t(
+                            'notices.rebuildComplete',
+                            '重建索引完成',
+                          ),
+                          failureNotice: t(
+                            'notices.rebuildFailed',
+                            '重建索引失败',
+                          ),
+                        }),
                       )
-                      primaryMode = 'sync'
-                      primarySuccess = t(
-                        'notices.continueComplete',
-                        '继续索引完成',
-                      )
-                      primaryFailure = t(
-                        'notices.continueFailed',
-                        '继续索引失败',
-                      )
-                    } else if (status === 'failed') {
-                      primaryLabel = t('settings.rag.continueIndex', '继续索引')
-                      primaryMode = 'sync'
-                      primarySuccess = t(
-                        'notices.continueComplete',
-                        '继续索引完成',
-                      )
-                      primaryFailure = t(
-                        'notices.continueFailed',
-                        '继续索引失败',
-                      )
-                    } else {
-                      primaryLabel = t('settings.rag.rebuildIndex', '重建索引')
-                      primaryMode = 'rebuild'
-                      primarySuccess = t('notices.rebuildComplete')
-                      primaryFailure = t('notices.rebuildFailed')
+                    }}
+                  />
+                  <ObsidianButton
+                    text={t('settings.rag.vacuumIndex', 'Vacuum 索引')}
+                    disabled={
+                      isIndexing ||
+                      !canRunIndexMaintenance ||
+                      isVacuumingRagBackend
                     }
-                    return (
-                      <>
-                        <ObsidianButton
-                          text={primaryLabel}
-                          disabled={isIndexing || !canUseIndexMaintenance}
-                          onClick={() => {
-                            void runIndexJob({
-                              mode: primaryMode,
-                              successNotice: primarySuccess,
-                              failureNotice: primaryFailure,
-                            })
-                          }}
-                        />
-                        {isInterrupted && (
-                          <ObsidianButton
-                            text={t(
-                              'settings.rag.rebuildFromScratch',
-                              '从头重建',
-                            )}
-                            disabled={isIndexing || !canUseIndexMaintenance}
-                            onClick={() => {
-                              new ConfirmModal(app, {
-                                title: t(
-                                  'settings.rag.rebuildFromScratch',
-                                  '从头重建',
-                                ),
-                                message: t(
-                                  'settings.rag.rebuildFromScratchConfirm',
-                                  '将清空当前嵌入模型已有的全部向量并重新索引整个知识库，可能产生大量 embedding 调用。继续？',
-                                ),
-                                ctaText: t(
-                                  'settings.rag.rebuildFromScratch',
-                                  '从头重建',
-                                ),
-                                cancelText: t('common.cancel', '取消'),
-                                onConfirm: () => {
-                                  void runIndexJob({
-                                    mode: 'rebuild',
-                                    successNotice: t('notices.rebuildComplete'),
-                                    failureNotice: t('notices.rebuildFailed'),
-                                  })
-                                },
-                              }).open()
-                            }}
-                          />
-                        )}
-                      </>
-                    )
-                  })()}
+                    onClick={() => {
+                      void ensureBackendChecked().then(() => runRagVacuum())
+                    }}
+                  />
                   {isIndexing && (
                     <ObsidianButton
-                      text={t('settings.rag.cancelIndex', '取消')}
+                      text={t('settings.rag.cancelIndex', '暂停')}
                       onClick={() => {
-                        console.debug('[YOLO] Cancel button clicked')
-                        plugin.cancelRagIndex()
-                        new Notice(
-                          t('notices.indexCancelling', '正在取消索引...'),
-                        )
+                        void plugin
+                          .getDatabaseMaintenanceController('rag')
+                          .cancelActiveJob()
+                          .then(() => {
+                            new Notice(
+                              t('notices.indexCancelling', '正在取消索引...'),
+                            )
+                          })
                       }}
                     />
                   )}
@@ -1234,9 +1214,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                     onChange={(folders: string[]) => {
                       const patterns = folderPathsToIncludePatterns(folders)
                       applySettingsUpdate({
-                        ...settings,
                         ragOptions: {
-                          ...settings.ragOptions,
                           includePatterns: patterns,
                         },
                       })
@@ -1293,9 +1271,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                         : folders
                       const patterns = folderPathsToIncludePatterns(userFolders)
                       applySettingsUpdate({
-                        ...settings,
                         ragOptions: {
-                          ...settings.ragOptions,
                           excludePatterns: patterns,
                           excludeYoloBaseDir: yoloRemoved
                             ? false
@@ -1397,9 +1373,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                         const chunkSize = parseIntegerInput(value)
                         if (chunkSize !== null) {
                           applySettingsUpdate({
-                            ...settings,
                             ragOptions: {
-                              ...settings.ragOptions,
                               chunkSize,
                             },
                           })
@@ -1410,6 +1384,40 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                         if (chunkSize === null) {
                           setChunkSizeInput(
                             String(settings.ragOptions.chunkSize),
+                          )
+                        }
+                      }}
+                    />
+                  </ObsidianSetting>
+
+                  <ObsidianSetting
+                    name={t('settings.rag.chunkOverlap', 'Chunk Overlap')}
+                    desc={t(
+                      'settings.rag.chunkOverlapDesc',
+                      '相邻 chunk 之间重叠的字符数。默认 50。',
+                    )}
+                    className="yolo-settings-card"
+                  >
+                    <ObsidianTextInput
+                      value={chunkOverlapInput}
+                      placeholder="50"
+                      onChange={(value) => {
+                        setChunkOverlapInput(value)
+                        const chunkOverlap = parseIntegerInput(value)
+                        if (chunkOverlap !== null) {
+                          applySettingsUpdate({
+                            ragOptions: {
+                              chunkOverlap,
+                            },
+                          })
+                        }
+                      }}
+                      onBlur={() => {
+                        const chunkOverlap =
+                          parseIntegerInput(chunkOverlapInput)
+                        if (chunkOverlap === null) {
+                          setChunkOverlapInput(
+                            String(settings.ragOptions.chunkOverlap ?? 50),
                           )
                         }
                       }}
@@ -1429,9 +1437,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                         const minSimilarity = parseFloatInput(value)
                         if (minSimilarity !== null) {
                           applySettingsUpdate({
-                            ...settings,
                             ragOptions: {
-                              ...settings.ragOptions,
                               minSimilarity,
                             },
                           })
@@ -1462,9 +1468,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                         const limit = parseIntegerInput(value)
                         if (limit !== null) {
                           applySettingsUpdate({
-                            ...settings,
                             ragOptions: {
-                              ...settings.ragOptions,
                               limit,
                             },
                           })
@@ -1493,9 +1497,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                         if (parsed !== null) {
                           const clamped = Math.max(1, Math.min(24, parsed))
                           applySettingsUpdate({
-                            ...settings,
                             ragOptions: {
-                              ...settings.ragOptions,
                               embeddingConcurrency: clamped,
                             },
                           })

@@ -1,10 +1,9 @@
+import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters'
 import { backOff } from 'exponential-backoff'
-import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter'
-import { minimatch } from 'minimatch'
 import { App, TFile } from 'obsidian'
 
 import { IndexProgress } from '../../../components/chat-view/QueryProgress'
-import { getYoloBaseDir } from '../../../core/paths/yoloPaths'
+import { isRagIndexablePath } from '../../../core/rag/indexSourcePolicy'
 import { splitMarkdownIntoChunks } from '../../../core/rag/markdownChunkSplitter'
 import {
   RagIndexFailureKind,
@@ -15,44 +14,40 @@ import {
 import {
   type DesiredChunk,
   type ReconcileScope,
-  planReconcile,
 } from '../../../core/rag/reconciler'
-import type {
-  VectorInsert,
-  VectorMetaData,
-  VectorSelect,
-  VectorStore,
-} from '../../../core/runtime-components'
-import {
-  EmbeddingDbStats,
-  EmbeddingModelClient,
-} from '../../../types/embedding'
+import { hashProjectionSource } from '../../../core/search/index/projectionSegmenter'
+import { EmbeddingModelClient } from '../../../types/embedding'
+import { EmbeddingModel } from '../../../types/embedding-model.types'
+import type { YoloSettingsLike } from '../../../types/yoloSettingsLike'
 import { sha256HexPrefix16 } from '../../../utils/common/content-hash'
-import {
-  createYieldController,
-  yieldToMain,
-} from '../../../utils/common/yield-to-main'
+import { yieldToMain } from '../../../utils/common/yield-to-main'
 import {
   PDF_INDEX_MAX_BYTES,
   PDF_INDEX_MAX_PAGES,
   extractPdfText,
 } from '../../../utils/pdf/extractPdfText'
+import { createEmbeddingVectorNamespace } from '../rag/embeddingNamespace'
+import {
+  type VectorChunkWrite,
+  type VectorFileWrite,
+  type VectorNamespace,
+  type VectorSearchTimings,
+  type VectorStore,
+} from '../rag/VectorStore'
+
+import type {
+  LegacyEmbeddingRecord,
+  VectorMetaData,
+} from './legacyEmbeddingTypes'
+import { adaptVectorHitsToLegacySimilarityRows } from './vectorHitAdapter'
 
 const PDF_PAGE_CHUNK_CHAR_THRESHOLD = 1500
-
-/** Opaque handle for the YOLO-root-aware PDF text cache. */
-type YoloSettingsLike = {
-  yolo?: {
-    baseDir?: string
-  }
-  ragOptions?: {
-    chunkSize?: number
-    chunkOverlap?: number
-  }
-}
+const SQLITE_FILE_WORKER_MAX = 8
+const PDF_PROJECTION_SOURCE_PARSER_VERSION = 'pdf-text-v1'
 
 export type ReconcileConfig = {
   chunkSize: number
+  chunkOverlap?: number
   includePatterns: string[]
   excludePatterns: string[]
   /**
@@ -79,6 +74,13 @@ export type ReconcileOptions = {
   truncate?: boolean
   signal?: AbortSignal
   onProgress?: (progress: IndexProgress) => void
+  onPdfTextExtracted?: (source: {
+    path: string
+    contentHash: string
+    sourceParserVersion: string
+    pages: { page: number; text: string }[]
+    signal?: AbortSignal
+  }) => void | Promise<void>
 }
 
 /**
@@ -98,57 +100,144 @@ export type ReconcileResult = {
   chunkifyFailedPaths: string[]
 }
 
+export type SimilaritySearchResult = Omit<LegacyEmbeddingRecord, 'id'> & {
+  id: string | number
+  similarity: number
+}
+
+export type VectorSimilarityTrace = {
+  coarseSearchMs?: number
+  loadFullVectorsMs?: number
+  rerankSimilarityMs?: number
+}
+
 export class VectorManager {
   private app: App
-  private repository: VectorStore
-  private acceptingOperations = true
-  private activeOperations = 0
-  private readonly idleWaiters = new Set<() => void>()
-  private saveCallback: (() => Promise<void>) | null = null
-  private vacuumCallback: (() => Promise<void>) | null = null
-
-  private async requestSave() {
-    if (this.saveCallback) {
-      await this.saveCallback()
-    } else {
-      throw new Error('No save callback set')
+  private vectorStore: VectorStore | null = null
+  private settings: {
+    embeddingModels?: EmbeddingModel[]
+    ragBackendSettings?: {
+      rebuildRequired?: boolean
     }
+  } | null = null
+
+  private static isOptionsLike(value: unknown): value is {
+    vectorStore?: VectorStore | null
+    settings?: {
+      embeddingModels?: EmbeddingModel[]
+      ragBackendSettings?: {
+        rebuildRequired?: boolean
+      }
+    } | null
+  } {
+    return (
+      !!value &&
+      typeof value === 'object' &&
+      ('vectorStore' in value || 'settings' in value)
+    )
   }
 
-  /**
-   * Best-effort persist for paths where the caller is about to throw a
-   * higher-priority error (user abort, etc.) and a save failure must NOT
-   * mask it. Save errors are logged and swallowed; on the success path use
-   * {@link requestSave} so dumpDataDir OOM (#408) propagates as failure.
-   */
-  private async tryFlush(reason: string): Promise<void> {
-    try {
-      await this.requestSave()
-    } catch (error) {
-      console.warn(
-        `[YOLO] Vector DB save failed (${reason}); preserving caller's error.`,
-        error,
-      )
-    }
-  }
-
-  private async requestVacuum() {
-    if (this.vacuumCallback) {
-      await this.vacuumCallback()
-    }
-  }
-
-  constructor(app: App, repository: VectorStore) {
+  constructor(
+    app: App,
+    legacyDbOrOptions?: unknown,
+    options?: {
+      vectorStore?: VectorStore | null
+      settings?: {
+        embeddingModels?: EmbeddingModel[]
+        ragBackendSettings?: {
+          rebuildRequired?: boolean
+        }
+      } | null
+    },
+  ) {
     this.app = app
-    this.repository = repository
+    const resolvedOptions =
+      options ??
+      (VectorManager.isOptionsLike(legacyDbOrOptions)
+        ? legacyDbOrOptions
+        : null)
+    this.vectorStore = resolvedOptions?.vectorStore ?? null
+    this.settings = resolvedOptions?.settings ?? null
   }
 
-  setSaveCallback(callback: () => Promise<void>) {
-    this.saveCallback = callback
+  setSaveCallback(_callback: () => Promise<void>) {}
+
+  setVacuumCallback(_callback: () => Promise<void>) {}
+
+  setSettings(
+    settings: {
+      embeddingModels?: EmbeddingModel[]
+      ragBackendSettings?: {
+        rebuildRequired?: boolean
+      }
+    } | null,
+  ) {
+    this.settings = settings
   }
 
-  setVacuumCallback(callback: () => Promise<void>) {
-    this.vacuumCallback = callback
+
+  async listNamespaces(): Promise<string[]> {
+    return this.vectorStore?.listNamespaces?.() ?? []
+  }
+
+  /** 兼容上游 UI：清空全部向量。 */
+  async clearAllVectors(embeddingModelOrId?: string | EmbeddingModelClient): Promise<void> {
+    const namespaces = await this.listNamespaces()
+    for (const ns of namespaces) {
+      const key = ns
+      const targetId =
+        typeof embeddingModelOrId === 'string'
+          ? embeddingModelOrId
+          : embeddingModelOrId?.id
+      if (targetId && key !== targetId) continue
+      await this.vectorStore?.dropNamespaceById?.(ns)
+    }
+  }
+
+  /** 兼容上游 UI：按模型清空。 */
+  async clearVectorsByModelIds(modelIds: string[]): Promise<void> {
+    const namespaces = await this.listNamespaces()
+    for (const ns of namespaces) {
+      const key = ns
+      if (modelIds.includes(key)) {
+        await this.vectorStore?.dropNamespaceById?.(ns)
+      }
+    }
+  }
+
+  /** 兼容上游 UI：模型统计。 */
+
+  async getStatus(): Promise<{
+    storagePath: string
+    readiness: 'opening' | 'ready' | 'unsupported' | 'open_failed'
+    rebuildRequired: boolean
+  }> {
+    const namespaces = await this.listNamespaces()
+    const ns = namespaces[0]
+    const status = await this.vectorStore?.getStatus?.()
+    return {
+      storagePath: status?.storagePath ?? '',
+      readiness: status?.readiness ?? 'unsupported',
+      rebuildRequired: status?.rebuildRequired ?? false,
+    }
+  }
+
+  async getEmbeddingStats(): Promise<
+    Array<{ model: string; rowCount: number; totalDataBytes: number }>
+  > {
+    const namespaces = await this.listNamespaces()
+    const stats: Array<{ model: string; rowCount: number; totalDataBytes: number }> = []
+    for (const ns of namespaces) {
+      const statsFor = await this.vectorStore?.getStats?.()
+      const model = ns
+      const rowCount = statsFor?.chunkCount ?? 0
+      stats.push({
+        model,
+        rowCount,
+        totalDataBytes: 0,
+      })
+    }
+    return stats
   }
 
   async performSimilaritySearch(
@@ -161,21 +250,73 @@ export class VectorManager {
         files: string[]
         folders: string[]
       }
+      signal?: AbortSignal
     },
-  ): Promise<
-    (VectorSelect & {
-      similarity: number
-    })[]
-  > {
-    const release = this.enterOperation()
-    try {
-      return await this.repository.performSimilaritySearch(
-        queryVector,
-        embeddingModel,
-        options,
-      )
-    } finally {
-      release()
+  ): Promise<{
+    rows: SimilaritySearchResult[]
+    trace?: VectorSimilarityTrace
+  }> {
+    if (this.vectorStore) {
+      const namespace = this.getVectorNamespace(embeddingModel)
+      const searchOptions = {
+        topK: options.limit,
+        minSimilarity: options.minSimilarity,
+        scope: options.scope,
+        signal: options.signal,
+      }
+      throwIfVectorSearchAborted(options.signal)
+      const detailedResult = this.vectorStore.searchDetailed
+        ? await this.vectorStore.searchDetailed(
+            namespace,
+            queryVector,
+            searchOptions,
+          )
+        : null
+      const hits =
+        detailedResult?.hits ??
+        (await this.vectorStore.search(namespace, queryVector, searchOptions))
+          .hits
+      throwIfVectorSearchAborted(options.signal)
+
+      return {
+        rows: adaptVectorHitsToLegacySimilarityRows(
+          hits,
+          embeddingModel,
+          this.coerceLegacyEmbeddingId.bind(this),
+          this.numberFromMetadata.bind(this),
+        ),
+        trace: this.mapVectorSearchTimings(detailedResult?.timingsMs),
+      }
+    }
+
+    throw new Error('SQLite vector store is not available.')
+  }
+
+  async getQueryEmbedding(
+    namespace: Parameters<NonNullable<VectorStore['getQueryEmbedding']>>[0],
+    queryHash: string,
+  ): Promise<number[] | null> {
+    return this.vectorStore?.getQueryEmbedding?.(namespace, queryHash) ?? null
+  }
+
+  async putQueryEmbedding(
+    namespace: Parameters<NonNullable<VectorStore['putQueryEmbedding']>>[0],
+    queryHash: string,
+    embedding: number[],
+  ): Promise<void> {
+    await this.vectorStore?.putQueryEmbedding?.(namespace, queryHash, embedding)
+  }
+
+  private mapVectorSearchTimings(
+    timings?: VectorSearchTimings,
+  ): VectorSimilarityTrace | undefined {
+    if (!timings) {
+      return undefined
+    }
+    return {
+      coarseSearchMs: timings.coarseSearch,
+      loadFullVectorsMs: timings.loadFullVectors,
+      rerankSimilarityMs: timings.rerankSimilarity,
     }
   }
 
@@ -195,387 +336,65 @@ export class VectorManager {
     config: ReconcileConfig,
     options: ReconcileOptions,
   ): Promise<ReconcileResult> {
-    const releaseOperation = this.enterOperation()
-    try {
-      const { signal, scope, truncate, onProgress } = options
-
-      if (truncate) {
-        await this.repository.truncateModel(embeddingModel.id)
-        await this.requestVacuum()
-      }
-
-      // 1. Determine the candidate file universe for this reconcile pass.
-      const allCandidates = this.listIndexableFiles(config)
-      const candidateFiles =
-        scope.kind === 'all'
-          ? allCandidates
-          : (() => {
-              const inScope = new Set(scope.paths)
-              return allCandidates.filter((f) => inScope.has(f.path))
-            })()
-      const candidateSet = new Set(candidateFiles.map((f) => f.path))
-
-      // 2. mtime map (used to skip unchanged files and to find removed paths).
-      const storedMtimes = truncate
-        ? null
-        : await this.repository.getFileMtimes(embeddingModel.id)
-      const mtimeMap =
-        storedMtimes === null
-          ? new Map<string, number>()
-          : storedMtimes instanceof Map
-            ? storedMtimes
-            : new Map(Object.entries(storedMtimes))
-
-      // 3. Partition candidates by mtime.
-      //
-      // Skip 0-byte files: they would chunkify into 0 chunks → no DB row →
-      // mtime-based partition would flag them as "new" forever, wasting a
-      // chunkify pass on every sync. Daily-note plugins commonly create empty
-      // placeholder notes; without this guard they'd flicker through the
-      // progress UI on every config change.
-      const filesToChunkify: TFile[] = []
-      let newFilesCount = 0
-      let updatedFilesCount = 0
-      for (const file of candidateFiles) {
-        if (file.stat.size === 0) continue
-        const existingMtime = mtimeMap.get(file.path)
-        if (existingMtime === undefined) {
-          filesToChunkify.push(file)
-          newFilesCount += 1
-        } else if (file.stat.mtime !== existingMtime) {
-          filesToChunkify.push(file)
-          updatedFilesCount += 1
-        }
-        // else: stable, leave actual rows alone.
-      }
-
-      // 4. Removed paths: in actual but no longer a candidate (and within scope).
-      const removedPaths: string[] = []
-      if (!truncate) {
-        const inScope = (path: string): boolean =>
-          scope.kind === 'all' ? true : scope.paths.includes(path)
-        for (const path of mtimeMap.keys()) {
-          if (!candidateSet.has(path) && inScope(path)) {
-            removedPaths.push(path)
-          }
-        }
-      }
-      const removedFilesCount = removedPaths.length
-
-      // 5. Chunkify and read actual for the diff scope.
-      const diffPaths = [...filesToChunkify.map((f) => f.path), ...removedPaths]
-
-      if (filesToChunkify.length === 0 && removedPaths.length === 0) {
-        // Nothing to do (everything is stable). Persist any truncate effect.
-        if (truncate) await this.requestSave()
-        return { permanentFailedPaths: [], chunkifyFailedPaths: [] }
-      }
-
-      const textSplitter = RecursiveCharacterTextSplitter.fromLanguage(
-        'markdown',
-        { chunkSize: config.chunkSize },
-      )
-
-      const desired: DesiredChunk[] = []
-      const failedFiles: { path: string; error: string }[] = []
-      let completedFilesCount = 0
-      const folderProgress: Record<
-        string,
-        {
-          completedFiles: number
-          totalFiles: number
-          completedChunks: number
-          totalChunks: number
-        }
-      > = {}
-
-      const folderOf = (path: string) =>
-        path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : ''
-      const ancestorsOf = (folder: string): string[] => {
-        if (!folder) return []
-        const parts = folder.split('/')
-        const out: string[] = []
-        for (let i = parts.length; i >= 1; i--) {
-          out.push(parts.slice(0, i).join('/'))
-        }
-        return out
-      }
-
-      for (const file of filesToChunkify) {
-        const folder = folderOf(file.path)
-        if (!folderProgress[folder]) {
-          folderProgress[folder] = {
-            completedFiles: 0,
-            totalFiles: 0,
-            completedChunks: 0,
-            totalChunks: 0,
-          }
-        }
-        folderProgress[folder].totalFiles += 1
-        for (const anc of ancestorsOf(folder).slice(1)) {
-          if (!folderProgress[anc]) {
-            folderProgress[anc] = {
-              completedFiles: 0,
-              totalFiles: 0,
-              completedChunks: 0,
-              totalChunks: 0,
-            }
-          }
-        }
-      }
-
-      const maybeYield = createYieldController(10)
-      for (const file of filesToChunkify) {
-        if (signal?.aborted) {
-          await this.tryFlush('chunkify abort')
-          throw new DOMException('Indexing cancelled by user', 'AbortError')
-        }
-        await maybeYield()
-
-        const folder = folderOf(file.path)
-        onProgress?.({
-          completedChunks: 0,
-          totalChunks: 0,
-          totalFiles: filesToChunkify.length,
-          completedFiles: completedFilesCount,
-          currentFile: file.path,
-          currentFolder: folder,
-          folderProgress,
-          newFilesCount,
-          updatedFilesCount,
-          removedFilesCount,
-        })
-
-        try {
-          const fileChunks = await this.chunkifyFile(
-            file,
-            textSplitter,
-            config.chunkSize,
-            signal,
-            config.settings ?? null,
-            config.settings?.ragOptions?.chunkOverlap ?? 0,
-          )
-          desired.push(...fileChunks)
-          folderProgress[folder].completedFiles += 1
-          folderProgress[folder].totalChunks += fileChunks.length
-          for (const anc of ancestorsOf(folder).slice(1)) {
-            folderProgress[anc].totalChunks += fileChunks.length
-          }
-          completedFilesCount += 1
-        } catch (error) {
-          if (error instanceof DOMException && error.name === 'AbortError') {
-            await this.tryFlush('chunkify abort (caught)')
-            throw error
-          }
-          failedFiles.push({
-            path: file.path,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          })
-        }
-      }
-
-      // Chunkify failures are soft (self-healing): the files are excluded from the
-      // diff (their old index is preserved and mtime not advanced), so the next
-      // reconcile retries them. We log details for diagnostics and report the
-      // paths up to the caller, but never throw or pop a modal here.
-      const chunkifyFailedPaths = failedFiles.map((f) => f.path)
-      if (failedFiles.length > 0) {
-        const errorDetails = failedFiles
-          .map(({ path, error }) => `File: ${path}\nError: ${error}`)
-          .join('\n\n')
-        console.warn(
-          `[YOLO] Failed to chunkify ${failedFiles.length} file(s) (will retry next reconcile):\n\n${errorDetails}`,
-        )
-      }
-
-      // 6. Read actual rows over the diff scope and plan.
-      //
-      // Critical: exclude failed-to-chunkify paths from the diff. Their `desired`
-      // is empty (chunking threw) but their existing rows must NOT be treated as
-      // "no longer desired" — that would silently delete a user's index after a
-      // transient I/O error. Skip them; next reconcile will retry.
-      const failedPaths = new Set(failedFiles.map((f) => f.path))
-      const safeDiffPaths = diffPaths.filter((p) => !failedPaths.has(p))
-      const actualRows = truncate
-        ? []
-        : await this.repository.listChunksForPaths(
-            embeddingModel.id,
-            safeDiffPaths,
-          )
-      const actual = actualRows.map((row) => ({
-        id: row.id,
-        path: row.path,
-        contentHash: row.content_hash,
-        metadata: row.metadata,
-        mtime: row.mtime,
-      }))
-      const plan = planReconcile(desired, actual)
-
-      // 7. Apply deletions and mtime bumps before embedding so that on-disk
-      //    state converges monotonically toward `desired`.
-      if (plan.toDeleteIds.length > 0) {
-        await this.repository.deleteVectorsByIds(plan.toDeleteIds)
-      }
-      if (plan.toBumpMtime.length > 0) {
-        await this.repository.bumpMtimeByIds(plan.toBumpMtime)
-      }
-
-      if (plan.toEmbed.length === 0) {
-        await this.requestSave()
-        onProgress?.({
-          completedChunks: 0,
-          totalChunks: 0,
-          totalFiles: filesToChunkify.length,
-          completedFiles: completedFilesCount,
-          folderProgress,
-          newFilesCount,
-          updatedFilesCount,
-          removedFilesCount,
-        })
-        return { permanentFailedPaths: [], chunkifyFailedPaths }
-      }
-
-      // 8. Embed in batches with rate-limit aware retry.
-      const { permanentFailedPaths } = await this.embedAndInsertBatches(
-        plan.toEmbed,
-        embeddingModel,
-        {
-          signal,
-          maxConcurrency: config.embeddingConcurrency,
-          onProgress: (snapshot) =>
-            onProgress?.({
-              ...snapshot,
-              totalFiles: filesToChunkify.length,
-              completedFiles: completedFilesCount,
-              folderProgress,
-              newFilesCount,
-              updatedFilesCount,
-              removedFilesCount,
-            }),
-        },
-      )
-
-      return { permanentFailedPaths, chunkifyFailedPaths }
-    } finally {
-      releaseOperation()
+    if (!this.vectorStore) {
+      throw new Error('SQLite vector store is not available.')
     }
-  }
 
-  /** Truncate one model's namespace (used by manual "remove index" actions). */
-  async clearAllVectors(embeddingModel: EmbeddingModelClient) {
-    const release = this.enterOperation()
-    try {
-      await this.repository.truncateModel(embeddingModel.id)
-      await this.requestVacuum()
-      await this.requestSave()
-    } finally {
-      release()
-    }
-  }
-
-  async clearVectorsByModelIds(modelIds: string[]) {
-    const release = this.enterOperation()
-    try {
-      await this.repository.clearVectorsByModelIds(modelIds)
-      await this.requestVacuum()
-      await this.requestSave()
-    } finally {
-      release()
-    }
-  }
-
-  async getEmbeddingStats(): Promise<EmbeddingDbStats[]> {
-    const release = this.enterOperation()
-    try {
-      return await this.repository.getEmbeddingStats()
-    } finally {
-      release()
-    }
-  }
-
-  async quiesce(): Promise<void> {
-    this.acceptingOperations = false
-    if (this.activeOperations === 0) return
-    await new Promise<void>((resolve) => this.idleWaiters.add(resolve))
-  }
-
-  private enterOperation(): () => void {
-    if (!this.acceptingOperations) {
-      throw new Error('PGlite engine is quiescing')
-    }
-    this.activeOperations += 1
-    let released = false
-    return () => {
-      if (released) return
-      released = true
-      this.activeOperations -= 1
-      if (this.activeOperations === 0) {
-        for (const resolve of this.idleWaiters) resolve()
-        this.idleWaiters.clear()
-      }
-    }
+    return this.reconcileWithVectorStore(embeddingModel, config, options)
   }
 
   // ---------- internals ----------
 
   private listIndexableFiles(config: ReconcileConfig): TFile[] {
-    let files = this.app.vault.getFiles().filter((f) => {
-      const ext = f.extension.toLowerCase()
-      if (ext === 'md') return true
-      if (config.indexPdf && ext === 'pdf') return true
-      return false
-    })
-    if (config.excludeYoloBaseDir) {
-      const yoloBaseDir = getYoloBaseDir(config.settings)
-      const prefix = `${yoloBaseDir}/`
-      files = files.filter(
-        (file) => file.path !== yoloBaseDir && !file.path.startsWith(prefix),
-      )
-    }
-    files = files.filter(
-      (file) =>
-        !config.excludePatterns.some((pattern) =>
-          minimatch(file.path, pattern),
-        ),
+    return this.app.vault.getFiles().filter((file) =>
+      isRagIndexablePath(file.path, {
+        yolo: config.settings?.yolo,
+        ragOptions: {
+          indexPdf: config.indexPdf,
+          excludeYoloBaseDir: config.excludeYoloBaseDir,
+          excludePatterns: config.excludePatterns,
+          includePatterns: config.includePatterns,
+        },
+      }),
     )
-    if (config.includePatterns.length > 0) {
-      files = files.filter((file) =>
-        config.includePatterns.some((pattern) => minimatch(file.path, pattern)),
-      )
-    }
-    return files
   }
 
   private async chunkifyFile(
     file: TFile,
-    textSplitter: RecursiveCharacterTextSplitter,
     chunkSize: number,
+    chunkOverlap: number,
     signal?: AbortSignal,
     settings?: YoloSettingsLike | null,
-    chunkOverlap = 0,
+    onPdfTextExtracted?: ReconcileOptions['onPdfTextExtracted'],
   ): Promise<DesiredChunk[]> {
     if (file.extension?.toLowerCase() === 'pdf') {
-      return this.chunkifyPdf(file, chunkSize, signal, settings)
+      return this.chunkifyPdf(
+        file,
+        chunkSize,
+        signal,
+        settings,
+        onPdfTextExtracted,
+      )
     }
 
     const fileContent = await this.app.vault.cachedRead(file)
     const sanitized = fileContent.split('\u0000').join('')
-    const splits = await splitMarkdownIntoChunks(
+    const docs = await splitMarkdownIntoChunks(
       sanitized,
       chunkSize,
       chunkOverlap,
     )
 
     const chunks: DesiredChunk[] = []
-    for (const split of splits) {
+    for (const doc of docs) {
       const meta: VectorMetaData = {
-        startLine: split.startLine,
-        endLine: split.endLine,
+        startLine: doc.startLine,
+        endLine: doc.endLine,
       }
-      const contentHash = await sha256HexPrefix16(split.content)
+      const contentHash = await sha256HexPrefix16(doc.content)
       chunks.push({
         path: file.path,
-        content: split.content,
+        content: doc.content,
         contentHash,
         metadata: meta,
         mtime: file.stat.mtime,
@@ -589,6 +408,7 @@ export class VectorManager {
     chunkSize: number,
     signal?: AbortSignal,
     settings?: YoloSettingsLike | null,
+    onPdfTextExtracted?: ReconcileOptions['onPdfTextExtracted'],
   ): Promise<DesiredChunk[]> {
     if (file.stat.size > PDF_INDEX_MAX_BYTES) {
       console.warn(
@@ -606,6 +426,26 @@ export class VectorManager {
         settings: settings ?? null,
       })
       pages = extracted.pages
+      const projectionSource = {
+        path: file.path,
+        contentHash: hashProjectionSource({
+          kind: 'pdf',
+          pages: extracted.pages,
+        }),
+        sourceParserVersion: PDF_PROJECTION_SOURCE_PARSER_VERSION,
+        pages: extracted.pages,
+        ...(signal ? { signal } : {}),
+      }
+      if (onPdfTextExtracted) {
+        try {
+          await onPdfTextExtracted(projectionSource)
+        } catch (error) {
+          console.warn(
+            `[YOLO] PDF projection callback failed: ${file.path}`,
+            error instanceof Error ? error.message : error,
+          )
+        }
+      }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw error
@@ -614,7 +454,7 @@ export class VectorManager {
         `[YOLO] PDF text extraction failed: ${file.path}`,
         error instanceof Error ? error.message : error,
       )
-      return []
+      throw error instanceof Error ? error : new Error(String(error))
     }
 
     const pageSplitter = new RecursiveCharacterTextSplitter({
@@ -657,86 +497,299 @@ export class VectorManager {
     return chunks
   }
 
-  private async embedAndInsertBatches(
-    toEmbed: DesiredChunk[],
+  private async reconcileWithVectorStore(
+    embeddingModel: EmbeddingModelClient,
+    config: ReconcileConfig,
+    options: ReconcileOptions,
+  ): Promise<ReconcileResult> {
+    const vectorStore = this.vectorStore
+    if (!vectorStore) {
+      throw new Error('VectorStore is not configured')
+    }
+
+    const { signal, scope, truncate, onProgress } = options
+    const namespace = this.getVectorNamespace(embeddingModel)
+
+    if (truncate) {
+      await vectorStore.clearNamespace(namespace)
+    }
+
+    const allCandidates = this.listIndexableFiles(config)
+    const candidateFiles =
+      scope.kind === 'all'
+        ? allCandidates
+        : allCandidates.filter((file) => scope.paths.includes(file.path))
+    const candidateSet = new Set(candidateFiles.map((file) => file.path))
+
+    const getIndexedFiles = vectorStore.getIndexedFiles?.bind(vectorStore)
+    if (!truncate && typeof getIndexedFiles !== 'function') {
+      throw new Error('VectorStore indexed-file capability is unavailable')
+    }
+    const indexedFiles = truncate
+      ? new Map<string, { mtime: number; contentHash?: string }>()
+      : await getIndexedFiles!.call(vectorStore, namespace)
+    const fileReadiness =
+      !truncate && typeof vectorStore.getFileReadiness === 'function'
+        ? ((await vectorStore.getFileReadiness(
+            namespace,
+            candidateFiles.map((file) => file.path),
+          )) ?? new Map())
+        : new Map()
+
+    const filesToChunkify: TFile[] = []
+    for (const file of candidateFiles) {
+      if (file.stat.size === 0) continue
+      const existing = indexedFiles.get(file.path)
+      if (existing == null || existing.mtime !== file.stat.mtime) {
+        filesToChunkify.push(file)
+      }
+    }
+
+    if (!truncate) {
+      const inScope = (path: string) =>
+        scope.kind === 'all' ? true : scope.paths.includes(path)
+      for (const path of indexedFiles.keys()) {
+        if (!candidateSet.has(path) && inScope(path)) {
+          await vectorStore.deleteFile(namespace, path)
+        }
+      }
+    }
+
+    const totalFilesCount = candidateFiles.length
+    let completedFilesCount = truncate
+      ? 0
+      : candidateFiles.filter((file) => {
+          const readiness = fileReadiness.get(file.path)
+          return readiness?.vectorReady === true
+        }).length
+
+    onProgress?.({
+      completedChunks: 0,
+      totalChunks: 0,
+      totalFiles: totalFilesCount,
+      completedFiles: completedFilesCount,
+    })
+
+    if (filesToChunkify.length === 0) {
+      return { permanentFailedPaths: [], chunkifyFailedPaths: [] }
+    }
+
+    const chunkifyFailedPaths: string[] = []
+    const permanentFailedPaths: string[] = []
+    const writtenPermanentFailedPaths = new Set<string>()
+    const activeFilePaths = new Set<string>()
+    const enqueuedWritePaths = new Set<string>()
+    const writtenPaths = new Set<string>()
+    let nextFileIndex = 0
+    let fatalError: unknown = null
+    let writeQueue: Promise<void> = Promise.resolve()
+
+    const fileWorkerLimit = Math.max(
+      1,
+      Math.min(SQLITE_FILE_WORKER_MAX, config.embeddingConcurrency ?? 10),
+    )
+
+    const enqueueWrite = (
+      fileWrite: VectorFileWrite,
+      permanentFailed: boolean,
+    ): Promise<void> => {
+      if (enqueuedWritePaths.has(fileWrite.path)) {
+        throw new Error(
+          `Duplicate file write enqueued in one reconcile run: ${fileWrite.path}`,
+        )
+      }
+      enqueuedWritePaths.add(fileWrite.path)
+      const writeTask = writeQueue.then(async () => {
+        if (writtenPaths.has(fileWrite.path)) {
+          throw new Error(
+            `Duplicate file write execution in one reconcile run: ${fileWrite.path}`,
+          )
+        }
+        await vectorStore.replaceFile(namespace, fileWrite)
+        writtenPaths.add(fileWrite.path)
+        if (permanentFailed) {
+          writtenPermanentFailedPaths.add(fileWrite.path)
+        }
+      })
+      writeQueue = writeTask.catch((error: unknown) => {
+        fatalError = fatalError ?? error
+        throw error
+      })
+      return writeTask
+    }
+
+    const processFile = async (file: TFile): Promise<void> => {
+      if (activeFilePaths.has(file.path)) {
+        throw new Error(
+          `Concurrent duplicate file processing detected: ${file.path}`,
+        )
+      }
+      activeFilePaths.add(file.path)
+      onProgress?.({
+        completedChunks: 0,
+        totalChunks: 0,
+        totalFiles: totalFilesCount,
+        completedFiles: completedFilesCount,
+        currentFile: file.path,
+      })
+
+      try {
+        const chunks = await this.chunkifyFile(
+          file,
+          config.chunkSize,
+          config.chunkOverlap ?? 0,
+          signal,
+          config.settings ?? null,
+          options.onPdfTextExtracted,
+        )
+        const { fileWrite, permanentFailed } =
+          await this.buildVectorStoreFileWrite(
+            file,
+            file.stat.mtime,
+            chunks,
+            embeddingModel,
+            signal,
+            config.embeddingConcurrency,
+          )
+
+        if (permanentFailed) {
+          permanentFailedPaths.push(file.path)
+        }
+        await enqueueWrite(fileWrite, permanentFailed)
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          throw error
+        }
+        if (error instanceof RagIndexIncompleteError) {
+          await vectorStore.deleteFile(namespace, file.path)
+          throw error
+        }
+        chunkifyFailedPaths.push(file.path)
+      } finally {
+        activeFilePaths.delete(file.path)
+        completedFilesCount += 1
+        onProgress?.({
+          completedChunks: 0,
+          totalChunks: 0,
+          totalFiles: totalFilesCount,
+          completedFiles: completedFilesCount,
+          currentFile: file.path,
+        })
+      }
+    }
+
+    const worker = async (): Promise<void> => {
+      while (true) {
+        if (signal?.aborted) {
+          throw new DOMException('Indexing cancelled by user', 'AbortError')
+        }
+        if (fatalError != null) {
+          return
+        }
+        const file = filesToChunkify[nextFileIndex++]
+        if (!file) {
+          return
+        }
+        try {
+          await processFile(file)
+        } catch (error) {
+          fatalError = error
+          throw error
+        }
+      }
+    }
+
+    await Promise.allSettled(
+      Array.from(
+        { length: Math.min(fileWorkerLimit, filesToChunkify.length) },
+        () => worker(),
+      ),
+    )
+
+    await writeQueue
+
+    if (fatalError instanceof RagIndexIncompleteError) {
+      if (writtenPermanentFailedPaths.size > 0) {
+        const paths = [...writtenPermanentFailedPaths]
+        if (typeof vectorStore.deleteFiles === 'function') {
+          await vectorStore.deleteFiles(namespace, paths)
+        } else {
+          for (const path of paths) {
+            await vectorStore.deleteFile(namespace, path)
+          }
+        }
+      }
+      throw new RagIndexIncompleteError([
+        ...new Set([
+          ...fatalError.rolledBackPaths,
+          ...writtenPermanentFailedPaths,
+        ]),
+      ])
+    }
+
+    if (fatalError != null) {
+      throw fatalError instanceof Error
+        ? fatalError
+        : new Error('Vector indexing failed with a non-Error value')
+    }
+
+    return { permanentFailedPaths, chunkifyFailedPaths }
+  }
+
+  private async buildVectorStoreFileWrite(
+    file: TFile,
+    mtime: number,
+    chunks: DesiredChunk[],
+    embeddingModel: EmbeddingModelClient,
+    signal?: AbortSignal,
+    maxConcurrency?: number,
+  ): Promise<{ fileWrite: VectorFileWrite; permanentFailed: boolean }> {
+    const { chunks: embeddedChunks, permanentFailed } =
+      await this.embedVectorStoreChunks(chunks, embeddingModel, {
+        signal,
+        maxConcurrency,
+      })
+
+    this.assertUniqueChunkIds(file.path, embeddedChunks)
+    return {
+      fileWrite: {
+        path: file.path,
+        mtime,
+        contentHash: await this.buildFileContentHashFromChunks(chunks),
+        chunks: embeddedChunks,
+      },
+      permanentFailed,
+    }
+  }
+
+  private async embedVectorStoreChunks(
+    chunks: DesiredChunk[],
     embeddingModel: EmbeddingModelClient,
     options: {
       signal?: AbortSignal
-      /**
-       * Max parallel embedding requests. Clamped to [1, 24]. Default 10.
-       * The adaptive batch-size shrink/grow stays within [1, maxConcurrency].
-       */
       maxConcurrency?: number
-      onProgress?: (snapshot: {
-        completedChunks: number
-        totalChunks: number
-        currentFile?: string
-        waitingForRateLimit?: boolean
-      }) => void
     },
-  ): Promise<{ permanentFailedPaths: string[] }> {
-    const { signal, onProgress } = options
-    const totalChunks = toEmbed.length
-    let completedChunks = 0
-    const failedChunks: {
-      path: string
-      metadata: VectorMetaData
+  ): Promise<{ chunks: VectorChunkWrite[]; permanentFailed: boolean }> {
+    const { signal } = options
+    const failedChunks: Array<{
       error: string
       kind: RagIndexFailureKind
-    }[] = []
-    const fileBoundaries: Array<{ path: string; endChunk: number }> = []
-    let cumulative = 0
-    for (const chunk of toEmbed) {
-      cumulative += 1
-      const last = fileBoundaries[fileBoundaries.length - 1]
-      if (last && last.path === chunk.path) {
-        last.endChunk = cumulative
-      } else {
-        fileBoundaries.push({ path: chunk.path, endChunk: cumulative })
-      }
-    }
-    let fileCursor = 0
-    let lastReportedFile: string | null = null
-    const currentFile = () => {
-      while (
-        fileCursor < fileBoundaries.length - 1 &&
-        completedChunks > fileBoundaries[fileCursor].endChunk
-      ) {
-        fileCursor += 1
-      }
-      return fileBoundaries[fileCursor]?.path
-    }
-    const nextReportedFile = () => {
-      const f = currentFile()
-      if (!f || f === lastReportedFile) return undefined
-      lastReportedFile = f
-      return f
-    }
-
+    }> = []
+    const writes: VectorChunkWrite[] = []
     const MAX_BATCH_SIZE = Math.max(
       1,
       Math.min(24, Math.floor(options.maxConcurrency ?? 10)),
     )
-    // Keep the adaptive floor at 10 when the ceiling allows, otherwise collapse
-    // to the ceiling so user-configured low values aren't auto-scaled up.
     const MIN_BATCH_SIZE = Math.min(10, MAX_BATCH_SIZE)
     let currentBatchSize = MAX_BATCH_SIZE
-    // Full DB snapshot checkpoint interval (chunks). requestSave() triggers
-    // a full pgClient.dumpDataDir + writeBinary, whose cost scales with total
-    // DB size — not with the 1500-chunk delta — so lowering this knob has
-    // O(DB size) write amplification and is not a sound way to bound the
-    // "embeddings already paid for but not yet persisted" loss. If that loss
-    // ever needs a real bound, do it with an incremental segment log, not by
-    // shortening this interval.
-    const INCREMENTAL_SAVE_THRESHOLD = 1500
-    let chunksSinceLastSave = 0
+    let wholeBatchFailed = false
 
     const embedOne = async (
       chunk: DesiredChunk,
-    ): Promise<VectorInsert | null> => {
+    ): Promise<VectorChunkWrite | null> => {
       if (signal?.aborted) return null
       try {
-        return await backOff(
+        const embedding = await backOff(
           async () => {
             if (signal?.aborted) {
               throw new DOMException('Indexing cancelled by user', 'AbortError')
@@ -749,23 +802,7 @@ export class VectorManager {
                 `Chunk content contains null bytes in file: ${chunk.path}`,
               )
             }
-            const embedding = await embeddingModel.getEmbedding(chunk.content)
-            completedChunks += 1
-            onProgress?.({
-              completedChunks,
-              totalChunks,
-              currentFile: nextReportedFile(),
-            })
-            return {
-              path: chunk.path,
-              mtime: chunk.mtime,
-              content: chunk.content,
-              content_hash: chunk.contentHash,
-              model: embeddingModel.id,
-              dimension: embeddingModel.dimension,
-              embedding,
-              metadata: chunk.metadata,
-            }
+            return await embeddingModel.getEmbedding(chunk.content)
           },
           {
             numOfAttempts: 6,
@@ -774,254 +811,177 @@ export class VectorManager {
             maxDelay: 30000,
             retry: (error) => {
               if (signal?.aborted) return false
-              if (!isTransientRagIndexError(error)) return false
-              const status =
-                typeof error === 'object' &&
-                error !== null &&
-                'status' in error &&
-                typeof (error as { status?: unknown }).status === 'number'
-                  ? (error as { status: number }).status
-                  : undefined
-              const message =
-                error instanceof Error ? error.message.toLowerCase() : ''
-              const waiting = status === 429 || message.includes('rate limit')
-              if (waiting) {
-                const f = currentFile() ?? chunk.path
-                lastReportedFile = f
-                onProgress?.({
-                  completedChunks,
-                  totalChunks,
-                  currentFile: f,
-                  waitingForRateLimit: true,
-                })
-              }
-              return true
+              return isTransientRagIndexError(error)
             },
           },
         )
-      } catch (error) {
-        failedChunks.push({
+
+        return {
+          chunkId: `${chunk.path}#${chunk.metadata.page ?? ''}:${chunk.metadata.startLine}:${chunk.metadata.endLine}:${chunk.contentHash}`,
           path: chunk.path,
-          metadata: chunk.metadata,
+          text: chunk.content,
+          contentHash: chunk.contentHash,
+          embedding,
+          location: {
+            lineStart: chunk.metadata.startLine,
+            lineEnd: chunk.metadata.endLine,
+            page: chunk.metadata.page,
+          },
+          metadataJson: {
+            startLine: chunk.metadata.startLine,
+            endLine: chunk.metadata.endLine,
+            page: chunk.metadata.page,
+            contentHash: chunk.contentHash,
+          },
+        }
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          throw error
+        }
+        failedChunks.push({
           error: error instanceof Error ? error.message : 'Unknown error',
-          // Classify the original error object (status/code/instanceof), not a
-          // stringified message, so transient vs permanent is reliable.
           kind: classifyRagIndexError(error),
         })
         return null
       }
     }
 
-    // Set when a whole batch fails to embed and we stop early, leaving later
-    // batches unattempted. Such a run is NOT complete and must never be treated
-    // as success (see the post-loop handling below).
-    let wholeBatchFailed = false
-    // Soft permanent failures (files whose successful chunks are kept, but which
-    // can never index fully and are not retried). Surfaced to the caller via the
-    // return value — never thrown, never popped as a modal.
-    const softPermanentFailedPaths: string[] = []
-    let inFlightError: unknown = null
-    try {
-      for (
-        let batchStart = 0;
-        batchStart < toEmbed.length;
-        batchStart += currentBatchSize
-      ) {
-        const batch = toEmbed.slice(batchStart, batchStart + currentBatchSize)
-        if (signal?.aborted) {
-          await this.tryFlush('embed-loop abort')
-          throw new DOMException('Indexing cancelled by user', 'AbortError')
-        }
-        await yieldToMain()
+    for (
+      let batchStart = 0;
+      batchStart < chunks.length;
+      batchStart += currentBatchSize
+    ) {
+      if (signal?.aborted) {
+        throw new DOMException('Indexing cancelled by user', 'AbortError')
+      }
+      await yieldToMain()
 
-        let validRows: VectorInsert[] = []
-        let attempt = 0
-        while (attempt < 2) {
-          attempt += 1
-          // Record where this attempt's failures begin. If the whole attempt
-          // fails and we retry, we discard them (below) so only the FINAL
-          // attempt's failures drive rollback/warning — otherwise a batch that
-          // fails attempt 1 but succeeds attempt 2 would still be rolled back.
-          const failureStart = failedChunks.length
-          const results = await Promise.all(batch.map((c) => embedOne(c)))
-          validRows = results.filter((r): r is VectorInsert => r !== null)
-          if (validRows.length > 0) {
-            if (
-              validRows.length !== batch.length &&
-              currentBatchSize > MIN_BATCH_SIZE
-            ) {
-              currentBatchSize = Math.max(
-                MIN_BATCH_SIZE,
-                Math.floor(currentBatchSize / 2),
-              )
-            } else if (
-              validRows.length === batch.length &&
-              currentBatchSize < MAX_BATCH_SIZE
-            ) {
-              currentBatchSize = Math.min(MAX_BATCH_SIZE, currentBatchSize + 4)
-            }
-            break
-          }
-          if (attempt < 2) {
-            // Discard this failed attempt's records before retrying.
-            failedChunks.splice(failureStart)
+      const batch = chunks.slice(batchStart, batchStart + currentBatchSize)
+      let validRows: VectorChunkWrite[] = []
+      let attempt = 0
+      while (attempt < 2) {
+        attempt += 1
+        const failureStart = failedChunks.length
+        const results = await Promise.all(batch.map((chunk) => embedOne(chunk)))
+        validRows = results.filter(
+          (row): row is VectorChunkWrite => row !== null,
+        )
+        if (validRows.length > 0) {
+          if (
+            validRows.length !== batch.length &&
+            currentBatchSize > MIN_BATCH_SIZE
+          ) {
             currentBatchSize = Math.max(
               MIN_BATCH_SIZE,
               Math.floor(currentBatchSize / 2),
             )
-            await yieldToMain()
+          } else if (
+            validRows.length === batch.length &&
+            currentBatchSize < MAX_BATCH_SIZE
+          ) {
+            currentBatchSize = Math.min(MAX_BATCH_SIZE, currentBatchSize + 4)
           }
-        }
-
-        if (signal?.aborted) {
-          if (validRows.length > 0) {
-            await this.repository.insertVectors(validRows)
-          }
-          await this.tryFlush('post-batch abort')
-          throw new DOMException('Indexing cancelled by user', 'AbortError')
-        }
-
-        if (validRows.length === 0 && batch.length > 0) {
-          // Whole batch failed (e.g. full network outage or invalid API key).
-          // Stop embedding and fall through to the unified failure aggregation
-          // below: if the failures are transient it throws RagIndexIncomplete-
-          // Error (→ retry); if purely permanent/unknown the post-loop guard
-          // throws so the run is recorded as failed rather than silently
-          // succeeding with later batches left unprocessed.
-          wholeBatchFailed = true
           break
         }
-        await this.repository.insertVectors(validRows)
-        chunksSinceLastSave += validRows.length
-        if (chunksSinceLastSave >= INCREMENTAL_SAVE_THRESHOLD) {
-          await this.requestSave()
-          chunksSinceLastSave = 0
-        }
-        onProgress?.({
-          completedChunks,
-          totalChunks,
-          waitingForRateLimit: false,
-        })
-
-        batchStart += batch.length - currentBatchSize
-      }
-
-      // ---- Failure aggregation + classification-based routing ----
-      //
-      // Aggregate per-chunk failures by file. A file is rolled back if it has
-      // ANY transient failure (even mixed transient+permanent): keeping its
-      // successful/reused chunks would stamp the current mtime and let the
-      // transient gap be frozen forever (MAX-mtime skip). Files whose failures
-      // are exclusively permanent/unknown can never index fully, so we keep
-      // their successful chunks (stable mtime, no flapping) and surface a
-      // persistent, actionable warning instead of retrying forever.
-      if (failedChunks.length > 0) {
-        const failuresByPath = new Map<string, RagIndexFailureKind[]>()
-        for (const chunk of failedChunks) {
-          const bucket = failuresByPath.get(chunk.path)
-          if (bucket) bucket.push(chunk.kind)
-          else failuresByPath.set(chunk.path, [chunk.kind])
-        }
-
-        const rollbackPaths: string[] = []
-        const permanentFailedPaths: string[] = []
-        for (const [path, kinds] of failuresByPath) {
-          if (kinds.some((kind) => kind === 'transient')) {
-            rollbackPaths.push(path)
-          } else {
-            permanentFailedPaths.push(path)
-          }
-        }
-
-        if (rollbackPaths.length > 0) {
-          // This run is incomplete and will retry (RagIndexIncompleteError
-          // below). Roll back BOTH transient AND permanent-failed files:
-          // - transient: must be re-embedded;
-          // - permanent: leaving its partial success would stamp the current
-          //   mtime and let the file be silently skipped on the retry, freezing
-          //   the gap. Re-evaluate it next run; a permanent-only file is then
-          //   surfaced (below) once a clean run completes.
-          // Delete each file's ENTIRE row set (incl. reused/bumped chunks from
-          // step 7), so no surviving row carries the current mtime.
-          // (rollbackPaths and permanentFailedPaths are disjoint by construction.)
-          await this.repository.deleteVectorsByPaths(embeddingModel.id, [
-            ...rollbackPaths,
-            ...permanentFailedPaths,
-          ])
-        }
-
-        // Persistent "keep + warn" is valid ONLY for a fully-processed run with
-        // no transient retry in flight. On an early stop (wholeBatchFailed) the
-        // run is incomplete and surfaces via the throw below; on a transient
-        // retry the permanent files were just rolled back for re-evaluation.
-        // Either way, suppress the partial report here to avoid a misleading
-        // "the rest is indexed" message / a frozen gap.
-        if (
-          permanentFailedPaths.length > 0 &&
-          rollbackPaths.length === 0 &&
-          !wholeBatchFailed
-        ) {
-          softPermanentFailedPaths.push(...permanentFailedPaths)
-          const errorDetails = failedChunks
-            .filter(
-              (chunk) =>
-                !failuresByPath
-                  .get(chunk.path)
-                  ?.some((kind) => kind === 'transient'),
-            )
-            .map((chunk) => `File: ${chunk.path}\nError: ${chunk.error}`)
-            .join('\n\n')
-          console.warn(
-            `[YOLO] ${permanentFailedPaths.length} file(s) could not be indexed (kept partial results, will not retry):\n\n${errorDetails}`,
+        if (attempt < 2) {
+          failedChunks.splice(failureStart)
+          currentBatchSize = Math.max(
+            MIN_BATCH_SIZE,
+            Math.floor(currentBatchSize / 2),
           )
-        }
-
-        if (rollbackPaths.length > 0) {
-          throw new RagIndexIncompleteError([
-            ...rollbackPaths,
-            ...permanentFailedPaths,
-          ])
+          await yieldToMain()
         }
       }
 
-      // Early stop with no transient failures to retry: the cause is
-      // permanent/unknown (e.g. invalid API key) and later batches were never
-      // attempted. Throw so the run is recorded as failed (no false success,
-      // no retry for a permanent cause); the catch below surfaces the details.
-      if (wholeBatchFailed) {
-        throw new Error(
-          'Embedding halted: an entire batch failed to embed and indexing was stopped before completing all chunks.',
-        )
+      if (validRows.length === 0 && batch.length > 0) {
+        wholeBatchFailed = true
+        break
       }
-    } catch (error) {
-      inFlightError = error
-      throw error
-    } finally {
-      // Always persist whatever made it into the DB, on both the success path
-      // and any throw (AbortError, RagIndexIncompleteError, wholeBatchFailed
-      // halt, etc.) — those errors propagate unchanged to the caller.
-      //
-      // If save() itself throws (e.g. dumpDataDir OOM in #408), surface it
-      // ONLY on the success path — otherwise we would mask the original
-      // failure (user abort, API key error, transient rollback) with a save
-      // error, which is both wrong (the user did not "save-fail") and
-      // mis-classified for retry policy. On failure paths we log it so it's
-      // still diagnosable and the next reconcile will hit it again cleanly.
-      try {
-        await this.requestSave()
-      } catch (saveError) {
-        if (inFlightError !== null) {
-          console.warn(
-            '[YOLO] Vector DB save failed during failure path; preserving original error.',
-            saveError,
-          )
-        } else {
-          // eslint-disable-next-line no-unsafe-finally -- intentional: success path must surface save failure
-          throw saveError
-        }
-      }
+
+      writes.push(...validRows)
+      batchStart += batch.length - currentBatchSize
     }
 
-    return { permanentFailedPaths: softPermanentFailedPaths }
+    const hasTransientFailure = failedChunks.some(
+      (chunk) => chunk.kind === 'transient',
+    )
+    if (hasTransientFailure) {
+      throw new RagIndexIncompleteError([chunks[0]?.path ?? 'unknown'])
+    }
+
+    if (wholeBatchFailed) {
+      throw new Error(
+        'Embedding halted: an entire batch failed to embed and indexing was stopped before completing all chunks.',
+      )
+    }
+
+    if (failedChunks.length > 0) {
+      return { chunks: writes, permanentFailed: true }
+    }
+
+    return { chunks: writes, permanentFailed: false }
   }
+
+  private getVectorNamespace(
+    embeddingModel: EmbeddingModelClient,
+  ): VectorNamespace {
+    const configuredModel = this.settings?.embeddingModels?.find(
+      (model) => model.id === embeddingModel.id,
+    )
+    return createEmbeddingVectorNamespace({
+      model: configuredModel?.model ?? embeddingModel.id,
+      dimension: embeddingModel.dimension,
+    })
+  }
+
+  private numberFromMetadata(value: unknown): number | undefined {
+    return typeof value === 'number' ? value : undefined
+  }
+
+  private coerceLegacyEmbeddingId(id: string, fallbackIndex: number): number {
+    const numericId = Number(id)
+    return Number.isFinite(numericId) ? numericId : fallbackIndex + 1
+  }
+
+  private async buildFileContentHashFromChunks(
+    chunks: DesiredChunk[],
+  ): Promise<string> {
+    return sha256HexPrefix16(chunks.map((chunk) => chunk.contentHash).join('|'))
+  }
+
+  private assertUniqueChunkIds(path: string, chunks: VectorChunkWrite[]): void {
+    const seen = new Set<string>()
+    const duplicates = new Set<string>()
+    for (const chunk of chunks) {
+      if (seen.has(chunk.chunkId)) {
+        duplicates.add(chunk.chunkId)
+        continue
+      }
+      seen.add(chunk.chunkId)
+    }
+    if (duplicates.size === 0) {
+      return
+    }
+    const details = chunks
+      .filter((chunk) => duplicates.has(chunk.chunkId))
+      .slice(0, 6)
+      .map((chunk) => ({
+        chunkId: chunk.chunkId,
+        lineStart: chunk.location.lineStart,
+        lineEnd: chunk.location.lineEnd,
+        page: chunk.location.page,
+        contentHash: chunk.contentHash,
+        textPreview: chunk.text.slice(0, 120),
+      }))
+    throw new Error(
+      `Duplicate chunk ids generated for ${path}: ${JSON.stringify(details)}`,
+    )
+  }
+}
+
+function throwIfVectorSearchAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return
+  const error = new Error('Vector search cancelled')
+  error.name = 'AbortError'
+  throw error
 }

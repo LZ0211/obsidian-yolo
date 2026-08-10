@@ -1816,12 +1816,14 @@ describe('local fs tool action helpers', () => {
   })
 
   describe('workspace scope final defense', () => {
+    // Under the home-dir policy, `workspaceRoot: ''` means the whole vault is
+    // in scope; restrictions come from the exclude lists.
     const allowNotes = {
       enabled: true,
       workspaceRoot: '',
-      readExtraIncludes: ['Notes'],
+      readExtraIncludes: [],
       readExcludes: [],
-      writeExcludes: [],
+      writeExcludes: ['secret'],
     }
 
     it('rejects fs_edit when path is outside scope', async () => {
@@ -1839,46 +1841,55 @@ describe('local fs tool action helpers', () => {
       })
       expect(result.status).toBe(ToolCallResponseStatus.Error)
       if (result.status === ToolCallResponseStatus.Error) {
-        expect(result.error).toMatch(/workspace scope/i)
+        expect(result.error).toMatch(/workspace (access policy|scope)/i)
         expect(result.error).toMatch(/secret\/a\.md/)
       }
     })
 
-    it('rejects fs_move when only newPath is outside scope', async () => {
-      const result = await callLocalFileTool({
-        app: {
-          vault: {
-            getAbstractFileByPath: jest.fn(),
-          },
-          fileManager: { renameFile: jest.fn() },
-        } as unknown as App,
-        toolName: 'fs_move',
-        args: {
-          oldPath: 'Notes/a.md',
-          newPath: 'secret/a.md',
-        },
-        workspaceAccessPolicy: allowNotes,
-      })
-      expect(result.status).toBe(ToolCallResponseStatus.Error)
-      if (result.status === ToolCallResponseStatus.Error) {
-        expect(result.error).toMatch(/secret\/a\.md/)
-      }
-    })
-
-    it('rejects fs_delete when path is outside scope', async () => {
+    // The local tool set has no fs_move/fs_delete: path operations run
+    // through the virtual bash shell. The write-root escape is exercised
+    // through fs_edit with an absolute path instead.
+    it('rejects absolute paths that escape the workspace write root', async () => {
       const result = await callLocalFileTool({
         app: {
           vault: { getAbstractFileByPath: jest.fn() },
         } as unknown as App,
-        toolName: 'fs_delete',
+        toolName: 'fs_edit',
         args: {
-          path: 'secret/b.md',
+          path: '/secret/a.md',
+          oldText: 'x',
+          newText: 'y',
         },
-        workspaceAccessPolicy: allowNotes,
+        workspaceAccessPolicy: {
+          enabled: true,
+          workspaceRoot: 'Notes',
+          readExtraIncludes: [],
+          readExcludes: [],
+          writeExcludes: [],
+        },
       })
       expect(result.status).toBe(ToolCallResponseStatus.Error)
       if (result.status === ToolCallResponseStatus.Error) {
-        expect(result.error).toMatch(/secret\/b\.md/)
+        expect(result.error).toMatch(/secret\/a\.md/)
+      }
+    })
+
+    it('rejects writes into the YOLO user data root', async () => {
+      const result = await callLocalFileTool({
+        app: {
+          vault: { getAbstractFileByPath: jest.fn() },
+        } as unknown as App,
+        settings: { yolo: { baseDir: 'YOLO' } } as never,
+        toolName: 'fs_edit',
+        args: {
+          path: 'YOLO/data/chats/x.json',
+          oldText: 'a',
+          newText: 'b',
+        },
+      })
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      if (result.status === ToolCallResponseStatus.Error) {
+        expect(result.error).toMatch(/File not found/)
       }
     })
 
@@ -2337,7 +2348,7 @@ describe('fs_read wikilink resolution', () => {
       app,
       toolName: 'fs_read',
       args: { paths: ['[[Secret]]'] },
-      workspaceAccessPolicy: { enabled: true, workspaceRoot: '', readExtraIncludes: ['Notes'], readExcludes: [], writeExcludes: [] },
+      workspaceAccessPolicy: { enabled: true, workspaceRoot: '', readExtraIncludes: [], readExcludes: ['Private'], writeExcludes: [] },
     })
 
     const results = parseSuccessResults(result)
@@ -2390,7 +2401,7 @@ describe('fs_read wikilink resolution', () => {
       app,
       toolName: 'fs_read',
       args: { paths: ['Private/Secret.md'] },
-      workspaceAccessPolicy: { enabled: true, workspaceRoot: '', readExtraIncludes: ['Notes'], readExcludes: [], writeExcludes: [] },
+      workspaceAccessPolicy: { enabled: true, workspaceRoot: '', readExtraIncludes: [], readExcludes: ['Private'], writeExcludes: [] },
     })
 
     const results = parseSuccessResults(result)

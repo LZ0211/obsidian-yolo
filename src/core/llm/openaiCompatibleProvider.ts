@@ -11,7 +11,7 @@ import {
   LLMResponseNonStreaming,
   LLMResponseStreaming,
 } from '../../types/llm/response'
-import { LLMProvider, RequestTransportMode } from '../../types/provider.types'
+import { LLMProvider, LLMProviderPresetType, RequestTransportMode } from '../../types/provider.types'
 import { resolveRequestReasoningLevel } from '../../types/reasoning'
 import { getBuiltinProviderTools } from '../../utils/llm/model-tools'
 import { resolveProviderBaseUrl } from '../../utils/llm/provider-base-url'
@@ -21,7 +21,7 @@ import { formatMessages } from '../../utils/llm/request'
 import { BaseLLMProvider } from './base'
 import { resolveAdapterForBaseUrl } from './baseUrlDetection'
 import { extractEmbeddingVector } from './embedding-utils'
-import { LLMBaseUrlNotSetException } from './exception'
+import { LLMAPIKeyNotSetException, LLMBaseUrlNotSetException } from './exception'
 import { NoStainlessOpenAI } from './NoStainlessOpenAI'
 import { applyOpenAICompatibleCapabilities } from './openaiCompatibleCapabilities'
 import { OpenAIMessageAdapter } from './openaiMessageAdapter'
@@ -99,6 +99,18 @@ type OpenAICompatibleStreamingRequest = LLMRequestStreaming &
   Record<string, unknown> &
   OpenAICompatibleExtras
 
+const API_KEY_OPTIONAL_PRESETS = new Set<LLMProviderPresetType>([
+  'ollama',
+  'lm-studio',
+  'openai-compatible',
+  'chatgpt-oauth',
+  'gemini-oauth',
+  'amazon-bedrock',
+])
+
+export const providerRequiresApiKey = (
+  presetType: LLMProviderPresetType,
+): boolean => !API_KEY_OPTIONAL_PRESETS.has(presetType)
 export class OpenAICompatibleProvider extends BaseLLMProvider<LLMProvider> {
   private adapter: OpenAIMessageAdapter
   private browserClient: OpenAI
@@ -445,4 +457,44 @@ export class OpenAICompatibleProvider extends BaseLLMProvider<LLMProvider> {
       // backwards compatibility but is intentionally not extended.
     }
   }
+  async rerank(
+    model: string,
+    query: string,
+    documents: string[],
+    options?: { topN?: number; signal?: AbortSignal },
+  ): Promise<Array<{ index: number; relevanceScore: number }>> {
+    this.assertApiKeyConfigured()
+    if (!this.resolvedBaseUrl) {
+      throw new LLMBaseUrlNotSetException(
+        `Provider ${this.provider.id} base URL is missing. Please set it in settings menu.`,
+      )
+    }
+
+    const topN = options?.topN ?? documents.length
+    const body = { model, query, documents, top_n: topN, return_documents: false }
+
+    const response = await runWithRequestTransport({
+      mode: this.requestTransportMode,
+      memoryKey: this.requestTransportMemoryKey,
+      runBrowser: () => this.browserClient.post("/rerank", { body, signal: options?.signal }),
+      runObsidian: () => this.obsidianClient.post("/rerank", { body, signal: options?.signal }),
+      runNode: () => this.nodeClient.post("/rerank", { body, signal: options?.signal }),
+    })
+
+    const data = response as { results?: Array<{ index: number; relevance_score: number }> }
+    if (!data.results || !Array.isArray(data.results)) return []
+    return data.results.map((r) => ({ index: r.index, relevanceScore: r.relevance_score }))
+  }
+
+  private assertApiKeyConfigured(): void {
+    if (
+      providerRequiresApiKey(this.provider.presetType) &&
+      !this.provider.apiKey?.trim()
+    ) {
+      throw new LLMAPIKeyNotSetException(
+        `Provider ${this.provider.id} API key is missing. Please set it in settings menu.`,
+      )
+    }
+  }
+
 }
