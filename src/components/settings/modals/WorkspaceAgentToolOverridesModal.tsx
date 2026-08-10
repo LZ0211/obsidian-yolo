@@ -7,9 +7,16 @@ import type { WorkspaceAgentBehaviorOverrides } from '../../../settings/schema/s
 import type {
   Assistant,
   AssistantToolApprovalMode,
+  AssistantToolDisclosureMode,
 } from '../../../types/assistant.types'
 import { ObsidianToggle } from '../../common/ObsidianToggle'
 import { SimpleSelect } from '../../common/SimpleSelect'
+
+const DISCLOSURE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'inherit', label: 'Inherit' },
+  { value: 'always', label: 'Always' },
+  { value: 'on_demand', label: 'On demand' },
+]
 
 const APPROVAL_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'inherit', label: 'Inherit' },
@@ -21,7 +28,10 @@ type OverrideDraft = {
   disabledToolNames: string[]
   toolConfigOverrides: Record<
     string,
-    { approvalMode?: AssistantToolApprovalMode }
+    {
+      approvalMode?: AssistantToolApprovalMode
+      disclosureMode?: AssistantToolDisclosureMode
+    }
   >
 }
 
@@ -79,10 +89,47 @@ export function WorkspaceAgentToolOverridesModal({
   ) => {
     setDraft((current) => {
       const next = { ...current.toolConfigOverrides }
+      const existing = next[toolName]
       if (!mode || mode === 'inherit') {
-        delete next[toolName]
+        if (existing) {
+          const { approvalMode: _removed, ...rest } = existing
+          if (Object.keys(rest).length > 0) {
+            next[toolName] = rest
+          } else {
+            delete next[toolName]
+          }
+        }
       } else {
-        next[toolName] = { approvalMode: mode as AssistantToolApprovalMode }
+        next[toolName] = {
+          ...(existing ?? {}),
+          approvalMode: mode as AssistantToolApprovalMode,
+        }
+      }
+      return { ...current, toolConfigOverrides: next }
+    })
+  }
+
+  const setToolDisclosureMode = (
+    toolName: string,
+    mode: string | null,
+  ) => {
+    setDraft((current) => {
+      const next = { ...current.toolConfigOverrides }
+      const existing = next[toolName]
+      if (!mode || mode === 'inherit') {
+        if (existing) {
+          const { disclosureMode: _removed, ...rest } = existing
+          if (Object.keys(rest).length > 0) {
+            next[toolName] = rest
+          } else {
+            delete next[toolName]
+          }
+        }
+      } else {
+        next[toolName] = {
+          ...(existing ?? {}),
+          disclosureMode: mode as AssistantToolDisclosureMode,
+        }
       }
       return { ...current, toolConfigOverrides: next }
     })
@@ -136,6 +183,18 @@ export function WorkspaceAgentToolOverridesModal({
               options={APPROVAL_OPTIONS}
               onChange={(mode) => setToolApprovalMode(toolName, mode)}
               placeholder={t('settings.workspaceAgents.toolApprovalMode', 'Approval mode')}
+            />
+            <SimpleSelect
+              value={
+                draft.toolConfigOverrides[toolName]?.disclosureMode ??
+                'inherit'
+              }
+              options={DISCLOSURE_OPTIONS}
+              onChange={(mode) => setToolDisclosureMode(toolName, mode)}
+              placeholder={t(
+                'settings.workspaceAgents.toolDisclosureMode',
+                'Disclosure mode',
+              )}
             />
             <ObsidianToggle
               value={!disabledSet.has(toolName)}

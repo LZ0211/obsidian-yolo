@@ -224,6 +224,32 @@ export function WorkspaceAgentsSection({ app }: { app: App }) {
                 </ObsidianSetting>
                 <ObsidianSetting
                   name={t(
+                    'settings.workspaceAgents.agentModeAllowed',
+                    'Agent mode',
+                  )}
+                  desc={t(
+                    'settings.workspaceAgents.agentModeAllowedDesc',
+                    'When off, this workspace agent only exposes Ask mode.',
+                  )}
+                >
+                  <ObsidianToggle
+                    value={
+                      agent.behaviorOverrides?.agentModeAllowed !== false
+                    }
+                    onChange={(allowed) =>
+                      updateAgent(agent.id, (current) => ({
+                        ...current,
+                        behaviorOverrides: {
+                          ...(current.behaviorOverrides ?? {}),
+                          agentModeAllowed: allowed,
+                        },
+                        updatedAt: Date.now(),
+                      }))
+                    }
+                  />
+                </ObsidianSetting>
+                <ObsidianSetting
+                  name={t(
                     'settings.workspaceAgents.promptOverride',
                     'Prompt override',
                   )}
