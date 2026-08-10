@@ -343,6 +343,7 @@ export default class YoloPlugin extends Plugin {
   private readonly managedModulePathChangeListeners = new Set<() => void>()
   private localMcpServer: LocalMcpServerRuntime | null = null
   private localMcpSettingsUnsubscribe: (() => void) | null = null
+  private ragLogRibbonIconEl: HTMLElement | null = null
   private injectionBridgeUninstall: (() => void) | null = null
   private liteSkillRegistryDispose: (() => void) | null = null
   private webviewSelectionBridge: WebviewSelectionBridge | null = null
@@ -2238,6 +2239,9 @@ export default class YoloPlugin extends Plugin {
       }
       moduleAutoDownloadEnabled = next
     })
+    this.addSettingsChangeListener(() => {
+      this.syncRagLogRibbonIcon()
+    })
     await loadLocale(this.resolveObsidianLanguage())
     this._tCache = undefined
     await this.migrateLegacyVaultMirrorIfNeeded()
@@ -2343,6 +2347,7 @@ export default class YoloPlugin extends Plugin {
     this.addRibbonIcon(YOLO_ICON_ID, 'YOLO Chat', () => {
       void this.openChatView({ placement: this.resolveRibbonPlacement() })
     })
+    this.syncRagLogRibbonIcon()
 
     this.setupBackgroundActivityStatusBar()
     this.updateToastCleanup = mountUpdateToast(this)
@@ -2727,6 +2732,7 @@ export default class YoloPlugin extends Plugin {
     this.isUnloaded = true
     this.injectionBridgeUninstall?.()
     this.injectionBridgeUninstall = null
+    this.removeRagLogRibbonIcon()
     clearAllChatGPTOAuthServices()
     this.disposeCliRuntimeCoordinator()
     this.liteSkillRegistryDispose?.()
@@ -3976,6 +3982,33 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
 
   openRagLogModal(): void {
     new RAGLogModal(this.app, this).open()
+  }
+
+  private removeRagLogRibbonIcon(): void {
+    this.ragLogRibbonIconEl?.remove()
+    this.ragLogRibbonIconEl = null
+  }
+
+  private syncRagLogRibbonIcon(): void {
+    const shouldShow =
+      Platform.isDesktop &&
+      this.settings.ragOptions.showRagLogRibbonIcon !== false
+    if (!shouldShow) {
+      this.removeRagLogRibbonIcon()
+      return
+    }
+
+    if (this.ragLogRibbonIconEl?.isConnected) {
+      return
+    }
+
+    this.ragLogRibbonIconEl = this.addRibbonIcon(
+      'history',
+      this.t('settings.rag.log.openTitle', 'RAG 日志'),
+      () => {
+        this.openRagLogModal()
+      },
+    )
   }
 
   async getRetrievalInspectStatus(): Promise<RetrievalInspectStatus> {
