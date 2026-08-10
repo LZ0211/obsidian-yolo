@@ -78,6 +78,21 @@ export type AssistantWorkspaceScope = z.infer<
   typeof assistantWorkspaceScopeSchema
 >
 
+/**
+ * Enhanced workspace access policy (migrated from the local fork): scopes the
+ * agent to a home directory (`workspaceRoot`) with read/write boundary rules.
+ * When present it is authoritative over `workspaceScope` for the runtime.
+ */
+export const workspaceAccessPolicySchema = z.object({
+  enabled: z.boolean().default(false),
+  workspaceRoot: z.string().default(''),
+  readExtraIncludes: z.array(z.string()).default([]),
+  readExcludes: z.array(z.string()).default([]),
+  writeExcludes: z.array(z.string()).default([]),
+})
+
+export type WorkspaceAccessPolicy = z.infer<typeof workspaceAccessPolicySchema>
+
 // Assistant type definition
 export const assistantSchema = z.object({
   id: z.string(),
@@ -105,6 +120,7 @@ export const assistantSchema = z.object({
     .record(z.string(), assistantSkillPreferenceSchema)
     .optional(),
   workspaceScope: assistantWorkspaceScopeSchema.optional(),
+  workspaceAccessPolicy: workspaceAccessPolicySchema.optional(),
   enableProjectInstructions: z.boolean().optional(),
   // Per-agent focus sync (current file pointer injection in sidebar chat).
   includeCurrentFileContent: z.boolean().optional(),

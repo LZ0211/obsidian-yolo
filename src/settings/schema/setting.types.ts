@@ -308,6 +308,18 @@ const tabCompletionTriggerSchema = z
   })
 
 /**
+ * Workspace agent policy (migrated from the local fork): the agent's home
+ * directory and read/write boundary rules around it.
+ */
+export const workspaceAgentPolicySchema = z.object({
+  workspaceRoot: z.string().trim().min(1, 'Workspace root cannot be blank'),
+  readAllowlist: z.array(z.string()).catch([]),
+  readDenylist: z.array(z.string()).catch([]),
+  writeDenylist: z.array(z.string()).catch([]),
+})
+export type WorkspaceAgentPolicy = z.infer<typeof workspaceAgentPolicySchema>
+
+/**
  * Settings
  */
 

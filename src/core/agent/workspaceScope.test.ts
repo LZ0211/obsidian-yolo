@@ -4,7 +4,12 @@ import {
   collectToolCallPaths,
   findPathOutsideScope,
   isPathAllowedByScope,
+  isReadablePath,
   isWorkspaceScopeActive,
+  isWritablePath,
+  normalizeWorkspacePath,
+  resolveReadablePath,
+  resolveWritablePath,
 } from './workspaceScope'
 
 const scope = (
@@ -82,10 +87,10 @@ describe('collectToolCallPaths', () => {
     ])
   })
 
-  it('returns empty for fs_read (its paths may be wikilinks, not literal vault paths — scope is enforced per-resolved-file inside its own read loop instead, see localFileTools.ts)', () => {
+  it('extracts array path from fs_read.paths', () => {
     expect(
       collectToolCallPaths('fs_read', { paths: ['a.md', 'b.md'] }),
-    ).toEqual([])
+    ).toEqual(['a.md', 'b.md'])
   })
 
   it('extracts oldPath + newPath for fs_move top-level', () => {
@@ -111,6 +116,35 @@ describe('collectToolCallPaths', () => {
 
   it('ignores empty strings and non-string values', () => {
     expect(collectToolCallPaths('fs_list', { path: '  ' })).toEqual([])
+    expect(
+      collectToolCallPaths('fs_read', { paths: ['a.md', 42, null] }),
+    ).toEqual(['a.md'])
+  })
+
+  it('extracts both oldPath and newPath for fs_file_ops:move', () => {
+    expect(
+      collectToolCallPaths('fs_file_ops', {
+        action: 'move',
+        oldPath: 'a.md',
+        newPath: 'b.md',
+      }),
+    ).toEqual(['a.md', 'b.md'])
+  })
+
+  it('extracts only path for fs_file_ops:delete and fs_file_ops:create_dir', () => {
+    expect(
+      collectToolCallPaths('fs_file_ops', {
+        action: 'delete',
+        path: 'a.md',
+        recursive: true,
+      }),
+    ).toEqual(['a.md'])
+    expect(
+      collectToolCallPaths('fs_file_ops', {
+        action: 'create_dir',
+        path: 'a/b',
+      }),
+    ).toEqual(['a/b'])
   })
 })
 
@@ -118,21 +152,21 @@ describe('findPathOutsideScope', () => {
   it('returns null when scope is disabled', () => {
     expect(
       findPathOutsideScope(
-        'fs_edit',
-        { path: 'secret/a.md' },
+        'fs_read',
+        { paths: ['secret/a.md'] },
         scope({ enabled: false, include: ['allowed'] }),
       ),
     ).toBeNull()
   })
 
-  it('is a no-op for fs_read regardless of scope — its paths may be wikilinks, resolved and scope-checked per-file inside fs_read itself (see localFileTools.ts)', () => {
+  it('returns the first offending path for array args', () => {
     expect(
       findPathOutsideScope(
         'fs_read',
-        { paths: ['secret/a.md'] },
+        { paths: ['allowed/a.md', 'secret/b.md', 'allowed/c.md'] },
         scope({ include: ['allowed'] }),
       ),
-    ).toBeNull()
+    ).toBe('secret/b.md')
   })
 
   it('catches out-of-scope oldPath in fs_move', () => {
@@ -165,28 +199,68 @@ describe('findPathOutsideScope', () => {
     ).toBeNull()
   })
 
+  it('catches an out-of-scope newPath in fs_file_ops:move', () => {
+    expect(
+      findPathOutsideScope(
+        'fs_file_ops',
+        { action: 'move', oldPath: 'allowed/a.md', newPath: 'secret/a.md' },
+        scope({ include: ['allowed'] }),
+      ),
+    ).toBe('secret/a.md')
+  })
+
+  it('catches an out-of-scope oldPath in fs_file_ops:move', () => {
+    expect(
+      findPathOutsideScope(
+        'fs_file_ops',
+        { action: 'move', oldPath: 'secret/a.md', newPath: 'allowed/b.md' },
+        scope({ include: ['allowed'] }),
+      ),
+    ).toBe('secret/a.md')
+  })
+
+  it('returns null when both fs_file_ops:move paths are in scope', () => {
+    expect(
+      findPathOutsideScope(
+        'fs_file_ops',
+        { action: 'move', oldPath: 'allowed/a.md', newPath: 'allowed/b.md' },
+        scope({ include: ['allowed'] }),
+      ),
+    ).toBeNull()
+  })
+
+  it('catches an out-of-scope path in fs_file_ops:delete', () => {
+    expect(
+      findPathOutsideScope(
+        'fs_file_ops',
+        { action: 'delete', path: 'secret/b.md' },
+        scope({ include: ['allowed'] }),
+      ),
+    ).toBe('secret/b.md')
+  })
+
   it('exempts listed skill paths from workspace scope', () => {
     const exemptPaths = new Set(['YOLO/skills/demo/SKILL.md'])
     expect(
       findPathOutsideScope(
-        'fs_edit',
-        { path: 'YOLO/skills/demo/SKILL.md' },
+        'fs_read',
+        { paths: ['YOLO/skills/demo/SKILL.md'] },
         scope({ include: ['Notes'] }),
         { exemptPaths },
       ),
     ).toBeNull()
     expect(
       findPathOutsideScope(
-        'fs_edit',
-        { path: 'YOLO/skills/demo/references/guide.md' },
+        'fs_read',
+        { paths: ['YOLO/skills/demo/references/guide.md'] },
         scope({ include: ['Notes'] }),
         { exemptPaths },
       ),
     ).toBeNull()
     expect(
       findPathOutsideScope(
-        'fs_edit',
-        { path: 'YOLO/skills/other/SKILL.md' },
+        'fs_read',
+        { paths: ['YOLO/skills/other/SKILL.md'] },
         scope({ include: ['Notes'] }),
         { exemptPaths },
       ),
@@ -197,8 +271,8 @@ describe('findPathOutsideScope', () => {
     const exemptPaths = new Set(['builtin://skills/skill-creator.md'])
     expect(
       findPathOutsideScope(
-        'fs_edit',
-        { path: 'builtin://skills/skill-creator.md' },
+        'fs_read',
+        { paths: ['builtin://skills/skill-creator.md'] },
         scope({ include: ['Notes'] }),
         { exemptPaths },
       ),
@@ -208,10 +282,128 @@ describe('findPathOutsideScope', () => {
   it('exempts browser:// paths from workspace scope', () => {
     expect(
       findPathOutsideScope(
-        'fs_edit',
-        { path: 'browser://page_ab12cd34_ef56gh78' },
+        'fs_read',
+        { paths: ['browser://page_ab12cd34_ef56gh78'] },
         scope({ include: ['Notes'] }),
       ),
     ).toBeNull()
+  })
+})
+
+describe('WorkspaceAccessPolicy helpers', () => {
+  const policy = (override: {
+    enabled?: boolean
+    workspaceRoot?: string
+    readExtraIncludes?: string[]
+    readExcludes?: string[]
+    writeExcludes?: string[]
+  }) => ({
+    enabled: true,
+    workspaceRoot: 'Work',
+    readExtraIncludes: [],
+    readExcludes: [],
+    writeExcludes: [],
+    ...override,
+  })
+
+  it('normalizes valid workspace paths and rejects traversal/OS-absolute paths', () => {
+    expect(normalizeWorkspacePath(' Work//Notes/ ')).toBe('Work/Notes')
+    expect(normalizeWorkspacePath('')).toBe('')
+    expect(() => normalizeWorkspacePath('C:/Work')).toThrow(/invalid/i)
+    expect(() => normalizeWorkspacePath('Work\\Notes')).toThrow(/invalid/i)
+    expect(() => normalizeWorkspacePath('Work/../Notes')).toThrow(/invalid/i)
+    expect(() => normalizeWorkspacePath('Work/./Notes')).toThrow(/invalid/i)
+  })
+
+  it('treats "/" as the whole-vault sentinel, same as an empty root', () => {
+    // AssistantsSection's workspace agent creation defaults workspaceRoot to
+    // '/' when the user leaves it blank; that literal '/' must resolve to
+    // vault-root (not throw), otherwise every file under a workspace agent
+    // fails isReadablePath and @-mention lists render empty.
+    expect(normalizeWorkspacePath('/')).toBe('')
+    expect(normalizeWorkspacePath(' / ')).toBe('')
+
+    const rootAccess = policy({ workspaceRoot: '/' })
+    expect(isReadablePath('Anything/a.md', rootAccess)).toBe(true)
+    expect(isReadablePath('Notes/a.md', rootAccess)).toBe(true)
+  })
+
+  it('strips the leading slash from a picked-folder workspaceRoot instead of rejecting it', () => {
+    // AgentWorkspaceScopeEditor's folder picker always stores a chosen root as
+    // `/<folder>` (see setWorkspaceRoot), e.g. real user data has
+    // workspaceRoot: '/04-专利'. This must normalize to 'Notes/Sub', not throw
+    // — a real production data.json had this exact shape and got an empty
+    // @-mention list before this fix.
+    expect(normalizeWorkspacePath('/Notes/Sub')).toBe('Notes/Sub')
+
+    const scopedAccess = policy({ workspaceRoot: '/Notes/Sub' })
+    expect(isReadablePath('Notes/Sub/a.md', scopedAccess)).toBe(true)
+    expect(isReadablePath('Notes/Sub', scopedAccess)).toBe(true)
+    expect(isReadablePath('Other/a.md', scopedAccess)).toBe(false)
+  })
+
+  it('allows reads under workspace root and extra includes but excludes denied paths', () => {
+    const access = policy({
+      workspaceRoot: 'Work',
+      readExtraIncludes: ['Shared'],
+      readExcludes: ['Work/Private'],
+    })
+
+    expect(isReadablePath('Work/a.md', access)).toBe(true)
+    expect(isReadablePath('Shared/a.md', access)).toBe(true)
+    expect(isReadablePath('Work/Private/a.md', access)).toBe(false)
+    expect(isReadablePath('Other/a.md', access)).toBe(false)
+    expect(isReadablePath('Work2/a.md', access)).toBe(false)
+  })
+
+  it('resolves reads relative to workspace root unless input uses vault-root absolute addressing', () => {
+    const access = policy({
+      workspaceRoot: 'Work',
+      readExtraIncludes: ['Shared'],
+    })
+
+    expect(resolveReadablePath('a.md', access)).toBe('Work/a.md')
+    expect(resolveReadablePath('Work/a.md', access)).toBe('Work/a.md')
+    expect(resolveReadablePath('/Shared/a.md', access)).toBe('Shared/a.md')
+    expect(() => resolveReadablePath('/Private/a.md', access)).toThrow(
+      /outside/i,
+    )
+  })
+
+  it('allows global reads and writes when policy is missing or disabled', () => {
+    expect(isReadablePath('Anything/a.md', undefined)).toBe(true)
+    expect(isWritablePath('Anything/a.md', undefined)).toBe(true)
+    expect(isReadablePath('Anything/a.md', policy({ enabled: false }))).toBe(
+      true,
+    )
+    expect(isWritablePath('Anything/a.md', policy({ enabled: false }))).toBe(
+      true,
+    )
+  })
+
+  it('resolves writes under workspaceRoot and rejects paths outside the write root', () => {
+    const access = policy({
+      workspaceRoot: 'Work',
+      readExtraIncludes: ['Shared'],
+      writeExcludes: ['Work/Locked'],
+    })
+
+    expect(resolveWritablePath('draft.md', access)).toBe('Work/draft.md')
+    expect(resolveWritablePath('Work/draft.md', access)).toBe('Work/draft.md')
+    expect(resolveWritablePath('Shared/x.md', access)).toBe('Work/Shared/x.md')
+    expect(isWritablePath('Work/draft.md', access)).toBe(true)
+    expect(() => resolveWritablePath('Locked/x.md', access)).toThrow(/denied/i)
+  })
+
+  it('distinguishes relative writes from vault-root absolute writes', () => {
+    const access = policy({ workspaceRoot: 'Work' })
+
+    expect(resolveWritablePath('Outside/a.md', access)).toBe(
+      'Work/Outside/a.md',
+    )
+    expect(resolveWritablePath('/Work/a.md', access)).toBe('Work/a.md')
+    expect(() => resolveWritablePath('/Outside/a.md', access)).toThrow(
+      /outside the workspace write root/i,
+    )
   })
 })
