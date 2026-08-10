@@ -11,6 +11,7 @@ import {
 
 import { upsertEditReviewSnapshot } from '../../database/json/chat/editReviewSnapshotStore'
 import { buildPdfPageImageCacheKey } from '../../database/json/chat/imageCacheStore'
+import { validateAttachmentPath } from '../bot/attachment-security'
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import type {
   ApplyViewResult,
@@ -114,6 +115,12 @@ import {
 } from '../memory/memoryManager'
 import { isWithinYoloUserDataRoot } from '../paths/yoloPaths'
 import type { RAGEngine } from '../rag/ragEngine'
+import { MetadataFilterDslError } from '../search/metadataFilterDsl'
+import {
+  type MetadataFileSearchHit,
+  type MetadataSearchHit,
+  searchFilesByMetadataDsl,
+} from '../search/metadataSearch'
 import {
   acquireRuntimeComponent,
   isRuntimeComponentEnabled,
@@ -232,6 +239,7 @@ export const LOCAL_FILE_TOOL_SHORT_NAMES = [
   'memory_add',
   'memory_update',
   'memory_delete',
+  'meta_search',
   'web_search',
   'web_scrape',
   JS_SANDBOX_TOOL_NAME,
@@ -240,18 +248,33 @@ export const LOCAL_FILE_TOOL_SHORT_NAMES = [
   'load_tool_schemas',
   'todo_write',
   'ask_user_question',
+  'send_attachment',
 ] as const
+
+// Excluded from the user-facing Agent settings surface. `load_tool_schemas`
+// is a protocol tool for the on-demand disclosure mechanism, not a user
+// capability. `send_attachment` is a bot-runtime-only capability (Bot
+// Platform Phase 6.5) — it is only ever offered by `agent-runner.ts`
+// appending its FQN directly to a bot run's `allowedToolNames`, never through
+// per-assistant `toolPreferences`, so it must not be enumerable/toggleable in
+// the normal Agent settings UI.
+const NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES = new Set<string>([
+  'load_tool_schemas',
+  'send_attachment',
+])
 
 /**
  * Subset of {@link LOCAL_FILE_TOOL_SHORT_NAMES} that the user actually
- * configures via the Agent settings panel. `load_tool_schemas` is a protocol
- * tool — it exists for the on-demand disclosure mechanism, not as a user-
- * facing capability — so it is excluded here. The runtime still dispatches and
- * normalizes it through `LOCAL_FILE_TOOL_SHORT_NAMES`; it just isn't part of
- * the per-agent tool preference surface.
+ * configures via the Agent settings panel. See
+ * {@link NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES} for what's excluded and why.
+ * The runtime still dispatches and normalizes excluded tools through
+ * `LOCAL_FILE_TOOL_SHORT_NAMES`; they just aren't part of the per-agent tool
+ * preference surface.
  */
 export const USER_FACING_LOCAL_TOOL_SHORT_NAMES: readonly string[] =
-  LOCAL_FILE_TOOL_SHORT_NAMES.filter((name) => name !== 'load_tool_schemas')
+  LOCAL_FILE_TOOL_SHORT_NAMES.filter(
+    (name) => !NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES.has(name),
+  )
 type LocalFileToolName = (typeof LOCAL_FILE_TOOL_SHORT_NAMES)[number]
 type ContextPruneMode = 'selected' | 'all'
 // 'delete' | 'create_dir' | 'move' retired with fs_delete/fs_create_dir/fs_move
@@ -975,6 +998,35 @@ export function getLocalFileTools(options?: {
       },
     },
     {
+      name: 'meta_search',
+      description:
+        'Query note metadata (frontmatter + built-in fields like tags/links/headings) with a SQL-like DSL: SELECT|TABLE ... FROM ... [WHERE ...] [ORDER BY ...] [LIMIT N]. ' +
+        'TABLE returns a Markdown table instead of JSON; same grammar otherwise. ' +
+        'Run `select keys(*) from *|"path"` first to discover which fields exist before filtering.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          meta: {
+            type: 'string',
+            description:
+              'Grammar: `select|table <fields>|**|keys(*)|distinct <field> from *|**|"path" [where <cond>] [order by <field> [asc|desc]] [limit N]`. Standard SQL comparison operators, plus `contains`/`includes`/`ilike` for substring match. ' +
+              'Built-in fields start with `$` and have bare aliases: `$source_path`/`path`, `$folder_path`/`folder`, `$file_name`/`filename`, `$title`/`name`, `$document_type`/`type`, `$tag`/`tags`, `$alias`/`aliases`, `$link`/`links`, `$outlink`/`outlinks`, `$inlink`/`backlinks`, `$embed`/`embeds`, `$heading`/`headings`, `$heading_level`, `$section_type`, `$list_item_count`, `$task_count`. Anything else is read straight from frontmatter. ' +
+              'Use `table` instead of `select` for a compact Markdown table instead of JSON.\n' +
+              'Examples:\n' +
+              '  `select keys(*) from "Projects"`\n' +
+              '  `select title, priority from Projects where priority >= 3 order by priority desc limit 5`\n' +
+              '  `table title, priority from Projects where priority >= 3 order by priority desc limit 5`',
+          },
+          maxResults: {
+            type: 'integer',
+            description:
+              'Maximum files to return. Defaults to 20, range 1-300.',
+          },
+        },
+        required: ['meta'],
+      },
+    },
+    {
       name: WEB_SEARCH_TOOL_NAME,
       description:
         'Search the web for up-to-date or specific information using the configured search provider. ' +
@@ -1192,6 +1244,26 @@ export function getLocalFileTools(options?: {
           },
         },
         required: ['todos'],
+      },
+    },
+    {
+      name: 'send_attachment',
+      description:
+        'Send a file already present in the vault as an attachment to the current bot chat. Only available in bot conversations. The path must be vault-relative and fall under one of the admin-configured allowed directories, or the call fails.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: 'Vault-relative path of the file to send.',
+          },
+          label: {
+            type: 'string',
+            description:
+              'Optional short caption shown alongside the attachment (images only).',
+          },
+        },
+        required: ['path'],
       },
     },
   ]
@@ -1695,6 +1767,194 @@ const getFsReadOperation = (args: Record<string, unknown>): FsReadOperation => {
 
 const formatJsonResult = (payload: unknown): string => {
   return JSON.stringify(payload, null, 2)
+}
+
+const utf8ByteLength = (value: string): number =>
+  new TextEncoder().encode(value).length
+
+const buildZeroResultHints = (meta: string): string[] => {
+  const hints: string[] = []
+  const lower = meta.toLowerCase()
+
+  if (!lower.includes('keys(*)') && !lower.includes('distinct')) {
+    hints.push(
+      'No files matched. Try `select keys(*) from *` to see available field names in this scope.',
+    )
+  }
+
+  if (/\btag\b/.test(lower)) {
+    hints.push(
+      'The built-in `$tag` field only matches Obsidian #tags in file content/frontmatter, not folder names.',
+    )
+  }
+
+  if (/document_type\s*(=|like|contains)\s*['"]email['"]/i.test(lower)) {
+    hints.push(
+      '`$document_type` is derived from file extension. `.md` files have `$document_type = "markdown"`, not `"email"`.',
+    )
+  }
+
+  if (/\bfolder\b/.test(lower) && !lower.includes('folder_path')) {
+    hints.push(
+      'The built-in folder field is `$folder_path`, not `folder`. Use `select keys(*) from *` to confirm correct key names.',
+    )
+  }
+
+  if (/\bsource_path\b.*\blike\b/i.test(lower) && !lower.includes('%')) {
+    hints.push(
+      '`$source_path` is the full vault path. Try `$folder_path = "path/to/folder"` instead of `$source_path like "substring"` for filtering by directory.',
+    )
+  }
+
+  if (
+    /(?:^|\s|=)\w+\s*=\s*['"]/.test(lower) &&
+    !lower.includes('contains') &&
+    !lower.includes(' like ')
+  ) {
+    hints.push(
+      'Query uses = but returned no matches. If the field is marked list[...] in `select keys(*) from *|"path"`, use contains for membership checks instead of =.',
+    )
+  }
+
+  if (!/\bwhere\b|contains\b|=|\blike\b|>=|<=/.test(lower)) {
+    hints.push('No filter detected. Did you mean to add `where key op value`?')
+  }
+
+  return hints
+}
+
+const sliceToByteBudget = (
+  full: string,
+  maxChars: number,
+): {
+  text: string
+  truncated?: { totalBytes: number; omittedBytes: number }
+} => {
+  if (utf8ByteLength(full) <= maxChars) {
+    return { text: full }
+  }
+
+  const TRUNCATION_SUFFIX = '\n\n... (truncated)'
+  const suffixLength = utf8ByteLength(TRUNCATION_SUFFIX)
+  const available = maxChars - suffixLength
+  if (available <= 0) {
+    return {
+      text: TRUNCATION_SUFFIX.trim(),
+      truncated: { totalBytes: utf8ByteLength(full), omittedBytes: utf8ByteLength(full) },
+    }
+  }
+
+  let sliceEnd = available
+  if (sliceEnd > full.length) {
+    sliceEnd = full.length
+  }
+  while (
+    sliceEnd > 0 &&
+    utf8ByteLength(full.slice(0, sliceEnd)) > available
+  ) {
+    sliceEnd -= 1
+  }
+
+  const text = full.slice(0, sliceEnd) + TRUNCATION_SUFFIX
+  return {
+    text,
+    truncated: {
+      totalBytes: utf8ByteLength(full),
+      omittedBytes: utf8ByteLength(full) - utf8ByteLength(text),
+    },
+  }
+}
+
+const formatBoundedJsonResult = (
+  payload: unknown,
+  maxChars: number,
+): { text: string; truncated?: { totalBytes: number; omittedBytes: number } } =>
+  sliceToByteBudget(JSON.stringify(payload), maxChars)
+
+const formatBoundedTextResult = (
+  text: string,
+  maxChars: number,
+): { text: string; truncated?: { totalBytes: number; omittedBytes: number } } =>
+  sliceToByteBudget(text, maxChars)
+
+const escapeTableCell = (value: string): string =>
+  value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
+
+const metadataCellText = (value: string | number | boolean): string =>
+  String(value)
+
+const buildMetadataResultTable = (results: MetadataSearchHit[]): string => {
+  if (results[0]?.kind === 'distinct') {
+    const hit = results[0]
+    const header = hit.key === 'available_keys' ? 'field' : hit.key
+    const rows = hit.values.map(
+      (value) => `| ${escapeTableCell(metadataCellText(value))} |`,
+    )
+    return [`| ${header} |`, '| --- |', ...rows].join('\n')
+  }
+
+  const fileHits = results as MetadataFileSearchHit[]
+  const columns: string[] = []
+  const seenColumns = new Set<string>()
+  for (const hit of fileHits) {
+    for (const key of Object.keys(hit.metadata)) {
+      if (!seenColumns.has(key)) {
+        seenColumns.add(key)
+        columns.push(key)
+      }
+    }
+  }
+
+  const headerCells = ['path', ...columns]
+  const headerRow = `| ${headerCells.join(' | ')} |`
+  const separatorRow = `| ${headerCells.map(() => '---').join(' | ')} |`
+  const dataRows = fileHits.map((hit) => {
+    const cells = [
+      escapeTableCell(hit.path),
+      ...columns.map((column) => {
+        const values = hit.metadata[column]
+        return values
+          ? escapeTableCell(values.map(metadataCellText).join(', '))
+          : ''
+      }),
+    ]
+    return `| ${cells.join(' | ')} |`
+  })
+
+  return [headerRow, separatorRow, ...dataRows].join('\n')
+}
+
+const METADATA_DSL_HINTS: Record<string, string> = {
+  malformed_query:
+    'Query syntax is invalid. Use `select keys(*) from *` to discover queryable fields, then write `select ... from ...`.',
+  unsupported_operator:
+    'Operator not supported. Use: =, ==, !=, <>, like, contains, >=, >, <=, <.',
+  unsupported_syntax:
+    'Use `select keys(*) from *` to discover queryable fields, then write `select ... from ...`.',
+}
+
+const formatMetadataDslError = (error: unknown): Error => {
+  if (!(error instanceof MetadataFilterDslError)) {
+    return error instanceof Error ? error : new Error(String(error))
+  }
+
+  const hint = METADATA_DSL_HINTS[error.code]
+  return new Error(
+    hint
+      ? `${error.message}. ${hint}`
+      : `${error.message}. Use: key op value [and key op value ...].`,
+  )
+}
+
+const isReadablePathSafe = (
+  path: string,
+  policy: WorkspaceAccessPolicy | undefined,
+): boolean => {
+  try {
+    return isReadablePath(path, policy)
+  } catch {
+    return false
+  }
 }
 
 const normalizeLocalToolName = (toolName: string): string => {
@@ -3558,6 +3818,88 @@ export async function callLocalFileTool({
         }
       }
 
+      case 'meta_search': {
+        const meta = getTextArg(args, 'meta').trim()
+        const maxResults = getOptionalIntegerArg({
+          args,
+          key: 'maxResults',
+          defaultValue: 20,
+          min: 1,
+          max: 300,
+        })
+        let results
+        try {
+          results = searchFilesByMetadataDsl(app, meta, {
+            maxResults,
+            isReadablePath: (path) =>
+              isReadablePathSafe(path, workspaceAccessPolicy),
+          })
+        } catch (error) {
+          throw formatMetadataDslError(error)
+        }
+        const MAX_RESULT_CHARS = 12_000
+        const zeroHints = buildZeroResultHints(meta)
+        const wantsTable = /^\s*table\b/i.test(meta)
+
+        if (wantsTable) {
+          const tableText =
+            results.length === 0
+              ? zeroHints.length > 0
+                ? zeroHints.join('\n')
+                : 'No rows matched.'
+              : buildMetadataResultTable(results)
+          const { text, truncated } = formatBoundedTextResult(
+            tableText,
+            MAX_RESULT_CHARS,
+          )
+          return {
+            status: ToolCallResponseStatus.Success,
+            text,
+            ...(truncated && {
+              metadata: {
+                truncated: {
+                  totalBytes: truncated.totalBytes,
+                  omittedBytes: truncated.omittedBytes,
+                },
+              },
+            }),
+          }
+        }
+
+        const resultKind = results[0]?.kind ?? null
+        const strippedResults = results.map((hit) =>
+          hit.kind === 'file'
+            ? {
+                path: hit.path,
+                matchedKeys: hit.matchedKeys,
+                metadata: hit.metadata,
+              }
+            : { key: hit.key, values: hit.values },
+        )
+        const { text, truncated } = formatBoundedJsonResult(
+          {
+            tool: 'meta_search',
+            ...(resultKind && { resultKind }),
+            results: strippedResults,
+            ...(results.length === 0 &&
+              zeroHints.length > 0 && { hint: zeroHints }),
+          },
+          MAX_RESULT_CHARS,
+        )
+        return {
+          status: ToolCallResponseStatus.Success,
+          text,
+          ...(truncated && {
+            metadata: {
+              truncated: {
+                totalBytes: truncated.totalBytes,
+                omittedBytes: truncated.omittedBytes,
+              },
+            },
+          }),
+        }
+      }
+
       case 'web_search': {
         if (!settings) {
           throw new Error('Web search is unavailable: settings not loaded.')
@@ -4034,6 +4376,36 @@ export async function callLocalFileTool({
 
       case 'todo_write': {
         return executeTodoWrite({ args })
+      }
+
+      case 'send_attachment': {
+        // Result status directly gates `scanForSendAttachment` (see
+        // `message-converter.ts`): it only ever inspects `request.arguments`
+        // for calls whose `response.status === Success`, so a failed
+        // validation MUST return `Error` here — returning `Success` with an
+        // `ok: false` payload would make the dispatcher try to send a file
+        // that was never actually validated/allowed.
+        const path = getOptionalTextArg(args, 'path')
+        if (!path || path.trim() === '') {
+          return {
+            status: ToolCallResponseStatus.Error,
+            error: 'path is required.',
+          }
+        }
+        const validation = validateAttachmentPath(path, {
+          isAllowed: (normalizedPath) =>
+            isReadablePathSafe(normalizedPath, workspaceAccessPolicy),
+        })
+        if (!validation.ok) {
+          return {
+            status: ToolCallResponseStatus.Error,
+            error: validation.error,
+          }
+        }
+        return {
+          status: ToolCallResponseStatus.Success,
+          text: JSON.stringify({ ok: true, path: validation.normalizedPath }),
+        }
       }
 
       default:
