@@ -167,6 +167,26 @@ export const en: TranslationKeys = {
   },
 
   settings: {
+    workspaceAgents: {
+        sectionTitle: "Workspace agents",
+        sectionDesc: "Each workspace agent inherits an Assistant template and adds a home-directory workspace policy.",
+        defaultName: "New workspace agent",
+        pickTemplate: "Pick a template",
+        noTemplates: "Create an Assistant first to use as a template.",
+        template: "Template: {name}",
+        missingTemplate: "Missing template: {id}",
+        agentName: "Name",
+        agentNamePlaceholder: "Agent name",
+        promptOverride: "Prompt override",
+        promptOverrideDesc: "Overrides the template system prompt. Empty inherits the template.",
+        promptOverridePlaceholder: "Inherit from template",
+        toolOverridesTitle: "Tool overrides",
+        toolOverridesButton: "Tool overrides",
+        toolApprovalMode: "Approval mode",
+        skillOverridesTitle: "Skill overrides",
+        skillOverridesButton: "Skill overrides",
+        skillLoadMode: "Load mode",
+      },
     title: 'Yolo settings',
     tabs: {
       models: 'Models',

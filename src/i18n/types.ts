@@ -148,6 +148,26 @@ export type TranslationKeys = {
   // Settings
   settings: {
     title: string
+    workspaceAgents?: {
+      sectionTitle?: string
+      sectionDesc?: string
+      defaultName?: string
+      pickTemplate?: string
+      noTemplates?: string
+      template?: string
+      missingTemplate?: string
+      agentName?: string
+      agentNamePlaceholder?: string
+      promptOverride?: string
+      promptOverrideDesc?: string
+      promptOverridePlaceholder?: string
+      toolOverridesTitle?: string
+      toolOverridesButton?: string
+      toolApprovalMode?: string
+      skillOverridesTitle?: string
+      skillOverridesButton?: string
+      skillLoadMode?: string
+    }
     tabs: {
       models: string
       editor: string

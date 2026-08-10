@@ -74,9 +74,9 @@ describe('workspaceAgentResolver', () => {
     expect(resolved!.name).toBe('Renamed')
     expect(resolved!.systemPrompt).toBe('overridden prompt')
     expect(resolved!.enabledToolNames).toEqual(['tool-a'])
-    expect(resolved!.toolPreferences['tool-b']).toEqual({ enabled: false })
+    expect(resolved!.toolPreferences?.['tool-b']).toEqual({ enabled: false })
     expect(resolved!.enabledSkills).toEqual(['skill-1'])
-    expect(resolved!.skillPreferences['skill-2']).toEqual({ enabled: false })
+    expect(resolved!.skillPreferences?.['skill-2']).toEqual({ enabled: false })
   })
 
   it('returns null when the template is missing or the agent is disabled', () => {

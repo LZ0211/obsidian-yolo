@@ -138,6 +138,26 @@ export const zh: TranslationKeys = {
   },
 
   settings: {
+    workspaceAgents: {
+        sectionTitle: "工作空间 Agent",
+        sectionDesc: "每个工作空间 Agent 继承一个 Assistant 模板，并添加工作目录（home）策略。",
+        defaultName: "新建工作空间 Agent",
+        pickTemplate: "选择模板",
+        noTemplates: "请先创建一个 Assistant 作为模板。",
+        template: "模板：{name}",
+        missingTemplate: "模板缺失：{id}",
+        agentName: "名称",
+        agentNamePlaceholder: "Agent 名称",
+        promptOverride: "提示词覆盖",
+        promptOverrideDesc: "覆盖模板的 system prompt。留空则继承模板。",
+        promptOverridePlaceholder: "继承模板",
+        toolOverridesTitle: "工具覆盖",
+        toolOverridesButton: "工具覆盖",
+        toolApprovalMode: "审批模式",
+        skillOverridesTitle: "技能覆盖",
+        skillOverridesButton: "技能覆盖",
+        skillLoadMode: "加载模式",
+      },
     title: 'YOLO 设置',
     tabs: {
       models: '模型',
