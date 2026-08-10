@@ -32,7 +32,7 @@ import type { JSX as ReactJSX } from 'react/jsx-runtime'
 
 import { PROVIDER_PRESET_INFO } from '../../../../../constants'
 import { useApp } from '../../../../../contexts/app-context'
-import { isReadablePath } from '../../../../../core/agent/workspaceScope'
+import { isMentionableInWorkspaceScope } from '../../../../../utils/chat/workspaceMentionScope'
 import { toDisplayPath } from '../../../../../core/paths/displayPath'
 import { useLanguage } from '../../../../../contexts/language-context'
 import { useSettings } from '../../../../../contexts/settings-context'
@@ -471,26 +471,8 @@ export default function NewMentionsPlugin({
   const workspaceRoot = workspaceAccessPolicy?.workspaceRoot ?? ''
 
   const isMentionableInScope = useCallback(
-    (mentionable: Mentionable): boolean => {
-      if (!workspaceAccessPolicy?.enabled) return true
-      if (mentionable.type === 'file') {
-        return isReadablePath(mentionable.file.path, workspaceAccessPolicy)
-      }
-      if (mentionable.type === 'folder') {
-        if (isReadablePath(mentionable.folder.path, workspaceAccessPolicy)) {
-          return true
-        }
-        return [
-          workspaceAccessPolicy.workspaceRoot,
-          ...workspaceAccessPolicy.readExtraIncludes,
-        ].some((includePath) => {
-          const include = includePath.replace(/^\/+|\/+$/g, '')
-          const folder = mentionable.folder.path.replace(/^\/+|\/+$/g, '')
-          return include !== '' && include.startsWith(folder + '/')
-        })
-      }
-      return true
-    },
+    (mentionable: Mentionable): boolean =>
+      isMentionableInWorkspaceScope(mentionable, workspaceAccessPolicy),
     [workspaceAccessPolicy],
   )
 

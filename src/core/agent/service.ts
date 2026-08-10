@@ -2095,10 +2095,13 @@ export class AgentService {
     let fileChangesPromise: Promise<AgentFileChange[]> | null = null
     const finishFileChangeTracking = (): Promise<AgentFileChange[]> => {
       if (fileChangesPromise) return fileChangesPromise
-      fileChangesPromise =
+      // Git-diff enrichment may fail (e.g. vault without a git repo); a
+      // tracking failure must never break the run itself.
+      fileChangesPromise = (
         fileChangeRunToken && this.options.fileChangeTracker
           ? this.options.fileChangeTracker.finishRun(fileChangeRunToken)
           : Promise.resolve([])
+      ).catch(() => [])
       return fileChangesPromise
     }
 
