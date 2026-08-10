@@ -10,15 +10,11 @@ const homePolicy: WorkspaceAccessPolicy = {
   writeExcludes: [],
 }
 
-const fileMention = (path: string) => ({
-  type: 'file' as const,
-  file: { path },
-})
+const fileMention = (path: string) =>
+  ({ type: 'file', file: { path } }) as never
 
-const folderMention = (path: string) => ({
-  type: 'folder' as const,
-  folder: { path },
-})
+const folderMention = (path: string) =>
+  ({ type: 'folder', folder: { path } }) as never
 
 describe('isMentionableInWorkspaceScope', () => {
   it('shows everything when no policy is enabled', () => {
