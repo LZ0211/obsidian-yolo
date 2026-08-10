@@ -5,6 +5,7 @@ import { App, TFile } from 'obsidian'
 
 import { IndexProgress } from '../../../components/chat-view/QueryProgress'
 import { getYoloBaseDir } from '../../../core/paths/yoloPaths'
+import { splitMarkdownIntoChunks } from '../../../core/rag/markdownChunkSplitter'
 import {
   RagIndexFailureKind,
   RagIndexIncompleteError,
@@ -43,6 +44,10 @@ const PDF_PAGE_CHUNK_CHAR_THRESHOLD = 1500
 type YoloSettingsLike = {
   yolo?: {
     baseDir?: string
+  }
+  ragOptions?: {
+    chunkSize?: number
+    chunkOverlap?: number
   }
 }
 
@@ -348,6 +353,7 @@ export class VectorManager {
             config.chunkSize,
             signal,
             config.settings ?? null,
+            config.settings?.ragOptions?.chunkOverlap ?? 0,
           )
           desired.push(...fileChunks)
           folderProgress[folder].completedFiles += 1
@@ -546,6 +552,7 @@ export class VectorManager {
     chunkSize: number,
     signal?: AbortSignal,
     settings?: YoloSettingsLike | null,
+    chunkOverlap = 0,
   ): Promise<DesiredChunk[]> {
     if (file.extension?.toLowerCase() === 'pdf') {
       return this.chunkifyPdf(file, chunkSize, signal, settings)
@@ -553,17 +560,22 @@ export class VectorManager {
 
     const fileContent = await this.app.vault.cachedRead(file)
     const sanitized = fileContent.split('\u0000').join('')
-    const docs = await textSplitter.createDocuments([sanitized])
+    const splits = await splitMarkdownIntoChunks(
+      sanitized,
+      chunkSize,
+      chunkOverlap,
+    )
 
     const chunks: DesiredChunk[] = []
-    for (const doc of docs) {
-      const startLine = doc.metadata.loc.lines.from as number
-      const endLine = doc.metadata.loc.lines.to as number
-      const meta: VectorMetaData = { startLine, endLine }
-      const contentHash = await sha256HexPrefix16(doc.pageContent)
+    for (const split of splits) {
+      const meta: VectorMetaData = {
+        startLine: split.startLine,
+        endLine: split.endLine,
+      }
+      const contentHash = await sha256HexPrefix16(split.content)
       chunks.push({
         path: file.path,
-        content: doc.pageContent,
+        content: split.content,
         contentHash,
         metadata: meta,
         mtime: file.stat.mtime,

@@ -40,6 +40,10 @@ export type YoloSettingsLike = {
   yolo?: {
     baseDir?: string
   }
+  ragOptions?: {
+    chunkSize?: number
+    chunkOverlap?: number
+  }
 }
 
 type TextTransform = (
