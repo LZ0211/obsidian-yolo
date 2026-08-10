@@ -1,4 +1,5 @@
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { findUnifiedAgentById, getUnifiedAgentList } from '../../../core/agent/workspaceAgentResolver'
 import { SerializedEditorState } from 'lexical'
 import { FilePlus2 } from 'lucide-react'
 import { Notice } from 'obsidian'
@@ -290,7 +291,7 @@ const ChatUserInput = forwardRef<ChatUserInputRef, ChatUserInputProps>(
     const loadedSkillEntries = useLiteSkillEntries(app, { settings })
     const allSkillEntries = quickAccessSkillEntries ?? loadedSkillEntries
     const availableAssistants = useMemo(
-      () => settings.assistants || [],
+      () => getUnifiedAgentList(settings),
       [settings.assistants],
     )
     const availableSkills = useMemo(() => {

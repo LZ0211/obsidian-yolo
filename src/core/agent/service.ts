@@ -2211,8 +2211,13 @@ export class AgentService {
       const aborted =
         input.abortSignal?.aborted ||
         (error instanceof Error && error.name === 'AbortError')
+      const trackedFileChanges = await finishFileChangeTracking()
       currentRunEntry.state = {
         ...currentRunEntry.state,
+        messages: this.attachFileChangesToLatestAssistant(
+          currentRunEntry.state.messages,
+          trackedFileChanges,
+        ),
         status: aborted ? 'aborted' : 'error',
         pendingCompactionAnchorMessageId: null,
         errorMessage: aborted ? undefined : formatErrorMessageWithCauses(error),

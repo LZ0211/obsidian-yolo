@@ -97,7 +97,9 @@ export const zh: TranslationKeys = {
       confirmDelete: '再次点击确认删除',
     },
     chat: {
-      exportSuccess: '已导出聊天记录到 {path}',
+            fileChanges: "工作区变更（{count}）",
+      fileChangeBinary: "二进制",
+    exportSuccess: '已导出聊天记录到 {path}',
       exportError: '导出失败',
     },
     composer: {

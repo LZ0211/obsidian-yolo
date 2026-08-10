@@ -106,6 +106,8 @@ export type TranslationKeys = {
       confirmDelete?: string
     }
     chat?: {
+      fileChanges?: string
+      fileChangeBinary?: string
       exportSuccess?: string
       exportError?: string
     }

@@ -97,7 +97,9 @@ export const en: TranslationKeys = {
       confirmDelete: 'Click again to delete',
     },
     chat: {
-      exportSuccess: 'Exported chat to {path}',
+            fileChanges: "Workspace changes ({count})",
+      fileChangeBinary: "Binary",
+    exportSuccess: 'Exported chat to {path}',
       exportError: 'Could not export conversation',
     },
     composer: {

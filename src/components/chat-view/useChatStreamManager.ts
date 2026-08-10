@@ -1,4 +1,5 @@
 import { UseMutationResult, useMutation } from '@tanstack/react-query'
+import { findUnifiedAgentById, getUnifiedAgentList } from '../../core/agent/workspaceAgentResolver'
 import { Platform, TFile } from 'obsidian'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
@@ -499,9 +500,7 @@ export function useChatStreamManager({
       const effectiveAssistantId =
         assistantIdOverride ?? settings.currentAssistantId
       const selectedAssistant = effectiveAssistantId
-        ? (settings.assistants || []).find(
-            (assistant) => assistant.id === effectiveAssistantId,
-          ) || null
+        ? findUnifiedAgentById(settings, effectiveAssistantId) || null
         : null
       const requestedModelId =
         modelId || selectedAssistant?.modelId || settings.chatModelId
@@ -732,9 +731,7 @@ export function useChatStreamManager({
         const effectiveAssistantId =
           assistantIdOverride ?? settings.currentAssistantId
         const selectedAssistant = effectiveAssistantId
-          ? (settings.assistants || []).find(
-              (assistant) => assistant.id === effectiveAssistantId,
-            ) || null
+          ? findUnifiedAgentById(settings, effectiveAssistantId) || null
           : null
 
         const requestedModelId =
@@ -1063,9 +1060,7 @@ export function useChatStreamManager({
       const effectiveAssistantId =
         assistantIdOverride ?? settings.currentAssistantId
       const selectedAssistant = effectiveAssistantId
-        ? (settings.assistants || []).find(
-            (assistant) => assistant.id === effectiveAssistantId,
-          ) || null
+        ? findUnifiedAgentById(settings, effectiveAssistantId) || null
         : null
       const requestedModelId =
         modelId || selectedAssistant?.modelId || settings.chatModelId

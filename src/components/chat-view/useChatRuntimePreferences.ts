@@ -12,6 +12,7 @@ import { v4 as uuidv4 } from 'uuid'
 
 import { resolveAssistantModelId } from '../../core/agent/assistant-model'
 import { DEFAULT_ASSISTANT_ID } from '../../core/agent/default-assistant'
+import { findUnifiedAgentById, getUnifiedAgentList } from '../../core/agent/workspaceAgentResolver'
 import {
   type ChatRuntimeId,
   type CliChatMode,
@@ -179,7 +180,7 @@ export function useChatRuntimePreferences({
 
   useEffect(() => {
     if (
-      settings.assistants.some(
+      getUnifiedAgentList(settings).some(
         (assistant) => assistant.id === conversationAssistantId,
       )
     ) {
@@ -187,7 +188,7 @@ export function useChatRuntimePreferences({
     }
     const fallbackAssistantId =
       settings.currentAssistantId ??
-      settings.assistants[0]?.id ??
+      getUnifiedAgentList(settings)[0]?.id ??
       DEFAULT_ASSISTANT_ID
     setConversationAssistantId(fallbackAssistantId)
     conversationAssistantIdRef.current.set(
@@ -360,9 +361,7 @@ export function useChatRuntimePreferences({
       setConversationAssistantId(assistantId)
       conversationAssistantIdRef.current.set(currentConversationId, assistantId)
       void persistPreferredAssistantId(assistantId)
-      const assistant = settings.assistants.find(
-        (item) => item.id === assistantId,
-      )
+      const assistant = findUnifiedAgentById(settings, assistantId)
       applyAssistantDefaultModel(
         resolveAssistantModelId(assistant?.modelId, settings.chatModelId),
       )

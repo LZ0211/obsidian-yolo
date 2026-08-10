@@ -1,4 +1,5 @@
 import { Notice } from 'obsidian'
+import { findUnifiedAgentById, getUnifiedAgentList } from '../../core/agent/workspaceAgentResolver'
 import {
   Dispatch,
   MutableRefObject,
@@ -701,12 +702,10 @@ export function useYoloChatSession({
           conversation.assistantId ??
           conversationAssistantIdRef.current.get(conversationId) ??
           settings.currentAssistantId ??
-          settings.assistants[0]?.id ??
+          getUnifiedAgentList(settings)[0]?.id ??
           DEFAULT_ASSISTANT_ID
         const loadedAssistantModelId =
-          settings.assistants.find(
-            (assistant) => assistant.id === loadedAssistantId,
-          )?.modelId ?? null
+          findUnifiedAgentById(settings, loadedAssistantId)?.modelId ?? null
         setConversationAssistantId(loadedAssistantId)
         conversationAssistantIdRef.current.set(
           conversationId,
