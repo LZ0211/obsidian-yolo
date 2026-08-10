@@ -141,6 +141,8 @@ export type ChatAssistantMessage = {
     branchRunStatus?: 'idle' | 'running' | 'completed' | 'aborted' | 'error'
     branchWaitingApproval?: boolean
     sources?: CitationSource[]
+    /** Run-level file changes (workspace-scoped, git-diff enriched). */
+    fileChanges?: AgentFileChange[]
     /** CLI child activity owner; omitted for foreground assistant messages. */
     cliSubagentParentCallId?: string
   }

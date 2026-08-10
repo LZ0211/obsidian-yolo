@@ -42,6 +42,7 @@ import AssistantMessageAnnotations from './AssistantMessageAnnotations'
 import AssistantMessageContent from './AssistantMessageContent'
 import AssistantMessageReasoning from './AssistantMessageReasoning'
 import AssistantMessageSources from './AssistantMessageSources'
+import AssistantMessageFileChanges from './AssistantMessageFileChanges'
 import AssistantToolMessageGroupActions from './AssistantToolMessageGroupActions'
 import LLMResponseInlineInfo from './LLMResponseInlineInfo'
 import { isReasoningActivityActive } from './reasoningActivity'
@@ -1175,6 +1176,12 @@ function AssistantToolMessageGroupItem({
                       message.metadata.sources.length > 0 && (
                         <AssistantMessageSources
                           sources={message.metadata.sources}
+                        />
+                      )}
+                    {message.metadata?.fileChanges &&
+                      message.metadata.fileChanges.length > 0 && (
+                        <AssistantMessageFileChanges
+                          fileChanges={message.metadata.fileChanges}
                         />
                       )}
                     {message.metadata?.generationState === 'error' &&

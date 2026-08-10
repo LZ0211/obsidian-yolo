@@ -1983,6 +1983,31 @@ export class AgentService {
     return messages
   }
 
+  private attachFileChangesToLatestAssistant(
+    messages: ChatMessage[],
+    fileChanges: AgentFileChange[],
+  ): ChatMessage[] {
+    if (fileChanges.length === 0) {
+      return messages
+    }
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]
+      if (message.role !== 'assistant') {
+        continue
+      }
+      const next = [...messages]
+      next[index] = {
+        ...message,
+        metadata: {
+          ...message.metadata,
+          fileChanges,
+        },
+      }
+      return next
+    }
+    return messages
+  }
+
   private findDebugTraceIdForToolCall(
     messages: ChatMessage[],
     toolCallId: string | undefined,
@@ -2067,11 +2092,14 @@ export class AgentService {
     const fileChangeRunToken = this.options.fileChangeTracker?.beginRun({
       workspaceAccessPolicy: input.workspaceAccessPolicy,
     })
+    let fileChangesPromise: Promise<AgentFileChange[]> | null = null
     const finishFileChangeTracking = (): Promise<AgentFileChange[]> => {
-      if (!fileChangeRunToken || !this.options.fileChangeTracker) {
-        return Promise.resolve([])
-      }
-      return this.options.fileChangeTracker.finishRun(fileChangeRunToken)
+      if (fileChangesPromise) return fileChangesPromise
+      fileChangesPromise =
+        fileChangeRunToken && this.options.fileChangeTracker
+          ? this.options.fileChangeTracker.finishRun(fileChangeRunToken)
+          : Promise.resolve([])
+      return fileChangesPromise
     }
 
     const runtimeInput: AgentRuntimeRunInput = {
@@ -2153,15 +2181,19 @@ export class AgentService {
     const backgroundExecutionReleasePromise = acquireBackgroundExecution()
     try {
       await runtime.run(runtimeInput)
+      const trackedFileChanges = await finishFileChangeTracking()
 
       const currentRunEntry = this.runEntriesByKey.get(runKey)
       if (!currentRunEntry || currentRunEntry.runToken !== runToken) {
         return
       }
 
-      const nextMessages = this.attachSourcesToLatestAssistant(
-        currentRunEntry.state.messages,
-        citationRegistry,
+      const nextMessages = this.attachFileChangesToLatestAssistant(
+        this.attachSourcesToLatestAssistant(
+          currentRunEntry.state.messages,
+          citationRegistry,
+        ),
+        trackedFileChanges,
       )
 
       currentRunEntry.state = {
