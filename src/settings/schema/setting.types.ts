@@ -369,6 +369,113 @@ export type WorkspaceAgent = z.infer<typeof workspaceAgentSchema>
  * Settings
  */
 
+// platform instance is one record in `platforms[]`; the same platformType
+// can appear multiple times (e.g. two Telegram bots), disambiguated by `id`.
+const botPlatformBaseSchema = z.object({
+  id: z.string(),
+  name: z.string().catch(''),
+  enabled: z.boolean().catch(false),
+  allowedUsers: resilientArraySchema(z.string()).catch([]),
+  allowedGroups: resilientArraySchema(z.string()).catch([]),
+  whitelistEnabled: z.boolean().catch(true),
+  // Falls back to DEFAULT_ASSISTANT_ID at runtime when unset.
+  assistantId: z.string().optional(),
+})
+
+export const botPlatformTelegramSchema = botPlatformBaseSchema.extend({
+  platformType: z.literal('telegram'),
+  botToken: z.string().catch(''),
+  allowedUsers: resilientArraySchema(z.string()).catch([]),
+  allowedGroups: resilientArraySchema(z.string()).catch([]),
+  whitelistEnabled: z.boolean().catch(true),
+  startupUpdatePolicy: z.enum(['skip', 'consume']).catch('skip'),
+  pollingIntervalMs: z.number().int().min(1000).catch(3000),
+})
+export type BotPlatformTelegramConfig = z.infer<
+  typeof botPlatformTelegramSchema
+>
+
+// WeChat personal-account ClawBot/iLink protocol. botToken/baseUrl/botId/
+// loginTime are written by the QR login flow (Settings UI); new instances
+// start with these unset. Private chat only, no groups.
+export const botPlatformWeixinSchema = botPlatformBaseSchema.extend({
+  platformType: z.literal('weixin_oc'),
+  botToken: z.string().optional(),
+  baseUrl: z.string().catch('https://ilinkai.weixin.qq.com'),
+  botId: z.string().optional(),
+  loginTime: z.number().optional(),
+  allowedUsers: resilientArraySchema(z.string()).catch([]),
+  allowedGroups: resilientArraySchema(z.string()).catch([]),
+  whitelistEnabled: z.boolean().catch(true),
+  pollTimeoutMs: z.number().int().catch(40_000),
+})
+export type BotPlatformWeixinConfig = z.infer<typeof botPlatformWeixinSchema>
+
+export const botPlatformDingtalkSchema = botPlatformBaseSchema.extend({
+  platformType: z.literal('dingtalk'),
+  robotCode: z.string().catch(''),
+  clientId: z.string().catch(''),
+  clientSecret: z.string().catch(''),
+  streamMode: z.boolean().catch(true),
+})
+export type BotPlatformDingtalkConfig = z.infer<
+  typeof botPlatformDingtalkSchema
+>
+
+export const botPlatformFeishuSchema = botPlatformBaseSchema.extend({
+  platformType: z.literal('feishu'),
+  appId: z.string().catch(''),
+  appSecret: z.string().catch(''),
+})
+export type BotPlatformFeishuConfig = z.infer<typeof botPlatformFeishuSchema>
+
+export const botPlatformQqOfficialSchema = botPlatformBaseSchema.extend({
+  platformType: z.literal('qq_official'),
+  appId: z.string().catch(''),
+  appSecret: z.string().catch(''),
+  enableC2c: z.boolean().catch(true),
+  enableGroup: z.boolean().catch(true),
+  enableGuild: z.boolean().catch(true),
+})
+export type BotPlatformQqOfficialConfig = z.infer<
+  typeof botPlatformQqOfficialSchema
+>
+
+export const botPlatformConfigSchema = z.discriminatedUnion('platformType', [
+  botPlatformTelegramSchema,
+  botPlatformWeixinSchema,
+  botPlatformDingtalkSchema,
+  botPlatformFeishuSchema,
+  botPlatformQqOfficialSchema,
+])
+export type BotPlatformConfig = z.infer<typeof botPlatformConfigSchema>
+
+export const sessionMappingSchema = z.object({
+  sessionKey: z.string(),
+  platformName: z.string(),
+  chatType: z.enum(['private', 'group']),
+  platformChatId: z.string(),
+  threadId: z.string().optional(),
+  conversationId: z.string(),
+  conversationTitle: z.string().optional(),
+  createdAt: z.number(),
+  lastActiveAt: z.number(),
+  archivedAt: z.number().optional(),
+  disabled: z.boolean().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+})
+export type SessionMapping = z.infer<typeof sessionMappingSchema>
+
+export const botsSettingsSchema = z.object({
+  enabled: z.boolean().catch(false),
+  whitelistEnabled: z.boolean().catch(true),
+  groupChatEnabled: z.boolean().catch(false),
+  adminUsers: resilientArraySchema(z.string()).catch([]),
+  platforms: resilientArraySchema(botPlatformConfigSchema).catch([]),
+  sessionMappings: resilientArraySchema(sessionMappingSchema).catch([]),
+})
+export type BotsSettings = z.infer<typeof botsSettingsSchema>
+
 export const yoloSettingsSchema = z.object({
   // Version
   version: z.literal(SETTINGS_SCHEMA_VERSION).catch(SETTINGS_SCHEMA_VERSION),
@@ -755,6 +862,16 @@ export const yoloSettingsSchema = z.object({
 
   // Assistant list
   assistants: resilientArraySchema(assistantSchema),
+
+  // Bot platform instances
+  bots: botsSettingsSchema.catch({
+    enabled: false,
+    whitelistEnabled: true,
+    groupChatEnabled: false,
+    adminUsers: [],
+    platforms: [],
+    sessionMappings: [],
+  }),
 
   // Workspace agent instances (inherit an assistant template + override)
   workspaceAgents: resilientArraySchema(workspaceAgentSchema),

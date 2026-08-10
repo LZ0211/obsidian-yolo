@@ -185,6 +185,8 @@ import {
 import type { DatabaseManager } from './database/DatabaseManager'
 import { PGLiteAbortedException } from './database/exception'
 import { ChatManager } from './database/json/chat/ChatManager'
+import type { BotService } from './core/bot/bot-service'
+import { deserializeChatMessage } from './hooks/useChatHistory'
 import { pruneImageCache } from './database/json/chat/imageCacheStore'
 import { prunePdfTextCache } from './database/json/chat/pdfTextCacheStore'
 import type {
@@ -316,6 +318,7 @@ export default class YoloPlugin extends Plugin {
   private learningModuleSettingsHandoff: (() => Promise<void>) | null = null
   private learningLegacyInstallMigration: (() => Promise<void>) | null = null
   private rawLearningLegacySettings: unknown = undefined
+  private botService: BotService | null = null
   private learningModuleSettingsHandoffReady = false
   private readonly managedModulePathChangeListeners = new Set<() => void>()
   private localMcpServer: LocalMcpServerRuntime | null = null
@@ -1270,6 +1273,46 @@ export default class YoloPlugin extends Plugin {
       })()
     }
     return this.agentServiceReady
+  }
+
+  private async startBotService(): Promise<void> {
+    if (!Platform.isDesktop) {
+      return
+    }
+    if (this.botService) {
+      return
+    }
+    const { BotService } = await import('./core/bot/bot-service')
+    const { createBotPlatformAdapterFactory } = await import(
+      './core/bot/platform-adapter-factory'
+    )
+    const chatManager = new ChatManager(this.app, this.settings)
+    const botService = new BotService({
+      app: this.app,
+      getSettings: () => this.settings,
+      saveSettings: async (settings) => {
+        await this.setSettings(settings)
+      },
+      registerSettingsListener: (listener: (settings: YoloSettings) => void) =>
+        this.addSettingsChangeListener(listener),
+      createConversation: async (title) => {
+        const chat = await chatManager.createChat({ title })
+        return chat.id
+      },
+      loadConversation: async (conversationId) => {
+        const chat = await chatManager.findById(conversationId)
+        if (!chat) return null
+        return chat.messages.map((message) =>
+          deserializeChatMessage(message, this.app),
+        )
+      },
+      createAdapter: createBotPlatformAdapterFactory(this.app),
+      getAgentService: () => this.getAgentService(),
+      getMcpManager: () => this.getMcpManager(),
+      notifyUser: (message) => new Notice(message),
+    })
+    this.botService = botService
+    await botService.initialize()
   }
 
   getAgentService(): AgentService {
@@ -2314,6 +2357,11 @@ export default class YoloPlugin extends Plugin {
       })
       .catch((error: unknown) => {
         console.error('[YOLO] Agent service warmup failed:', error)
+      })
+    void this.warmupAgentService()
+      .then(() => this.startBotService())
+      .catch((error: unknown) => {
+        console.error('[YOLO] Bot service startup failed:', error)
       })
     this.register(() => {
       shouldStartAgentNotifications = false

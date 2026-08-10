@@ -169,6 +169,7 @@ export const zh: TranslationKeys = {
       agent: 'Agent',
       modules: '模块',
       others: '其他',
+      bots: "Bot 平台",
     },
     supportYolo: {
       name: '支持 YOLO',

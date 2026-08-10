@@ -1,0 +1,758 @@
+// lodash.isequal ships CommonJS, so a plain default import resolves to
+// undefined under ts-jest (no esModuleInterop) even though it works fine
+// through esbuild's production bundling. Same workaround as
+// `useChatTimelineReadModel.test.ts`.
+jest.mock('lodash.isequal', () => {
+  const actual = jest.requireActual('lodash.isequal') as unknown
+  return { __esModule: true, default: actual }
+})
+
+jest.mock('./agent-runner', () => ({
+  runBotAgentTurn: jest.fn(),
+}))
+
+import type {
+  BotPlatformConfig,
+  BotPlatformTelegramConfig,
+  BotPlatformWeixinConfig,
+  BotsSettings,
+  YoloSettings,
+} from '../../settings/schema/setting.types'
+import type { AgentService } from '../agent/service'
+import type { ChatMessage } from '../../types/chat'
+import type { McpManager } from '../mcp/mcpManager'
+
+import { runBotAgentTurn } from './agent-runner'
+import { BotService } from './bot-service'
+import type { BotServiceDeps } from './bot-service'
+import { encodeSessionKey } from './types'
+import type { PlatformAdapter, PlatformMessageEvent } from './types'
+
+function makeTelegramConfig(
+  overrides: Partial<BotPlatformTelegramConfig> = {},
+): BotPlatformTelegramConfig {
+  return {
+    id: 'bot-1',
+    name: 'MyBot',
+    enabled: true,
+    platformType: 'telegram',
+    botToken: 'token',
+    allowedUsers: ['u1'],
+    allowedGroups: ['g1'],
+    whitelistEnabled: true,
+    startupUpdatePolicy: 'skip',
+    pollingIntervalMs: 3000,
+    ...overrides,
+  }
+}
+
+function makeWeixinConfig(
+  overrides: Partial<BotPlatformWeixinConfig> = {},
+): BotPlatformWeixinConfig {
+  return {
+    id: 'bot-1',
+    name: 'WeChat',
+    enabled: true,
+    platformType: 'weixin_oc',
+    botToken: 'token',
+    baseUrl: 'https://ilinkai.weixin.qq.com',
+    allowedUsers: ['u1'],
+    allowedGroups: [],
+    whitelistEnabled: true,
+    pollTimeoutMs: 40_000,
+    ...overrides,
+  }
+}
+
+function makeBotsSettings(overrides: Partial<BotsSettings> = {}): BotsSettings {
+  return {
+    enabled: true,
+    whitelistEnabled: true,
+    groupChatEnabled: true,
+    adminUsers: ['admin1'],
+    platforms: [makeTelegramConfig()],
+    sessionMappings: [],
+    ...overrides,
+  }
+}
+
+function makeFakeAdapter(): PlatformAdapter & {
+  start: jest.Mock
+  stop: jest.Mock
+  sendMessage: jest.Mock
+  downloadFile: jest.Mock
+  onMessage: jest.Mock
+  onError: jest.Mock
+} {
+  return {
+    meta: {
+      name: 'telegram',
+      displayName: 'Telegram',
+      description: '',
+      version: '1.0.0',
+    },
+    capabilities: {
+      markdownMode: 'none',
+      supportsImage: true,
+      supportsFile: true,
+      supportsStreaming: false,
+      maxMessageLength: 4096,
+      maxImageSize: 1,
+      maxFileSize: 1,
+    },
+    start: jest.fn().mockResolvedValue(undefined),
+    stop: jest.fn().mockResolvedValue(undefined),
+    health: jest.fn().mockReturnValue('running'),
+    sendMessage: jest.fn().mockResolvedValue([]),
+    sendStreamingMessage: jest.fn(),
+    downloadFile: jest.fn(),
+    onMessage: jest.fn().mockReturnValue(jest.fn()),
+    onError: jest.fn().mockReturnValue(jest.fn()),
+  }
+}
+
+function makeHarness(botsSettingsOverrides: Partial<BotsSettings> = {}) {
+  let settings: YoloSettings = {
+    bots: makeBotsSettings(botsSettingsOverrides),
+  } as unknown as YoloSettings
+
+  const getSettings = jest.fn(() => settings)
+  const saveSettings = jest.fn(async (next: YoloSettings) => {
+    settings = next
+  })
+  const settingsListeners: Array<(settings: YoloSettings) => void> = []
+  const registerSettingsListener = jest.fn(
+    (listener: (settings: YoloSettings) => void) => {
+      settingsListeners.push(listener)
+      return () => {
+        const index = settingsListeners.indexOf(listener)
+        if (index !== -1) settingsListeners.splice(index, 1)
+      }
+    },
+  )
+
+  const conversations = new Map<string, readonly ChatMessage[]>()
+  let nextConversationId = 1
+  const createChat = jest.fn(
+    async (initial: { id?: string; title?: string }) => {
+      const conversationId = initial.id ?? `conv-${nextConversationId++}`
+      conversations.set(conversationId, [])
+      return conversationId
+    },
+  )
+  const findById = jest.fn(async (id: string) => conversations.get(id) ?? null)
+  const conversationGateway = {
+    dispatch: jest.fn((command: { type: string; conversationId: string; title?: { kind?: string; value?: string }; commandId?: string }) => {
+      if (command.type !== 'create_conversation') {
+        throw new Error(`unexpected bot command: ${command.type}`)
+      }
+      const title =
+        command.title?.kind === 'named' ? command.title.value : 'New chat'
+      const settled = createChat({
+        id: command.conversationId,
+        title,
+      }).then(() => ({
+        status: 'accepted' as const,
+        sequence: 1,
+        value: { conversationId: command.conversationId },
+      }))
+      return { commandId: command.commandId, settled }
+    }),
+  } as unknown as { dispatch: (command: unknown) => { settled: Promise<{ status: string }> } }
+
+  const adaptersByPlatformId = new Map<
+    string,
+    ReturnType<typeof makeFakeAdapter>
+  >()
+  const createAdapter = jest.fn((config: BotPlatformConfig) => {
+    const adapter = makeFakeAdapter()
+    adaptersByPlatformId.set(config.id, adapter)
+    return adapter
+  })
+
+  const getAgentService = jest.fn(() => ({}) as unknown as AgentService)
+  const getMcpManager = jest.fn(async () => ({}) as unknown as McpManager)
+  const notifyUser = jest.fn()
+  const vault = {
+    createBinary: jest.fn().mockResolvedValue({}),
+    createFolder: jest.fn().mockResolvedValue({}),
+    getAbstractFileByPath: jest.fn(),
+  }
+  const app = { vault } as unknown as BotServiceDeps['app']
+
+  const deps: BotServiceDeps = {
+    app,
+    getSettings,
+    saveSettings,
+    registerSettingsListener,
+    createConversation: (title: string) =>
+      conversationGateway.dispatch({
+        type: 'create_conversation',
+        conversationId: 'ignored',
+        title: { kind: 'named', value: title },
+      } as never).settled.then((r: { status: string }) =>
+        r.status === 'accepted' || r.status === 'already_applied'
+          ? `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+          : Promise.reject(new Error('create failed')),
+      ),
+    loadConversation: findById,
+    createAdapter,
+    getAgentService,
+    getMcpManager,
+    notifyUser,
+  }
+
+  const service = new BotService(deps)
+
+  return {
+    service,
+    getSettings,
+    saveSettings,
+    registerSettingsListener,
+    triggerSettingsChange: (next: YoloSettings) => {
+      settings = next
+      settingsListeners.forEach((listener) => listener(next))
+    },
+    createChat,
+    findById,
+    conversationGateway,
+    createAdapter,
+    adaptersByPlatformId,
+    notifyUser,
+    app,
+    vault,
+    getCurrentSettings: () => settings,
+  }
+}
+
+function makeEvent(
+  overrides: Partial<PlatformMessageEvent> = {},
+): PlatformMessageEvent {
+  return {
+    platformName: 'telegram',
+    messageId: 'm1',
+    sessionKey: encodeSessionKey('telegram', 'private', 'u1'),
+    chatType: 'private',
+    senderId: 'u1',
+    senderName: 'User One',
+    message: {
+      components: [{ type: 'text', text: 'hello' }],
+      plainText: 'hello',
+      rawMessage: {},
+      timestamp: 0,
+    },
+    ...overrides,
+  }
+}
+
+describe('BotService lifecycle', () => {
+  it('initialize() starts adapters for enabled platforms when bots.enabled', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    expect(h.createAdapter).toHaveBeenCalledTimes(1)
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+    expect(adapter.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('initialize() does not start any adapter when bots.enabled is false', async () => {
+    const h = makeHarness({ enabled: false })
+    await h.service.initialize()
+    expect(h.createAdapter).not.toHaveBeenCalled()
+  })
+
+  it('cleanup() stops every running adapter and unsubscribes from settings', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+    await h.service.cleanup()
+    expect(adapter.stop).toHaveBeenCalledTimes(1)
+    expect(adapter.onMessage.mock.results[0]?.value).toHaveBeenCalledTimes(1)
+    expect(adapter.onError.mock.results[0]?.value).toHaveBeenCalledTimes(1)
+  })
+
+  it('cleanup() is idempotent and does not restart adapters', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+
+    await Promise.all([h.service.cleanup(), h.service.cleanup()])
+
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+    expect(adapter.stop).toHaveBeenCalledTimes(1)
+    expect(h.createAdapter).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not start queued turns after cleanup aborts the service', async () => {
+    let releaseFirstTurn!: () => void
+    const firstTurnBlocked = new Promise<void>((resolve) => {
+      releaseFirstTurn = resolve
+    })
+    const runTurn = jest.mocked(runBotAgentTurn)
+    runTurn.mockImplementationOnce(async () => firstTurnBlocked)
+
+    const h = makeHarness()
+    await h.service.initialize()
+
+    await h.service.handleIncoming(
+      makeEvent({ messageId: 'cleanup-first' }),
+      makeTelegramConfig(),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(runTurn).toHaveBeenCalledTimes(1)
+
+    await h.service.handleIncoming(
+      makeEvent({ messageId: 'cleanup-second' }),
+      makeTelegramConfig(),
+    )
+
+    const cleanup = h.service.cleanup()
+    releaseFirstTurn()
+    await cleanup
+
+    expect(runTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it('onSettingsChanged starts a newly added platform', async () => {
+    const h = makeHarness({ platforms: [] })
+    await h.service.initialize()
+    expect(h.createAdapter).not.toHaveBeenCalled()
+
+    await h.service.onSettingsChanged(
+      h.getCurrentSettings().bots,
+      makeBotsSettings(),
+    )
+    expect(h.createAdapter).toHaveBeenCalledTimes(1)
+  })
+
+  it('onSettingsChanged stops a removed platform', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+
+    await h.service.onSettingsChanged(
+      h.getCurrentSettings().bots,
+      makeBotsSettings({ platforms: [] }),
+    )
+    expect(adapter.stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('onSettingsChanged restarts a platform whose config changed', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const firstAdapter = h.adaptersByPlatformId.get('bot-1')!
+
+    const changedConfig = makeTelegramConfig({ botToken: 'new-token' })
+    await h.service.onSettingsChanged(
+      h.getCurrentSettings().bots,
+      makeBotsSettings({ platforms: [changedConfig] }),
+    )
+    expect(firstAdapter.stop).toHaveBeenCalledTimes(1)
+    expect(h.createAdapter).toHaveBeenCalledTimes(2)
+  })
+
+  it('onSettingsChanged does not restart a platform whose config is unchanged', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+
+    await h.service.onSettingsChanged(
+      h.getCurrentSettings().bots,
+      makeBotsSettings(),
+    )
+    expect(adapter.stop).not.toHaveBeenCalled()
+    expect(h.createAdapter).toHaveBeenCalledTimes(1)
+  })
+
+  it('onSettingsChanged stops everything when bots.enabled flips to false', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+
+    await h.service.onSettingsChanged(
+      h.getCurrentSettings().bots,
+      makeBotsSettings({ enabled: false }),
+    )
+    expect(adapter.stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('a settings listener registered by initialize() drives onSettingsChanged', async () => {
+    const h = makeHarness({ platforms: [] })
+    await h.service.initialize()
+    expect(h.createAdapter).not.toHaveBeenCalled()
+
+    h.triggerSettingsChange({
+      bots: makeBotsSettings(),
+    } as unknown as YoloSettings)
+    // onSettingsChanged runs asynchronously off the listener; flush microtasks.
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(h.createAdapter).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses the previous settings snapshot when the settings listener fires', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+
+    h.triggerSettingsChange({
+      bots: makeBotsSettings({ platforms: [] }),
+    } as unknown as YoloSettings)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(adapter.stop).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('BotService.handleIncoming', () => {
+  it('keeps the adapter-provided filename extension for non-file attachments', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+    const os = await import('node:os')
+    const path = await import('node:path')
+    const fs = await import('node:fs/promises')
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yolo-bot-test-'))
+    const tempPath = path.join(tempDir, 'source.png')
+    await fs.writeFile(tempPath, Buffer.from('x'))
+    adapter.downloadFile.mockResolvedValueOnce({
+      fileName: 'received.png',
+      mimeType: 'image/png',
+      size: 1,
+      tempPath,
+    })
+
+    await h.service.handleIncoming(
+      makeEvent({
+        messageId: 'm-image',
+        message: {
+          components: [{ type: 'image', mimeType: 'image/png' }],
+          plainText: '',
+          rawMessage: {},
+          timestamp: 0,
+        },
+      }),
+      makeTelegramConfig(),
+    )
+
+    expect(h.vault.createBinary).toHaveBeenCalledWith(
+      expect.stringMatching(/m-image-0-received\.png$/),
+      Buffer.from('x'),
+    )
+    await expect(fs.stat(tempPath)).rejects.toThrow()
+    await fs.rm(tempDir, { recursive: true, force: true })
+  })
+
+  it('ignores events marked isFromBot', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    await h.service.handleIncoming(
+      makeEvent({ isFromBot: true }),
+      makeTelegramConfig(),
+    )
+    expect(h.createChat).not.toHaveBeenCalled()
+  })
+
+  it('drops events with a malformed sessionKey without throwing', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    await expect(
+      h.service.handleIncoming(
+        makeEvent({ sessionKey: 'bad' }),
+        makeTelegramConfig(),
+      ),
+    ).resolves.toBeUndefined()
+    expect(h.createChat).not.toHaveBeenCalled()
+    spy.mockRestore()
+  })
+
+  it('dedupes a repeated messageId (same platform/session/thread)', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const event = makeEvent()
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(h.createChat).toHaveBeenCalledTimes(1)
+
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(h.createChat).toHaveBeenCalledTimes(1) // not called again
+  })
+
+  it('denies an unauthorized sender (not whitelisted, not admin)', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const event = makeEvent({ senderId: 'stranger', messageId: 'm-denied' })
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(h.createChat).not.toHaveBeenCalled()
+  })
+
+  it('allows an admin even if not on the platform allowedUsers list', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const event = makeEvent({
+      senderId: 'admin1',
+      messageId: 'm-admin',
+      sessionKey: encodeSessionKey('telegram', 'private', 'admin1'),
+    })
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(h.createChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('allows everyone when whitelistEnabled is false', async () => {
+    const config = makeTelegramConfig({ whitelistEnabled: false })
+    const h = makeHarness({ platforms: [config] })
+    await h.service.initialize()
+    const event = makeEvent({ senderId: 'stranger', messageId: 'm-open' })
+    await h.service.handleIncoming(event, config)
+    expect(h.createChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('honors the global whitelist switch for every platform config', async () => {
+    const h = makeHarness({ whitelistEnabled: false })
+    await h.service.initialize()
+    const event = makeEvent({
+      senderId: 'stranger',
+      messageId: 'm-global-open',
+    })
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(h.createChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not run a disabled session mapping', async () => {
+    const h = makeHarness({
+      sessionMappings: [
+        {
+          sessionKey: encodeSessionKey('telegram', 'private', 'u1'),
+          platformName: 'telegram',
+          chatType: 'private',
+          platformChatId: 'u1',
+          conversationId: 'conv-disabled',
+          createdAt: 0,
+          lastActiveAt: 0,
+          disabled: true,
+        },
+      ],
+    })
+    await h.service.initialize()
+    await h.service.handleIncoming(
+      makeEvent({ messageId: 'm-disabled' }),
+      makeTelegramConfig(),
+    )
+    expect(h.createChat).not.toHaveBeenCalled()
+  })
+
+  it('creates a conversation + session mapping on first contact, then reuses it', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const event1 = makeEvent({ messageId: 'm1' })
+    await h.service.handleIncoming(event1, makeTelegramConfig())
+    expect(h.createChat).toHaveBeenCalledTimes(1)
+
+    const mapping = h.service
+      .getSessionMapper()
+      .getSessionByKey(event1.sessionKey)
+    expect(mapping?.conversationId).toEqual(expect.any(String))
+
+    const event2 = makeEvent({ messageId: 'm2' })
+    await h.service.handleIncoming(event2, makeTelegramConfig())
+    expect(h.createChat).toHaveBeenCalledTimes(1) // reused, not recreated
+  })
+
+  it('repairs a session mapping whose conversation no longer exists', async () => {
+    const sessionKey = encodeSessionKey('telegram', 'private', 'u1')
+    const h = makeHarness({
+      sessionMappings: [
+        {
+          sessionKey,
+          platformName: 'telegram',
+          chatType: 'private',
+          platformChatId: 'u1',
+          conversationId: 'conv-missing',
+          createdAt: 0,
+          lastActiveAt: 0,
+        },
+      ],
+    })
+    await h.service.initialize()
+
+    await h.service.handleIncoming(
+      makeEvent({ messageId: 'm-repair', sessionKey }),
+      makeTelegramConfig(),
+    )
+
+    expect(h.findById).toHaveBeenCalledWith('conv-missing')
+    expect(h.createChat).toHaveBeenCalledTimes(1)
+    expect(
+      h.service.getSessionMapper().getSessionByKey(sessionKey)?.conversationId,
+    ).toEqual(expect.any(String))
+  })
+
+  it('group chat: drops non-wake traffic even when groupChatEnabled', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const event = makeEvent({
+      chatType: 'group',
+      senderId: 'u1',
+      messageId: 'g1',
+      sessionKey: encodeSessionKey('telegram', 'group', 'g1'),
+    })
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(h.createChat).not.toHaveBeenCalled()
+  })
+
+  it('group chat: wakes on mentionedBotId', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const event = makeEvent({
+      chatType: 'group',
+      senderId: 'u1',
+      messageId: 'g2',
+      sessionKey: encodeSessionKey('telegram', 'group', 'g1'),
+      mentionedBotId: 'MyBot',
+    })
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(h.createChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('group chat: wakes when replying to a message the bot sent', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    h.service.getSentMessageRegistry().register({
+      platformMessageId: 'bot-msg-1',
+      sessionKey: encodeSessionKey('telegram', 'group', 'g1'),
+      sentAt: 0,
+    })
+    const event = makeEvent({
+      chatType: 'group',
+      senderId: 'u1',
+      messageId: 'g3',
+      sessionKey: encodeSessionKey('telegram', 'group', 'g1'),
+      message: {
+        components: [
+          { type: 'reply_to', messageId: 'bot-msg-1', preview: 'bot said hi' },
+          { type: 'text', text: 'thanks' },
+        ],
+        plainText: 'thanks',
+        rawMessage: {},
+        timestamp: 0,
+      },
+    })
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(h.createChat).toHaveBeenCalledTimes(1)
+  })
+
+  it("group chat: does not wake for other bots' targeted commands", async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const event = makeEvent({
+      chatType: 'group',
+      senderId: 'u1',
+      messageId: 'g4',
+      sessionKey: encodeSessionKey('telegram', 'group', 'g1'),
+      command: { name: 'help', targetBotId: 'SomeOtherBot' },
+    })
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(h.createChat).not.toHaveBeenCalled()
+  })
+
+  it('group chat: drops everything when groupChatEnabled is false', async () => {
+    const h = makeHarness({ groupChatEnabled: false })
+    await h.service.initialize()
+    const event = makeEvent({
+      chatType: 'group',
+      senderId: 'u1',
+      messageId: 'g5',
+      sessionKey: encodeSessionKey('telegram', 'group', 'g1'),
+      mentionedBotId: 'MyBot',
+    })
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(h.createChat).not.toHaveBeenCalled()
+  })
+
+  it('/help sends the help text without creating a conversation', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+    const event = makeEvent({ messageId: 'c1', command: { name: 'help' } })
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(adapter.sendMessage).toHaveBeenCalledWith(
+      event.sessionKey,
+      expect.objectContaining({
+        text: expect.stringContaining('Available commands'),
+      }),
+    )
+    expect(h.createChat).not.toHaveBeenCalled()
+  })
+
+  it('/status reports "no conversation" before first contact', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+    const event = makeEvent({ messageId: 'c2', command: { name: 'status' } })
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(adapter.sendMessage).toHaveBeenCalledWith(
+      event.sessionKey,
+      expect.objectContaining({
+        text: expect.stringContaining('No conversation bound'),
+      }),
+    )
+  })
+
+  it('/reset denies a non-admin sender', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+    const event = makeEvent({ messageId: 'c3', command: { name: 'reset' } })
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(adapter.sendMessage).toHaveBeenCalledWith(
+      event.sessionKey,
+      expect.objectContaining({
+        text: expect.stringContaining('not authorized'),
+      }),
+    )
+    expect(h.createChat).not.toHaveBeenCalled()
+  })
+
+  it('/reset creates a fresh conversation for an admin sender', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+    const sessionKey = encodeSessionKey('telegram', 'private', 'admin1')
+    const event = makeEvent({
+      messageId: 'c4',
+      senderId: 'admin1',
+      sessionKey,
+      command: { name: 'reset' },
+    })
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(h.createChat).toHaveBeenCalledTimes(1)
+    expect(adapter.sendMessage).toHaveBeenCalledWith(
+      sessionKey,
+      expect.objectContaining({ text: expect.stringContaining('reset') }),
+    )
+    expect(
+      h.service.getSessionMapper().getSessionByKey(sessionKey)?.conversationId,
+    ).toEqual(expect.any(String))
+  })
+})
+
+describe('BotService adapter diagnostics', () => {
+  it('notifies the user when WeChat reports an expired session', async () => {
+    const h = makeHarness({ platforms: [makeWeixinConfig()] })
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+    const onError = adapter.onError.mock.calls[0][0] as Parameters<
+      PlatformAdapter['onError']
+    >[0]
+
+    onError(
+      new Error('WeChat session expired; re-login (QR scan) required.'),
+      adapter,
+      { operation: 'receive', retryable: false },
+    )
+
+    expect(h.notifyUser).toHaveBeenCalledWith(
+      expect.stringContaining('WeChat bot login expired'),
+    )
+  })
+})

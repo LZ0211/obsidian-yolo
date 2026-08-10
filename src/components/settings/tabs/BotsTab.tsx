@@ -1,0 +1,398 @@
+import { App } from 'obsidian'
+import React from 'react'
+
+import { useLanguage } from '../../../contexts/language-context'
+import { useSettings } from '../../../contexts/settings-context'
+import YoloPlugin from '../../../main'
+import {
+  BotPlatformConfig,
+  BotsSettings,
+} from '../../../settings/schema/setting.types'
+import { ObsidianButton } from '../../common/ObsidianButton'
+import { ObsidianSetting } from '../../common/ObsidianSetting'
+import { ObsidianTextInput } from '../../common/ObsidianTextInput'
+import { ObsidianToggle } from '../../common/ObsidianToggle'
+import { ConfirmModal } from '../../modals/ConfirmModal'
+import { EditBotPlatformModal } from '../modals/BotPlatformFormModal'
+import { BotPlatformPickerModal } from '../modals/BotPlatformPickerModal'
+
+type BotsTabProps = {
+  app: App
+  plugin: YoloPlugin
+}
+
+const PLATFORM_BADGE_STYLE: Record<
+  BotPlatformConfig['platformType'],
+  { label: string; background: string; color: string }
+> = {
+  telegram: {
+    label: 'Telegram',
+    background: 'rgba(84,170,235,.13)',
+    color: '#54aaeb',
+  },
+  weixin_oc: {
+    label: 'WeChat',
+    background: 'rgba(7,193,96,.13)',
+    color: '#07c160',
+  },
+  dingtalk: {
+    label: 'DingTalk',
+    background: 'rgba(0,132,255,.13)',
+    color: '#0084ff',
+  },
+  feishu: {
+    label: 'Feishu',
+    background: 'rgba(51,112,255,.13)',
+    color: '#3370ff',
+  },
+  qq_official: {
+    label: 'QQ',
+    background: 'rgba(18,150,219,.13)',
+    color: '#1296db',
+  },
+}
+
+const describePlatform = (platform: BotPlatformConfig): string => {
+  switch (platform.platformType) {
+    case 'telegram':
+      return `${platform.botToken ? 'Token configured' : 'No token set'} · Whitelist ${
+        platform.whitelistEnabled ? 'on' : 'off'
+      }`
+    case 'weixin_oc':
+      return platform.botId
+        ? `Logged in as ${platform.botId}`
+        : 'Not logged in yet'
+    case 'dingtalk':
+      return `Robot code: ${platform.robotCode || '(unset)'}`
+    case 'feishu':
+      return `App ID: ${platform.appId || '(unset)'}`
+    default:
+      return ''
+  }
+}
+
+export function BotsTab({ app, plugin }: BotsTabProps) {
+  const { t } = useLanguage()
+  const { settings, setSettings } = useSettings()
+  const bots = settings.bots
+
+  const updateBots = (patch: Partial<BotsSettings>) => {
+    void setSettings({ ...settings, bots: { ...bots, ...patch } })
+  }
+
+  const updatePlatform = (id: string, patch: Partial<BotPlatformConfig>) => {
+    updateBots({
+      platforms: bots.platforms.map((platform) =>
+        platform.id === id
+          ? ({ ...platform, ...patch } as BotPlatformConfig)
+          : platform,
+      ),
+    })
+  }
+
+  const deletePlatform = (platform: BotPlatformConfig) => {
+    new ConfirmModal(app, {
+      title: t('settings.bots.deletePlatformTitle', 'Delete bot platform'),
+      message: t(
+        'settings.bots.deletePlatformMessage',
+        'Remove "{name}"? This cannot be undone.',
+      ).replace('{name}', platform.name || platform.platformType),
+      ctaText: t('common.delete', 'Delete'),
+      onConfirm: () => {
+        updateBots({
+          platforms: bots.platforms.filter((p) => p.id !== platform.id),
+        })
+      },
+    }).open()
+  }
+
+  const archiveMapping = (sessionKey: string, archive: boolean) => {
+    updateBots({
+      sessionMappings: bots.sessionMappings.map((mapping) =>
+        mapping.sessionKey === sessionKey
+          ? { ...mapping, archivedAt: archive ? Date.now() : undefined }
+          : mapping,
+      ),
+    })
+  }
+
+  return (
+    <div>
+      {/* ===== GLOBAL ===== */}
+      <div className="yolo-settings-section">
+        <section className="yolo-settings-block">
+          <div className="yolo-settings-block-head">
+            <div className="yolo-settings-block-head-title-row">
+              <div className="yolo-settings-sub-header yolo-settings-block-title">
+                {t('settings.bots.globalTitle', 'Global')}
+              </div>
+            </div>
+          </div>
+          <div className="yolo-settings-block-content">
+            <ObsidianSetting
+              name={t('settings.bots.enable', 'Enable Bot Platform')}
+              desc={t(
+                'settings.bots.enableDesc',
+                'Start or stop all configured bot platform connections',
+              )}
+            >
+              <ObsidianToggle
+                value={bots.enabled}
+                onChange={(value) => updateBots({ enabled: value })}
+              />
+            </ObsidianSetting>
+
+            <ObsidianSetting
+              name={t('settings.bots.whitelist', 'Enable Whitelist')}
+              desc={t(
+                'settings.bots.whitelistDesc',
+                'Only allow messages from users/groups explicitly permitted per platform',
+              )}
+            >
+              <ObsidianToggle
+                value={bots.whitelistEnabled}
+                onChange={(value) => updateBots({ whitelistEnabled: value })}
+              />
+            </ObsidianSetting>
+
+            <ObsidianSetting
+              name={t('settings.bots.groupChat', 'Enable Group Chat')}
+              desc={t(
+                'settings.bots.groupChatDesc',
+                'Allow bots to respond in group conversations (requires group in allowed list)',
+              )}
+            >
+              <ObsidianToggle
+                value={bots.groupChatEnabled}
+                onChange={(value) => updateBots({ groupChatEnabled: value })}
+              />
+            </ObsidianSetting>
+
+            <ObsidianSetting
+              name={t('settings.bots.adminUsers', 'Admin Users')}
+              desc={t(
+                'settings.bots.adminUsersDesc',
+                'Platform sender IDs who can run /reset and manage commands. Comma-separated.',
+              )}
+            >
+              <ObsidianTextInput
+                value={bots.adminUsers.join(', ')}
+                placeholder="123456789"
+                onChange={(value) =>
+                  updateBots({
+                    adminUsers: value
+                      .split(',')
+                      .map((s) => s.trim())
+                      .filter(Boolean),
+                  })
+                }
+              />
+            </ObsidianSetting>
+          </div>
+        </section>
+      </div>
+
+      {/* ===== PLATFORM LIST ===== */}
+      <div className="yolo-settings-section">
+        <section className="yolo-settings-block">
+          <div className="yolo-settings-block-head">
+            <div className="yolo-settings-block-head-title-row">
+              <div className="yolo-settings-sub-header yolo-settings-block-title">
+                {t('settings.bots.platformsTitle', 'Platforms')}
+              </div>
+              <div className="yolo-settings-desc yolo-settings-block-desc">
+                {t(
+                  'settings.bots.platformsDesc',
+                  'Manage bot platform connections. Each platform runs a separate adapter.',
+                )}
+              </div>
+            </div>
+            <div className="yolo-settings-block-action">
+              <ObsidianButton
+                cta
+                text={t('settings.bots.addPlatform', '+ Add Platform')}
+                onClick={() => new BotPlatformPickerModal(app, plugin).open()}
+              />
+            </div>
+          </div>
+
+          <div className="yolo-settings-block-content">
+            {bots.platforms.length === 0 && (
+              <div className="yolo-settings-desc">
+                {t(
+                  'settings.bots.noPlatforms',
+                  'No bot platforms configured yet.',
+                )}
+              </div>
+            )}
+            {bots.platforms.map((platform) => {
+              const badge = PLATFORM_BADGE_STYLE[platform.platformType]
+              return (
+                <div
+                  className="setting-item yolo-settings-card"
+                  key={platform.id}
+                >
+                  <div className="setting-item-info">
+                    <div
+                      className="setting-item-name"
+                      style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+                    >
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          width: 7,
+                          height: 7,
+                          borderRadius: '50%',
+                          background: platform.enabled
+                            ? 'var(--text-success)'
+                            : 'var(--text-muted)',
+                        }}
+                      />
+                      {platform.name || badge.label}
+                    </div>
+                    <div className="setting-item-description">
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 2,
+                          padding: '0 5px',
+                          borderRadius: 4,
+                          fontSize: 9,
+                          fontWeight: 600,
+                          textTransform: 'uppercase' as const,
+                          background: badge.background,
+                          color: badge.color,
+                          marginRight: 6,
+                        }}
+                      >
+                        {badge.label}
+                      </span>
+                      {describePlatform(platform)}
+                    </div>
+                  </div>
+                  <div className="setting-item-control yolo-item-control">
+                    <ObsidianButton
+                      text={t('common.edit', 'Edit')}
+                      onClick={() =>
+                        new EditBotPlatformModal(app, plugin, platform).open()
+                      }
+                    />
+                    <ObsidianButton
+                      text={
+                        platform.enabled
+                          ? t('settings.bots.stop', 'Stop')
+                          : t('settings.bots.start', 'Start')
+                      }
+                      onClick={() =>
+                        updatePlatform(platform.id, {
+                          enabled: !platform.enabled,
+                        })
+                      }
+                    />
+                    <ObsidianButton
+                      text={t('common.delete', 'Delete')}
+                      onClick={() => deletePlatform(platform)}
+                    />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      </div>
+
+      {/* ===== SESSIONS ===== */}
+      <div className="yolo-settings-section">
+        <section className="yolo-settings-block">
+          <div className="yolo-settings-block-head">
+            <div className="yolo-settings-block-head-title-row">
+              <div className="yolo-settings-sub-header yolo-settings-block-title">
+                {t('settings.bots.sessionsTitle', 'Sessions')}
+              </div>
+              <div className="yolo-settings-desc yolo-settings-block-desc">
+                {t(
+                  'settings.bots.sessionsDesc',
+                  'Bot session mappings to conversations',
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="yolo-settings-block-content">
+            {bots.sessionMappings.length === 0 && (
+              <div className="yolo-settings-desc">
+                {t('settings.bots.noSessions', 'No bot sessions yet.')}
+              </div>
+            )}
+            {bots.sessionMappings.map((mapping) => {
+              const isArchived = !!mapping.archivedAt
+              return (
+                <div
+                  className="setting-item yolo-settings-card"
+                  key={mapping.sessionKey}
+                >
+                  <div className="setting-item-info">
+                    <div
+                      className="setting-item-name"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        opacity: isArchived ? 0.55 : 1,
+                      }}
+                    >
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          width: 7,
+                          height: 7,
+                          borderRadius: '50%',
+                          background: isArchived
+                            ? 'var(--text-muted)'
+                            : 'var(--text-success)',
+                        }}
+                      />
+                      {mapping.sessionKey}
+                    </div>
+                    <div className="setting-item-description">
+                      → {mapping.conversationId}
+                      {mapping.conversationTitle
+                        ? ` · ${mapping.conversationTitle}`
+                        : ''}{' '}
+                      · {t('settings.bots.lastActive', 'Last active')}:{' '}
+                      {new Date(mapping.lastActiveAt).toLocaleString()}
+                      {isArchived
+                        ? ` (${t('settings.bots.archived', 'archived')})`
+                        : ''}
+                    </div>
+                  </div>
+                  <div className="setting-item-control yolo-item-control">
+                    <ObsidianButton
+                      text={t('settings.bots.openChat', 'Open Chat')}
+                      onClick={() =>
+                        void plugin.openChatView({
+                          initialConversationId: mapping.conversationId,
+                          placement: 'sidebar',
+                        })
+                      }
+                    />
+                    <ObsidianButton
+                      text={
+                        isArchived
+                          ? t('settings.bots.unarchive', 'Unarchive')
+                          : t('settings.bots.archive', 'Archive')
+                      }
+                      onClick={() =>
+                        archiveMapping(mapping.sessionKey, !isArchived)
+                      }
+                    />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+}

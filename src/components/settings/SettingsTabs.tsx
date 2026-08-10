@@ -13,6 +13,7 @@ import YoloPlugin from '../../main'
 import { SETTINGS_ACTIVE_TAB_STORAGE_KEY } from '../../utils/openPluginSettingsTab'
 
 import { AgentTab } from './tabs/AgentTab'
+import { BotsTab } from './tabs/BotsTab'
 import { EditorTab } from './tabs/EditorTab'
 import { KnowledgeTab } from './tabs/KnowledgeTab'
 import { ModelsTab } from './tabs/ModelsTab'
@@ -31,6 +32,7 @@ export type SettingsTabId =
   | 'modules'
   | 'agent'
   | 'others'
+  | 'bots'
 
 type SettingsTab = {
   id: SettingsTabId
@@ -67,6 +69,11 @@ const SETTINGS_TABS: SettingsTab[] = [
     id: 'others',
     labelKey: 'settings.tabs.others',
     component: OthersTab,
+  },
+  {
+    id: 'bots',
+    labelKey: 'settings.tabs.bots',
+    component: BotsTab,
   },
 ]
 

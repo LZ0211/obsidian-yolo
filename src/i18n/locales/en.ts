@@ -198,6 +198,7 @@ export const en: TranslationKeys = {
       agent: 'Agent',
       modules: 'Modules',
       others: 'Others',
+      bots: "Bots",
     },
     supportYolo: {
       name: 'Support the project',

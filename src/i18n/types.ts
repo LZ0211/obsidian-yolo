@@ -178,6 +178,7 @@ export type TranslationKeys = {
       agent: string
       modules: string
       others: string
+      bots?: string
     }
     supportYolo: {
       name: string

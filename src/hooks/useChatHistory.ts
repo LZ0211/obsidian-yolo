@@ -672,7 +672,7 @@ const serializeChatMessage = (message: ChatMessage): SerializedChatMessage => {
   }
 }
 
-const deserializeChatMessage = (
+export const deserializeChatMessage = (
   message: SerializedChatMessage,
   app: App,
 ): ChatMessage => {
