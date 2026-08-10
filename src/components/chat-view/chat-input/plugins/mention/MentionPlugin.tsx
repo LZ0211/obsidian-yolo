@@ -32,6 +32,7 @@ import type { JSX as ReactJSX } from 'react/jsx-runtime'
 
 import { PROVIDER_PRESET_INFO } from '../../../../../constants'
 import { useApp } from '../../../../../contexts/app-context'
+import { toDisplayPath } from '../../../../../core/paths/displayPath'
 import { useLanguage } from '../../../../../contexts/language-context'
 import { useSettings } from '../../../../../contexts/settings-context'
 import { Assistant } from '../../../../../types/assistant.types'
@@ -115,6 +116,30 @@ function getFileParentFolderPath(filePath: string): string {
     return '/'
   }
   return `/${filePath.slice(0, lastSlashIndex)}`
+}
+
+// With a workspace home directory configured, mention subtitles render
+// home-relative (`~/...`); without one they fall back to the legacy
+// `/`-prefixed vault-absolute form.
+function getFileSubtitle(filePath: string, workspaceRoot: string): string {
+  if (workspaceRoot === '') return getFileParentFolderPath(filePath)
+  const lastSlashIndex = filePath.lastIndexOf('/')
+  if (lastSlashIndex < 0) return ''
+  const parent = filePath.slice(0, lastSlashIndex)
+  const display = toDisplayPath(parent, workspaceRoot)
+  if (display === '' || display === '~' || display.startsWith('~/')) {
+    return display
+  }
+  return `/${display}`
+}
+
+function getFolderSubtitle(folderPath: string, workspaceRoot: string): string {
+  if (workspaceRoot === '') return `/${folderPath}`
+  const display = toDisplayPath(folderPath, workspaceRoot)
+  if (display === '' || display === '~' || display.startsWith('~/')) {
+    return display
+  }
+  return `/${display}`
 }
 
 type MentionMenuMode = 'direct-search' | 'entry'
@@ -432,6 +457,17 @@ export default function NewMentionsPlugin({
   const app = useApp()
   const { settings } = useSettings()
 
+  // The active assistant's workspace home directory: mention subtitles render
+  // home-relative (`~/...`) when a workspace policy is enabled.
+  const workspaceRoot = useMemo(() => {
+    const activeAssistant = assistants.find(
+      (assistant) => assistant.id === currentAssistantId,
+    )
+    const policy = activeAssistant?.workspaceAccessPolicy
+    if (!policy?.enabled) return ''
+    return policy.workspaceRoot ?? ''
+  }, [assistants, currentAssistantId])
+
   const [queryString, setQueryString] = useState<string | null>(null)
   const [menuScope, setMenuScope] = useState<MentionMenuScope>('root')
   const [menuContentTransition, setMenuContentTransition] = useState<{
@@ -636,7 +672,7 @@ export default function NewMentionsPlugin({
             new MentionTypeaheadOption({
               kind: 'mentionable',
               mentionable,
-              subtitle: `/${mentionable.folder.path}`,
+              subtitle: getFolderSubtitle(mentionable.folder.path, workspaceRoot),
             }),
         )
       }
@@ -651,7 +687,7 @@ export default function NewMentionsPlugin({
             new MentionTypeaheadOption({
               kind: 'mentionable',
               mentionable,
-              subtitle: getFileParentFolderPath(mentionable.file.path),
+              subtitle: getFileSubtitle(mentionable.file.path, workspaceRoot),
             }),
         )
       }
@@ -707,8 +743,8 @@ export default function NewMentionsPlugin({
                 mentionable,
                 subtitle:
                   mentionable.type === 'file'
-                    ? getFileParentFolderPath(mentionable.file.path)
-                    : `/${mentionable.folder.path}`,
+                    ? getFileSubtitle(mentionable.file.path, workspaceRoot)
+                    : getFolderSubtitle(mentionable.folder.path, workspaceRoot),
               }),
           )
 
