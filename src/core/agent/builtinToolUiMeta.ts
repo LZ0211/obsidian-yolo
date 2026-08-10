@@ -17,6 +17,19 @@ export const WEB_OPS_SPLIT_ACTION_TOOL_NAMES = [
 ] as const
 
 export const BUILTIN_TOOL_UI_META: Record<string, BuiltinToolUiMeta> = {
+  meta_search: {
+    labelKey: 'settings.agent.builtinMetaSearchLabel',
+    descKey: 'settings.agent.builtinMetaSearchDesc',
+    labelFallback: 'Search Metadata',
+    descFallback:
+      'Search indexed metadata and parsed file fields with a constrained query DSL and return matching files.',
+  },
+  send_attachment: {
+    labelKey: 'settings.agent.builtinSendAttachmentLabel',
+    descKey: 'settings.agent.builtinSendAttachmentDesc',
+    labelFallback: 'Send Attachment',
+    descFallback: 'Send a vault file as an attachment to the current bot chat.',
+  },
   fs_list: {
     labelKey: 'settings.agent.builtinFsListLabel',
     descKey: 'settings.agent.builtinFsListDesc',
@@ -176,6 +189,7 @@ export const BUILTIN_TOOL_CATEGORY_ORDER: BuiltinToolCategory[] = [
 ]
 
 const BUILTIN_TOOL_CATEGORY_MAP: Record<string, BuiltinToolCategory> = {
+  meta_search: 'vault',
   fs_list: 'vault',
   fs_search: 'vault',
   fs_read: 'vault',
@@ -189,6 +203,7 @@ const BUILTIN_TOOL_CATEGORY_MAP: Record<string, BuiltinToolCategory> = {
   ask_user_question: 'context',
   [MEMORY_OPS_GROUP_TOOL_NAME]: 'context',
   [WEB_OPS_GROUP_TOOL_NAME]: 'external',
+  send_attachment: 'external',
   js_eval: 'external',
   terminal_command: 'external',
   delegate_subagent: 'external',

@@ -578,6 +578,10 @@ export type TranslationKeys = {
       enableAllTools?: string
       disableAllTools?: string
       descriptionColumn?: string
+      builtinMetaSearchLabel?: string
+      builtinMetaSearchDesc?: string
+      builtinSendAttachmentLabel?: string
+      builtinSendAttachmentDesc?: string
       builtinFsListLabel?: string
       builtinFsListDesc?: string
       builtinFsSearchLabel?: string

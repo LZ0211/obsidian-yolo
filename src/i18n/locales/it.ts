@@ -751,6 +751,10 @@ export const it: DeepPartial<TranslationKeys> = {
       enableToolDisclosureDesc:
         'Gli strumenti opzionali partono con descrizioni brevi, poi caricano i dettagli completi quando servono. Consigliato quando sono abilitati molti strumenti MCP. Nota: questo meccanismo dipende dalle capacità di tool-use del modello — alcuni modelli potrebbero non riconoscere in modo affidabile gli strumenti caricati in questo modo.',
       descriptionColumn: 'Descrizione',
+      builtinMetaSearchLabel: 'Cerca metadati',
+      builtinMetaSearchDesc: 'Cerca metadati indicizzati e campi di file parsificati con un DSL di query vincolato, restituendo i file corrispondenti.',
+      builtinSendAttachmentLabel: 'Invia allegato',
+      builtinSendAttachmentDesc: 'Invia un file del vault come allegato alla chat bot corrente.',
       builtinFsListLabel: 'Leggi vault',
       builtinFsListDesc: 'Elenca la struttura delle directory del vault',
       builtinFsSearchLabel: 'Cerca nel vault',
