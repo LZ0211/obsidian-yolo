@@ -9,6 +9,7 @@ import {
 import { App, TFile, Vault } from 'obsidian'
 import React, { useMemo, useState } from 'react'
 
+import { normalizePathSlashes } from '../../../core/paths/normalizePath'
 import { listAllFolderPaths } from '../../../utils/rag-utils'
 import { ReactModal } from '../../common/ReactModal'
 
@@ -17,6 +18,8 @@ type FolderPickerModalProps = {
   existing: string[]
   allowFiles?: boolean
   onPick: (folderPath: string) => void
+  rootPath?: string
+  isSelectable?: (folderPath: string) => boolean
 }
 
 export class FolderPickerModal extends ReactModal<FolderPickerModalProps> {
@@ -26,11 +29,20 @@ export class FolderPickerModal extends ReactModal<FolderPickerModalProps> {
     existing: string[],
     allowFiles: boolean,
     onPick: (folderPath: string) => void,
+    rootPath?: string,
+    isSelectable?: (folderPath: string) => boolean,
   ) {
     super({
       app,
       Component: FolderPickerModalComponent,
-      props: { vault, existing, onPick, allowFiles },
+      props: {
+        vault,
+        existing,
+        onPick,
+        allowFiles,
+        rootPath,
+        isSelectable,
+      },
       options: { title: allowFiles ? '选择文件或文件夹' : '选择文件夹' },
     })
   }
@@ -42,10 +54,21 @@ function FolderPickerModalComponent({
   onPick,
   onClose,
   allowFiles,
+  rootPath,
+  isSelectable,
 }: FolderPickerModalProps & { onClose: () => void }) {
   const [q, setQ] = useState('')
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']))
-  const allFolders = useMemo(() => listAllFolderPaths(vault), [vault])
+  const normalizedRoot = rootPath ? normalizePathSlashes(rootPath) : ''
+  const [expanded, setExpanded] = useState<Set<string>>(
+    () => new Set([normalizedRoot]),
+  )
+  const allFolders = useMemo(() => {
+    const folders = listAllFolderPaths(vault)
+    if (!folders.includes('')) folders.unshift('')
+    if (!normalizedRoot) return folders
+    const prefix = normalizedRoot + '/'
+    return folders.filter((p) => p === normalizedRoot || p.startsWith(prefix))
+  }, [vault, normalizedRoot])
   const allFiles = useMemo<TFile[]>(() => {
     if (!allowFiles) return []
     try {
@@ -113,10 +136,11 @@ function FolderPickerModalComponent({
       arr.sort((a, b) => a.name.localeCompare(b.name))
       for (const n of arr) sortRec(n.children)
     }
-    const r = ensure('').children
+    const rootNode = ensure(normalizedRoot)
+    const r = [rootNode]
     sortRec(r)
     return r
-  }, [allFolders, allFiles, allowFiles])
+  }, [allFolders, allFiles, allowFiles, normalizedRoot])
 
   // filter tree by query (show matches and their ancestors)
   const filteredRoots: Node[] = useMemo(() => {
@@ -189,7 +213,10 @@ function FolderPickerModalComponent({
       })
       const isDisabled =
         isSelected ||
-        (node.type === 'file' ? isCoveredByAncestor : isCoveredByAncestor)
+        (node.type === 'file' ? isCoveredByAncestor : isCoveredByAncestor) ||
+        (node.type === 'folder' && isSelectable
+          ? !isSelectable(node.path)
+          : false)
       const isLast = index === nodes.length - 1
       const guides = ancestorLast.map((isLastAncestor, levelIdx) => (
         <span
@@ -289,6 +316,7 @@ function FolderPickerModalComponent({
       <input
         type="text"
         placeholder="搜索文件夹..."
+        aria-label="搜索文件夹"
         value={q}
         onChange={(e) => setQ(e.target.value)}
         className="svelte-obsidian-text-input"

@@ -17,6 +17,14 @@ export type AssistantSkillLoadMode = z.infer<
   typeof assistantSkillLoadModeSchema
 >
 
+export const assistantSkillOverridePreferenceSchema = z.object({
+  loadMode: assistantSkillLoadModeSchema.optional(),
+})
+
+export type AssistantSkillOverridePreference = z.infer<
+  typeof assistantSkillOverridePreferenceSchema
+>
+
 export const assistantSkillPreferenceSchema = z.object({
   enabled: z.boolean().optional(),
   loadMode: assistantSkillLoadModeSchema.optional(),
@@ -47,6 +55,15 @@ export const assistantToolDisclosureModeSchema = z.enum(['always', 'on_demand'])
 
 export type AssistantToolDisclosureMode = z.infer<
   typeof assistantToolDisclosureModeSchema
+>
+
+export const assistantToolOverridePreferenceSchema = z.object({
+  approvalMode: assistantToolApprovalModeSchema.optional(),
+  disclosureMode: assistantToolDisclosureModeSchema.optional(),
+})
+
+export type AssistantToolOverridePreference = z.infer<
+  typeof assistantToolOverridePreferenceSchema
 >
 
 export const assistantToolPreferenceSchema = z.object({

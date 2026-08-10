@@ -14,6 +14,7 @@ import { useApp } from '../../contexts/app-context'
 import { useLanguage } from '../../contexts/language-context'
 import { usePlugin } from '../../contexts/plugin-context'
 import { useSettings } from '../../contexts/settings-context'
+import { getUnifiedAgentList } from '../../core/agent/workspaceAgentResolver'
 import { getAssistantModelDisplayLabel } from '../../core/agent/assistant-model'
 import {
   DEFAULT_ASSISTANT_ID,
@@ -92,7 +93,7 @@ export function AssistantSelector({
     }
   }, [plugin])
 
-  const assistants = settings.assistants || []
+  const assistants = getUnifiedAgentList(settings)
   const resolvedCurrentAssistantId =
     currentAssistantId ?? settings.currentAssistantId ?? DEFAULT_ASSISTANT_ID
 

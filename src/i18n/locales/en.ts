@@ -673,6 +673,28 @@ export const en: TranslationKeys = {
         excludeDesc: 'Excluded from the allow range (higher priority)',
         excludeBadge: 'EXCLUDE',
         excludeEmpty: 'No exclusions.',
+        rootTitle: 'Working directory',
+        rootDesc:
+          'Relative reads and all writes are resolved under this directory.',
+        rootBadge: 'ROOT',
+        rootEmpty: 'Vault root is used when no working directory is set.',
+        pick: 'Pick',
+        readExtraTitle: 'Extra readable paths',
+        readExtraDesc:
+          'Additional vault paths outside the working directory that this agent may read.',
+        readExtraBadge: 'READ',
+        readExtraEmpty: 'No extra readable paths.',
+        readExcludeTitle: 'Read deny list',
+        readExcludeDesc:
+          'Subpaths hidden from reads, mentions, search, metadata, and tool results.',
+        readExcludeBadge: 'DENY READ',
+        readExcludeEmpty: 'No read exclusions.',
+        writeExcludeTitle: 'Write deny list',
+        writeExcludeDesc:
+          'Subpaths under the working directory where writes, deletes, moves, and edits are blocked.',
+        writeExcludeBadge: 'DENY WRITE',
+        writeExcludeEmpty: 'No write exclusions.',
+        denyDisabledHint: 'Set a workspace root first to configure deny lists.',
       },
       editorTabModel: 'Model',
       editorName: 'Name',

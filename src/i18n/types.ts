@@ -497,6 +497,24 @@ export type TranslationKeys = {
         excludeDesc?: string
         excludeBadge?: string
         excludeEmpty?: string
+        rootTitle?: string
+        rootDesc?: string
+        rootBadge?: string
+        rootEmpty?: string
+        pick?: string
+        readExtraTitle?: string
+        readExtraDesc?: string
+        readExtraBadge?: string
+        readExtraEmpty?: string
+        readExcludeTitle?: string
+        readExcludeDesc?: string
+        readExcludeBadge?: string
+        readExcludeEmpty?: string
+        writeExcludeTitle?: string
+        writeExcludeDesc?: string
+        writeExcludeBadge?: string
+        writeExcludeEmpty?: string
+        denyDisabledHint?: string
       }
       editorTabModel?: string
       editorName?: string

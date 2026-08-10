@@ -38,6 +38,7 @@ import { AssistantsModal } from '../modals/AssistantsModal'
 
 import { AgentAutoContextCompactionSection } from './AgentAutoContextCompactionSection'
 import { AgentCliPathSection } from './AgentCliPathSection'
+import { WorkspaceAgentsSection } from './WorkspaceAgentsSection'
 import { AgentImageReadingSection } from './AgentImageReadingSection'
 import { AgentMcpServerSection } from './AgentMcpServerSection'
 import { NotificationSettingsSection } from './NotificationSettingsSection'
@@ -684,6 +685,15 @@ export function AgentSection({ app }: AgentSectionProps) {
             <AgentCliPathSection app={app} />
           </div>
         )}
+        <div className="yolo-agent-sub-card">
+          <div className="yolo-agent-sub-card-head">
+            {t(
+              'settings.workspaceAgents.blockTitle',
+              'Workspace agents',
+            )}
+          </div>
+          <WorkspaceAgentsSection app={app} />
+        </div>
       </section>
 
       <section className="yolo-agent-block">

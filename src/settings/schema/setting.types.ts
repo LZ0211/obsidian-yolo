@@ -6,7 +6,11 @@ import {
 } from '../../constants'
 import { DEFAULT_LOCAL_MCP_SERVER_PORT } from '../../core/mcp/localMcpServerConfig'
 import { webSearchSettingsSchema } from '../../core/web-search/types'
-import { assistantSchema } from '../../types/assistant.types'
+import {
+  assistantSchema,
+  assistantSkillOverridePreferenceSchema,
+  assistantToolOverridePreferenceSchema,
+} from '../../types/assistant.types'
 import { chatModelSchema } from '../../types/chat-model.types'
 import { embeddingModelSchema } from '../../types/embedding-model.types'
 import {
@@ -318,6 +322,48 @@ export const workspaceAgentPolicySchema = z.object({
   writeDenylist: z.array(z.string()).catch([]),
 })
 export type WorkspaceAgentPolicy = z.infer<typeof workspaceAgentPolicySchema>
+
+/**
+ * Workspace agent behavior overrides (migrated from the local fork): a
+ * workspace agent inherits an upstream Assistant template and can override
+ * selected behaviors (prompt, tools, skills, mode gate) plus a workspace
+ * home-directory policy.
+ */
+export const workspaceAgentBehaviorOverridesSchema = z.object({
+  name: z.string().optional(),
+  promptOverride: z.string().optional(),
+  systemPromptOverride: z.string().optional(),
+  disabledToolNames: z.array(z.string()).optional(),
+  toolConfigOverrides: z
+    .record(z.string(), assistantToolOverridePreferenceSchema)
+    .optional(),
+  disabledSkillIds: z.array(z.string()).optional(),
+  skillConfigOverrides: z
+    .record(z.string(), assistantSkillOverridePreferenceSchema)
+    .optional(),
+  // When false, the workspace agent only exposes Ask mode in the chat input.
+  agentModeAllowed: z.boolean().optional(),
+})
+export type WorkspaceAgentBehaviorOverrides = z.infer<
+  typeof workspaceAgentBehaviorOverridesSchema
+>
+
+/**
+ * Workspace agent instance: inherits an upstream Assistant template and
+ * overrides behavior + workspace policy. Kept as its own record type so the
+ * upstream assistant editor stays untouched.
+ */
+export const workspaceAgentSchema = z.object({
+  id: z.string(),
+  name: z.string().min(1, 'Name cannot be empty'),
+  templateId: z.string(),
+  disabled: z.boolean().optional(),
+  behaviorOverrides: workspaceAgentBehaviorOverridesSchema.optional(),
+  workspacePolicy: workspaceAgentPolicySchema,
+  createdAt: z.number(),
+  updatedAt: z.number(),
+})
+export type WorkspaceAgent = z.infer<typeof workspaceAgentSchema>
 
 /**
  * Settings
@@ -709,6 +755,9 @@ export const yoloSettingsSchema = z.object({
 
   // Assistant list
   assistants: resilientArraySchema(assistantSchema),
+
+  // Workspace agent instances (inherit an assistant template + override)
+  workspaceAgents: resilientArraySchema(workspaceAgentSchema),
 
   // Currently selected assistant ID
   currentAssistantId: z.string().optional(),

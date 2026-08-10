@@ -26,6 +26,7 @@ import {
 import { resolveAssistantModelId } from '../../core/agent/assistant-model'
 import { getLatestAssistantContextUsage } from '../../core/agent/compaction'
 import { DEFAULT_ASSISTANT_ID } from '../../core/agent/default-assistant'
+import { findUnifiedAgentById } from '../../core/agent/workspaceAgentResolver'
 import {
   type ChatRuntimeId,
   type CliRuntimeScope,
@@ -519,12 +520,8 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     return settings.chatOptions.agentYoloEnabled ?? false
   })
   const selectedAssistant = useMemo(() => {
-    return (
-      settings.assistants.find(
-        (assistant) => assistant.id === conversationAssistantId,
-      ) ?? null
-    )
-  }, [conversationAssistantId, settings.assistants])
+    return findUnifiedAgentById(settings, conversationAssistantId) ?? null
+  }, [conversationAssistantId, settings])
   const selectedAssistantTimeContextEnabled = useMemo(
     () => resolveAssistantTimeContextEnabled(selectedAssistant, settings),
     [selectedAssistant, settings],
@@ -537,9 +534,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     }
     const initialAssistantId =
       settings.currentAssistantId ?? DEFAULT_ASSISTANT_ID
-    const initialAssistant = settings.assistants.find(
-      (assistant) => assistant.id === initialAssistantId,
-    )
+    const initialAssistant = findUnifiedAgentById(settings, initialAssistantId)
     return initialAssistant?.modelId ?? settings.chatModelId
   })
 
@@ -1128,9 +1123,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       // preserved.
       const overrideAssistantId = options?.assistantId
       const overrideAssistant = overrideAssistantId
-        ? (settings.assistants.find(
-            (assistant) => assistant.id === overrideAssistantId,
-          ) ?? null)
+        ? (findUnifiedAgentById(settings, overrideAssistantId) ?? null)
         : null
       const applySelection = () => {
         flushSync(() => {
