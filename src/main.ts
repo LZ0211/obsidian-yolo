@@ -4040,13 +4040,38 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
           if (signal.aborted) {
             throw new DOMException('Maintenance cancelled', 'AbortError')
           }
-          if (command.kind !== MAINTENANCE_JOB_KIND.VACUUM) {
-            throw new Error(`Unsupported maintenance job: ${command.kind}`)
+          if (command.kind === MAINTENANCE_JOB_KIND.VACUUM) {
+            const dbManager = await this.getDbManager()
+            await dbManager.getVectorStore()?.vacuum()
+            return
           }
-          onProgress({ completed: 0, message: 'Running VACUUM...' })
-          const dbManager = await this.getDbManager()
-          await dbManager.getVectorStore()?.vacuum()
-          onProgress({ completed: 1, total: 1 })
+          // Index jobs must go through RagIndexService so the run snapshot
+          // (and therefore the settings-page progress ring) updates live.
+          const abort = () => this.getRagIndexService().cancelActiveRun()
+          signal.addEventListener('abort', abort)
+          try {
+            await this.runRagIndex({
+              mode:
+                command.kind === MAINTENANCE_JOB_KIND.FULL_REBUILD
+                  ? 'rebuild'
+                  : 'sync',
+              scope: command.scope ?? { kind: 'all' },
+              trigger: 'manual',
+              retryPolicy: 'none',
+              onProgress: (progress) => {
+                onProgress({
+                  completed: progress.completedFiles ?? 0,
+                  total: progress.totalFiles,
+                  message: progress.currentFile,
+                })
+              },
+            })
+          } finally {
+            signal.removeEventListener('abort', abort)
+          }
+          if (signal.aborted) {
+            throw new DOMException('Maintenance cancelled', 'AbortError')
+          }
         },
       }),
     })
