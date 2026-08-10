@@ -19,6 +19,7 @@ import type {
 import type {
   AssistantToolApprovalMode,
   AssistantWorkspaceScope,
+  WorkspaceAccessPolicy,
 } from '../../types/assistant.types'
 import type { ChatMessage } from '../../types/chat'
 import type { ChatModelModality } from '../../types/chat-model.types'
@@ -79,10 +80,14 @@ import {
   BUILTIN_SKILL_PATH_PREFIX,
   buildAllowedSkillPathSet,
   findPathOutsideScope,
+  collectToolCallPaths,
   findPathWithinExcludedRoot,
   isCoveredBySkillPathExemption,
   isPathAllowedByScope,
+  isReadablePath,
   normalizeSkillPathForExemption,
+  resolveReadablePath,
+  resolveWritablePath,
 } from '../agent/workspaceScope'
 import {
   BROWSER_PAGE_ID_PATTERN,
@@ -2159,6 +2164,47 @@ async function maybeWithInternalWrite<T>(
   return task()
 }
 
+const workspacePolicyToUpstreamScope = (
+  policy: WorkspaceAccessPolicy | undefined,
+): AssistantWorkspaceScope | undefined => {
+  if (!policy?.enabled) return undefined
+  return {
+    enabled: true,
+    include: [policy.workspaceRoot, ...policy.readExtraIncludes].filter(
+      (entry) => entry !== '',
+    ),
+    exclude: [...policy.readExcludes],
+  }
+}
+
+const findWorkspacePolicyViolation = ({
+  toolName,
+  args,
+  policy,
+  exemptPaths,
+  isWriteTool,
+}: {
+  toolName: string
+  args: Record<string, unknown>
+  policy: WorkspaceAccessPolicy
+  exemptPaths?: ReadonlySet<string>
+  isWriteTool: boolean
+}): string | null => {
+  for (const path of collectToolCallPaths(toolName, args)) {
+    if (exemptPaths?.has(path)) continue
+    try {
+      if (isWriteTool) {
+        resolveWritablePath(path, policy)
+      } else {
+        resolveReadablePath(path, policy)
+      }
+    } catch {
+      return path
+    }
+  }
+  return null
+}
+
 export async function callLocalFileTool({
   app,
   settings,
@@ -2173,7 +2219,7 @@ export async function callLocalFileTool({
   requireReview = false,
   signal,
   chatModelId,
-  workspaceScope,
+  workspaceAccessPolicy,
   allowedSkillPaths,
   // Unused in this file now that fs_search (citation annotation) — its only
   // consumer — is gone. Kept in the accepted options shape because callers
@@ -2197,7 +2243,7 @@ export async function callLocalFileTool({
   requireReview?: boolean
   signal?: AbortSignal
   chatModelId?: string
-  workspaceScope?: AssistantWorkspaceScope
+  workspaceAccessPolicy?: WorkspaceAccessPolicy
   allowedSkillPaths?: readonly string[]
   runContext?: AgentRunContext
   subagentParentContext?: SubagentParentContext
@@ -2217,24 +2263,25 @@ export async function callLocalFileTool({
 
   try {
     // Final defense: reject any fs_* call whose path args fall outside the
-    // agent's workspace scope. The gateway performs the same check up front
-    // for UI Rejected status, but we re-validate here so manual-approval /
-    // direct-call code paths cannot bypass the constraint.
-    if (workspaceScope?.enabled) {
+    // agent's workspace access policy (home directory + read/write rules).
+    // The gateway performs the same check up front for UI Rejected status,
+    // but we re-validate here so manual-approval / direct-call code paths
+    // cannot bypass the constraint.
+    if (workspaceAccessPolicy?.enabled) {
       const exemptPaths = allowedSkillPaths
         ? buildAllowedSkillPathSet(allowedSkillPaths)
         : undefined
-      const offendingPath = findPathOutsideScope(
+      const isWriteTool = isLocalFsWriteToolName(toolName)
+      const offendingPath = findWorkspacePolicyViolation({
         toolName,
         args,
-        workspaceScope,
-        {
-          exemptPaths,
-        },
-      )
+        policy: workspaceAccessPolicy,
+        exemptPaths,
+        isWriteTool,
+      })
       if (offendingPath !== null) {
         throw new Error(
-          `Path "${offendingPath}" is outside this agent's workspace scope.`,
+          `Path "${offendingPath}" is outside this agent's workspace access policy.`,
         )
       }
     }
@@ -2571,10 +2618,10 @@ export async function callLocalFileTool({
           // wikilink targets aren't literal paths until resolved above.
           // Applies uniformly to exact-match and wikilink-resolved entries.
           // Files inside an allowed skill package keep the same exemption
-          // they had under findPathOutsideScope's exemptPaths option.
+          // they had under the workspace policy's exemptPaths option.
           if (
-            workspaceScope?.enabled &&
-            !isPathAllowedByScope(file.path, workspaceScope) &&
+            workspaceAccessPolicy?.enabled &&
+            !isReadablePath(file.path, workspaceAccessPolicy) &&
             !(
               allowedSkillPathSet &&
               isCoveredBySkillPathExemption(file.path, allowedSkillPathSet)
@@ -3435,7 +3482,11 @@ export async function callLocalFileTool({
         const command = getTextArg(args, 'command')
         const lease = await acquireRuntimeComponent('bash-engine')
         try {
-          const fs = createVaultBashFileSystem(app, workspaceScope, settings)
+          const fs = createVaultBashFileSystem(
+            app,
+            workspacePolicyToUpstreamScope(workspaceAccessPolicy),
+            settings,
+          )
           const confirmDangerousOperation = async (
             kind: DangerousBashOperationKind,
             targets: readonly string[],
@@ -3465,7 +3516,9 @@ export async function callLocalFileTool({
               app,
               settings,
               getRagEngine,
-              workspaceScope,
+              workspaceScope: workspacePolicyToUpstreamScope(
+                workspaceAccessPolicy,
+              ),
               signal,
             }),
             signal,

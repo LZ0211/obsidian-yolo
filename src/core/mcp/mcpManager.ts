@@ -5,7 +5,7 @@ import { YoloSettings } from '../../settings/schema/setting.types'
 import type { ApplyViewState } from '../../types/apply-view.types'
 import type {
   AssistantToolApprovalMode,
-  AssistantWorkspaceScope,
+  WorkspaceAccessPolicy,
 } from '../../types/assistant.types'
 import type { ChatMessage } from '../../types/chat'
 import type { ChatModelModality } from '../../types/chat-model.types'
@@ -1042,7 +1042,7 @@ export class McpManager {
     signal,
     requireReview = false,
     chatModelId,
-    workspaceScope,
+    workspaceAccessPolicy,
     allowedSkillPaths,
     subagentParentContext,
     runContext,
@@ -1058,7 +1058,7 @@ export class McpManager {
     signal?: AbortSignal
     requireReview?: boolean
     chatModelId?: string
-    workspaceScope?: AssistantWorkspaceScope
+    workspaceAccessPolicy?: WorkspaceAccessPolicy
     allowedSkillPaths?: readonly string[]
     runContext?: AgentRunContext
     subagentParentContext?: SubagentParentContext
@@ -1107,7 +1107,7 @@ export class McpManager {
           requireReview,
           signal: compositeSignal,
           chatModelId,
-          workspaceScope,
+          workspaceAccessPolicy,
           allowedSkillPaths,
           runContext,
           subagentParentContext,

@@ -1197,11 +1197,13 @@ describe('AgentToolGateway', () => {
 
     const gateway = new AgentToolGateway(mcpManager, {
       allowedToolNames: ['yolo_local__fs_edit'],
-      workspaceScope: {
+      workspaceAccessPolicy: {
         enabled: true,
-        include: ['Notes'],
-        exclude: [],
-      },
+        workspaceRoot: '',
+        readExtraIncludes: ['Notes'],
+        readExcludes: [],
+        writeExcludes: [],
+        },
     })
 
     const message = gateway.createToolMessage({
@@ -1243,11 +1245,13 @@ describe('AgentToolGateway', () => {
 
     const gateway = new AgentToolGateway(mcpManager, {
       allowedToolNames: ['yolo_local__fs_read'],
-      workspaceScope: {
+      workspaceAccessPolicy: {
         enabled: true,
-        include: ['Notes'],
-        exclude: [],
-      },
+        workspaceRoot: '',
+        readExtraIncludes: ['Notes'],
+        readExcludes: [],
+        writeExcludes: [],
+        },
     })
 
     const message = gateway.createToolMessage({

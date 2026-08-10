@@ -1,4 +1,7 @@
-import type { AssistantToolApprovalMode } from '../../types/assistant.types'
+import type {
+  AssistantToolApprovalMode,
+  WorkspaceAccessPolicy,
+} from '../../types/assistant.types'
 import {
   ChatConversationCompactionLike,
   ChatConversationCompactionState,
@@ -87,6 +90,8 @@ export type AgentRuntimeRunInput = {
     include: string[]
     exclude: string[]
   }
+  /** Enhanced workspace access policy (home directory + read/write rules). */
+  workspaceAccessPolicy?: WorkspaceAccessPolicy
   allowedSkillPaths?: string[]
   contextualInjections?: ContextualInjection[]
   toolCapabilityMode?: ToolCapabilityMode

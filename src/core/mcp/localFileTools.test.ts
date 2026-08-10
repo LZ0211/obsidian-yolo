@@ -1818,8 +1818,10 @@ describe('local fs tool action helpers', () => {
   describe('workspace scope final defense', () => {
     const allowNotes = {
       enabled: true,
-      include: ['Notes'],
-      exclude: [],
+      workspaceRoot: '',
+      readExtraIncludes: ['Notes'],
+      readExcludes: [],
+      writeExcludes: [],
     }
 
     it('rejects fs_edit when path is outside scope', async () => {
@@ -1833,7 +1835,7 @@ describe('local fs tool action helpers', () => {
           oldText: 'x',
           newText: 'y',
         },
-        workspaceScope: allowNotes,
+        workspaceAccessPolicy: allowNotes,
       })
       expect(result.status).toBe(ToolCallResponseStatus.Error)
       if (result.status === ToolCallResponseStatus.Error) {
@@ -1855,7 +1857,7 @@ describe('local fs tool action helpers', () => {
           oldPath: 'Notes/a.md',
           newPath: 'secret/a.md',
         },
-        workspaceScope: allowNotes,
+        workspaceAccessPolicy: allowNotes,
       })
       expect(result.status).toBe(ToolCallResponseStatus.Error)
       if (result.status === ToolCallResponseStatus.Error) {
@@ -1872,7 +1874,7 @@ describe('local fs tool action helpers', () => {
         args: {
           path: 'secret/b.md',
         },
-        workspaceScope: allowNotes,
+        workspaceAccessPolicy: allowNotes,
       })
       expect(result.status).toBe(ToolCallResponseStatus.Error)
       if (result.status === ToolCallResponseStatus.Error) {
@@ -1894,7 +1896,7 @@ describe('local fs tool action helpers', () => {
           path: 'secret/new.md',
           content: 'leak',
         },
-        workspaceScope: allowNotes,
+        workspaceAccessPolicy: allowNotes,
       })
       expect(result.status).toBe(ToolCallResponseStatus.Error)
     })
@@ -1913,7 +1915,7 @@ describe('local fs tool action helpers', () => {
           path: 'Notes/a.md',
           content: 'one',
         },
-        workspaceScope: allowNotes,
+        workspaceAccessPolicy: allowNotes,
       })
       expect(result.status).toBe(ToolCallResponseStatus.Success)
     })
@@ -1932,7 +1934,7 @@ describe('local fs tool action helpers', () => {
           path: 'secret/a.md',
           content: 'ok',
         },
-        workspaceScope: { enabled: false, include: ['Notes'], exclude: [] },
+        workspaceAccessPolicy: { enabled: false, workspaceRoot: '', readExtraIncludes: ['Notes'], readExcludes: [], writeExcludes: [] },
       })
       expect(result.status).toBe(ToolCallResponseStatus.Success)
     })
@@ -2335,7 +2337,7 @@ describe('fs_read wikilink resolution', () => {
       app,
       toolName: 'fs_read',
       args: { paths: ['[[Secret]]'] },
-      workspaceScope: { enabled: true, include: ['Notes'], exclude: [] },
+      workspaceAccessPolicy: { enabled: true, workspaceRoot: '', readExtraIncludes: ['Notes'], readExcludes: [], writeExcludes: [] },
     })
 
     const results = parseSuccessResults(result)
@@ -2358,7 +2360,7 @@ describe('fs_read wikilink resolution', () => {
       app,
       toolName: 'fs_read',
       args: { paths: ['[[Foo]]'] },
-      workspaceScope: { enabled: true, include: ['Notes'], exclude: [] },
+      workspaceAccessPolicy: { enabled: true, workspaceRoot: '', readExtraIncludes: ['Notes'], readExcludes: [], writeExcludes: [] },
     })
 
     const results = parseSuccessResults(result)
@@ -2388,7 +2390,7 @@ describe('fs_read wikilink resolution', () => {
       app,
       toolName: 'fs_read',
       args: { paths: ['Private/Secret.md'] },
-      workspaceScope: { enabled: true, include: ['Notes'], exclude: [] },
+      workspaceAccessPolicy: { enabled: true, workspaceRoot: '', readExtraIncludes: ['Notes'], readExcludes: [], writeExcludes: [] },
     })
 
     const results = parseSuccessResults(result)
@@ -2421,7 +2423,7 @@ describe('fs_read wikilink resolution', () => {
       app,
       toolName: 'fs_read',
       args: { paths: ['Skills/pkg/reference.md'] },
-      workspaceScope: { enabled: true, include: ['Notes'], exclude: [] },
+      workspaceAccessPolicy: { enabled: true, workspaceRoot: '', readExtraIncludes: ['Notes'], readExcludes: [], writeExcludes: [] },
       allowedSkillPaths: ['Skills/pkg/SKILL.md'],
     })
 

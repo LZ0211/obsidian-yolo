@@ -9,7 +9,7 @@ import {
   AssistantToolApprovalMode,
   AssistantToolPreference,
   AssistantToolServerPreference,
-  AssistantWorkspaceScope,
+  WorkspaceAccessPolicy,
 } from '../../types/assistant.types'
 import {
   ChatConversationCompactionLike,
@@ -71,7 +71,9 @@ import { GEMINI_STUB_ARGS_JSON_FIELD, isGeminiStubApiType } from './tool-stub'
 import type { AgentRunContext } from './types'
 import {
   buildAllowedSkillPathSet,
-  findPathOutsideScope,
+  collectToolCallPaths,
+  resolveReadablePath,
+  resolveWritablePath,
 } from './workspaceScope'
 
 type McpToolCallParams = Parameters<McpManager['callTool']>[0]
@@ -265,7 +267,7 @@ export class AgentToolGateway {
     AssistantToolServerPreference
   >
   private readonly enableToolDisclosure: boolean
-  private readonly workspaceScope?: AssistantWorkspaceScope
+  private readonly workspaceAccessPolicy?: WorkspaceAccessPolicy
   private readonly allowedSkillPaths?: readonly string[]
   private readonly apiType?: LLMProviderApiType | null
   private readonly runContext?: AgentRunContext
@@ -293,7 +295,7 @@ export class AgentToolGateway {
       toolPreferences?: Record<string, AssistantToolPreference>
       toolServerPreferences?: Record<string, AssistantToolServerPreference>
       enableToolDisclosure?: boolean
-      workspaceScope?: AssistantWorkspaceScope
+      workspaceAccessPolicy?: WorkspaceAccessPolicy
       allowedSkillPaths?: string[]
       apiType?: LLMProviderApiType | null
       runContext?: AgentRunContext
@@ -312,7 +314,7 @@ export class AgentToolGateway {
     this.toolPreferences = options?.toolPreferences
     this.toolServerPreferences = options?.toolServerPreferences
     this.enableToolDisclosure = options?.enableToolDisclosure ?? true
-    this.workspaceScope = options?.workspaceScope
+    this.workspaceAccessPolicy = options?.workspaceAccessPolicy
     this.allowedSkillPaths = options?.allowedSkillPaths
     this.apiType = options?.apiType
     this.runContext = options?.runContext
@@ -567,16 +569,28 @@ export class AgentToolGateway {
   }
 
   private findRequestPathOutsideScope(request: ToolCallRequest): string | null {
-    if (!this.workspaceScope?.enabled) return null
+    if (!this.workspaceAccessPolicy?.enabled) return null
     try {
       const parsed = parseToolName(request.name)
       if (parsed.serverName !== getLocalFileToolServerName()) return null
       const args = getToolCallArgumentsObject(request.arguments)
-      return findPathOutsideScope(parsed.toolName, args, this.workspaceScope, {
-        exemptPaths: this.allowedSkillPaths
-          ? buildAllowedSkillPathSet(this.allowedSkillPaths)
-          : undefined,
-      })
+      const exemptPaths = this.allowedSkillPaths
+        ? buildAllowedSkillPathSet(this.allowedSkillPaths)
+        : undefined
+      const isWriteTool = isLocalFsWriteToolName(parsed.toolName)
+      for (const path of collectToolCallPaths(parsed.toolName, args)) {
+        if (exemptPaths?.has(path)) continue
+        try {
+          if (isWriteTool) {
+            resolveWritablePath(path, this.workspaceAccessPolicy)
+          } else {
+            resolveReadablePath(path, this.workspaceAccessPolicy)
+          }
+        } catch {
+          return path
+        }
+      }
+      return null
     } catch {
       return null
     }
@@ -992,7 +1006,7 @@ export class AgentToolGateway {
           signal,
           chatModelId,
           debugTraceId,
-          workspaceScope: this.workspaceScope,
+          workspaceAccessPolicy: this.workspaceAccessPolicy,
           allowedSkillPaths: this.allowedSkillPaths,
           runContext: this.runContext,
           subagentParentContext: this.subagentParentContext,
@@ -1037,7 +1051,7 @@ export class AgentToolGateway {
             signal,
             chatModelId,
             debugTraceId,
-            workspaceScope: this.workspaceScope,
+            workspaceAccessPolicy: this.workspaceAccessPolicy,
             allowedSkillPaths: this.allowedSkillPaths,
             runContext: this.runContext,
             subagentParentContext: this.subagentParentContext,
@@ -1068,7 +1082,7 @@ export class AgentToolGateway {
           signal,
           chatModelId,
           debugTraceId,
-          workspaceScope: this.workspaceScope,
+          workspaceAccessPolicy: this.workspaceAccessPolicy,
           allowedSkillPaths: this.allowedSkillPaths,
           runContext: this.runContext,
           subagentParentContext: this.subagentParentContext,
@@ -1192,7 +1206,7 @@ export class AgentToolGateway {
             signal,
             chatModelId,
             debugTraceId,
-            workspaceScope: this.workspaceScope,
+            workspaceAccessPolicy: this.workspaceAccessPolicy,
             allowedSkillPaths: this.allowedSkillPaths,
             runContext: this.runContext,
             subagentParentContext: this.subagentParentContext,

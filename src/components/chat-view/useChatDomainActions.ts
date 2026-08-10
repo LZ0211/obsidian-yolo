@@ -22,6 +22,7 @@ import { selectionHighlightController } from '../../features/editor/selection-hi
 import type { useChatHistory } from '../../hooks/useChatHistory'
 import type { useChatManager } from '../../hooks/useJsonManagers'
 import type { ApplyViewState } from '../../types/apply-view.types'
+import { resolveAssistantWorkspaceAccessPolicy } from '../../core/agent/workspaceScope'
 import type { Assistant } from '../../types/assistant.types'
 import type {
   AssistantToolMessageGroup,
@@ -546,8 +547,8 @@ export function useChatDomainActions({
               // match the schema used when the call was emitted.
               chatModelId:
                 toolMessage.metadata?.branchModelId ?? conversationModelId,
-              workspaceScope: isAgentChatMode(chatMode)
-                ? selectedAssistant?.workspaceScope
+              workspaceAccessPolicy: isAgentChatMode(chatMode)
+                ? resolveAssistantWorkspaceAccessPolicy(selectedAssistant)
                 : undefined,
               subagentParentContext: isDelegateSubagentToolName(request.name)
                 ? plugin

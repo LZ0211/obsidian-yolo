@@ -1501,7 +1501,7 @@ export class AgentService {
             conversationMessages: runningMessages,
             roundId: toolMessage.id,
             chatModelId: lastRunInput.model.id,
-            workspaceScope: lastRunInput.workspaceScope,
+            workspaceAccessPolicy: lastRunInput.workspaceAccessPolicy,
             runContext: lastRunContext ?? undefined,
             subagentParentContext: buildSubagentParentContext(
               lastRunInput,
