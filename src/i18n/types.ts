@@ -869,12 +869,15 @@ export type TranslationKeys = {
       title: string
       chatModels: string
       embeddingModels: string
+      rerankModels?: string
       addChatModel: string
       addEmbeddingModel: string
+      addRerankModel?: string
       addCustomChatModel: string
       addCustomEmbeddingModel: string
       editChatModel: string
       editEmbeddingModel: string
+      editRerankModel?: string
       editCustomChatModel: string
       editCustomEmbeddingModel: string
       modelId: string
@@ -994,6 +997,7 @@ export type TranslationKeys = {
       dimensionPlaceholder: string
       noChatModelsConfigured: string
       noEmbeddingModelsConfigured: string
+      noRerankModels?: string
     }
     rag: {
       title: string

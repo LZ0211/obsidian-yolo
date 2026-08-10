@@ -77,6 +77,18 @@ export function getResponseStreamingMode(
   return 'auto'
 }
 
+export function providerSupportsRerank(provider: LLMProvider): boolean {
+  switch (provider.apiType) {
+    case 'openai-compatible':
+      return (
+        provider.presetType !== 'chatgpt-oauth' &&
+        !isBedrockMantleProvider(provider)
+      )
+    default:
+      return false
+  }
+}
+
 export function providerSupportsEmbedding(provider: LLMProvider): boolean {
   if (isNativeBedrockProvider(provider)) {
     return true

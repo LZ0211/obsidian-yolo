@@ -33,16 +33,22 @@ import YoloPlugin from '../../../main'
 import { ChatModel } from '../../../types/chat-model.types'
 import { EmbeddingModel } from '../../../types/embedding-model.types'
 import { LLMProvider } from '../../../types/provider.types'
+import { RerankModel } from '../../../types/rerank-model.types'
 import { resolveProviderDisplayBaseUrl } from '../../../utils/llm/provider-base-url'
-import { providerSupportsEmbedding } from '../../../utils/llm/provider-config'
+import {
+  providerSupportsEmbedding,
+  providerSupportsRerank,
+} from '../../../utils/llm/provider-config'
 import { openExternalLink } from '../../../utils/openExternalLink'
 import { ObsidianButton } from '../../common/ObsidianButton'
 import { ObsidianToggle } from '../../common/ObsidianToggle'
 import { AddChatModelModal } from '../modals/AddChatModelModal'
 import { AddEmbeddingModelModal } from '../modals/AddEmbeddingModelModal'
+import { AddRerankModelModal } from '../modals/AddRerankModelModal'
 import { ConnectivityTestModal } from '../modals/ConnectivityTestModal'
 import { EditChatModelModal } from '../modals/EditChatModelModal'
 import { EditEmbeddingModelModal } from '../modals/EditEmbeddingModelModal'
+import { EditRerankModelModal } from '../modals/EditRerankModelModal'
 import { EditProviderModal } from '../modals/ProviderFormModal'
 import { ProviderPickerModal } from '../modals/ProviderPickerModal'
 
@@ -60,6 +66,7 @@ type ProviderSectionItemProps = {
   toggleProvider: (id: string) => void
   chatModels: ChatModel[]
   embeddingModels: EmbeddingModel[]
+  rerankModels: RerankModel[]
   modelSensors: ReturnType<typeof useSensors>
   isDeleteConfirming: boolean
   onRequestDeleteProvider: (providerId: string) => void
@@ -68,9 +75,12 @@ type ProviderSectionItemProps = {
   handleDeleteChatModel: (modelId: string) => void
   handleDeleteEmbeddingModel: (modelId: string) => void
   deletingEmbeddingModelIds: Set<string>
+  handleDeleteRerankModel: (modelId: string) => void
+  deletingRerankModelIds: Set<string>
   handleToggleEnableChatModel: (modelId: string, value: boolean) => void
   handleChatModelDragEnd: (event: DragEndEvent) => void
   handleEmbeddingModelDragEnd: (event: DragEndEvent) => void
+  handleRerankModelDragEnd: (event: DragEndEvent) => void
   onCollapseForDrag: () => void
 }
 
@@ -566,6 +576,7 @@ function ProviderSectionItem({
   toggleProvider,
   chatModels,
   embeddingModels,
+  rerankModels,
   modelSensors,
   isDeleteConfirming,
   onRequestDeleteProvider,
@@ -574,9 +585,12 @@ function ProviderSectionItem({
   handleDeleteChatModel,
   handleDeleteEmbeddingModel,
   deletingEmbeddingModelIds,
+  handleDeleteRerankModel,
+  deletingRerankModelIds,
   handleToggleEnableChatModel,
   handleChatModelDragEnd,
   handleEmbeddingModelDragEnd,
+  handleRerankModelDragEnd,
   onCollapseForDrag,
 }: ProviderSectionItemProps) {
   const isChatGPTOAuth = provider.presetType === 'chatgpt-oauth'
@@ -774,6 +788,18 @@ function ProviderSectionItem({
             onDragEnd={handleEmbeddingModelDragEnd}
             onDelete={handleDeleteEmbeddingModel}
             deletingModelIds={deletingEmbeddingModelIds}
+          />
+
+          <RerankModelsTable
+            provider={provider}
+            app={app}
+            plugin={plugin}
+            t={t}
+            models={rerankModels}
+            sensors={modelSensors}
+            onDragEnd={handleRerankModelDragEnd}
+            onDelete={handleDeleteRerankModel}
+            deletingModelIds={deletingRerankModelIds}
           />
         </div>
       )}
@@ -1164,6 +1190,9 @@ export function ProvidersAndModelsSection({
   const [deletingEmbeddingModelIds, setDeletingEmbeddingModelIds] = useState<
     Set<string>
   >(new Set())
+  const [deletingRerankModelIds, setDeletingRerankModelIds] = useState<
+    Set<string>
+  >(new Set())
   const [pendingDeleteProviderId, setPendingDeleteProviderId] = useState<
     string | null
   >(null)
@@ -1382,6 +1411,80 @@ export function ProvidersAndModelsSection({
     } catch (error) {
       console.error('[YOLO] Failed to reorder embedding models:', error)
       new Notice('Failed to reorder embedding models.')
+    }
+  }
+
+  const handleDeleteRerankModel = (modelId: string) => {
+    if (modelId === settings.rerankModelId) {
+      new Notice(
+        'Cannot remove model that is currently selected as rerank model',
+      )
+      return
+    }
+
+    if (deletingRerankModelIds.has(modelId)) {
+      return
+    }
+
+    void (async () => {
+      setDeletingRerankModelIds((prev) => new Set(prev).add(modelId))
+      try {
+        await setSettings({
+          ...settings,
+          rerankModels: settings.rerankModels.filter((v) => v.id !== modelId),
+        })
+      } catch (error) {
+        console.error('[YOLO] Failed to delete rerank model:', error)
+        new Notice('Failed to delete rerank model.')
+      } finally {
+        setDeletingRerankModelIds((prev) => {
+          const next = new Set(prev)
+          next.delete(modelId)
+          return next
+        })
+      }
+    })()
+  }
+
+  const handleRerankModelDragEnd = async (
+    providerId: string,
+    { active, over }: DragEndEvent,
+  ) => {
+    if (!over || active.id === over.id) {
+      return
+    }
+
+    const providerModels = settings.rerankModels.filter(
+      (model) => model.providerId === providerId,
+    )
+    const oldIndex = providerModels.findIndex((model) => model.id === active.id)
+    const newIndex = providerModels.findIndex((model) => model.id === over.id)
+    if (oldIndex < 0 || newIndex < 0) {
+      return
+    }
+
+    const reorderedProviderModels = arrayMove(
+      providerModels,
+      oldIndex,
+      newIndex,
+    )
+    const queue = [...reorderedProviderModels]
+    const updatedRerankModels = settings.rerankModels.map((model) => {
+      if (model.providerId !== providerId) {
+        return model
+      }
+      return queue.shift() ?? model
+    })
+
+    try {
+      await setSettings({
+        ...settings,
+        rerankModels: updatedRerankModels,
+      })
+      triggerProviderDropSuccess(providerId, String(active.id))
+    } catch (error) {
+      console.error('[YOLO] Failed to reorder rerank models:', error)
+      new Notice('Failed to reorder rerank models.')
     }
   }
 
@@ -1656,6 +1759,9 @@ export function ProvidersAndModelsSection({
                 const embeddingModels = settings.embeddingModels.filter(
                   (m) => m.providerId === provider.id,
                 )
+                const rerankModels = settings.rerankModels.filter(
+                  (m) => m.providerId === provider.id,
+                )
 
                 return (
                   <ProviderSectionItem
@@ -1668,6 +1774,7 @@ export function ProvidersAndModelsSection({
                     toggleProvider={toggleProvider}
                     chatModels={chatModels}
                     embeddingModels={embeddingModels}
+                    rerankModels={rerankModels}
                     modelSensors={modelSensors}
                     isDeleteConfirming={pendingDeleteProviderId === provider.id}
                     onRequestDeleteProvider={armDeleteProviderConfirmation}
@@ -1676,12 +1783,17 @@ export function ProvidersAndModelsSection({
                     handleDeleteChatModel={handleDeleteChatModel}
                     handleDeleteEmbeddingModel={handleDeleteEmbeddingModel}
                     deletingEmbeddingModelIds={deletingEmbeddingModelIds}
+                    handleDeleteRerankModel={handleDeleteRerankModel}
+                    deletingRerankModelIds={deletingRerankModelIds}
                     handleToggleEnableChatModel={handleToggleEnableChatModel}
                     handleChatModelDragEnd={(event) =>
                       void handleChatModelDragEnd(provider.id, event)
                     }
                     handleEmbeddingModelDragEnd={(event) =>
                       void handleEmbeddingModelDragEnd(provider.id, event)
+                    }
+                    handleRerankModelDragEnd={(event) =>
+                      void handleRerankModelDragEnd(provider.id, event)
                     }
                     onCollapseForDrag={() =>
                       setExpandedProviders((prev) => {
@@ -1699,5 +1811,183 @@ export function ProvidersAndModelsSection({
         </div>
       </section>
     </div>
+  )
+}
+
+type RerankModelsTableProps = {
+  provider: LLMProvider
+  app: App
+  plugin: YoloPlugin
+  t: Translator
+  models: RerankModel[]
+  sensors: ReturnType<typeof useSensors>
+  onDragEnd: (event: DragEndEvent) => void
+  onDelete: (modelId: string) => void
+  deletingModelIds: Set<string>
+}
+
+function RerankModelsTable({
+  provider,
+  app,
+  plugin,
+  t,
+  models,
+  sensors,
+  onDragEnd,
+  onDelete,
+  deletingModelIds,
+}: RerankModelsTableProps) {
+  const items = models.map((model) => model.id)
+  const rerankSupported = providerSupportsRerank(provider)
+
+  return (
+    <div className="yolo-models-subsection">
+      <div className="yolo-models-subsection-header">
+        <span>{t('settings.models.rerankModels', 'Rerank models')}</span>
+        {rerankSupported && (
+          <button
+            type="button"
+            className="yolo-add-model-btn"
+            onClick={() => {
+              const modal = new AddRerankModelModal(app, plugin, provider)
+              modal.open()
+            }}
+          >
+            + {t('settings.models.addRerankModel', 'Add rerank model')}
+          </button>
+        )}
+      </div>
+
+      {models.length > 0 ? (
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={onDragEnd}
+        >
+          <SortableContext items={items} strategy={verticalListSortingStrategy}>
+            <table className="yolo-models-table yolo-rerank-models-table">
+              <colgroup>
+                <col width={16} />
+                <col />
+                <col />
+                <col width={60} />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>{t('settings.models.modelName')}</th>
+                  <th>Model (calling ID)</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {models.map((model) => (
+                  <RerankModelRow
+                    key={model.id}
+                    provider={provider}
+                    model={model}
+                    app={app}
+                    plugin={plugin}
+                    t={t}
+                    onDelete={onDelete}
+                    isDeleting={deletingModelIds.has(model.id)}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </SortableContext>
+        </DndContext>
+      ) : (
+        <div className="yolo-no-models">
+          {!rerankSupported
+            ? `${provider.id} provider does not support rerank.`
+            : t(
+                'settings.models.noRerankModels',
+                'No rerank models configured',
+              )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+type RerankModelRowProps = {
+  provider: LLMProvider
+  model: RerankModel
+  app: App
+  plugin: YoloPlugin
+  t: Translator
+  onDelete: (modelId: string) => void
+  isDeleting: boolean
+}
+
+function RerankModelRow({
+  provider,
+  model,
+  app,
+  plugin,
+  t,
+  onDelete,
+  isDeleting,
+}: RerankModelRowProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: model.id })
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  }
+
+  return (
+    <tr
+      ref={setNodeRef}
+      style={style}
+      className={isDragging ? 'yolo-row-dragging' : ''}
+      data-model-id={model.id}
+      data-model-key={`${provider.id}:${model.id}`}
+      {...attributes}
+      {...listeners}
+    >
+      <td>
+        <button
+          type="button"
+          className="yolo-drag-handle"
+          aria-label={t('settings.models.dragHandle', 'Drag to reorder')}
+        >
+          <GripVertical />
+        </button>
+      </td>
+      <td title={model.id}>{model.name ?? model.model ?? model.id}</td>
+      <td title={model.model}>{model.model}</td>
+      <td>
+        <div className="yolo-settings-actions">
+          <button
+            type="button"
+            onClick={() => new EditRerankModelModal(app, plugin, model).open()}
+            className="clickable-icon"
+            title="Edit model"
+            disabled={isDeleting}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <Edit />
+          </button>
+          <button
+            type="button"
+            onClick={() => onDelete(model.id)}
+            className="clickable-icon"
+            disabled={isDeleting}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {isDeleting ? <Loader2 className="yolo-spinner" /> : <Trash2 />}
+          </button>
+        </div>
+      </td>
+    </tr>
   )
 }

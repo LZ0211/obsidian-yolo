@@ -530,7 +530,7 @@ export default class YoloPlugin extends Plugin {
 
   private getModelListCacheKey(
     providerId: string,
-    scope: 'chat' | 'embedding',
+    scope: 'chat' | 'embedding' | 'rerank',
   ): string {
     return `${providerId}::${scope}`
   }
@@ -538,7 +538,7 @@ export default class YoloPlugin extends Plugin {
   // Get cached model list for a provider
   getCachedModelList(
     providerId: string,
-    scope: 'chat' | 'embedding' = 'chat',
+    scope: 'chat' | 'embedding' | 'rerank' = 'chat',
   ): string[] | null {
     const cached = this.modelListCache.get(
       this.getModelListCacheKey(providerId, scope),
@@ -553,7 +553,7 @@ export default class YoloPlugin extends Plugin {
   setCachedModelList(
     providerId: string,
     models: string[],
-    scope: 'chat' | 'embedding' = 'chat',
+    scope: 'chat' | 'embedding' | 'rerank' = 'chat',
   ): void {
     this.modelListCache.set(this.getModelListCacheKey(providerId, scope), {
       models,
