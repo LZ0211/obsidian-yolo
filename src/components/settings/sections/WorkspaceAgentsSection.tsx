@@ -1,4 +1,4 @@
-import { Pencil, Plus, Trash2 } from 'lucide-react'
+import { Pencil, Plus, Trash2, Wrench } from 'lucide-react'
 import { App, Notice } from 'obsidian'
 import { useCallback, useMemo, useState } from 'react'
 import { v4 as uuidv4 } from 'uuid'
@@ -9,13 +9,17 @@ import {
   type WorkspaceAgent,
   type WorkspaceAgentPolicy,
 } from '../../../settings/schema/setting.types'
+import type { Assistant } from '../../../types/assistant.types'
 import { ObsidianSetting } from '../../common/ObsidianSetting'
 import { ObsidianToggle } from '../../common/ObsidianToggle'
+import { SimpleSelect } from '../../common/SimpleSelect'
 
+import { WorkspaceAgentToolOverridesModal } from '../modals/WorkspaceAgentToolOverridesModal'
 import { WorkspaceAgentScopeEditor } from './WorkspaceAgentScopeEditor'
 
+// 未设置工作目录时统一为 vault 根（`/`），运行时归一为"全部允许"。
 const defaultPolicy = (): WorkspaceAgentPolicy => ({
-  workspaceRoot: '',
+  workspaceRoot: '/',
   readAllowlist: [],
   readDenylist: [],
   writeDenylist: [],
@@ -30,6 +34,9 @@ export function WorkspaceAgentsSection({ app }: { app: App }) {
   const { t } = useLanguage()
   const { settings, setSettings } = useSettings()
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [toolOverridesAgentId, setToolOverridesAgentId] = useState<
+    string | null
+  >(null)
   const agents = settings.workspaceAgents ?? []
 
   const updateAgent = useCallback(
@@ -106,10 +113,17 @@ export function WorkspaceAgentsSection({ app }: { app: App }) {
           'Each workspace agent inherits an Assistant template and adds a home-directory workspace policy.',
         )}
       >
-        <button
-          type="button"
-          className="clickable-icon"
-          onClick={() => {
+        <SimpleSelect
+          value=""
+          options={[
+            { value: '', label: t('common.add', 'Add') },
+            ...templateOptions.map((option) => ({
+              value: option.id,
+              label: option.name,
+            })),
+          ]}
+          onChange={(templateId) => {
+            if (!templateId) return
             if (templateOptions.length === 0) {
               new Notice(
                 t(
@@ -119,12 +133,10 @@ export function WorkspaceAgentsSection({ app }: { app: App }) {
               )
               return
             }
-            createAgent(templateOptions[0].id)
+            createAgent(templateId)
           }}
-          aria-label={t('common.add', 'Add')}
-        >
-          <Plus size={16} />
-        </button>
+          placeholder={t('settings.workspaceAgents.pickTemplate', 'Pick a template')}
+        />
       </ObsidianSetting>
 
       {agents.map((agent) => {
@@ -198,11 +210,58 @@ export function WorkspaceAgentsSection({ app }: { app: App }) {
                     }))
                   }
                 />
+                {template ? (
+                  <button
+                    type="button"
+                    className="yolo-workspace-agents-tool-overrides-button"
+                    onClick={() => setToolOverridesAgentId(agent.id)}
+                  >
+                    <Wrench size={14} />
+                    <span>
+                      {t(
+                        'settings.workspaceAgents.toolOverridesButton',
+                        'Tool overrides',
+                      )}
+                    </span>
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>
         )
       })}
+
+      {toolOverridesAgentId !== null ? (() => {
+        const target = agents.find(
+          (agent) => agent.id === toolOverridesAgentId,
+        )
+        const template = target
+          ? (settings.assistants ?? []).find(
+              (candidate) => candidate.id === target.templateId,
+            )
+          : undefined
+        if (!target || !template) {
+          setToolOverridesAgentId(null)
+          return null
+        }
+        const close = () => setToolOverridesAgentId(null)
+        return (
+          <div className="yolo-workspace-agents-tool-overrides-modal">
+            <WorkspaceAgentToolOverridesModal
+              template={template}
+              value={target.behaviorOverrides}
+              onChange={(nextOverrides) => {
+                updateAgent(target.id, (current) => ({
+                  ...current,
+                  behaviorOverrides: nextOverrides,
+                  updatedAt: Date.now(),
+                }))
+              }}
+              onClose={close}
+            />
+          </div>
+        )
+      })() : null}
     </div>
   )
 }
