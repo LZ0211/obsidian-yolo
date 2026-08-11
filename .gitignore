@@ -15,6 +15,7 @@ vendor/
 main.js
 meta.json
 main.css
+web-ui/dist/
 
 # Exclude sourcemaps
 *.map

@@ -57,6 +57,31 @@ export { htmlToMarkdown };
 export const parseYaml = (text: string): unknown => yamlLoad(text)
 export const stringifyYaml = (value: unknown): string => yamlDump(value)
 
+// `resolveSubpath` is imported by the shared `resolve-wikilink-target` module
+// (fs_read wikilink targets). The web App mock's metadataCache has no file
+// caches (getFileCache → null), so it is never exercised in practice — it
+// mirrors Obsidian's heading/block subpath resolution on the cache shape so
+// the shared bundle resolves the import.
+export function resolveSubpath(
+  cache: unknown,
+  subpath: string,
+):
+  | { type: 'heading'; current: unknown }
+  | { type: 'block'; block: unknown }
+  | null {
+  if (!subpath.startsWith('#')) return null
+  const key = subpath.slice(1)
+  if (key.startsWith('^')) {
+    const blockId = key.slice(1)
+    const block = (cache as { blocks?: Record<string, unknown> }).blocks?.[blockId]
+    return block ? { type: 'block', block } : null
+  }
+  const normalized = key.toLowerCase()
+  const current = (cache as { headings?: Array<{ heading: string }> })
+    .headings?.find((h) => h.heading.toLowerCase() === normalized)
+  return current ? { type: 'heading', current } : null
+}
+
 installDomCompat();
 
 // ============================================================================

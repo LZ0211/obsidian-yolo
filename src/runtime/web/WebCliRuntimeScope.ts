@@ -9,6 +9,7 @@
  */
 import type {
   ChatRuntime,
+  ChatRuntimeId,
   ChatRuntimeSnapshot,
   ChatSessionSummary,
 } from '../../core/chat-runtime/contract'
@@ -198,9 +199,10 @@ export function createWebCliRuntimeScope(
 ): CliRuntimeScope & {
   /** 渲染层共享的契约 ChatRuntime（ChatSidebarTabs buildRuntime 注入用）。
    *  `conversationId` 绑定 web-native 适配器实例（会话级实例化，与服务端
-   *  native runtime 的按会话缓存一致）。 */
+   *  native runtime 的按会话缓存一致）。runtimeId 取完整 ChatRuntimeId——
+   *  web 主面（'yolo'）与 CLI 面（'claude-code'/'codex'）共用本 scope。 */
   getChatRuntime(
-    runtimeId: CliRuntimeId,
+    runtimeId: ChatRuntimeId,
     conversationId?: string | null,
   ): ChatRuntime
 } {
@@ -208,7 +210,7 @@ export function createWebCliRuntimeScope(
   const controllers = new Map<CliRuntimeId, WebCliConversationController>()
 
   const getAdapter = (
-    runtimeId: CliRuntimeId,
+    runtimeId: ChatRuntimeId,
     conversationId?: string | null,
   ): RemoteChatRuntimeAdapter => {
     const key = `${runtimeId}:${conversationId ?? ''}`

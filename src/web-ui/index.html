@@ -1,0 +1,993 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>Smart Assistent</title>
+    <link rel="stylesheet" href="app.css" />
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body,
+      #app-root {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+      }
+
+      #app-root {
+        overflow: hidden;
+      }
+
+      #app-root,
+      #app-root > .app-container,
+      #app-root > .app-container > .horizontal-main-container,
+      #app-root > .app-container > .horizontal-main-container > .workspace {
+        height: 100%;
+      }
+
+      .workspace.yolo-web-demo-workspace {
+        height: 100%;
+      }
+
+      .workspace-split.mod-left-split,
+      .workspace-split.mod-right-split {
+        flex: 0 0 auto;
+        width: auto;
+      }
+
+      .workspace-split.mod-left-split {
+        min-width: 280px;
+        width: 320px;
+      }
+
+      .workspace-split.mod-right-split {
+        min-width: 320px;
+        width: 380px;
+      }
+
+      .workspace-split.yolo-web-split-hidden {
+        width: 0;
+        min-width: 0;
+        flex-basis: 0;
+        overflow: hidden;
+      }
+
+      /* Visible sidedock title in the tab-header bar. Obsidian hides the
+         standard `workspace-tab-header-inner-title` in sidebars
+         (`--sidebar-tab-text-display`), so the shell inserts this dedicated
+         element instead. */
+      .yolo-sidedock-tab-title {
+        flex: 1 1 auto;
+        align-self: center;
+        margin: 0 8px;
+        padding: 0 4px;
+        font-size: var(--nav-item-size, 13px);
+        font-weight: var(--nav-item-weight, 600);
+        color: var(--text-normal);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .workspace-split.mod-right-split .workspace-leaf-content,
+      .workspace-split.mod-root .workspace-leaf-content {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .side-dock-ribbon-action {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 4px;
+      }
+
+      .nav-action-button {
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .tree-item-inner {
+        min-width: 0;
+        flex: 1 1 auto;
+      }
+
+      .nav-header,
+      .nav-files-container {
+        color: var(--text-normal);
+      }
+
+      .nav-files-container {
+        display: block;
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+
+      .yolo-web-files-nav-header.is-hidden,
+      .yolo-web-files-nav-container.is-hidden,
+      .yolo-web-files-state.is-hidden,
+      .yolo-web-history-pane.is-hidden,
+      .workspace-tab-header-tab-list.is-hidden {
+        display: none !important;
+      }
+
+      .yolo-web-center-topbar-meta {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex: 1 1 auto;
+        min-width: 0;
+        padding: 0 8px;
+      }
+
+      .yolo-web-center-topbar-title {
+        flex: 1 1 auto;
+        min-width: 0;
+        color: var(--text-normal);
+        font-size: var(--font-ui-small);
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .yolo-web-center-topbar-title-text {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .yolo-web-center-topbar-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-shrink: 0;
+      }
+
+      .yolo-web-center-topbar-actions select {
+        min-width: 120px;
+        padding: 2px 6px;
+        border: 1px solid var(--background-modifier-border);
+        border-radius: var(--radius-s, 4px);
+        background: var(--background-secondary);
+        color: var(--text-normal);
+        font-size: var(--font-ui-smaller);
+      }
+
+      .tree-item,
+      .tree-item-self,
+      .nav-folder-title-content,
+      .nav-file-title-content,
+      .tree-item-flair {
+        color: var(--text-normal);
+      }
+
+      .yolo-web-demo-pane-footer {
+        padding: 0 16px 12px;
+        color: var(--text-faint);
+        font-size: var(--font-ui-smaller);
+      }
+
+      .yolo-web-history-pane {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        min-height: 0;
+      }
+
+      .yolo-web-history-nav-header {
+        padding: 8px 10px;
+        border-bottom: 1px solid
+          color-mix(in srgb, var(--background-modifier-border) 60%, transparent);
+      }
+
+      .yolo-web-history-new-chat-button {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 8px 10px;
+        border: 1px solid var(--background-modifier-border);
+        border-radius: var(--radius-m, 8px);
+        color: var(--text-normal);
+        background: var(--background-secondary);
+        font-size: var(--font-ui-small);
+        cursor: pointer;
+      }
+
+      .yolo-web-history-new-chat-button:hover {
+        background: var(--background-modifier-hover);
+        border-color: var(--interactive-accent);
+      }
+
+      /* On mobile, "New chat" is already covered by the chat header's "+"
+         button, so the history pane's own entry point (and the header strip
+         that only wraps it) is redundant there. */
+      body.is-mobile .yolo-mobile-drawer .yolo-web-history-nav-header {
+        display: none;
+      }
+
+      .yolo-web-history-new-chat-label {
+        font-weight: 600;
+      }
+
+      .yolo-web-history-list {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: auto;
+        padding: 0;
+        margin: 0;
+        list-style: none;
+      }
+
+      .yolo-web-history-pane .search-input-container {
+        margin: 8px 10px;
+      }
+
+      .yolo-web-history-list .yolo-chat-list-dropdown-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        margin: 2px 4px;
+        border-radius: var(--radius-m, 6px);
+        cursor: pointer;
+        color: var(--text-normal);
+      }
+
+      .yolo-web-history-list .yolo-chat-list-dropdown-item:hover {
+        background: color-mix(
+          in srgb,
+          var(--background-modifier-hover) 92%,
+          transparent
+        );
+      }
+
+      .yolo-web-history-list .yolo-chat-list-dropdown-item-title {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .yolo-web-history-list .yolo-chat-list-dropdown-item-title-group {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+
+      .yolo-web-history-list .yolo-chat-list-dropdown-item-title-text {
+        display: block;
+        flex: 0 1 auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: var(--nav-item-size, var(--font-ui-small));
+      }
+
+      .yolo-web-history-list .yolo-chat-list-dropdown-item-meta {
+        flex-shrink: 0;
+        color: var(--text-faint);
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .yolo-web-history-list .yolo-chat-list-dropdown-item-title-input {
+        flex: 1;
+        min-width: 0;
+        padding: 2px 6px;
+        border: 1px solid var(--background-modifier-border);
+        border-radius: var(--radius-s, 4px);
+        background: var(--background-primary);
+        color: var(--text-normal);
+        font-size: var(--nav-item-size, var(--font-ui-small));
+      }
+
+      .yolo-web-history-list .yolo-chat-list-dropdown-item-actions {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        flex-shrink: 0;
+      }
+
+      .yolo-web-history-list .yolo-chat-list-dropdown-item-icon,
+      .yolo-web-history-list .yolo-chat-list-pin-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 0;
+        border-radius: var(--radius-s, 4px);
+        color: var(--text-muted);
+        background: transparent;
+        cursor: pointer;
+        opacity: 0;
+        transform: translateX(5px) scale(0.96);
+        pointer-events: none;
+        transition:
+          opacity 140ms ease,
+          transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+          color 120ms ease,
+          background-color 120ms ease;
+      }
+
+      .yolo-web-history-list
+        .yolo-chat-list-dropdown-item:hover
+        .yolo-chat-list-dropdown-item-icon,
+      .yolo-web-history-list
+        .yolo-chat-list-dropdown-item:focus-within
+        .yolo-chat-list-dropdown-item-icon,
+      .yolo-web-history-list
+        .yolo-chat-list-dropdown-item:hover
+        .yolo-chat-list-pin-button,
+      .yolo-web-history-list
+        .yolo-chat-list-dropdown-item:focus-within
+        .yolo-chat-list-pin-button,
+      .yolo-web-history-list
+        .yolo-chat-list-dropdown-item-actions.is-more-open
+        .yolo-chat-list-dropdown-item-icon,
+      .yolo-web-history-list
+        .yolo-chat-list-dropdown-item-actions.is-more-open
+        .yolo-chat-list-pin-button {
+        opacity: 1;
+        transform: translateX(0) scale(1);
+        pointer-events: auto;
+      }
+
+      .yolo-web-history-list .yolo-chat-list-dropdown-item-icon:hover,
+      .yolo-web-history-list .yolo-chat-list-pin-button:hover {
+        background: var(--background-modifier-hover);
+        color: var(--text-normal);
+      }
+
+      .yolo-web-history-list .yolo-chat-list-pin-button.is-pinned {
+        color: var(--interactive-accent);
+        opacity: 1;
+        transform: translateX(0) scale(1);
+        pointer-events: auto;
+      }
+
+      .yolo-web-history-list .yolo-chat-list-inline-actions {
+        display: grid;
+        grid-template-columns: 0fr;
+        opacity: 0;
+        transform: translateX(6px);
+        transform-origin: right center;
+        pointer-events: none;
+        transition:
+          grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1),
+          opacity 150ms ease,
+          transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      .yolo-web-history-list .yolo-chat-list-inline-actions.is-open {
+        grid-template-columns: 1fr;
+        opacity: 1;
+        transform: translateX(0);
+        pointer-events: auto;
+      }
+
+      .yolo-web-history-list .yolo-chat-list-inline-actions-inner {
+        min-width: 0;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+
+      .yolo-web-history-list .yolo-chat-list-more-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 0;
+        border-radius: var(--radius-s, 4px);
+        color: var(--text-muted);
+        background: transparent;
+        cursor: pointer;
+      }
+
+      .yolo-web-history-list .yolo-chat-list-more-button:hover {
+        background: var(--background-modifier-hover);
+        color: var(--text-normal);
+      }
+
+      .yolo-web-history-list .yolo-chat-list-more-button.is-open {
+        color: var(--text-normal);
+        background: var(--background-modifier-hover);
+      }
+
+      .yolo-web-history-list .yolo-chat-list-more-button svg {
+        transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+        transform-origin: center;
+      }
+
+      .yolo-web-history-list .yolo-chat-list-more-button.is-open svg {
+        transform: rotate(90deg) scale(0.96);
+      }
+
+      .yolo-web-history-list .yolo-chat-list-dropdown-empty {
+        padding: 12px 14px;
+        color: var(--text-faint);
+        font-size: var(--font-ui-smaller);
+        text-align: center;
+        list-style: none;
+      }
+
+      .yolo-web-history-list .yolo-chat-list-dropdown-divider {
+        padding: 10px 14px 4px;
+        color: var(--text-muted);
+        font-size: var(--font-ui-smaller);
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        list-style: none;
+        pointer-events: none;
+      }
+
+      .yolo-web-demo-chat-shell {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        min-height: 0;
+        background: var(--background-primary);
+      }
+
+      .yolo-web-demo-chat-header {
+        padding: 18px 20px 14px;
+        border-bottom: 1px solid var(--background-modifier-border);
+      }
+
+      .yolo-web-demo-chat-title {
+        color: var(--text-normal);
+        font-size: 22px;
+        font-weight: 700;
+      }
+
+      .yolo-web-demo-chat-subtitle {
+        margin-top: 6px;
+        color: var(--text-muted);
+        font-size: 13px;
+        line-height: 1.4;
+      }
+
+      .yolo-web-demo-chat-transcript {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: auto;
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .yolo-web-demo-message {
+        max-width: 720px;
+        padding: 12px 14px;
+        border: 1px solid var(--background-modifier-border);
+        border-radius: 12px;
+        background: var(--background-secondary);
+      }
+
+      .yolo-web-demo-message.mod-user {
+        margin-left: auto;
+        background: var(--background-modifier-hover);
+      }
+
+      .yolo-web-demo-message-author {
+        color: var(--text-normal);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .yolo-web-demo-message-body {
+        margin-top: 6px;
+        color: var(--text-muted);
+        line-height: 1.5;
+      }
+
+      .yolo-web-demo-composer {
+        padding: 14px 20px 18px;
+        border-top: 1px solid var(--background-modifier-border);
+        background: var(--background-primary-alt, var(--background-primary));
+      }
+
+      .yolo-web-demo-composer-meta {
+        margin-bottom: 8px;
+        color: var(--text-faint);
+        font-size: var(--font-ui-smaller);
+      }
+
+      .yolo-web-demo-composer-input {
+        min-height: 52px;
+        padding: 14px 16px;
+        border: 1px solid var(--background-modifier-border);
+        border-radius: 14px;
+        color: var(--text-muted);
+        background: var(--background-secondary);
+      }
+
+      /* Preview host contract: applied directly to the pane's own content
+         element (not the ambient .view-content / .yolo-mobile-drawer-slot
+         host, which differs by platform and — on mobile — must stay
+         overflow:hidden for the sticky files/history header contract).
+         This element owns its own scrolling, and lays its children out as a
+         flex column so full-bleed media (image/pdf/html iframe) can stretch
+         to fill the remaining height via flex: 1 1 auto below, while normal
+         markdown/text content just flows and lets this pane scroll it. */
+      .yolo-web-preview-pane {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 16px;
+        color: var(--text-normal);
+        background: var(--background-secondary);
+      }
+
+      .yolo-web-preview-pane .markdown-reading-view,
+      .yolo-web-preview-pane .empty-state {
+        border-radius: 8px;
+        background: var(--background-secondary);
+      }
+
+      .yolo-web-preview-fallback,
+      .yolo-web-pane-state {
+        color: var(--text-muted);
+      }
+
+      .yolo-web-preview-content {
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+
+      /* Markdown tables can render much wider than the pane. Give the table
+         itself its own horizontal scroll region (GitHub's markdown-body
+         technique) instead of the whole preview pane, which we deliberately
+         keep overflow-x: hidden above. */
+      .yolo-web-preview-content .yolo-web-markdown-preview table {
+        display: block;
+        max-width: 100%;
+        overflow-x: auto;
+      }
+
+      /* Text preview */
+      .yolo-web-text-preview {
+        white-space: pre-wrap;
+        word-break: break-word;
+        padding: 12px;
+        margin: 0;
+        border-radius: 8px;
+        background: var(--background-secondary);
+      }
+
+      /* Code preview */
+      .yolo-web-code-preview {
+        margin: 0;
+        border-radius: 8px;
+        font-size: 13px;
+        line-height: 1.5;
+        overflow: auto;
+      }
+
+      .yolo-web-code-preview code {
+        white-space: pre;
+      }
+
+      /* CSV preview */
+      .yolo-web-csv-preview {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      .yolo-web-csv-preview-warning {
+        padding: 8px 12px;
+        margin-bottom: 8px;
+        border-radius: 6px;
+        background: var(--background-modifier-warning, rgba(255, 200, 0, 0.15));
+        color: var(--text-warning, #c90);
+        font-size: var(--font-ui-smaller);
+      }
+
+      .yolo-web-csv-preview-table-wrapper {
+        flex: 1 1 auto;
+        overflow: auto;
+        min-height: 0;
+        border-radius: 8px;
+        background: var(--background-secondary);
+      }
+
+      .yolo-web-csv-preview-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      .yolo-web-csv-preview-th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        padding: 8px 12px;
+        background: var(--background-secondary);
+        border-bottom: 2px solid var(--background-modifier-border);
+        color: var(--text-normal);
+        font-weight: 600;
+        text-align: left;
+        white-space: nowrap;
+      }
+
+      .yolo-web-csv-preview-td {
+        padding: 6px 12px;
+        border-bottom: 1px solid var(--background-modifier-border);
+        color: var(--text-muted);
+        white-space: nowrap;
+      }
+
+      .yolo-web-csv-preview-empty {
+        padding: 24px;
+        color: var(--text-muted);
+        text-align: center;
+      }
+
+      /* Markdown preview */
+      .yolo-web-markdown-preview {
+        padding: 12px;
+      }
+
+      /* Frontmatter block — rendered before the main markdown body.
+         The .frontmatter selector is already handled by base.css
+         (border-top/bottom, transparent bg); we only add padding here. */
+      .yolo-web-frontmatter {
+        padding: 8px 0 10px;
+        margin-bottom: 4px;
+      }
+
+      .yolo-web-frontmatter-yaml {
+        margin: 0;
+        padding: 0;
+        font-family: var(--font-monospace, monospace);
+        font-size: 12px;
+        line-height: 1.6;
+        color: var(--text-muted);
+        background: transparent;
+        white-space: pre-wrap;
+        word-break: break-word;
+        border: none;
+      }
+
+      /* Embed loading / error states */
+      .yolo-web-embed-loading {
+        display: inline-block;
+        padding: 4px 8px;
+        margin: 4px 0;
+        border-radius: 4px;
+        background: var(--background-modifier-hover);
+        color: var(--text-muted);
+        font-size: var(--font-ui-smaller);
+      }
+
+      .yolo-web-embed-error {
+        display: inline-block;
+        padding: 4px 8px;
+        margin: 4px 0;
+        border-radius: 4px;
+        background: var(--background-modifier-error, rgba(255, 0, 0, 0.1));
+        color: var(--text-error, #f44);
+        font-size: var(--font-ui-smaller);
+      }
+
+      .yolo-web-embed-image {
+        max-width: 100%;
+        object-fit: contain;
+        border-radius: 6px;
+      }
+
+      .yolo-web-embed-pdf {
+        width: 100%;
+        min-height: 400px;
+        border: 0;
+        border-radius: 6px;
+      }
+
+      /* HTML rendered mode iframe. min-height: 0 (not a fixed px value) so
+         flex: 1 1 auto is what determines the actual height — it now fills
+         the .yolo-web-preview-pane flex column exactly, instead of
+         collapsing to a fixed minimum inside a non-flex ancestor. */
+      .yolo-web-html-preview-iframe {
+        width: 100%;
+        flex: 1 1 auto;
+        min-height: 0;
+        border: 0;
+        border-radius: 8px;
+        background: var(--background-primary, #fff);
+      }
+
+      .yolo-web-preview-text {
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      /* Full-file image/PDF preview. Override the base Obsidian
+         .image-embed (width: fit-content, sized to the image's natural
+         resolution) / .pdf-embed (fixed height: 800px) rules so these
+         stretch to fill the pane instead — see obsidianPreviewDom.ts, which
+         applies both the base class (for shared chrome) and this one. */
+      .yolo-web-preview-image,
+      .yolo-web-preview-pdf {
+        flex: 1 1 auto;
+        min-height: 0;
+        width: 100%;
+        height: 100%;
+        border: 0;
+        border-radius: 8px;
+        background: var(--background-secondary);
+      }
+
+      .yolo-web-preview-image {
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+        align-self: center;
+      }
+
+      .yolo-web-auth-page {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100%;
+        padding: 24px;
+        background: var(--background-primary);
+      }
+
+      .yolo-web-auth-page > .modal.mod-settings {
+        width: min(480px, calc(100vw - 32px));
+        max-width: 100%;
+        margin: 0;
+        background: var(--background-secondary);
+        border: 1px solid var(--background-modifier-border);
+        border-radius: var(--radius-m, 10px);
+        box-shadow: var(--shadow-l, 0 8px 32px rgba(0, 0, 0, 0.3));
+      }
+
+      .yolo-web-auth-page > .modal.mod-settings > .modal-content {
+        padding: 24px;
+      }
+
+      .yolo-web-auth-title {
+        margin-bottom: 8px;
+        color: var(--text-normal);
+        font-size: 20px;
+        font-weight: 700;
+      }
+
+      .yolo-web-auth-form {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-top: 16px;
+      }
+
+      .yolo-web-auth-input {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid var(--background-modifier-border);
+        border-radius: var(--radius-s, 6px);
+        color: var(--text-normal);
+        background: var(--background-primary);
+        font-size: 14px;
+      }
+
+      .yolo-web-auth-input:focus {
+        outline: none;
+        border-color: var(--interactive-accent);
+        box-shadow: 0 0 0 2px
+          var(--interactive-accent-hover, rgba(0, 0, 0, 0.1));
+      }
+
+      .yolo-web-auth-submit {
+        width: 100%;
+        padding: 10px 16px;
+        border: none;
+        border-radius: var(--radius-s, 6px);
+        color: var(--text-on-accent);
+        background: var(--interactive-accent);
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      .yolo-web-auth-submit:hover:not(:disabled) {
+        background: var(--interactive-accent-hover);
+      }
+
+      .yolo-web-auth-submit:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .yolo-web-auth-error {
+        min-height: 16px;
+        color: var(--text-error, #ff8f8f);
+        font-size: 12px;
+      }
+
+      /* Mobile fold (docs/superpowers/plans/2026-06-30-mobile-web-layout.md, PR1).
+         Every rule here is gated under body.is-mobile so desktop stays
+         byte-identical. */
+
+      /* app.css's own .is-mobile block deliberately maps
+         --nav-item-size: var(--font-ui-medium) (== --font-text-size) instead
+         of --font-ui-small like desktop, for bigger touch targets on a real
+         phone. In this drawer-based web shell the file tree isn't a
+         thumb-reach touch list, so it reads as oversized — bring it back
+         down to the desktop-equivalent size. */
+      body.is-mobile {
+        --nav-item-size: var(--font-ui-small);
+      }
+
+      body.is-mobile .workspace-ribbon.mod-left,
+      body.is-mobile .workspace-split.mod-left-split,
+      body.is-mobile .workspace-split.mod-right-split,
+      body.is-mobile .workspace-ribbon.mod-right {
+        display: none !important;
+      }
+
+      body.is-mobile .workspace-tab-header-container {
+        display: none !important;
+      }
+
+      /* centerLeftToggle/centerRightToggle are always created but only ever
+         moved into a ribbon/tab-header by updateDesktopSidebarToggleLayout,
+         which is skipped on mobile — so without this rule they stay put as
+         trailing flex children of .workspace and render as two stray square
+         buttons that squeeze the root split. */
+      body.is-mobile .sidebar-toggle-button {
+        display: none !important;
+      }
+
+      body.is-mobile .workspace-split.mod-root {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+
+      body.is-mobile .yolo-chat-header--workspace {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        background: var(--background-primary);
+        margin-bottom: 0;
+      }
+
+      /* Mobile drawer (docs/superpowers/plans/2026-06-30-mobile-web-layout.md,
+         PR2). Layout verbatim from docs/superpowers/prototypes/
+         2026-06-30-mobile-layout.html (.proto-drawer* renamed to
+         .yolo-mobile-drawer*); ribbon reuses the real side-dock-ribbon-action/
+         side-dock-actions/side-dock-settings classes rather than prototype
+         markup, so only the flex-column container behavior needs restating
+         here. */
+      body.is-mobile .yolo-mobile-drawer-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 7;
+        background: var(--background-modifier-cover, rgba(0, 0, 0, 0.45));
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 180ms ease-out;
+      }
+      body.is-mobile .yolo-mobile-drawer-backdrop.is-open {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      body.is-mobile .yolo-mobile-drawer {
+        display: grid;
+        grid-template-columns: 48px 1fr;
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: 100vw;
+        z-index: 8;
+        background: var(--background-secondary);
+        border-right: 1px solid var(--background-modifier-border);
+        transform: translateX(-100%);
+        transition: transform 200ms ease-out;
+        will-change: transform;
+      }
+      body.is-mobile .yolo-mobile-drawer.is-open {
+        transform: translateX(0);
+      }
+
+      body.is-mobile .yolo-mobile-drawer-ribbon.side-dock-ribbon {
+        display: flex;
+        flex-direction: column;
+        width: 48px;
+        height: 100%;
+        border-right: 1px solid var(--background-modifier-border);
+        overflow: auto;
+      }
+      body.is-mobile .yolo-mobile-drawer-ribbon .side-dock-ribbon-action {
+        min-width: 44px;
+        min-height: 44px;
+      }
+      body.is-mobile
+        .yolo-mobile-drawer-ribbon
+        .side-dock-ribbon-action.is-active {
+        color: var(--text-accent);
+        background-color: transparent;
+      }
+
+      body.is-mobile .yolo-mobile-drawer-body {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        min-width: 0;
+      }
+      body.is-mobile .yolo-mobile-drawer-title {
+        padding: 12px 14px;
+        font-size: var(--font-ui-small);
+        font-weight: 700;
+        color: var(--text-muted);
+        border-bottom: 1px solid var(--background-modifier-border);
+        flex-shrink: 0;
+      }
+      body.is-mobile .yolo-mobile-drawer-slots {
+        flex: 1 1 auto;
+        min-height: 0;
+        position: relative;
+      }
+      /* Mirror app.css's .workspace-leaf-content (flex column + overflow:
+         hidden on the host, with the inner list/pane owning its own
+         overflow-y) so the files toolbar/search stay fixed while only
+         .nav-files-container / .yolo-web-history-list scroll — same as the
+         desktop sidebar host already does. Letting the slot itself scroll
+         (overflow-y: auto) would drag the header along with it. */
+      body.is-mobile .yolo-mobile-drawer-slot {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      body.is-mobile .yolo-mobile-drawer-slot.is-hidden {
+        display: none;
+      }
+
+      body.is-mobile .yolo-mobile-hamburger {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        z-index: 6;
+        min-width: 44px;
+        min-height: 44px;
+      }
+      body.is-mobile .yolo-view-toggle--single {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body class="theme-dark">
+    <div id="app-root"></div>
+    <script type="module" src="index.js"></script>
+  </body>
+</html>
