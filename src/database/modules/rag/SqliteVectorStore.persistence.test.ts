@@ -312,7 +312,16 @@ describe('SqliteVectorStore persistence', () => {
 
     expect(await store.listNamespaces()).toEqual([vectorNamespaceId(namespace)])
     expect(await store.getIndexedFiles(namespace)).toEqual(
-      new Map([['notes/a.md', { mtime: 123, contentHash: 'file-hash' }]]),
+      new Map([
+        [
+          'notes/a.md',
+          {
+            mtime: 123,
+            contentHash: 'file-hash',
+            updatedAt: expect.any(Number),
+          },
+        ],
+      ]),
     )
 
     let stats = await store.getStats(namespace)

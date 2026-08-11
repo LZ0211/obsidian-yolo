@@ -94,6 +94,7 @@ type IndexedFileRow = {
   path: string
   mtime: number
   content_hash: string | null
+  updated_at: number | null
 }
 
 type CountRow = {
@@ -505,12 +506,16 @@ export class SqliteVectorStore
     const release = await this.acquireNamespaceReadLease(state)
     try {
       const rows = state.runtime.query<IndexedFileRow>(
-        'select path, mtime, content_hash from rag_files order by path',
+        'select path, mtime, content_hash, updated_at from rag_files order by path',
       )
       return new Map(
         rows.map((row) => [
           row.path,
-          { mtime: row.mtime, contentHash: row.content_hash ?? undefined },
+          {
+            mtime: row.mtime,
+            contentHash: row.content_hash ?? undefined,
+            updatedAt: row.updated_at ?? undefined,
+          },
         ]),
       )
     } finally {

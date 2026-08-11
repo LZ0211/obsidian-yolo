@@ -326,8 +326,14 @@ describe('VectorManager.reconcile', () => {
     const ragStore = fakeVectorStore()
     ragStore.getIndexedFiles.mockResolvedValue(
       new Map([
-        ['ready.md', { mtime: 100, contentHash: 'ready-hash' }],
-        ['vector-only.md', { mtime: 100, contentHash: 'vector-only-hash' }],
+        [
+          'ready.md',
+          { mtime: 100, contentHash: 'ready-hash', updatedAt: 1 },
+        ],
+        [
+          'vector-only.md',
+          { mtime: 100, contentHash: 'vector-only-hash', updatedAt: 1 },
+        ],
       ]),
     )
     ;(ragStore.getFileReadiness as jest.Mock).mockResolvedValue(
@@ -364,8 +370,14 @@ describe('VectorManager.reconcile', () => {
     const ragStore = fakeVectorStore()
     ragStore.getIndexedFiles.mockResolvedValue(
       new Map([
-        ['ready.md', { mtime: 100, contentHash: 'ready-hash' }],
-        ['vector-only.md', { mtime: 100, contentHash: 'vector-only-hash' }],
+        [
+          'ready.md',
+          { mtime: 100, contentHash: 'ready-hash', updatedAt: 1 },
+        ],
+        [
+          'vector-only.md',
+          { mtime: 100, contentHash: 'vector-only-hash', updatedAt: 1 },
+        ],
       ]),
     )
     ;(ragStore.getFileReadiness as jest.Mock).mockResolvedValue(
@@ -385,13 +397,8 @@ describe('VectorManager.reconcile', () => {
       onProgress,
     })
 
-    expect(onProgress).toHaveBeenCalledTimes(1)
-    expect(onProgress).toHaveBeenCalledWith(
-      expect.objectContaining({
-        totalFiles: 2,
-        completedFiles: 2,
-      }),
-    )
+    // 无待处理文件时直接完成，不报中间进度（避免无变更的更新显示伪进度）
+    expect(onProgress).not.toHaveBeenCalled()
     expect(ragStore.replaceFile).not.toHaveBeenCalled()
   })
 

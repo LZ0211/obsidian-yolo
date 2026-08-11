@@ -184,7 +184,12 @@ export type VectorStore = {
   }): Promise<readonly string[]>
   getIndexedFiles?(
     namespace: VectorNamespace,
-  ): Promise<Map<string, { mtime: number; contentHash?: string }>>
+  ): Promise<
+    Map<
+      string,
+      { mtime: number; contentHash?: string; updatedAt?: number }
+    >
+  >
   replaceFile(namespace: VectorNamespace, file: VectorFileWrite): Promise<void>
   replaceFiles?(
     namespace: VectorNamespace,

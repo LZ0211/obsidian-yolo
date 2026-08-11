@@ -390,6 +390,7 @@ export class VectorManager {
       chunkOverlap,
     )
 
+    const realMtime = await this.readRealFileMtime(file)
     const chunks: DesiredChunk[] = []
     for (const doc of docs) {
       const meta: VectorMetaData = {
@@ -402,7 +403,7 @@ export class VectorManager {
         content: doc.content,
         contentHash,
         metadata: meta,
-        mtime: Math.round(file.stat.mtime),
+        mtime: realMtime,
       })
     }
     return chunks
@@ -545,7 +546,22 @@ export class VectorManager {
     for (const file of candidateFiles) {
       if (file.stat.size === 0) continue
       const existing = indexedFiles.get(file.path)
-      if (existing == null || existing.mtime !== Math.round(file.stat.mtime)) {
+      if (existing == null) {
+        filesToChunkify.push(file)
+        continue
+      }
+      // 文件在索引写入之后被修改过 → 待处理；否则（mtime 早于索引时间）
+      // 视为已索引的旧文件。用索引写入时间（updated_at）做基准，不比较
+      // db 存的 mtime，避免 Obsidian TFile.stat 缓存噪声导致重复索引。
+      const realMtime = await this.readRealFileMtime(file)
+      if (existing.updatedAt !== undefined) {
+        if (realMtime > existing.updatedAt * 1000) {
+          filesToChunkify.push(file)
+        }
+        continue
+      }
+      // 老数据无 updated_at：回退 mtime 比较
+      if (existing.mtime !== realMtime) {
         filesToChunkify.push(file)
       }
     }
@@ -567,6 +583,12 @@ export class VectorManager {
           const readiness = fileReadiness.get(file.path)
           return readiness?.vectorReady === true
         }).length
+
+    // 没有待处理文件时直接完成：不报中间进度（否则无变更的"更新索引"也会
+    // 显示一次 99% 的伪进度，看起来像重新处理了一遍）。
+    if (filesToChunkify.length === 0 && !truncate) {
+      return { permanentFailedPaths: [], chunkifyFailedPaths: [] }
+    }
 
     onProgress?.({
       completedChunks: 0,
@@ -650,7 +672,7 @@ export class VectorManager {
         const { fileWrite, permanentFailed } =
           await this.buildVectorStoreFileWrite(
             file,
-            Math.round(file.stat.mtime),
+            await this.readRealFileMtime(file),
             chunks,
             embeddingModel,
             signal,
@@ -739,6 +761,25 @@ export class VectorManager {
     }
 
     return { permanentFailedPaths, chunkifyFailedPaths }
+  }
+
+
+  /**
+   * 实时文件系统 mtime（app.vault.adapter.stat），替代 Obsidian TFile.stat
+   * 的缓存值。TFile.stat.mtime 是内部缓存，对部分文件（如邮箱插件反复
+   * 解析的邮件）两次读取的浮点小数可能不同，导致增量判定误判为"文件变了"
+   * 而重复索引。adapter.stat 直接读文件系统，值稳定。
+   */
+  private async readRealFileMtime(file: TFile): Promise<number> {
+    try {
+      const stat = await this.app.vault.adapter.stat(file.path)
+      if (stat && typeof stat.mtime === 'number') {
+        return Math.round(stat.mtime)
+      }
+    } catch {
+      // fallthrough to cached value
+    }
+    return Math.round(file.stat.mtime)
   }
 
   private async buildVectorStoreFileWrite(
