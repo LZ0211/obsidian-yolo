@@ -3,6 +3,7 @@
 
 import { ChatCompletionCreateParams, ReasoningEffort } from 'openai/resources'
 
+import type { ResponsesContinuation } from '../../core/agent/responsesContinuation'
 import { ReasoningLevel } from '../reasoning'
 import { ToolCallRequest } from '../tool-call.types'
 
@@ -13,6 +14,12 @@ export type LLMRequestBase = {
   model: string
 
   reasoningLevel?: ReasoningLevel
+
+  // Codex-style stateful continuation for Responses-capable providers. When
+  // `continuation.previousResponseId` is set, the adapter sends
+  // `previous_response_id` + `input: pendingInputItems` instead of resending
+  // the full message history on every iteration.
+  continuation?: ResponsesContinuation
 
   // Tool calling
   tools?: RequestTool[]

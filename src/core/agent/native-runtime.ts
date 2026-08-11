@@ -29,6 +29,7 @@ import {
 } from './compaction'
 import { AgentLlmTurnExecutor } from './llm-turn-executor'
 import { createAgentLoopWorker } from './loop-worker'
+import type { ResponsesContinuation } from './responsesContinuation'
 import {
   applyRepeatedReadCallGuard,
   createRepeatedReadCallGuardState,
@@ -181,6 +182,10 @@ export class NativeAgentRuntime implements AgentRuntime {
     let repeatedToolFailureGuardState = createRepeatedToolFailureGuardState()
     const promptedAutoCompactionAssistantMessageIds = new Set<string>()
     let pendingResumeAssistantMessage = resumeAssistantMessage
+    // Per-run Responses continuation handle. Carries the prior response id and
+    // the accumulated tool-output input items across turns; `undefined` for
+    // non-Responses providers and after handle-reset fallback turns.
+    let responsesContinuation: ResponsesContinuation | undefined = undefined
 
     const runCompletion = new Promise<void>((resolve, reject) => {
       const handleWorkerMessage = (message: AgentWorkerOutbound): void => {
@@ -223,7 +228,9 @@ export class NativeAgentRuntime implements AgentRuntime {
                     promptedAssistantMessageIds:
                       promptedAutoCompactionAssistantMessageIds,
                   })
-                const llmTurnExecutor = new AgentLlmTurnExecutor({
+                const llmTurnExecutorInput: ConstructorParameters<
+                  typeof AgentLlmTurnExecutor
+                >[0] = {
                   providerClient: input.providerClient,
                   model: input.model,
                   requestContextBuilder: input.requestContextBuilder,
@@ -277,20 +284,69 @@ export class NativeAgentRuntime implements AgentRuntime {
                     this.upsertAssistantMessage(assistantMessage)
                     this.notifySubscribers()
                   },
-                })
+                }
 
                 // Record the boundary before the LLM request: messages added
                 // after this point (this turn's assistant + tool) are the
                 // compaction `turnMessages`.
                 currentTurnMessageBoundary = this.messages.length
 
-                const turnResult = await llmTurnExecutor.run()
+                /**
+                 * Run the LLM turn, retrying ONCE on the full message-history
+                 * path when a stateful continuation request (`previous_response_id`
+                 * + accumulated `input`) is rejected/errors. The spec requires
+                 * falling back to message history whenever continuation is
+                 * unavailable; a provider rejection of the continuation request
+                 * is exactly that.
+                 */
+                const runTurnWithContinuationFallback = async (): Promise<
+                  Awaited<ReturnType<AgentLlmTurnExecutor['run']>>
+                > => {
+                  const runOnce = (
+                    continuation: ResponsesContinuation | undefined,
+                  ) => {
+                    const executor = new AgentLlmTurnExecutor({
+                      ...llmTurnExecutorInput,
+                      responsesContinuation: continuation,
+                    })
+                    return executor.run()
+                  }
+                  try {
+                    return await runOnce(responsesContinuation)
+                  } catch (error) {
+                    const continuationInFlight =
+                      responsesContinuation?.previousResponseId != null
+                    const isAbort =
+                      abortSignal.aborted ||
+                      (error instanceof Error && error.name === 'AbortError')
+                    if (!continuationInFlight || isAbort) {
+                      throw error
+                    }
+                    // The failed continuation turn may have upserted a partial
+                    // assistant message after `currentTurnMessageBoundary`;
+                    // truncate it so the retry starts from a clean transcript,
+                    // then clear the handle so the adapter resends the full
+                    // message history.
+                    this.messages = this.messages.slice(
+                      0,
+                      currentTurnMessageBoundary,
+                    )
+                    responsesContinuation = undefined
+                    return runOnce(undefined)
+                  }
+                }
+
+                const turnResult = await runTurnWithContinuationFallback()
                 pendingToolMessageId = null
                 pendingToolCallCount = turnResult.toolCallRequests.length
                 currentDebugTraceId = turnResult.debugTraceId
                 currentTurnRequestMessages = turnResult.requestMessages
                 currentTurnRequestTools = turnResult.requestTools
                 currentTurnRequestReasoning = turnResult.requestReasoning
+                // Carry the per-run Responses handle forward so the next turn
+                // appends tool outputs and reuses the response id. `undefined`
+                // for non-Responses providers and after handle-reset turns.
+                responsesContinuation = turnResult.responsesContinuation
 
                 worker.postMessage({
                   type: 'llm_result',

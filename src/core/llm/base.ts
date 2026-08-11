@@ -29,6 +29,10 @@ export abstract class BaseLLMProvider<P extends LLMProvider> {
     this.provider = provider
   }
 
+  get providerConfig(): P {
+    return this.provider
+  }
+
   resolveResponseExecutionMode(
     deliveryMode: ResponseDeliveryMode,
   ): ResponseExecutionMode {

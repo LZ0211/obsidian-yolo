@@ -38,6 +38,8 @@ export type SingleTurnExecutionResult = {
   content: string
   reasoning?: string
   annotations?: Annotation[]
+  /** Provider response id — the Responses API uses it for stateful continuation. */
+  id?: string
   usage?: ResponseUsage
   finishReason?: string | null
   providerMetadata?: ProviderMetadata
@@ -340,6 +342,7 @@ export async function executeSingleTurn({
         content: response.choices?.[0]?.message?.content ?? '',
         reasoning: response.choices?.[0]?.message?.reasoning ?? undefined,
         annotations: response.choices?.[0]?.message?.annotations,
+        id: response.id,
         usage: response.usage,
         finishReason: response.choices?.[0]?.finish_reason,
         providerMetadata: response.choices?.[0]?.message?.providerMetadata,
@@ -406,6 +409,7 @@ export async function executeSingleTurn({
   let usage: ResponseUsage | undefined
   let finishReason: string | null = null
   let providerMetadata: ProviderMetadata | undefined
+  let streamResponseId: string | undefined
   const turnKey = `single-turn:${Date.now()}:${Math.random().toString(36).slice(2)}`
   const toolCallAccumulator = new ToolCallAccumulator(turnKey)
 
@@ -468,6 +472,9 @@ export async function executeSingleTurn({
         }
         if (reasoningDelta) {
           reasoning += reasoningDelta
+        }
+        if (chunk.id) {
+          streamResponseId = chunk.id
         }
         if (chunk.usage) {
           usage = chunk.usage
@@ -618,6 +625,7 @@ export async function executeSingleTurn({
       content,
       reasoning: reasoning || undefined,
       annotations,
+      id: streamResponseId,
       usage,
       finishReason: finalFinishReason,
       providerMetadata: finalProviderMetadata,

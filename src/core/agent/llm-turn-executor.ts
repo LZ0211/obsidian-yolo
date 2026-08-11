@@ -23,7 +23,14 @@ import { ReasoningPhaseTracker } from '../../utils/chat/reasoningPhaseTracker'
 import { RequestContextBuilder } from '../../utils/chat/requestContextBuilder'
 import { formatErrorMessageWithCauses } from '../../utils/error-message'
 import { hasHostedWebSearch } from '../../utils/llm/model-tools'
-import { executeSingleTurn } from '../ai/single-turn'
+import {
+  type SingleTurnExecutionResult,
+  executeSingleTurn,
+} from '../ai/single-turn'
+import {
+  type ResponsesContinuation,
+  supportsResponsesStatefulContinuation,
+} from './responsesContinuation'
 import { BaseLLMProvider } from '../llm/base'
 import {
   createLLMDebugTrace,
@@ -85,6 +92,13 @@ type AgentLlmTurnExecutorInput = {
     useUrlContext?: boolean
   }
   systemPromptOverride?: string
+  /**
+   * Codex-style stateful continuation for Responses-capable providers. When
+   * set, the request forwards it as `continuation` (the adapter sends
+   * `previous_response_id` + accumulated tool-output items instead of the
+   * full message history).
+   */
+  responsesContinuation?: ResponsesContinuation
   onAssistantMessage: (message: ChatAssistantMessage) => void
 }
 
@@ -107,6 +121,13 @@ type AgentLlmTurnExecutorOutput = {
    * and the cache-warm prefix would not hit.
    */
   requestReasoning: ReasoningLevel | undefined
+  /**
+   * The updated Responses continuation handle: `previousResponseId` points at
+   * this turn's provider response id so the next turn can send a delta-only
+   * `input` alongside `previous_response_id`. `undefined` for non-Responses
+   * providers and after stateless/fallback turns.
+   */
+  responsesContinuation?: ResponsesContinuation
 }
 
 export class AgentLlmTurnExecutor {
@@ -268,6 +289,12 @@ export class AgentLlmTurnExecutor {
           max_tokens: this.input.requestParams?.max_tokens,
           ...(requestReasoning !== undefined
             ? { reasoningLevel: requestReasoning }
+            : {}),
+          // Forward the per-run continuation handle. Only ever present on
+          // Responses-capable providers; other providers ignore `continuation`
+          // and stay byte-for-byte on the message-history path.
+          ...(this.input.responsesContinuation
+            ? { continuation: this.input.responsesContinuation }
             : {}),
         },
         tools,
@@ -486,6 +513,46 @@ export class AgentLlmTurnExecutor {
       requestMessages,
       requestTools: tools,
       requestReasoning,
+      responsesContinuation: this.buildResponsesContinuation(turnResult),
+    }
+  }
+
+  /**
+   * Build the updated per-run continuation handle for the next LLM turn.
+   * Responses-capable providers (`openai-responses`) construct a handle whose
+   * `previousResponseId` points at this turn's provider response id so the
+   * adapter can send `previous_response_id` + `input: pendingInputItems` on
+   * the next turn. Non-Responses providers never construct a handle
+   * (`undefined`), keeping them byte-for-byte on the message-history path.
+   */
+  private buildResponsesContinuation(
+    turnResult: SingleTurnExecutionResult,
+  ): ResponsesContinuation | undefined {
+    if (this.input.apiType !== 'openai-responses') {
+      return undefined
+    }
+    // Stateless Responses endpoints (e.g. DeepSeek) do not support
+    // `previous_response_id`; building a handle there would make the adapter
+    // send a delta-only continuation the API rejects. Fall back to the full
+    // message-history input instead (no handle).
+    if (
+      !supportsResponsesStatefulContinuation(
+        this.input.providerClient.providerConfig?.baseUrl,
+      )
+    ) {
+      return undefined
+    }
+    return {
+      previousResponseId: turnResult.id ?? null,
+      // When the turn produced no provider response id (aborted / mid-stream
+      // loss), the accumulated `pendingInputItems` were never consumed by any
+      // response. Drop them so a later valid-id turn never inherits stale
+      // items; `previousResponseId: null` keeps the adapter on the full
+      // message-history path for that next turn.
+      pendingInputItems: turnResult.id
+        ? (this.input.responsesContinuation?.pendingInputItems ?? [])
+        : [],
+      endTurn: this.input.responsesContinuation?.endTurn ?? true,
     }
   }
 

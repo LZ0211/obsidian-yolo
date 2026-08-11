@@ -262,7 +262,9 @@ export class OpenAIResponsesProvider extends BaseLLMProvider<LLMProvider> {
 
     return {
       async *[Symbol.asyncIterator]() {
-        const state = adapter.createStreamState()
+        const state = adapter.createStreamState(
+          request.continuation?.endTurn,
+        )
         for await (const event of stream) {
           yield* adapter.parseStreamEvent(event, state)
         }

@@ -49,6 +49,12 @@ type StreamState = {
   streamedReasoningItemIds: Set<string>
   /** Hosted searches seen so far, re-emitted in full as each one completes. */
   hostedWebSearchCalls: Map<string, HostedWebSearchCall>
+  /**
+   * The request-level `end_turn` value. The Responses API does not echo it
+   * back, so the finish-reason mapping needs it from the request: `false`
+   * (continuation turned) surfaces as `end_turn_continue`.
+   */
+  endTurn: boolean | undefined
 }
 
 type ReasoningSummaryPartAddedEvent = {
@@ -408,12 +414,16 @@ const getHostedWebSearchCall = (
 const getFinishReason = (
   response: Response,
   sawToolCall: boolean,
+  endTurn: boolean | undefined,
 ): string | null => {
   if (sawToolCall) {
     return 'tool_calls'
   }
   if (response.status === 'incomplete') {
     return 'length'
+  }
+  if (endTurn === false) {
+    return 'end_turn_continue'
   }
   return 'stop'
 }
@@ -425,17 +435,29 @@ export class ChatGPTOAuthResponsesAdapter {
   ): ChatGPTOAuthRequest {
     const isCodexProfile = options?.profile === 'codex'
     const instructions = toInstructions(request.messages)
+    const continuation = request.continuation
+    // Codex-style stateful continuation: once a prior response id exists, the
+    // body switches from the full message history to `previous_response_id` +
+    // accumulated tool-output `input` items (the API deduplicates against the
+    // items already in the open response).
+    const input = continuation?.previousResponseId
+      ? continuation.pendingInputItems
+      : toInputItems(
+          request.messages.filter((message) => message.role !== 'system'),
+        )
     const body: ChatGPTOAuthRequest = {
       model: request.model,
       instructions: instructions || 'You are a helpful assistant.',
-      input: toInputItems(
-        request.messages.filter((message) => message.role !== 'system'),
-      ),
+      input,
       tools: toTools(request.tools),
       tool_choice: toToolChoice(request.tool_choice),
       parallel_tool_calls: true,
       stream: request.stream === true,
       store: false,
+    }
+    if (continuation?.previousResponseId) {
+      body.previous_response_id = continuation.previousResponseId
+      body.end_turn = continuation.endTurn
     }
 
     if (!isCodexProfile) {
@@ -554,7 +576,11 @@ export class ChatGPTOAuthResponsesAdapter {
       object: 'chat.completion',
       choices: [
         {
-          finish_reason: getFinishReason(response, toolCalls.length > 0),
+          finish_reason: getFinishReason(
+            response,
+            toolCalls.length > 0,
+            undefined,
+          ),
           message: {
             role: 'assistant',
             content: text || null,
@@ -726,7 +752,11 @@ export class ChatGPTOAuthResponsesAdapter {
           object: 'chat.completion.chunk',
           choices: [
             {
-              finish_reason: getFinishReason(event.response, state.sawToolCall),
+              finish_reason: getFinishReason(
+                event.response,
+                state.sawToolCall,
+                state.endTurn,
+              ),
               delta: {},
             },
           ],
@@ -763,13 +793,14 @@ export class ChatGPTOAuthResponsesAdapter {
     }
   }
 
-  createStreamState(): StreamState {
+  createStreamState(endTurn?: boolean): StreamState {
     return {
       toolIndexByItemId: new Map(),
       sawToolCall: false,
       reasoningSummaryIndices: new Map(),
       streamedReasoningItemIds: new Set(),
       hostedWebSearchCalls: new Map(),
+      endTurn,
     }
   }
 
