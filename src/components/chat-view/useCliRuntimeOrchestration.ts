@@ -24,7 +24,9 @@ import {
   type CliRuntimeScope,
   type CliSessionRef,
   type CliTurnConfiguration,
+  RUNTIME_CAPABILITIES,
   buildCliEnvironmentContext,
+  isCliRuntime,
   syncNativeConversationTitle,
 } from '../../core/cli-runtime'
 import { CLAUDE_EXIT_PLAN_MODE_TOOL } from '../../core/cli-runtime/claude/exitPlanMode'
@@ -293,7 +295,8 @@ export function useCliRuntimeOrchestration({
   }, [])
   useEffect(() => {
     if (
-      activeRuntimeId === 'yolo' ||
+      !isCliRuntime(activeRuntimeId) ||
+      !RUNTIME_CAPABILITIES[activeRuntimeId].hasNativeSkills ||
       !cliRuntimeScope ||
       !cliConversationController
     ) {
@@ -366,8 +369,15 @@ export function useCliRuntimeOrchestration({
       : (cliConversationId ?? currentConversationId)
 
   useEffect(() => {
-    if (!cliRuntimeScope || activeRuntimeId !== 'codex') return
-    void cliRuntimeScope.warmConversationRuntime('codex').catch(() => undefined)
+    if (
+      !cliRuntimeScope ||
+      !isCliRuntime(activeRuntimeId) ||
+      !RUNTIME_CAPABILITIES[activeRuntimeId].needsWarmup
+    )
+      return
+    void cliRuntimeScope
+      .warmConversationRuntime(activeRuntimeId)
+      .catch(() => undefined)
   }, [activeRuntimeId, cliRuntimeScope])
 
   const cliSessionRestoreGenerationRef = useRef(0)
@@ -661,7 +671,7 @@ export function useCliRuntimeOrchestration({
         console.error('Failed to persist CLI mode preference', error)
       })
       const sessionRef = controller?.getSnapshot().sessionRef
-      if (sessionRef && activeRuntimeId !== 'yolo') {
+      if (sessionRef && isCliRuntime(activeRuntimeId)) {
         void createOrTouchCliConversation(
           preferenceConversationId,
           sessionRef,
@@ -700,7 +710,7 @@ export function useCliRuntimeOrchestration({
 
   const handleCliModeSelectChange = useCallback(
     (nextMode: ChatModeSelectValue) => {
-      if (activeRuntimeId === 'yolo') return
+      if (!isCliRuntime(activeRuntimeId)) return
       if (nextMode === 'ask') return
       if (
         activeRuntimeId === 'claude-code' &&
@@ -730,7 +740,7 @@ export function useCliRuntimeOrchestration({
 
   const handleCliYoloChange = useCallback(
     (enabled: boolean) => {
-      if (activeRuntimeId === 'yolo' || cliChatMode === 'plan') return
+      if (!isCliRuntime(activeRuntimeId) || cliChatMode === 'plan') return
       if (enabled && !settings.chatOptions.fullAccessWarningConfirmed) {
         new AcknowledgementModal(app, {
           title: t(
@@ -806,7 +816,7 @@ export function useCliRuntimeOrchestration({
 
   const handleClaudePlanShortcut = useCallback(
     (event: React.KeyboardEvent<HTMLElement>) => {
-      if (activeRuntimeId !== 'claude-code') return
+      if (!RUNTIME_CAPABILITIES[activeRuntimeId].supportsPlanMode) return
       if (
         event.key !== 'Tab' ||
         !event.shiftKey ||
@@ -834,7 +844,7 @@ export function useCliRuntimeOrchestration({
   )
 
   useEffect(() => {
-    if (activeRuntimeId === 'yolo' || !cliConversationController) return
+    if (!isCliRuntime(activeRuntimeId) || !cliConversationController) return
     void cliConversationController
       .updatePermissionProfile({
         mode: cliChatMode,
@@ -900,7 +910,7 @@ export function useCliRuntimeOrchestration({
 
   const persistCliConfiguration = useCallback(
     (configuration: CliRuntimeConfiguration) => {
-      if (!cliConversationController || activeRuntimeId === 'yolo') return
+      if (!cliConversationController || !isCliRuntime(activeRuntimeId)) return
       const ref = cliConversationController.getSnapshot().sessionRef
       if (ref && cliRuntimeScope) {
         void cliRuntimeScope.sessionService.rememberConfiguration(ref, {
@@ -931,7 +941,7 @@ export function useCliRuntimeOrchestration({
 
   const handleCliModelChange = useCallback(
     (modelId: string | null) => {
-      if (!cliConversationController || activeRuntimeId === 'yolo') return
+      if (!cliConversationController || !isCliRuntime(activeRuntimeId)) return
       const rememberedEffort = modelId
         ? cliPreferenceSettingsRef.current.chatOptions
             .cliReasoningEffortByModel?.[`${activeRuntimeId}:${modelId}`]
@@ -962,7 +972,7 @@ export function useCliRuntimeOrchestration({
 
   const handleCliReasoningEffortChange = useCallback(
     (reasoningEffort: string | null) => {
-      if (!cliConversationController || activeRuntimeId === 'yolo') return
+      if (!cliConversationController || !isCliRuntime(activeRuntimeId)) return
       void cliConversationController
         .updateConfiguration({ reasoningEffort })
         .then((configuration) => {
@@ -991,7 +1001,8 @@ export function useCliRuntimeOrchestration({
       turnConfiguration?: CliTurnConfiguration,
     ) => {
       if (
-        activeRuntimeId === 'yolo' ||
+        !isCliRuntime(activeRuntimeId) ||
+        !RUNTIME_CAPABILITIES[activeRuntimeId].supportsMessageRewrite ||
         !cliConversationController ||
         !cliOperationCoordinator ||
         !cliRuntimeScope ||
