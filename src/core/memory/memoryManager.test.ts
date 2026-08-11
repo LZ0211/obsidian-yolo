@@ -406,6 +406,46 @@ describe('memoryManager', () => {
     expect(context.assistant).toContain('Memory_1: 当前在实现 YOLO 记忆机制')
   })
 
+  it('keeps raw content and parsed snapshot reads of the same file isolated in cache', async () => {
+    const { app } = createMockVaultApp()
+    const settings = {
+      yolo: { baseDir: 'YOLO' },
+      currentAssistantId: 'helper',
+      assistants: [
+        {
+          id: 'helper',
+          name: '助手A',
+          systemPrompt: 'You are helper.',
+        },
+      ],
+    }
+
+    await memoryAdd({
+      app,
+      settings,
+      content: '用户喜欢简洁回答',
+      category: 'preferences',
+      scope: 'global',
+    })
+
+    // Regression: the parsed-snapshot read and the raw-content read share
+    // the same vault-file cache. If one overwrites the other's slot, the raw
+    // read later receives a parsed object and `content.trim()` crashes.
+    await loadMemorySourceSnapshot({
+      app,
+      settings,
+      scope: 'global',
+    })
+
+    const context = await getMemoryPromptContext({
+      app,
+      settings,
+      assistantId: 'helper',
+    })
+    expect(typeof context.global).toBe('string')
+    expect(context.global).toContain('Preference_1')
+  })
+
   it('reads assistant memory when system prompt is empty', async () => {
     const { app } = createMockVaultApp()
     const settings = {

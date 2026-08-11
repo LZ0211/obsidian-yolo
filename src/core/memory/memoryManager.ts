@@ -616,15 +616,21 @@ type VaultFileCacheEntry = {
 }
 
 // Memory and prompt files are re-read on every agent turn even though they
-// rarely change. Cache the parsed result keyed by (app, path, mtime); Obsidian
-// keeps file metadata fresh, so an unchanged mtime reuses the last read instead
-// of hitting disk, parsing, and hashing again.
-const vaultFileReadCache = new WeakMap<App, Map<string, VaultFileCacheEntry>>()
+// rarely change. Cache the parsed result keyed by (app, purpose, path,
+// mtime); Obsidian keeps file metadata fresh, so an unchanged mtime reuses
+// the last read instead of hitting disk, parsing, and hashing again. `purpose`
+// separates callers that cache different shapes for the same path (raw
+// content vs. parsed snapshot) — sharing one slot would poison the cache.
+const vaultFileReadCache = new WeakMap<
+  App,
+  Map<string, VaultFileCacheEntry>
+>()
 
 const readVaultFileCached = async <T>(
   app: App,
   canonicalPath: string,
   read: (content: string) => Promise<T> | T,
+  purpose = 'content',
 ): Promise<T | null> => {
   const existing = app.vault.getAbstractFileByPath(canonicalPath)
   if (!existing || !(existing instanceof TFile)) {
@@ -636,13 +642,14 @@ const readVaultFileCached = async <T>(
     perApp = new Map()
     vaultFileReadCache.set(app, perApp)
   }
-  const cached = perApp.get(canonicalPath)
+  const cacheKey = `${purpose}::${canonicalPath}`
+  const cached = perApp.get(cacheKey)
   if (cached && cached.mtime === mtime) {
     return cached.value as T
   }
   const content = await app.vault.read(existing)
   const value = await read(content)
-  perApp.set(canonicalPath, { mtime, value })
+  perApp.set(cacheKey, { mtime, value })
   return value
 }
 
@@ -947,6 +954,7 @@ const readMemorySourceSnapshot = async ({
         content,
       }
     },
+    'snapshot',
   )
   if (cached) return cached
   // No readable TFile: a missing path is a valid empty snapshot, a folder is not.
