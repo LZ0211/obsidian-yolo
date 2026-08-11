@@ -258,8 +258,12 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     setInjectedRuntime(built)
     return () => {
       setInjectedRuntime(null)
-      void built.dispose()
+      void built.dispose().catch((error: unknown) => {
+        console.error('[YOLO] Failed to dispose injected runtime:', error)
+      })
     }
+    // 注意：依赖 props.buildRuntime 的函数身份——组装层（webChatMount）必须
+    // useCallback memoize，否则每次 render 都会重建 SSE adapter。
   }, [props.buildRuntime, yoloRuntime])
   const runtimeActions = useMemo(
     () =>
