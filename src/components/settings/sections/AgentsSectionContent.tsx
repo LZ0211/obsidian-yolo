@@ -62,15 +62,15 @@ import {
 } from '../../../core/agent/tool-preferences'
 import { applyDynamicToolDescriptions } from '../../../core/agent/tool-selection'
 import {
-  getInjectedToolGroupName,
-  isInjectedBridgeToolName,
-} from '../../../core/mcp/injectionBridge'
+  getInjectedToolGroup,
+  getInjectedToolGroupKey,
+  isLocalToolConfigurableInEditor,
+} from '../../../core/mcp/injectedToolGroup'
 import { getJsSandboxSettings } from '../../../core/mcp/jsSandboxSettings'
 import {
   LOCAL_FS_EDIT_TOOL_NAMES,
   LOCAL_FS_PATH_OPERATION_TOOL_NAMES,
   LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
-  USER_FACING_LOCAL_TOOL_SHORT_NAMES,
   getLocalFileToolServerName,
 } from '../../../core/mcp/localFileTools'
 import { parseToolName } from '../../../core/mcp/tool-name-utils'
@@ -1451,7 +1451,6 @@ export function AgentsSectionContent({
     const localMemorySplitToolTargets = new Set<string>()
     const localWebSplitToolTargets = new Set<string>()
     const templateCeiling = workspaceAgentDraft?.template
-    const userFacingLocalToolNames = new Set(USER_FACING_LOCAL_TOOL_SHORT_NAMES)
 
     availableTools.forEach((tool) => {
       if (!isToolWithinWorkspaceAgentTemplate(tool.name, templateCeiling)) {
@@ -1475,8 +1474,10 @@ export function AgentsSectionContent({
       }
       // Bot-runtime-only built-ins (e.g. send_attachment, Bot Platform Phase
       // 6.5) are never part of the per-assistant configurable surface — keep
-      // them out of the settings tool tree entirely.
-      if (isBuiltin && !userFacingLocalToolNames.has(toolName)) {
+      // them out of the settings tool tree entirely. 注入工具由第三方插件
+      // 主动注册，天然是用户可配置面，不适用该过滤（否则永远进不了下面的
+      // __injected 分组渲染）。
+      if (isBuiltin && !isLocalToolConfigurableInEditor(toolName)) {
         return
       }
       if (isBuiltin && EDIT_FS_TOOL_NAME_SET.has(toolName)) {
@@ -1497,19 +1498,17 @@ export function AgentsSectionContent({
       }
 
       // 注入工具按插件能力分组（注入方自定义组名）；未提供时回退"外部能力"。
-      const injectedGroupName = isInjectedBridgeToolName(toolName)
-        ? getInjectedToolGroupName(toolName)
-        : undefined
+      const injectedGroup = getInjectedToolGroup(toolName)
       const builtinCategory = isBuiltin
         ? (getBuiltinToolCategory(toolName) ?? 'vault')
         : null
-      const key = injectedGroupName
-        ? `__injected:${injectedGroupName}`
+      const key = injectedGroup
+        ? getInjectedToolGroupKey(injectedGroup.name)
         : isBuiltin
           ? `__builtin:${builtinCategory}`
           : serverName
-      const title = injectedGroupName
-        ? injectedGroupName
+      const title = injectedGroup
+        ? injectedGroup.name
         : isBuiltin
           ? t(
               BUILTIN_TOOL_CATEGORY_I18N[builtinCategory!].key,

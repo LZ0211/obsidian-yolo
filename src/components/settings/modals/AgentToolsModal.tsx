@@ -21,6 +21,7 @@ import {
   getBuiltinToolUiMeta,
 } from '../../../core/agent/builtinToolUiMeta'
 import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from '../../../core/agent/subagent/constants'
+import { getInjectedToolGroup } from '../../../core/mcp/injectedToolGroup'
 import { JS_SANDBOX_TOOL_NAME } from '../../../core/mcp/jsSandboxTool'
 import {
   LOCAL_FS_EDIT_TOOL_NAMES,
@@ -171,28 +172,52 @@ function AgentToolsModalContent({
 
     const allTools = [...tools, fileEditTool, memoryOpsTool, webOpsTool]
 
+    // 注入工具按插件自定义能力组名分组（如 "Smart-Docx 插件能力"）；
+    // 未提供组名的注入工具回落通用 External 分类。
+    const injectedGroups = new Map<string, typeof allTools>()
+    const builtinEligibleTools: typeof allTools = []
+    for (const tool of allTools) {
+      const injectedGroup = getInjectedToolGroup(tool.id)
+      if (injectedGroup) {
+        const list = injectedGroups.get(injectedGroup.name) ?? []
+        list.push(tool)
+        injectedGroups.set(injectedGroup.name, list)
+        continue
+      }
+      builtinEligibleTools.push(tool)
+    }
+
     const byCategory = new Map<BuiltinToolCategory, typeof allTools>()
     for (const category of BUILTIN_TOOL_CATEGORY_ORDER) {
       byCategory.set(category, [])
     }
-    for (const tool of allTools) {
+    for (const tool of builtinEligibleTools) {
       const category = getBuiltinToolCategory(tool.id) ?? 'vault'
       byCategory.get(category)!.push(tool)
     }
 
-    return BUILTIN_TOOL_CATEGORY_ORDER.map((category) => ({
-      category,
-      title: t(
-        BUILTIN_TOOL_CATEGORY_I18N[category].key,
-        BUILTIN_TOOL_CATEGORY_I18N[category].fallback,
+    return [
+      ...BUILTIN_TOOL_CATEGORY_ORDER.map((category) => ({
+        category,
+        title: t(
+          BUILTIN_TOOL_CATEGORY_I18N[category].key,
+          BUILTIN_TOOL_CATEGORY_I18N[category].fallback,
+        ),
+        tools: (byCategory.get(category) ?? []).slice().sort((a, b) => {
+          return (
+            getBuiltinToolDisplayIndex(category, a.id) -
+            getBuiltinToolDisplayIndex(category, b.id)
+          )
+        }),
+      })).filter((group) => group.tools.length > 0),
+      ...Array.from(injectedGroups.entries()).map(
+        ([groupName, groupTools]) => ({
+          category: '__injected' as const,
+          title: groupName,
+          tools: groupTools,
+        }),
       ),
-      tools: (byCategory.get(category) ?? []).slice().sort((a, b) => {
-        return (
-          getBuiltinToolDisplayIndex(category, a.id) -
-          getBuiltinToolDisplayIndex(category, b.id)
-        )
-      }),
-    })).filter((group) => group.tools.length > 0)
+    ]
   }, [settings.mcp.builtinToolOptions, t])
 
   const handleToggleBuiltinTool = (toolName: string, enabled: boolean) => {
