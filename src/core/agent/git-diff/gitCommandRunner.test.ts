@@ -84,9 +84,16 @@ describe('runGitCommand', () => {
   it('terminates a command when combined output exceeds the byte cap', async () => {
     const startedAt = Date.now()
 
+    // Write the cap in two stages: the first 128 bytes trips the limit, then
+    // a delayed burst gives the runner a stable window to kill the process
+    // before it dumps the full 4096 bytes (on loaded machines a synchronous
+    // 4 KB write can outrun the kill, making the byte assertion flaky).
     const result = await runGitCommand({
       ...baseRequest,
-      args: ['-e', 'process.stdout.write("x".repeat(4096))'],
+      args: [
+        '-e',
+        'process.stdout.write("x".repeat(128)); setTimeout(() => process.stdout.write("x".repeat(4096)), 200)',
+      ],
       maxOutputBytes: 128,
     })
 
@@ -217,7 +224,10 @@ describe('runGitCommand', () => {
     const result = await runGitCommand({
       ...baseRequest,
       args: ['-e', parentScript],
-      timeoutMs: 250,
+      // Generous timeout so the parent reliably spawns the descendant and
+      // writes its PID before the kill lands — on loaded machines 250 ms is
+      // too tight and the PID write can lose the race.
+      timeoutMs: 1_000,
     })
     const descendantPid = parsePositivePid(result.stdout)
 
