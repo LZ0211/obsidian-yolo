@@ -25,18 +25,19 @@ export function ConversationWorkingDirectoryControl({
 
   return (
     <div className="yolo-chat-working-directory-control">
-      <button
-        type="button"
-        className="yolo-chat-user-input-submit-button yolo-chat-working-directory-button"
-        aria-label={selectLabel}
-        title={selectLabel}
-        disabled={locked}
-        onClick={onOpenPicker}
-      >
-        <span className="yolo-chat-user-input-submit-button-icons">
-          {locked ? <LockKeyhole size={14} /> : <FolderClosed size={14} />}
-        </span>
-      </button>
+      {!locked ? (
+        <button
+          type="button"
+          className="yolo-chat-user-input-submit-button yolo-chat-working-directory-button"
+          aria-label={selectLabel}
+          title={selectLabel}
+          onClick={onOpenPicker}
+        >
+          <span className="yolo-chat-user-input-submit-button-icons">
+            <FolderClosed size={14} />
+          </span>
+        </button>
+      ) : null}
       {displayValue ? (
         <span
           className={`yolo-chat-working-directory-chip${locked ? ' is-locked' : ''}`}

@@ -282,6 +282,7 @@ async function runChildAgent(
     toolPreferences: parent.toolPreferences,
     toolServerPreferences: parent.toolServerPreferences,
     workspaceScope: parent.workspaceScope,
+    workspaceAccessPolicy: parent.workspaceAccessPolicy,
     allowedSkillPaths: parent.allowedSkillPaths,
     enableToolDisclosure: parent.enableToolDisclosure,
     reasoningLevel: parent.reasoningLevel,

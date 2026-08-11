@@ -27,7 +27,6 @@ import { resolveAssistantModelId } from '../../core/agent/assistant-model'
 import { getLatestAssistantContextUsage } from '../../core/agent/compaction'
 import { DEFAULT_ASSISTANT_ID } from '../../core/agent/default-assistant'
 import { findUnifiedAgentById } from '../../core/agent/workspaceAgentResolver'
-import { toDisplayPath } from '../../core/paths/displayPath'
 import { normalizePathSlashes } from '../../core/paths/normalizePath'
 import {
   isConversationFileScopeLocked,
@@ -537,42 +536,39 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     [selectedAssistant, settings],
   )
 
-  // Per-conversation working directory: falls back to the assistant's
-  // workspace home; an explicit override must stay inside that home.
-  const conversationWorkingDirectory = useMemo(
+  // Per-conversation working directory (backup 语义): explicit selection lives
+  // in conversationOverrides; the displayed value falls back to the agent's
+  // workspace home (vault root for a plain assistant).
+  const explicitConversationWorkingDirectory =
+    conversationOverrides?.workingDirectory ?? undefined
+  const effectiveConversationWorkingDirectory = useMemo(
     () =>
       resolveConversationFileScope(
         selectedAssistant?.workspaceAccessPolicy,
-        conversationOverrides?.workingDirectory ?? undefined,
+        undefined,
       ).workingDirectory,
-    [conversationOverrides?.workingDirectory, selectedAssistant],
-  )
-  const workspaceHome = useMemo(
-    () =>
-      selectedAssistant?.workspaceAccessPolicy?.enabled
-        ? (selectedAssistant.workspaceAccessPolicy.workspaceRoot ?? '/')
-        : '',
     [selectedAssistant],
   )
+  const displayedConversationWorkingDirectory =
+    explicitConversationWorkingDirectory ?? effectiveConversationWorkingDirectory
   const conversationWorkingDirectoryLocked =
     isLoadingConversation || isConversationFileScopeLocked(chatMessages)
   const workingDirectoryControl = useMemo(
     () => (
       <ConversationWorkingDirectoryControl
-        value={conversationWorkingDirectory}
-        displayValue={toDisplayPath(conversationWorkingDirectory, workspaceHome)}
+        value={explicitConversationWorkingDirectory}
+        displayValue={displayedConversationWorkingDirectory}
         locked={conversationWorkingDirectoryLocked}
         onChange={handleWorkingDirectoryChange}
         onOpenPicker={handleOpenWorkingDirectoryPicker}
       />
     ),
     [
-      conversationWorkingDirectory,
+      explicitConversationWorkingDirectory,
+      displayedConversationWorkingDirectory,
       conversationWorkingDirectoryLocked,
       handleOpenWorkingDirectoryPicker,
       handleWorkingDirectoryChange,
-      toDisplayPath,
-      workspaceHome,
     ],
   )
 
@@ -791,7 +787,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     selectedAssistant,
     conversationWorkingDirectoryLocked:
       isLoadingConversation || isConversationFileScopeLocked(chatMessages),
-    conversationWorkingDirectory,
+    conversationWorkingDirectory: explicitConversationWorkingDirectory,
     setConversationWorkingDirectory: (directory) =>
       setConversationOverrides((current) => ({
         ...(current ?? {}),

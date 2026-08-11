@@ -62,7 +62,10 @@ import { resolveEffectiveMaxContextTokens } from '../../utils/llm/model-capabili
 import { ErrorModal } from '../modals/ErrorModal'
 
 import { ChatMode } from './chat-input/ChatModeSelect'
-import { resolveWorkspaceScopeForRuntimeInput } from './chat-runtime-inputs'
+import {
+  resolveWorkspaceAccessPolicyForRuntimeInput,
+  resolveWorkspaceScopeForRuntimeInput,
+} from './chat-runtime-inputs'
 import {
   type ChatModeRuntime,
   resolveChatModeRuntime,
@@ -853,6 +856,10 @@ export function useChatStreamManager({
           ]?.blockedPrefixes ?? [...DEFAULT_BLOCKED_PREFIXES],
           workspaceScope:
             resolveWorkspaceScopeForRuntimeInput(selectedAssistant),
+          workspaceAccessPolicy: resolveWorkspaceAccessPolicyForRuntimeInput(
+            selectedAssistant,
+            conversationOverrides?.workingDirectory ?? undefined,
+          ),
           allowedSkillPaths,
           requestParams,
           contextualInjections: buildChatContextualInjections({

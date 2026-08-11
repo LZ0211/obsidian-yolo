@@ -29,6 +29,9 @@ export type ChatConversation = {
   pinnedAt?: number
   // Optional per-conversation overrides (temperature, top_p, stream)
   overrides?: ConversationOverrideSettings | null
+  /** Pre-rollback 会话顶层持久化的工作目录（backup 格式，读取兼容）。 */
+  workingDirectory?: string
+  fileScopeLocked?: boolean
   conversationModelId?: string
   assistantId?: string
   messageModelMap?: Record<string, string>

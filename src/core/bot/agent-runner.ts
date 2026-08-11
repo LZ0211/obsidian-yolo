@@ -316,7 +316,7 @@ export async function runBotAgentTurn(
           if (runAbortSignal.aborted) break
           console.error('[YOLO Bot] Agent run error:', event.message)
           const refs = await adapter.sendMessage(sessionKey, {
-            text: `Sorry, something went wrong: ${event.message}`,
+            text: `Sorry, something went wrong: ${event.message.split('\n')[0]}`,
           })
           registerSent(refs)
           break

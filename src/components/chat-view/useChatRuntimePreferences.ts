@@ -369,6 +369,25 @@ export function useChatRuntimePreferences({
 
   const handleConversationAssistantSelect = useCallback(
     (assistantId: string) => {
+      const explicitDirectory = getLate().conversationWorkingDirectory
+      if (explicitDirectory) {
+        const candidate = findUnifiedAgentById(settings, assistantId)
+        const compatible = candidate
+          ? isAgentCompatibleWithDirectory(
+              candidate.workspaceAccessPolicy,
+              explicitDirectory,
+            ).ok
+          : false
+        if (!compatible) {
+          new Notice(
+            t(
+              'chat.workingDirectory.unavailable',
+              'This folder is not available to the selected Agent.',
+            ),
+          )
+          return
+        }
+      }
       setConversationAssistantId(assistantId)
       conversationAssistantIdRef.current.set(currentConversationId, assistantId)
       void persistPreferredAssistantId(assistantId)
@@ -380,10 +399,12 @@ export function useChatRuntimePreferences({
     [
       applyAssistantDefaultModel,
       currentConversationId,
+      getLate,
       persistPreferredAssistantId,
       setConversationAssistantId,
       settings.assistants,
       settings.chatModelId,
+      t,
     ],
   )
 
@@ -656,12 +677,16 @@ export function useChatRuntimePreferences({
           policy.workspaceRoot.trim() || '/',
         ).replace(/^\/+/, '')
       : undefined
+    const existing =
+      late.conversationWorkingDirectory
+        ? [late.conversationWorkingDirectory.replace(/^\/+/, '')].filter(
+            (path) => path !== '',
+          )
+        : []
     new FolderPickerModal(
       app,
       app.vault,
-      late.conversationWorkingDirectory
-        ? [late.conversationWorkingDirectory.replace(/^\/+/, '')]
-        : [],
+      existing,
       false,
       handleWorkingDirectoryChange,
       rootPath || undefined,

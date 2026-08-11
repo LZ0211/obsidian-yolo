@@ -697,7 +697,15 @@ export function useYoloChatSession({
               reason: normalizedConversation.changed ? 'self-heal' : 'hydrate',
             },
           )
-        setConversationOverrides(conversation.overrides ?? null)
+        setConversationOverrides(
+          conversation.workingDirectory &&
+            !conversation.overrides?.workingDirectory
+            ? {
+                ...(conversation.overrides ?? {}),
+                workingDirectory: conversation.workingDirectory,
+              }
+            : (conversation.overrides ?? null),
+        )
         const loadedAssistantId =
           conversation.assistantId ??
           conversationAssistantIdRef.current.get(conversationId) ??

@@ -3,6 +3,15 @@
 // it so node:* module loading (node:sqlite etc.) works under Jest.
 ;(globalThis as { require?: unknown }).require = require
 
+// jsdom 测试环境不暴露 Node 的 TextDecoder/TextEncoder（gpt-tokenizer 依赖）。
+if (typeof globalThis.TextDecoder === 'undefined') {
+  const { TextDecoder, TextEncoder } = require('util') as typeof import('util')
+  ;(globalThis as { TextDecoder?: typeof TextDecoder }).TextDecoder =
+    TextDecoder
+  ;(globalThis as { TextEncoder?: typeof TextEncoder }).TextEncoder =
+    TextEncoder
+}
+
 import { encode } from 'gpt-tokenizer/encoding/cl100k_base'
 
 import {

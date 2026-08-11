@@ -22,7 +22,7 @@ import { selectionHighlightController } from '../../features/editor/selection-hi
 import type { useChatHistory } from '../../hooks/useChatHistory'
 import type { useChatManager } from '../../hooks/useJsonManagers'
 import type { ApplyViewState } from '../../types/apply-view.types'
-import { resolveAssistantWorkspaceAccessPolicy } from '../../core/agent/workspaceScope'
+import { resolveConversationFileScope } from '../../core/workspace/conversationFileScope'
 import type { Assistant } from '../../types/assistant.types'
 import type {
   AssistantToolMessageGroup,
@@ -548,7 +548,10 @@ export function useChatDomainActions({
               chatModelId:
                 toolMessage.metadata?.branchModelId ?? conversationModelId,
               workspaceAccessPolicy: isAgentChatMode(chatMode)
-                ? resolveAssistantWorkspaceAccessPolicy(selectedAssistant)
+                ? resolveConversationFileScope(
+                    selectedAssistant?.workspaceAccessPolicy,
+                    conversationOverrides?.workingDirectory ?? undefined,
+                  ).workspaceAccessPolicy
                 : undefined,
               subagentParentContext: isDelegateSubagentToolName(request.name)
                 ? plugin
@@ -635,6 +638,7 @@ export function useChatDomainActions({
       conversationModelId,
       chatMode,
       selectedAssistant,
+      conversationOverrides,
     ],
   )
 
