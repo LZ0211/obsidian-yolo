@@ -545,3 +545,101 @@ describe('RagIndexService', () => {
     expect(service.getSnapshot().permanentFailedPaths).toBeUndefined()
   })
 })
+
+describe('ragIndexService consecutive runs', () => {
+  const buildService = (updateVaultIndex: jest.Mock) => {
+    const saved: Record<string, string> = {}
+    return new RagIndexService({
+      app: {
+        loadLocalStorage: jest.fn((key: string) => saved[key] ?? null),
+        saveLocalStorage: jest.fn((key: string, value: string) => {
+          saved[key] = value
+        }),
+      } as never,
+      getRagEngine: jest.fn().mockResolvedValue({ updateVaultIndex }),
+      activityRegistry: new BackgroundActivityRegistry(),
+      isRagEnabled: () => true,
+      t: (_key, fallback) => fallback ?? '',
+    })
+  }
+
+  it('starts a new run with cleared progress and notifies subscribers', async () => {
+    const updateVaultIndex = jest
+      .fn()
+      .mockImplementation(
+        async (
+          _options: unknown,
+          onProgress?: (progress: {
+            type: 'indexing'
+            indexProgress: { completedFiles: number; totalFiles: number }
+          }) => void,
+        ) => {
+          onProgress?.({
+            type: 'indexing',
+            indexProgress: { completedFiles: 40, totalFiles: 40 },
+          })
+          return { permanentFailedPaths: [] }
+        },
+      )
+    const service = buildService(updateVaultIndex)
+
+    const seenSnapshots: Array<{ status: string; completedFiles?: number }> =
+      []
+    service.subscribe((snapshot) => {
+      seenSnapshots.push({
+        status: snapshot.status,
+        completedFiles: snapshot.completedFiles,
+      })
+    })
+
+    // First run completes at 40/40.
+    await service.runIndex({
+      mode: 'rebuild',
+      scope: { kind: 'all' },
+      trigger: 'manual',
+      retryPolicy: 'none',
+    })
+    expect(service.getSnapshot()).toMatchObject({
+      status: 'completed',
+      completedFiles: 40,
+      totalFiles: 40,
+    })
+
+    // Second run must start with progress cleared, not 40/40.
+    updateVaultIndex.mockImplementationOnce(
+      async (
+        _options: unknown,
+        onProgress?: (progress: {
+          type: 'indexing'
+          indexProgress: { completedFiles: number; totalFiles: number }
+        }) => void,
+      ) => {
+        onProgress?.({
+          type: 'indexing',
+          indexProgress: { completedFiles: 1, totalFiles: 10 },
+        })
+        return { permanentFailedPaths: [] }
+      },
+    )
+    await service.runIndex({
+      mode: 'sync',
+      scope: { kind: 'all' },
+      trigger: 'manual',
+      retryPolicy: 'none',
+    })
+
+    // The snapshot published when the second run started must have no
+    // leftover progress from the first run.
+    const startedSnapshots = seenSnapshots.filter(
+      (snapshot) => snapshot.status === 'running',
+    )
+    const lastStarted = startedSnapshots[startedSnapshots.length - 1]
+    expect(lastStarted).toBeDefined()
+    expect(lastStarted.completedFiles).toBeUndefined()
+    expect(service.getSnapshot()).toMatchObject({
+      status: 'completed',
+      completedFiles: 1,
+      totalFiles: 10,
+    })
+  })
+})
