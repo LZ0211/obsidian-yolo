@@ -26,8 +26,12 @@ import { ConfirmModal } from './components/modals/ConfirmModal'
 import { mountUpdateToast } from './components/UpdateToast'
 import { CHAT_VIEW_TYPE } from './constants'
 import { BAKED_PLUGIN_VERSION } from './constants/bakedVersion'
-import { AgentFileChangeTracker } from './core/agent/agentFileChangeTracker'
 import type { YoloAgentApi, YoloAgentApiService } from './core/agent/agent-api'
+import {
+  type AgentEventStore,
+  createAgentEventStore,
+} from './core/agent/agentEventStore'
+import { AgentFileChangeTracker } from './core/agent/agentFileChangeTracker'
 import type {
   AgentConversationRunSummary,
   AgentService,
@@ -185,6 +189,11 @@ import {
   checkForUpdate,
   normalizePluginVersion,
 } from './core/update/updateChecker'
+import { registerWebServerRoutes } from './core/web-server/registerWebServerRoutes'
+import type { WebAgentLifecycleService } from './core/web-server/webAgentLifecycleService'
+import { WebHttpServer } from './core/web-server/WebHttpServer'
+import { WebServerLifecycle } from './core/web-server/WebServerLifecycle'
+import { WebSseHub } from './core/web-server/WebSseHub'
 import { DatabaseMaintenanceController } from './core/maintenance/DatabaseMaintenanceController'
 import { createLazySqliteMaintenanceBackend } from './core/maintenance/DatabaseMaintenanceBackends'
 import {
@@ -348,6 +357,11 @@ export default class YoloPlugin extends Plugin {
   private readonly managedModulePathChangeListeners = new Set<() => void>()
   private localMcpServer: LocalMcpServerRuntime | null = null
   private localMcpSettingsUnsubscribe: (() => void) | null = null
+  private webServerLifecycle: WebServerLifecycle<YoloSettings> | null = null
+  private webAgentLifecycleService: WebAgentLifecycleService | null = null
+  private webSseHub: WebSseHub | null = null
+  private webAgentEventStore: AgentEventStore | null = null
+  private chatManager: ChatManager | null = null
   private ragLogRibbonIconEl: HTMLElement | null = null
   private injectionBridgeUninstall: (() => void) | null = null
   private liteSkillRegistryDispose: (() => void) | null = null
@@ -2251,6 +2265,21 @@ export default class YoloPlugin extends Plugin {
     this.addSettingsChangeListener(() => {
       this.syncRagLogRibbonIcon()
     })
+    // Web Runtime: toggle / host / port / token 变更 → reconcile 启停（desktop 门控在 reconcileWebRuntime 内）。
+    let previousWebRuntimeEnabled = this.settings.webRuntime.enabled === true
+    let previousWebRuntimeBinding = `${this.settings.webRuntime.host}:${this.settings.webRuntime.port}:${this.settings.webRuntime.token}`
+    this.addSettingsChangeListener((settings) => {
+      const nextWebRuntimeEnabled = settings.webRuntime.enabled === true
+      const nextWebRuntimeBinding = `${settings.webRuntime.host}:${settings.webRuntime.port}:${settings.webRuntime.token}`
+      if (
+        nextWebRuntimeEnabled !== previousWebRuntimeEnabled ||
+        nextWebRuntimeBinding !== previousWebRuntimeBinding
+      ) {
+        this.reconcileWebRuntime()
+      }
+      previousWebRuntimeEnabled = nextWebRuntimeEnabled
+      previousWebRuntimeBinding = nextWebRuntimeBinding
+    })
     await loadLocale(this.resolveObsidianLanguage())
     this._tCache = undefined
     await this.migrateLegacyVaultMirrorIfNeeded()
@@ -2369,6 +2398,9 @@ export default class YoloPlugin extends Plugin {
         if (shouldStartAgentNotifications) {
           this.getAgentNotificationCoordinator().start()
         }
+        // Web Runtime 启动 reconcile（desktop + enabled 门控在方法内；agent
+        // service 已 warmup，reconcile 复用缓存 promise 无额外开销）。
+        this.reconcileWebRuntime()
       })
       .catch((error: unknown) => {
         console.error('[YOLO] Agent service warmup failed:', error)
@@ -2824,6 +2856,15 @@ export default class YoloPlugin extends Plugin {
     this.mcpCoordinator?.cleanup()
     this.mcpCoordinator = null
     this.mcpManager = null
+    // Web Runtime cleanup（desktop HTTP server）
+    void this.webServerLifecycle?.stop()
+    this.webServerLifecycle = null
+    this.webAgentLifecycleService = null
+    this.webAgentEventStore?.close()
+    this.webAgentEventStore = null
+    this.webSseHub?.clear()
+    this.webSseHub = null
+    this.chatManager = null
     this.ragAutoUpdateService?.cleanup()
     this.ragAutoUpdateService = null
     this.agentService?.stopBackgroundTaskResultListener()
@@ -3991,7 +4032,6 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
     await this.getChatViewNavigator().addImageToChat(image)
   }
 
-
   private buildCurrentEmbeddingNamespace(): VectorNamespace | null {
     return this.buildEmbeddingNamespaceForModelId(
       this.settings.embeddingModelId,
@@ -4079,7 +4119,9 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
       const store = dbManager.getVectorStore()
       const latestTrace =
         (await dbManager.getRetrievalTraceStore()?.getLatestTrace()) ?? null
-      const backendStats = store ? await store.getStats().catch(() => null) : null
+      const backendStats = store
+        ? await store.getStats().catch(() => null)
+        : null
       const indexSnapshot = this.getRagIndexService().getSnapshot()
       return composeRetrievalInspectStatus({
         backendStatus,
@@ -4137,7 +4179,8 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
           return {
             inspect: (options) => inspectSqliteDatabase(runtime, options),
             count: (table) => countSqliteTableRows(runtime, table),
-            query: (source, rowLimit) => runReadOnlySql(runtime, source, rowLimit),
+            query: (source, rowLimit) =>
+              runReadOnlySql(runtime, source, rowLimit),
             dispose: () => runtime.close(),
           }
         },
@@ -4718,6 +4761,104 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
     const manager = await (await this.getMcpCoordinator()).getMcpManager()
     this.mcpManager = manager
     return manager
+  }
+
+  private getChatManager(): ChatManager {
+    if (!this.chatManager) {
+      this.chatManager = new ChatManager(this.app, this.settings)
+    }
+    return this.chatManager
+  }
+
+  private getWebSseHub(): WebSseHub {
+    if (!this.webSseHub) {
+      this.webSseHub = new WebSseHub()
+    }
+    return this.webSseHub
+  }
+
+  private getWebAgentEventStore(): AgentEventStore | null {
+    if (this.webAgentEventStore) {
+      return this.webAgentEventStore
+    }
+    const baseDir = this.resolveWebRuntimeBaseDir()
+    if (!baseDir) {
+      return null
+    }
+    this.webAgentEventStore = createAgentEventStore(baseDir)
+    return this.webAgentEventStore
+  }
+
+  /** Absolute filesystem path to the YOLO base dir, used by the desktop-only web runtime stores. Desktop-only; null on mobile. */
+  private resolveWebRuntimeBaseDir(): string | null {
+    const adapter = this.app.vault.adapter
+    const vaultBasePath =
+      adapter instanceof FileSystemAdapter ? adapter.getBasePath() : undefined
+    if (!vaultBasePath) {
+      return null
+    }
+    return normalizePath(`${vaultBasePath}/${getYoloBaseDir(this.settings)}`)
+  }
+
+  private getWebServerLifecycle(): WebServerLifecycle<YoloSettings> {
+    if (!this.webServerLifecycle) {
+      this.webServerLifecycle = new WebServerLifecycle<YoloSettings>({
+        getSettings: () => this.settings,
+        saveSettings: async (settings) => {
+          await this.setSettings(settings)
+        },
+        createServer: (runtime) => {
+          const server = new WebHttpServer({
+            host: runtime.host,
+            port: runtime.port,
+            token: runtime.token,
+          })
+          const eventStore = this.getWebAgentEventStore()
+          if (eventStore) {
+            const registered = registerWebServerRoutes({
+              server,
+              app: this.app,
+              plugin: this,
+              chatManager: this.getChatManager(),
+              agentEventStore: eventStore,
+              sseHub: this.getWebSseHub(),
+              getSettings: () => this.settings,
+              host: runtime.host,
+              port: runtime.port,
+              getAgentService: () => this.getAgentService(),
+              getMcpManager: () => this.getMcpManager(),
+            })
+            this.webAgentLifecycleService = registered.lifecycleService
+          } else {
+            console.warn(
+              '[YOLO] Web Runtime is unavailable because the vault file system path could not be resolved.',
+            )
+          }
+          return server
+        },
+      })
+    }
+    return this.webServerLifecycle
+  }
+
+  private reconcileWebRuntime(): void {
+    if (!Platform.isDesktop) {
+      return
+    }
+    void (async () => {
+      try {
+        if (this.isUnloaded) return
+        if (!this.settings.webRuntime.enabled) {
+          await this.getWebServerLifecycle().reconcile()
+          return
+        }
+        await this.warmupAgentService()
+        if (this.isUnloaded) return
+        await this.getWebServerLifecycle().reconcile()
+      } catch (error) {
+        console.error('[YOLO] Failed to reconcile Web Runtime server.', error)
+      }
+    })()
   }
 
   private registerTimeout(callback: () => void, timeout: number): void {

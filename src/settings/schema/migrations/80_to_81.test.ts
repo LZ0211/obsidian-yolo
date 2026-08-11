@@ -127,4 +127,48 @@ describe('migrateFrom80To81', () => {
       }),
     )
   })
+
+  it('seeds webRuntime defaults while preserving user-supplied fields', () => {
+    expect(
+      migrateFrom80To81({
+        version: 80,
+        webRuntime: { port: 18900, token: 'abc' },
+      }),
+    ).toMatchObject({
+      version: 81,
+      webRuntime: {
+        enabled: false,
+        port: 18900,
+        host: '127.0.0.1',
+        token: 'abc',
+        maxConcurrentAgentRuns: 12,
+      },
+    })
+  })
+
+  it('coerces invalid webRuntime values back to safe defaults', () => {
+    expect(
+      migrateFrom80To81({
+        version: 80,
+        webRuntime: {
+          port: 0,
+          token: 123,
+          maxConcurrentAgentRuns: 0,
+        },
+      }),
+    ).toMatchObject({
+      version: 81,
+      webRuntime: {
+        port: 18900,
+        token: '123',
+        maxConcurrentAgentRuns: 12,
+      },
+    })
+  })
+
+  it('leaves a malformed webRuntime block untouched for the schema to catch', () => {
+    expect(migrateFrom80To81({ version: 80, webRuntime: 'oops' })).toEqual(
+      expect.objectContaining({ webRuntime: 'oops' }),
+    )
+  })
 })

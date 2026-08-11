@@ -1,14 +1,18 @@
 import { App, Platform } from 'obsidian'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useLanguage } from '../../../contexts/language-context'
 import { useSettings } from '../../../contexts/settings-context'
+import { isLoopbackHost } from '../../../core/share/shareTokenStore'
 import { selectionHighlightController } from '../../../features/editor/selection-highlight/selectionHighlightController'
 import { Language } from '../../../i18n'
 import YoloPlugin from '../../../main'
+import type { YoloSettings } from '../../../settings/schema/setting.types'
 import { openExternalLink } from '../../../utils/openExternalLink'
 import { ObsidianButton } from '../../common/ObsidianButton'
 import { ObsidianDropdown } from '../../common/ObsidianDropdown'
 import { ObsidianSetting } from '../../common/ObsidianSetting'
+import { ObsidianTextInput } from '../../common/ObsidianTextInput'
 import { ObsidianToggle } from '../../common/ObsidianToggle'
 import { ChatPreferencesSection } from '../sections/ChatPreferencesSection'
 import { EtcSection } from '../sections/EtcSection'
@@ -163,6 +167,59 @@ export function OthersTab({ app, plugin }: OthersTabProps) {
         console.error('Failed to update chat export tool calls setting', error)
       }
     })()
+  }
+
+  // Web Runtime state
+  const settingsRef = useRef(settings)
+  useEffect(() => {
+    settingsRef.current = settings
+  }, [settings])
+
+  const [webRuntimeHostInput, setWebRuntimeHostInput] = useState(
+    settings.webRuntime.host,
+  )
+  const [webRuntimePortInput, setWebRuntimePortInput] = useState(
+    String(settings.webRuntime.port),
+  )
+  const [webRuntimeConcurrencyInput, setWebRuntimeConcurrencyInput] = useState(
+    String(settings.webRuntime.maxConcurrentAgentRuns),
+  )
+
+  useEffect(() => {
+    setWebRuntimeHostInput(settings.webRuntime.host)
+  }, [settings.webRuntime.host])
+
+  useEffect(() => {
+    setWebRuntimePortInput(String(settings.webRuntime.port))
+  }, [settings.webRuntime.port])
+  useEffect(() => {
+    setWebRuntimeConcurrencyInput(
+      String(settings.webRuntime.maxConcurrentAgentRuns),
+    )
+  }, [settings.webRuntime.maxConcurrentAgentRuns])
+
+  const applyWebRuntimeUpdate = useCallback(
+    (patch: Partial<YoloSettings['webRuntime']>) => {
+      void setSettings({
+        ...settingsRef.current,
+        webRuntime: {
+          ...settingsRef.current.webRuntime,
+          ...patch,
+        },
+      })
+    },
+    [setSettings],
+  )
+
+  function parseIntegerInput(input: string): number | null {
+    const trimmed = input.trim()
+    if (trimmed.length === 0) return null
+    const normalized =
+      trimmed.startsWith('0') && trimmed.length > 1
+        ? trimmed.replace(/^0+/, '') || '0'
+        : trimmed
+    const parsed = Number(normalized)
+    return Number.isFinite(parsed) ? parsed : null
   }
 
   const handleRibbonClickActionChange = (value: string) => {
@@ -407,6 +464,140 @@ export function OthersTab({ app, plugin }: OthersTabProps) {
                 onChange={handleChatExportIncludeToolCallsChange}
               />
             </ObsidianSetting>
+          </div>
+        </section>
+      </div>
+
+      <div className="yolo-settings-section yolo-settings-section--tight">
+        <section className="yolo-settings-block">
+          <div className="yolo-settings-block-head">
+            <div className="yolo-settings-block-head-title-row">
+              <div className="yolo-settings-sub-header yolo-settings-block-title">
+                {t('settings.etc.webRuntimeTitle', 'Web Runtime')}
+              </div>
+            </div>
+            <div className="yolo-settings-desc">
+              {t(
+                'settings.etc.webRuntimeDesc',
+                '配置浏览器访问入口与监听地址，允许通过浏览器连接到内置 Web 运行时。',
+              )}
+            </div>
+          </div>
+
+          <div className="yolo-settings-block-content">
+            <ObsidianSetting
+              name={t('settings.etc.webRuntimeEnabled', '启用 Web Runtime')}
+              desc={t(
+                'settings.etc.webRuntimeEnabledDesc',
+                '启用后，可通过浏览器连接到内置 Web 运行时。',
+              )}
+              className="yolo-settings-card"
+            >
+              <ObsidianToggle
+                value={settings.webRuntime.enabled}
+                onChange={(value) => {
+                  applyWebRuntimeUpdate({ enabled: value })
+                }}
+              />
+            </ObsidianSetting>
+
+            <ObsidianSetting
+              name={t('settings.etc.webRuntimeHost', '监听地址')}
+              desc={t(
+                'settings.etc.webRuntimeHostDesc',
+                '使用 127.0.0.1 仅限本机访问；非回环地址会开放到网络。',
+              )}
+              className="yolo-settings-card"
+            >
+              <ObsidianTextInput
+                value={webRuntimeHostInput}
+                placeholder="127.0.0.1"
+                onChange={(value) => {
+                  setWebRuntimeHostInput(value)
+                  const host = value.trim()
+                  if (host.length > 0) {
+                    applyWebRuntimeUpdate({ host })
+                  }
+                }}
+                onBlur={() => {
+                  const host = webRuntimeHostInput.trim()
+                  if (!host) {
+                    setWebRuntimeHostInput(settings.webRuntime.host)
+                    return
+                  }
+                  if (host !== webRuntimeHostInput) {
+                    setWebRuntimeHostInput(host)
+                  }
+                }}
+              />
+            </ObsidianSetting>
+
+            <ObsidianSetting
+              name={t('settings.etc.webRuntimePort', '端口')}
+              desc={t(
+                'settings.etc.webRuntimePortDesc',
+                '设置 Web Runtime 的监听端口，范围 1 到 65535。',
+              )}
+              className="yolo-settings-card"
+            >
+              <ObsidianTextInput
+                value={webRuntimePortInput}
+                placeholder="18900"
+                onChange={(value) => {
+                  setWebRuntimePortInput(value)
+                  const port = parseIntegerInput(value)
+                  if (port !== null && port >= 1 && port <= 65535) {
+                    applyWebRuntimeUpdate({ port })
+                  }
+                }}
+                onBlur={() => {
+                  const port = parseIntegerInput(webRuntimePortInput)
+                  if (port === null || port < 1 || port > 65535) {
+                    setWebRuntimePortInput(String(settings.webRuntime.port))
+                    return
+                  }
+                  if (port !== settings.webRuntime.port) {
+                    setWebRuntimePortInput(String(port))
+                  }
+                }}
+              />
+            </ObsidianSetting>
+
+            <ObsidianSetting
+              name={t(
+                'settings.etc.webRuntimeConcurrency',
+                '最大并发 Agent Run',
+              )}
+              desc={t(
+                'settings.etc.webRuntimeConcurrencyDesc',
+                '同时执行的 Web Agent 上限，范围 1 到 20；相同会话始终串行。',
+              )}
+              className="yolo-settings-card"
+            >
+              <ObsidianTextInput
+                value={webRuntimeConcurrencyInput}
+                placeholder="12"
+                onChange={(value) => {
+                  setWebRuntimeConcurrencyInput(value)
+                  const maxConcurrentAgentRuns = parseIntegerInput(value)
+                  if (
+                    maxConcurrentAgentRuns !== null &&
+                    maxConcurrentAgentRuns >= 1 &&
+                    maxConcurrentAgentRuns <= 20
+                  )
+                    applyWebRuntimeUpdate({ maxConcurrentAgentRuns })
+                }}
+              />
+            </ObsidianSetting>
+
+            {!isLoopbackHost(settings.webRuntime.host) ? (
+              <div className="yolo-muted-note">
+                {t(
+                  'settings.etc.webRuntimeNetworkWarning',
+                  'Server is accessible from the network. Ensure your firewall allows inbound connections on port {{port}}.',
+                ).replace('{{port}}', String(settings.webRuntime.port))}
+              </div>
+            ) : null}
           </div>
         </section>
       </div>

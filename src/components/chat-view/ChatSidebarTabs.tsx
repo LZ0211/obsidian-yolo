@@ -8,6 +8,10 @@ type ChatSidebarTabsProps = {
   chatRef: React.RefObject<ChatRef>
   placement: ChatLeafPlacement
   initialChatProps?: ChatProps
+  /** Web 端懒解析 CLI scope（远程组装）；透传给 Chat，桌面不传。 */
+  getCliRuntimeScope?: ChatProps['getCliRuntimeScope']
+  /** Web 端注入的契约 runtime 装配（RemoteChatRuntimeAdapter）；透传给 Chat。 */
+  buildRuntime?: ChatProps['buildRuntime']
   onConversationContextChange?: ChatProps['onConversationContextChange']
   onRuntimeSnapshotChange?: ChatProps['onRuntimeSnapshotChange']
 }
@@ -16,6 +20,8 @@ const ChatSidebarTabs: React.FC<ChatSidebarTabsProps> = ({
   chatRef,
   placement,
   initialChatProps,
+  getCliRuntimeScope,
+  buildRuntime,
   onConversationContextChange,
   onRuntimeSnapshotChange,
 }) => {
@@ -32,6 +38,8 @@ const ChatSidebarTabs: React.FC<ChatSidebarTabsProps> = ({
             ref={chatRef}
             {...(chatProps ?? {})}
             placement={placement}
+            getCliRuntimeScope={getCliRuntimeScope}
+            buildRuntime={buildRuntime}
             onConversationContextChange={onConversationContextChange}
             onRuntimeSnapshotChange={onRuntimeSnapshotChange}
             activeView={activeTab}

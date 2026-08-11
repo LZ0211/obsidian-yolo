@@ -1,5 +1,5 @@
 import { App } from 'obsidian'
-import React from 'react'
+import * as React from 'react'
 
 // App context
 const AppContext = React.createContext<App | undefined>(undefined)

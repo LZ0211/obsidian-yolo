@@ -2102,6 +2102,21 @@ export const zh: TranslationKeys = {
         '当当前 Agent 任务结束且不再等待审批时发出提醒。',
       interactionSectionTitle: '交互',
       maintenanceSectionTitle: '维护',
+      webRuntimeTitle: 'Web 运行时',
+      webRuntimeDesc:
+        '配置浏览器访问入口与监听地址，允许通过浏览器连接到内置 Web 运行时。',
+      webRuntimeEnabled: '启用 Web 运行时',
+      webRuntimeEnabledDesc: '启用后，可通过浏览器连接到内置 Web 运行时。',
+      webRuntimeHost: '监听地址',
+      webRuntimeHostDesc:
+        '使用 127.0.0.1 仅限本机访问；非回环地址会开放到网络。',
+      webRuntimePort: '端口',
+      webRuntimePortDesc: '设置 Web 运行时的监听端口，范围 1 到 65535。',
+      webRuntimeNetworkWarning:
+        '服务器可从网络访问。请确保设置了访问令牌，且防火墙允许端口 {{port}} 的入站连接。',
+      webRuntimeConcurrency: '最大并发 Agent Run',
+      webRuntimeConcurrencyDesc:
+        '同时执行的 Web Agent 上限，范围 1 到 20；相同会话始终串行。',
     },
   },
 
