@@ -1,6 +1,6 @@
 import type { SqliteNativeRuntimeFacade } from '../../database/sqlite/sqliteNativeRuntime'
 
-export const MEMORY_INDEX_SCHEMA_VERSION = 1
+export const MEMORY_INDEX_SCHEMA_VERSION = 2
 
 export class MemoryIndexUnavailableError extends Error {
   readonly code = 'memory_index_unavailable'
@@ -105,6 +105,20 @@ export const buildMemoryIndexSchemaSql = (): readonly string[] => [
     source_file_fingerprint text,
     created_at integer not null
   );`,
+  // v2: dense embeddings for semantic (vector) recall. One row per indexed
+  // entry, keyed by memory_key (``partition::localId``) so the semantic path
+  // aligns with the lexical and graph paths in the RRF fusion. The embedding
+  // is produced by the RAG embedding model configured for the vault and
+  // written during reconcile.
+  `create table if not exists memory_embeddings (
+    partition_key text not null,
+    memory_key text not null,
+    local_id integer not null,
+    embedding blob not null,
+    dimension integer not null,
+    updated_at integer not null,
+    primary key (partition_key, memory_key)
+  );`,
 ]
 
 const readSchemaVersion = (
@@ -126,11 +140,14 @@ export function initializeMemoryIndexSchema(
       'create table if not exists memory_schema_meta (key text primary key, value text not null);',
     )
     const current = readSchemaVersion(runtime)
-    if (current !== null && current !== MEMORY_INDEX_SCHEMA_VERSION) {
+    if (current !== null && current > MEMORY_INDEX_SCHEMA_VERSION) {
       throw new MemoryIndexUnavailableError(
         `Unsupported memory index schema version: ${String(current)}`,
       )
     }
+    // Older versions migrate forward: every statement is `create table if not
+    // exists`, so re-running the full DDL on a v1 database only adds the new
+    // v2 tables and leaves existing data intact.
     runtime.transaction(() => {
       for (const sql of buildMemoryIndexSchemaSql()) runtime.exec(sql)
       runtime.exec(
