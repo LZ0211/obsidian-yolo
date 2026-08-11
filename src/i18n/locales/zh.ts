@@ -2114,6 +2114,9 @@ export const zh: TranslationKeys = {
       webRuntimePortDesc: '设置 Web 运行时的监听端口，范围 1 到 65535。',
       webRuntimeNetworkWarning:
         '服务器可从网络访问。请确保设置了访问令牌，且防火墙允许端口 {{port}} 的入站连接。',
+      webRuntimeConcurrency: '最大并发 Agent Run',
+      webRuntimeConcurrencyDesc:
+        '同时执行的 Web Agent 上限，范围 1 到 20；相同会话始终串行。',
     },
   },
 

@@ -2013,6 +2013,9 @@ export const it: DeepPartial<TranslationKeys> = {
         'Porta utilizzata dal runtime web. Intervallo valido: da 1 a 65535.',
       webRuntimeNetworkWarning:
         'Il server è accessibile dalla rete. Assicurati che il token sia impostato e che il firewall consenta connessioni in entrata sulla porta {{port}}.',
+      webRuntimeConcurrency: 'Numero massimo di agenti simultanei',
+      webRuntimeConcurrencyDesc:
+        'Limite massimo di agenti Web eseguiti in parallelo, intervallo da 1 a 20; le sessioni della stessa conversazione vengono sempre eseguite in serie.',
     },
   },
 

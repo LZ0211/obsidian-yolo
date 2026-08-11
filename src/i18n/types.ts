@@ -1817,6 +1817,8 @@ export type TranslationKeys = {
       webRuntimePort?: string
       webRuntimePortDesc?: string
       webRuntimeNetworkWarning?: string
+      webRuntimeConcurrency?: string
+      webRuntimeConcurrencyDesc?: string
     }
     smartSpace?: {
       quickActionsTitle: string

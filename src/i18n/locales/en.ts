@@ -2283,6 +2283,9 @@ export const en: TranslationKeys = {
         'Port used by the web runtime. Valid range is 1 to 65535.',
       webRuntimeNetworkWarning:
         'Server is accessible from the network. Ensure your bearer token is set and your firewall allows inbound connections on port {{port}}.',
+      webRuntimeConcurrency: 'Max concurrent agent runs',
+      webRuntimeConcurrencyDesc:
+        'Upper bound for web agents executing in parallel, range 1 to 20; runs of the same session always execute serially.',
     },
   },
 
