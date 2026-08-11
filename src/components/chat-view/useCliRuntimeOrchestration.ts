@@ -53,10 +53,14 @@ import {
 } from './cliChatIntegration'
 import {
   type CliModePreference,
+  type PrePlanCliModeMemory,
   normalizeCliModeForRuntime,
   patchConversationCliModeOverrides,
+  prunePrePlanCliMode,
+  readPrePlanCliMode,
   rememberCliModePreference,
   rememberCliRuntimeConfiguration,
+  rememberPrePlanCliMode,
   resolveCliRuntimePreference,
 } from './cliRuntimePreferences'
 
@@ -87,9 +91,7 @@ export type UseCliRuntimeOrchestrationParams = {
   setRequestedRuntimeId: Dispatch<SetStateAction<ChatRuntimeId>>
   lastCliRuntimeIdRef: MutableRefObject<CliRuntimeId>
   cliModeRequestGenerationRef: MutableRefObject<number>
-  prePlanCliModeByConversationRef: MutableRefObject<
-    Map<string, { mode: 'agent'; yoloEnabled: boolean }>
-  >
+  prePlanCliModeByConversationRef: PrePlanCliModeMemory
   chatMountedRef: MutableRefObject<boolean>
   seededCliSessionRef: CliSessionRef | null | undefined
   seededCliConversationId: string | null | undefined
@@ -641,14 +643,18 @@ export function useCliRuntimeOrchestration({
         mode === 'plan' &&
         cliChatMode !== 'plan'
       ) {
-        prePlanCliModeByConversationRef.current.set(preferenceConversationId, {
-          mode: 'agent',
-          yoloEnabled: cliYoloEnabled,
-        })
+        rememberPrePlanCliMode(
+          prePlanCliModeByConversationRef,
+          preferenceConversationId,
+          cliYoloEnabled,
+        )
       }
-      if (runtimeId === 'claude-code' && mode !== 'plan') {
-        prePlanCliModeByConversationRef.current.delete(preferenceConversationId)
-      }
+      prunePrePlanCliMode(
+        prePlanCliModeByConversationRef,
+        preferenceConversationId,
+        runtimeId,
+        mode,
+      )
       setCliChatMode(mode)
       setCliYoloEnabled(yoloEnabled)
       const nextOverrides = patchConversationCliModeOverrides(
@@ -699,12 +705,10 @@ export function useCliRuntimeOrchestration({
   const restoreClaudeAgentMode = useCallback(() => {
     void applyCliModePreference(
       'claude-code',
-      prePlanCliModeByConversationRef.current.get(
+      readPrePlanCliMode(
+        prePlanCliModeByConversationRef,
         activeHistoryConversationId,
-      ) ?? {
-        mode: 'agent',
-        yoloEnabled: false,
-      },
+      ),
     )
   }, [activeHistoryConversationId, applyCliModePreference])
 
@@ -878,7 +882,7 @@ export function useCliRuntimeOrchestration({
         const result = await base.approveTool(action)
         if (
           result.kind === 'handled' &&
-          activeRuntimeId === 'claude-code' &&
+          RUNTIME_CAPABILITIES[activeRuntimeId].supportsPlanMode &&
           cliChatMode === 'plan'
         ) {
           const messages =

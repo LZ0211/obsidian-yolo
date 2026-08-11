@@ -41,6 +41,7 @@ import {
 } from './cliChatIntegration'
 import {
   type CliModePreference,
+  type PrePlanCliModeEntry,
   resolveCliModePreference,
   resolveCliRuntimePreference,
 } from './cliRuntimePreferences'
@@ -172,7 +173,7 @@ export function useChatRuntimePreferences({
     seededConversationOverrides ?? null,
   )
   const prePlanCliModeByConversationRef = useRef(
-    new Map<string, { mode: 'agent'; yoloEnabled: boolean }>(),
+    new Map<string, PrePlanCliModeEntry>(),
   )
   const cliModeRequestGenerationRef = useRef(0)
   const runtimeNavigationGenerationRef = useRef(0)
