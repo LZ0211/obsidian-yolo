@@ -142,4 +142,43 @@ describe('ModuleDeviceStateStore', () => {
       '1.0.0',
     )
   })
+
+  test('drops a corrupt record during listing without blocking other modules', async () => {
+    const { adapter, store } = harness()
+    adapter.folders.add(ROOT)
+    // Corrupt record: manifestUrl fails the official-release URL check.
+    adapter.files.set(
+      PATH,
+      JSON.stringify({
+        schemaVersion: 1,
+        data: {
+          moduleId: 'learning',
+          platform: 'desktop',
+          active: {
+            ...descriptor('1.0.0'),
+            manifestUrl: 'file:///tmp/module.json',
+          },
+          pending: null,
+        },
+      }),
+    )
+    const healthyPath = `${ROOT}/other.json`
+    adapter.files.set(
+      healthyPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        data: {
+          moduleId: 'other',
+          platform: 'desktop',
+          active: { ...descriptor('1.0.0'), id: 'other' },
+          pending: null,
+        },
+      }),
+    )
+
+    const listed = await store.list()
+
+    expect(listed.map((entry) => entry.moduleId)).toEqual(['other'])
+    expect(adapter.files.has(PATH)).toBe(false)
+  })
 })

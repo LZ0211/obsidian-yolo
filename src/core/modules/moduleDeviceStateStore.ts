@@ -136,7 +136,19 @@ export class ModuleDeviceStateStore {
     moduleIds.sort()
     const states = await Promise.all(
       moduleIds.map(async (moduleId) => {
-        const value = await this.read(moduleId)
+        let value: ModuleDeviceState | null
+        try {
+          value = await this.read(moduleId)
+        } catch (error) {
+          if (error instanceof ModuleDeviceStateCorruptionError) {
+            // One module's corrupt state must not block the whole module
+            // system: drop the record and let the module re-install fresh.
+            await this.remove(moduleId).catch(() => undefined)
+            if (retriesRemaining > 0) return null
+            throw error
+          }
+          throw error
+        }
         if (value === null) {
           if (retriesRemaining > 0) return null
           throw new Error(
