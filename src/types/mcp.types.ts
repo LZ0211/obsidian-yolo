@@ -226,6 +226,15 @@ export function normalizeMcpServerParameters({
   )
 }
 
+export const builtinToolActionOptionSchema = z.object({
+  disabled: z.boolean().optional(),
+  allowAutoExecution: z.boolean().optional(),
+})
+
+export type BuiltinToolActionOption = z.infer<
+  typeof builtinToolActionOptionSchema
+>
+
 export const mcpServerToolOptionsSchema = z.record(
   z.string(),
   z.object({
@@ -234,6 +243,9 @@ export const mcpServerToolOptionsSchema = z.record(
     blockedPrefixes: z.array(z.string()).optional(),
     allowedModelIds: z.array(z.string()).optional(),
     preferredModelId: z.string().optional(),
+    actionOptions: z
+      .record(z.string(), builtinToolActionOptionSchema)
+      .optional(),
   }),
 )
 

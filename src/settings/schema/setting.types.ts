@@ -4,6 +4,7 @@ import {
   DEFAULT_CHAT_MODELS,
   DEFAULT_CHAT_TITLE_MODEL_ID,
 } from '../../constants'
+import { DEFAULT_PARENT_SUBAGENT_TIMEOUT_CONFIG } from '../../core/agent/subagent/subagent-timeout-config'
 import { DEFAULT_LOCAL_MCP_SERVER_PORT } from '../../core/mcp/localMcpServerConfig'
 import { webSearchSettingsSchema } from '../../core/web-search/types'
 import {
@@ -13,7 +14,10 @@ import {
 } from '../../types/assistant.types'
 import { chatModelSchema } from '../../types/chat-model.types'
 import { embeddingModelSchema } from '../../types/embedding-model.types'
+import { imageModelSchema } from '../../types/image-model.types'
 import { rerankModelSchema } from '../../types/rerank-model.types'
+import { sttModelSchema } from '../../types/stt-model.types'
+import { ttsModelSchema } from '../../types/tts-model.types'
 import {
   mcpServerConfigSchema,
   mcpServerToolOptionsSchema,
@@ -23,6 +27,44 @@ import { REASONING_LEVELS, ReasoningLevel } from '../../types/reasoning'
 import { DEFAULT_CHAT_QUICK_ACCESS_ENTRIES } from '../chatQuickAccess'
 
 import { SETTINGS_SCHEMA_VERSION } from './migrations'
+
+/**
+ * MoA (Mixture of Agents) settings stored under `chatOptions.moa`. The
+ * explicit `/moa` chat command is the only activation path: reference models
+ * come from `@`-mentions in the composer (2–8 when used); if none are
+ * mentioned, the current conversation model is used as the reference proposer
+ * (3 runs). The aggregator is always the current conversation model.
+ * `allowedReferenceModelIds` is an optional allow-list that, when absent,
+ * permits any enabled model.
+ */
+export const moaSettingsSchema = z.object({
+  enabled: z.boolean().catch(true),
+  allowedReferenceModelIds: z.array(z.string()).optional(),
+  timeoutMs: z.number().int().min(1_000).max(120_000).catch(45_000),
+  maxOutputTokens: z.number().int().min(256).max(4_096).catch(2_048),
+})
+
+/**
+ * Configurable parent subagent timeout + breaker. Optional so older settings
+ * snapshots keep validating; the registry falls back to built-in defaults.
+ */
+export const subagentTimeoutSettingsSchema = z.object({
+  timeoutMs: z
+    .number()
+    .int()
+    .min(1)
+    .catch(DEFAULT_PARENT_SUBAGENT_TIMEOUT_CONFIG.timeoutMs),
+  maxConsecutiveTimeouts: z
+    .number()
+    .int()
+    .min(1)
+    .catch(DEFAULT_PARENT_SUBAGENT_TIMEOUT_CONFIG.maxConsecutiveTimeouts),
+  cooldownMs: z
+    .number()
+    .int()
+    .min(0)
+    .catch(DEFAULT_PARENT_SUBAGENT_TIMEOUT_CONFIG.cooldownMs),
+})
 
 const resilientArraySchema = <T extends z.ZodTypeAny>(itemSchema: T) =>
   z
@@ -658,6 +700,16 @@ export const yoloSettingsSchema = z.object({
       captureRawRequestDebug: false,
     }),
 
+  // Media models (TTS/STT/image)
+  ttsModels: resilientArraySchema(ttsModelSchema),
+  sttModels: resilientArraySchema(sttModelSchema),
+  imageModels: resilientArraySchema(imageModelSchema),
+  ttsModelId: z.string().catch(''),
+  sttModelId: z.string().catch(''),
+  imageModelId: z.string().catch(''),
+
+  subagentTimeout: subagentTimeoutSettingsSchema.optional(),
+
   // Chat options
   chatOptions: z
     .object({
@@ -739,6 +791,7 @@ export const yoloSettingsSchema = z.object({
           z.object({ type: z.literal('snippet'), id: z.string().min(1) }),
         ]),
       ).optional(),
+      moa: moaSettingsSchema.optional(),
     })
     .catch({
       includeCurrentFileContent: true,

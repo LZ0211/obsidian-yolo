@@ -66,10 +66,22 @@ export type AssistantToolOverridePreference = z.infer<
   typeof assistantToolOverridePreferenceSchema
 >
 
+export const assistantToolActionPreferenceSchema = z.object({
+  enabled: z.boolean().optional(),
+  approvalMode: assistantToolApprovalModeSchema.optional(),
+})
+
+export type AssistantToolActionPreference = z.infer<
+  typeof assistantToolActionPreferenceSchema
+>
+
 export const assistantToolPreferenceSchema = z.object({
   enabled: z.boolean().optional(),
   approvalMode: assistantToolApprovalModeSchema.optional(),
   disclosureMode: assistantToolDisclosureModeSchema.optional(),
+  actions: z
+    .record(z.string(), assistantToolActionPreferenceSchema)
+    .optional(),
 })
 
 export type AssistantToolPreference = z.infer<
