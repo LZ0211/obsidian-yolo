@@ -151,6 +151,11 @@ export const it: DeepPartial<TranslationKeys> = {
     chat: {
       exportSuccess: 'Chat esportata in {path}',
       exportError: 'Impossibile esportare la conversazione',
+      workingDirectory: {
+        locked: 'La directory di lavoro è bloccata',
+        select: 'Seleziona directory di lavoro',
+        clear: 'Cancella directory di lavoro',
+      },
     },
     composer: {
       title: 'Sparkle',

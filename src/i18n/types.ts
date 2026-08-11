@@ -140,6 +140,11 @@ export type TranslationKeys = {
     chat?: {
       exportSuccess?: string
       exportError?: string
+      workingDirectory?: {
+        locked?: string
+        select?: string
+        clear?: string
+      }
     }
     composer: {
       title: string

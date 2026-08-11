@@ -135,6 +135,11 @@ export const en: TranslationKeys = {
     chat: {
       exportSuccess: 'Exported chat to {path}',
       exportError: 'Could not export conversation',
+      workingDirectory: {
+        locked: 'Working directory is locked',
+        select: 'Select working directory',
+        clear: 'Clear working directory',
+      },
     },
     composer: {
       title: 'Sparkle',

@@ -29,7 +29,10 @@ import { DEFAULT_ASSISTANT_ID } from '../../core/agent/default-assistant'
 import { findUnifiedAgentById } from '../../core/agent/workspaceAgentResolver'
 import { toDisplayPath } from '../../core/paths/displayPath'
 import { normalizePathSlashes } from '../../core/paths/normalizePath'
-import { resolveConversationFileScope } from '../../core/workspace/conversationFileScope'
+import {
+  isConversationFileScopeLocked,
+  resolveConversationFileScope,
+} from '../../core/workspace/conversationFileScope'
 import { FolderPickerModal } from '../settings/modals/FolderPickerModal'
 import { ConversationWorkingDirectoryControl } from './chat-input/ConversationWorkingDirectoryControl'
 import {
@@ -550,7 +553,10 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     [selectedAssistant],
   )
   const workingDirectoryControl = useMemo(() => {
-    const isLocked = workspaceHome === ''
+    // The directory locks once the conversation has user messages (backup
+    // semantics from conversationFileScope): changing it mid-conversation
+    // would split the file scope. Fresh conversations are never locked.
+    const isLocked = isConversationFileScopeLocked(chatMessages)
     const pickWorkingDirectory = () => {
       new FolderPickerModal(
         app,

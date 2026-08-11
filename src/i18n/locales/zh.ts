@@ -132,6 +132,11 @@ export const zh: TranslationKeys = {
     chat: {
       exportSuccess: '已导出聊天记录到 {path}',
       exportError: '导出失败',
+      workingDirectory: {
+        locked: '工作目录已锁定',
+        select: '选择工作目录',
+        clear: '清除工作目录',
+      },
     },
     composer: {
       title: '灵光写作',
