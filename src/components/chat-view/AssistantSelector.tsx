@@ -150,7 +150,14 @@ export function AssistantSelector({
 
   const handleEditAssistant = (assistantId: string) => {
     setOpen(false)
-    const modal = new AssistantsModal(app, plugin, assistantId, false)
+    const isWorkspaceAgent = (settings.workspaceAgents ?? []).some(
+      (agent) => agent.id === assistantId,
+    )
+    const modal = isWorkspaceAgent
+      ? new AssistantsModal(app, plugin, undefined, false, {
+          workspaceAgentId: assistantId,
+        })
+      : new AssistantsModal(app, plugin, assistantId, false)
     modal.open()
   }
 
