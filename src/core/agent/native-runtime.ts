@@ -135,6 +135,7 @@ export class NativeAgentRuntime implements AgentRuntime {
           requestMessages,
           resumeAssistantMessage,
         )
+        this.scheduleMemoryAgent(input, abortSignal)
       } finally {
         if (this.runAbortController === localAbortController) {
           this.runAbortController = null
@@ -640,6 +641,7 @@ export class NativeAgentRuntime implements AgentRuntime {
 
     try {
       await runCompletion
+      this.scheduleMemoryAgent(input, abortSignal)
     } finally {
       if (abortListener) {
         abortSignal.removeEventListener('abort', abortListener)
@@ -649,6 +651,28 @@ export class NativeAgentRuntime implements AgentRuntime {
         this.runAbortController = null
       }
     }
+  }
+
+  /**
+   * Queue hidden memory extraction after a run settles. Subagent child runs
+   * and aborted runs never extract; the hook is provided by the service layer.
+   */
+  private scheduleMemoryAgent(
+    input: AgentRuntimeRunInput,
+    signal: AbortSignal,
+  ): void {
+    // Subagent child runs (identified by a system-prompt override) never
+    // extract memory; aborted runs skip extraction too.
+    if (Boolean(input.systemPromptOverride) || signal.aborted) return
+
+    input.enqueueMemoryExtraction?.({
+      messages: [...input.messages, ...this.messages],
+      providerClient: input.providerClient,
+      model: input.model,
+      assistantId: input.assistantId,
+      requestContextBuilder: input.requestContextBuilder,
+      signal,
+    })
   }
 
   private shouldUseSingleTurnFastPath(): boolean {

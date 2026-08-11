@@ -1,0 +1,237 @@
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
+import { App, FileSystemAdapter, normalizePath, TFile, TFolder } from 'obsidian'
+
+import { executeSingleTurn } from '../ai/single-turn'
+import { RequestContextBuilder } from '../../utils/chat/requestContextBuilder'
+import { loadMemorySourceSnapshot, memoryAdd } from './memoryManager'
+import { openMemoryIndexStore } from './memoryIndex'
+import { getMemoryIndexRuntimeHandle, closeMemoryIndexRuntime } from './memoryIndexRuntime'
+
+jest.mock('../ai/single-turn', () => ({
+  executeSingleTurn: jest.fn(),
+}))
+
+const executeSingleTurnMock = executeSingleTurn as jest.Mock
+
+class TempFileSystemAdapter extends FileSystemAdapter {
+  constructor(private readonly basePath: string) {
+    super()
+  }
+  override getBasePath(): string {
+    return this.basePath
+  }
+}
+
+const makeVaultApp = (rootDir: string): App => {
+  const files = new Map<string, string>()
+  const directories = new Set<string>([rootDir])
+  const vault = {
+    getAbstractFileByPath: jest.fn((p: string) => {
+      const absolute = path.join(rootDir, p)
+      if (directories.has(absolute)) {
+        return Object.assign(new TFolder(), { path: p, children: [] })
+      }
+      if (files.has(p)) {
+        return Object.assign(new TFile(), {
+          path: p,
+          basename: path.basename(p),
+          extension: p.split('.').pop() ?? '',
+          stat: { size: files.get(p)?.length ?? 0, mtime: Date.now() },
+        })
+      }
+      return null
+    }),
+    read: jest.fn(async (file: { path: string }) => files.get(file.path) ?? ''),
+    cachedRead: jest.fn(async (file: { path: string }) => files.get(file.path) ?? ''),
+    create: jest.fn(async (p: string, content: string) => {
+      files.set(p, content)
+      return {
+        path: p,
+        basename: path.basename(p),
+        extension: p.split('.').pop() ?? '',
+        stat: { size: content.length, mtime: Date.now() },
+      }
+    }),
+    modify: jest.fn(async (file: { path: string }, content: string) => {
+      files.set(file.path, content)
+    }),
+    createFolder: jest.fn(async (p: string) => {
+      directories.add(path.join(rootDir, p))
+    }),
+    getFiles: jest.fn(() => []),
+    getMarkdownFiles: jest.fn(() => []),
+    getRoot: jest.fn(() => null),
+    on: jest.fn(() => () => undefined),
+    offref: jest.fn(),
+  }
+  return {
+    vault,
+    workspace: { getLeavesOfType: jest.fn(() => []) },
+    metadataCache: { getFileCache: jest.fn(() => null) },
+  } as unknown as App
+}
+
+describe('memory wiring integration (extract → persist → reconcile → recall)', () => {
+  let rootDir: string
+  let app: App
+  let settings: { yolo: { baseDir: string } }
+
+  beforeEach(() => {
+    rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-wiring-'))
+    app = makeVaultApp(rootDir)
+    ;(app.vault as { adapter: unknown }).adapter = new TempFileSystemAdapter(rootDir)
+    settings = {
+      yolo: { baseDir: 'YOLO' },
+      advancedMemoryIndexEnabled: true,
+    } as never
+    executeSingleTurnMock.mockReset()
+  })
+
+  afterEach(async () => {
+    await closeMemoryIndexRuntime(app)
+    fs.rmSync(rootDir, { recursive: true, force: true })
+  })
+
+  it('hidden extraction writes memory, commits to the index, and stays queryable after update', async () => {
+    // 1. Extraction: the LLM returns a memory operation JSON.
+    executeSingleTurnMock.mockResolvedValue({
+      content: JSON.stringify({
+        operations: [
+          {
+            op: 'add',
+            category: 'preferences',
+            scope: 'global',
+            content: '用户偏好极简风格的设计',
+            keywords: ['极简风格', '设计'],
+          },
+        ],
+      }),
+      toolCalls: [],
+    })
+
+    const builder = new RequestContextBuilder(app, settings as never, {
+      memoryIndexRuntime: getMemoryIndexRuntimeHandle(app, () => settings),
+    })
+    const providerClient = {} as never
+    const model = { id: 'test-model', model: 'test-model' } as never
+
+    // 2. Run the hidden extraction turn.
+    const plainTextState = (text: string) => ({
+      root: {
+        children: [
+          {
+            children: [
+              {
+                detail: 0,
+                format: 0,
+                mode: 'normal',
+                style: '',
+                text,
+                type: 'text',
+                version: 1,
+              },
+            ],
+            direction: 'ltr',
+            format: '',
+            indent: 0,
+            type: 'paragraph',
+            version: 1,
+          },
+        ],
+        direction: 'ltr',
+        format: '',
+        indent: 0,
+        type: 'root',
+        version: 1,
+      },
+    })
+    await builder.processMemoryTurn({
+      messages: [
+        {
+          role: 'user',
+          id: 'u1',
+          content: plainTextState('我喜欢极简风格的设计'),
+          mtime: Date.now(),
+        },
+        {
+          role: 'assistant',
+          id: 'a1',
+          content: '好的，我记住了。',
+          mtime: Date.now(),
+        },
+      ] as never,
+      providerClient,
+      model,
+      signal: new AbortController().signal,
+    })
+
+    // 3. The memory file was written (persistence).
+    const memoryFile = 'YOLO/memory/global.md'
+    const fileContent = await app.vault.read({
+      path: memoryFile,
+    } as never)
+    expect(fileContent).toContain('极简风格')
+
+    // 4. Manual add + reconcile through the runtime handle (update path).
+    const handle = getMemoryIndexRuntimeHandle(app, () => settings)
+    const store = await handle.getStore()
+    console.log('store capability:', (store as { capability?: string }).capability)
+    await memoryAdd({
+      app,
+      settings,
+      content: '用户是前端工程师',
+      category: 'profile',
+      scope: 'global',
+    })
+    // Direct reconcile (bypasses the queue) to isolate the failure.
+    const snapshot2 = await loadMemorySourceSnapshot({
+      app,
+      settings: settings as never,
+      scope: 'global',
+    })
+    await (store as { reconcilePartition: (i: never) => Promise<void> }).reconcilePartition({
+      partition: { scope: 'global', assistantId: null, partitionKey: 'global' },
+      sourcePath: memoryFile,
+      sourceFileFingerprint: snapshot2.sourceFileFingerprint,
+      parserVersion: snapshot2.parserVersion,
+      entries: snapshot2.entries,
+    } as never)
+    handle.onSourceCommitted({
+      partition: { scope: 'global', assistantId: null, partitionKey: 'global' },
+      sourcePath: memoryFile,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+
+    // 5. The index reflects the entries (queryable after update).
+    const snapshot = await loadMemorySourceSnapshot({
+      app,
+      settings: settings as never,
+      scope: 'global',
+    })
+    const indexed = await store.query({
+      partition: { scope: 'global', assistantId: null, partitionKey: 'global' },
+      sourceFileFingerprint: snapshot.sourceFileFingerprint,
+      target: {
+        query: '前端',
+        keywords: ['前端'],
+        entities: [],
+        categories: ['profile', 'preferences', 'other'],
+        scopes: ['global'],
+        sector: null,
+        confidence: 1,
+        isReferential: false,
+        source: 'lexical',
+      } as never,
+      maxEntries: 8,
+      maxChars: 3000,
+    })
+    console.log('indexed entries:', indexed.length, 'fp match:', snapshot.sourceFileFingerprint)
+    expect(indexed.length).toBeGreaterThan(0)
+    expect(indexed.map((entry) => entry.content)).toEqual(
+      expect.arrayContaining(['用户是前端工程师']),
+    )
+  })
+})

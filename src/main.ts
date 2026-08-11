@@ -66,6 +66,10 @@ import {
 } from './core/llm/debugCapture'
 import { clearRequestTransportMemory } from './core/llm/requestTransport'
 import { installYoloInjectionBridge } from './core/mcp/injectionBridge'
+import {
+  closeMemoryIndexRuntime,
+  getMemoryIndexRuntime,
+} from './core/memory/memoryIndexRuntime'
 import type {
   LocalMcpServerRuntime,
   LocalMcpServerState,
@@ -2206,6 +2210,10 @@ export default class YoloPlugin extends Plugin {
         this.mcpManager?.invalidateAvailableToolsCache()
       },
     })
+    // Warm the memory index runtime so vault mutations start reconciling the
+    // SQLite memory index as soon as possible (md files remain the source of
+    // truth; the index mirrors them).
+    getMemoryIndexRuntime(this.app, () => this.settings)
     this.actionToastController = mountActionToast()
     this.initializeModuleSystem()
     this.initializeRuntimeComponentSystem()
@@ -2742,6 +2750,7 @@ export default class YoloPlugin extends Plugin {
     this.injectionBridgeUninstall?.()
     this.injectionBridgeUninstall = null
     this.removeRagLogRibbonIcon()
+    void closeMemoryIndexRuntime(this.app)
     clearAllChatGPTOAuthServices()
     this.disposeCliRuntimeCoordinator()
     this.liteSkillRegistryDispose?.()

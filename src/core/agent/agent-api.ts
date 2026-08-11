@@ -6,6 +6,7 @@ import type {
 import type { App } from 'obsidian'
 import { v4 as uuidv4 } from 'uuid'
 
+import { getMemoryIndexRuntimeHandle } from '../memory/memoryIndexRuntime'
 import { resolveWorkspaceScopeForRuntimeInput } from '../../components/chat-view/chat-runtime-inputs'
 import { resolveChatModeRuntime } from '../../components/chat-view/chat-runtime-profiles'
 import type { YoloSettings } from '../../settings/schema/setting.types'
@@ -407,6 +408,7 @@ export async function resolveAgentApiRunInput({
         agentService.getPromptSourceWatcher().getRevision(),
       promptSourcePathsCallback: (paths) =>
         agentService.getPromptSourceWatcher().setWatchedPaths(paths),
+      memoryIndexRuntime: getMemoryIndexRuntimeHandle(app, () => settings),
     },
   )
   const resolvedContext = await resolveAgentApiContext({

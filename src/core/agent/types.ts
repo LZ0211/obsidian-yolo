@@ -39,6 +39,16 @@ export type AgentPendingUserMessageDrain = {
   sourceUserMessageId: string
 }
 
+/** Payload handed to the memory extraction queue after a run settles. */
+export type MemoryExtractionRequest = {
+  messages: ChatMessage[]
+  providerClient: BaseLLMProvider<LLMProvider>
+  model: ChatModel
+  assistantId?: string
+  requestContextBuilder: RequestContextBuilder
+  signal: AbortSignal
+}
+
 export type AgentRuntimeRunInput = {
   providerClient: BaseLLMProvider<LLMProvider>
   model: ChatModel
@@ -139,6 +149,12 @@ export type AgentRuntimeRunInput = {
    * `vault-read` module agent capability). Defaults to false.
    */
   bashReadOnly?: boolean
+  /**
+   * Optional per-run memory extraction hook. Invoked after the run settles
+   * (hidden LLM extraction of durable user facts/preferences). Provided by
+   * the service layer; subagent child runs never set it.
+   */
+  enqueueMemoryExtraction?: (input: MemoryExtractionRequest) => void
 }
 
 export type AgentRuntimeLoopConfig = {

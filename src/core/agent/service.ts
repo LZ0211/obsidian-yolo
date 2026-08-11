@@ -39,6 +39,11 @@ import {
 } from './bash/command-classifier'
 import type { BashTaskRecord } from './bash/types'
 import { DEFAULT_BRANCH_ID } from './branch'
+import {
+  MemoryExtractionQueue,
+  type MemoryExtractionQueueTask,
+} from '../memory/memoryExtractionQueue'
+import type { MemoryExtractionRequest } from './types'
 import type { AgentFileChangeTracker } from './agentFileChangeTracker'
 import { CitationRegistry } from './citationRegistry'
 import { NativeAgentRuntime } from './native-runtime'
@@ -921,6 +926,18 @@ export class AgentService {
    */
   private readonly systemPromptSnapshotStore = new SystemPromptSnapshotStore()
   private readonly promptSourceWatcher = new PromptSourceWatcher()
+  private readonly memoryExtractionQueue = new MemoryExtractionQueue<
+    MemoryExtractionQueueTask & { request: MemoryExtractionRequest }
+  >(async (task, signal) => {
+    if (task.request.signal.aborted || signal.aborted) return
+    await task.request.requestContextBuilder.processMemoryTurn({
+      messages: task.request.messages,
+      providerClient: task.request.providerClient,
+      model: task.request.model,
+      assistantId: task.request.assistantId,
+      signal,
+    })
+  })
 
   constructor(private readonly options: AgentServiceOptions = {}) {}
 
@@ -2108,6 +2125,15 @@ export class AgentService {
     const runtimeInput: AgentRuntimeRunInput = {
       ...input,
       runContext,
+      enqueueMemoryExtraction: Boolean(input.systemPromptOverride)
+        ? undefined
+        : (request) => {
+            this.memoryExtractionQueue.enqueue({
+              assistantId: request.assistantId,
+              id: `${conversationId}:${runId}`,
+              request,
+            })
+          },
       drainPendingUserMessages: () => {
         const queue = this.pendingUserMessagesByKey.get(runKey)
         if (!queue || queue.length === 0) {

@@ -11,6 +11,10 @@ import type {
   SystemPromptSnapshot,
   SystemPromptSnapshotStore,
 } from '../../core/agent/systemPromptSnapshotStore'
+import { runMemoryAgentWithFallback } from '../../core/memory/memoryAgent'
+import type { MemoryIndexRuntimeHandle } from '../../core/memory/memoryIndexRuntime'
+import { executeSingleTurn } from '../../core/ai/single-turn'
+import { getChatModelClient } from '../../core/llm/manager'
 import {
   getMemoryPromptContext,
   resolveMemoryFilePaths,
@@ -42,7 +46,9 @@ import type {
   ChatUserMessage,
 } from '../../types/chat'
 import { getLatestChatConversationCompaction } from '../../types/chat'
+import type { BaseLLMProvider } from '../../core/llm/base'
 import type { ChatModel } from '../../types/chat-model.types'
+import type { LLMProvider } from '../../types/provider.types'
 import type { ContentPart, RequestMessage } from '../../types/llm/request'
 import type {
   Mentionable,
@@ -205,6 +211,8 @@ type RequestContextBuilderOptions = {
   systemPromptSnapshotStore?: SystemPromptSnapshotStore
   getPromptSourceRevision?: () => number
   promptSourcePathsCallback?: (paths: Set<string>) => void
+  /** Memory index runtime handle; wires hidden extraction commits + reflection. */
+  memoryIndexRuntime?: MemoryIndexRuntimeHandle
 }
 
 /**
@@ -521,6 +529,7 @@ export class RequestContextBuilder {
   private systemPromptSnapshotStore?: SystemPromptSnapshotStore
   private getPromptSourceRevision?: () => number
   private promptSourcePathsCallback?: (paths: Set<string>) => void
+  private memoryIndexRuntime?: MemoryIndexRuntimeHandle
 
   constructor(
     app: App,
@@ -533,6 +542,7 @@ export class RequestContextBuilder {
     this.systemPromptSnapshotStore = options?.systemPromptSnapshotStore
     this.getPromptSourceRevision = options?.getPromptSourceRevision
     this.promptSourcePathsCallback = options?.promptSourcePathsCallback
+    this.memoryIndexRuntime = options?.memoryIndexRuntime
   }
 
   private getMentionContextMode(): MentionContextMode {
@@ -2393,5 +2403,101 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
       return `${startLine + index}|${line}`
     })
     return linesWithNumbers.join('\n')
+  }
+
+  /**
+   * Hidden memory extraction after a conversation turn: pulls the last
+   * user/assistant message pair, resolves the memory model (falling back to
+   * the turn model), wires the reflection runner, and commits extraction
+   * results back into the memory index.
+   */
+  public async processMemoryTurn({
+    messages,
+    providerClient,
+    model,
+    assistantId,
+    signal,
+  }: {
+    messages: ChatMessage[]
+    providerClient: BaseLLMProvider<LLMProvider>
+    model: ChatModel
+    assistantId?: string
+    signal?: AbortSignal
+  }): Promise<void> {
+    const userMessage = [...messages]
+      .reverse()
+      .find((message): message is ChatUserMessage => message.role === 'user')
+    const assistantMessage = [...messages]
+      .reverse()
+      .find(
+        (message): message is ChatAssistantMessage =>
+          message.role === 'assistant',
+      )
+    if (!userMessage || !assistantMessage) return
+
+    const userText = userMessage.content
+      ? editorStateToPlainText(userMessage.content, {
+          ignoreMentionableTypes: ['model'],
+        })
+      : ''
+    const assistantText =
+      typeof assistantMessage.content === 'string'
+        ? assistantMessage.content
+        : ''
+    if (!userText.trim() || !assistantText.trim()) return
+
+    let memoryProviderClient = providerClient
+    let memoryModel = model
+    const configuredMemoryModelId = this.settings.memoryAgentModelId?.trim()
+    if (configuredMemoryModelId && configuredMemoryModelId !== model.id) {
+      try {
+        const resolved = getChatModelClient({
+          settings: this.settings,
+          modelId: configuredMemoryModelId,
+        })
+        memoryProviderClient = resolved.providerClient
+        memoryModel = resolved.model
+      } catch (error) {
+        console.warn(
+          '[YOLO][MemoryAgent] configured model unavailable; using current model',
+          error,
+        )
+      }
+    }
+
+    this.memoryIndexRuntime?.setReflectionModelRunner?.(
+      async (prompt, reflectionSignal) => {
+        const response = await executeSingleTurn({
+          providerClient: memoryProviderClient,
+          model: memoryModel,
+          request: {
+            model: memoryModel.model,
+            messages: [{ role: 'user', content: prompt }],
+          },
+          signal: reflectionSignal,
+          deliveryMode: 'buffered',
+          purpose: 'lightweight',
+        })
+        return response.content
+      },
+    )
+
+    await runMemoryAgentWithFallback({
+      input: {
+        app: this.app,
+        settings: this.settings,
+        assistantId: assistantId ?? this.settings.currentAssistantId,
+        userText,
+        assistantText,
+        providerClient: memoryProviderClient,
+        model: memoryModel,
+        signal,
+        onSourceCommitted: this.memoryIndexRuntime
+          ? (input) => this.memoryIndexRuntime?.onSourceCommitted(input)
+          : undefined,
+      },
+      fallback:
+        memoryModel.id === model.id ? undefined : { providerClient, model },
+    })
   }
 }

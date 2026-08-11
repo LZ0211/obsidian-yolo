@@ -505,6 +505,9 @@ export const yoloSettingsSchema = z.object({
   chatModelId: z.string().catch(''), // model for default chat feature
   rerankModelId: z.string().catch(''),
   chatTitleModelId: z.string().catch(''), // model for automatic conversation naming
+  memoryAgentModelId: z.string().optional(), // model for hidden memory extraction
+  advancedMemoryIndexEnabled: z.boolean().catch(true),
+  memoryReflectionEnabled: z.boolean().catch(false),
   embeddingModelId: z.string().catch(''), // model for embedding
 
   // System Prompt

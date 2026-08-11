@@ -52,6 +52,7 @@ function createPlainTextEditorState(text: string): SerializedEditorState {
   }
 }
 
+import { getMemoryIndexRuntimeHandle } from '../memory/memoryIndexRuntime'
 import { resolveChatModeRuntime } from '../../components/chat-view/chat-runtime-profiles'
 import { findUnifiedAgentById } from '../agent/workspaceAgentResolver'
 import type {
@@ -223,6 +224,7 @@ export async function runBotAgentTurn(
         agentService.getPromptSourceWatcher().getRevision(),
       promptSourcePathsCallback: (paths) =>
         agentService.getPromptSourceWatcher().setWatchedPaths(paths),
+      memoryIndexRuntime: getMemoryIndexRuntimeHandle(app, () => requestSettings),
     },
   )
 

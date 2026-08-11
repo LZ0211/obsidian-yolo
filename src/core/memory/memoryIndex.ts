@@ -728,11 +728,11 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
         Math.min(DEFAULT_MAX_CHARS, Math.trunc(input.maxChars)),
       )
       const categories =
-        input.target.categories.length > 0
+        input.target.categories?.length > 0
           ? input.target.categories
           : ['profile', 'preferences', 'other']
       const scopes =
-        input.target.scopes.length > 0
+        input.target.scopes?.length > 0
           ? input.target.scopes
           : [input.partition.scope]
       const queryKeywords = [
@@ -1002,12 +1002,12 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
       await this.operationChain
       const runtime = await this.getRuntime()
       const scopes =
-        input.target.scopes.length > 0
+        input.target.scopes?.length > 0
           ? input.target.scopes
           : [input.partition.scope]
       if (!scopes.includes(input.partition.scope)) return input.seeds
       const categories =
-        input.target.categories.length > 0
+        input.target.categories?.length > 0
           ? input.target.categories
           : ['profile', 'preferences', 'other']
       const prefix = `${input.partition.partitionKey}::`
