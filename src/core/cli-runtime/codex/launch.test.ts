@@ -83,7 +83,9 @@ describe('Codex launch discovery', () => {
     )
   })
 
-  it('searches the bundled Codex.app binary on macOS', async () => {
+  const describeDarwinOnly = process.platform === 'darwin' ? it : it.skip
+
+  describeDarwinOnly('searches the bundled Codex.app binary on macOS', async () => {
     mockedAccess.mockImplementation(async (candidate) => {
       if (
         String(candidate) === '/Applications/Codex.app/Contents/Resources/codex'
@@ -98,7 +100,7 @@ describe('Codex launch discovery', () => {
     ).resolves.toBe('/Applications/Codex.app/Contents/Resources/codex')
   })
 
-  it('prefers an existing configured path with home expansion', async () => {
+  describeDarwinOnly('prefers an existing configured path with home expansion', async () => {
     mockedAccess.mockImplementation(async (candidate) => {
       if (String(candidate) === '/Users/me/.nvm/current/bin/codex') return
       throw new Error('ENOENT')
@@ -114,7 +116,7 @@ describe('Codex launch discovery', () => {
     ).resolves.toMatchObject({ command: '/Users/me/.nvm/current/bin/codex' })
   })
 
-  it('falls back to auto-detection when the configured path is missing', async () => {
+  describeDarwinOnly('falls back to auto-detection when the configured path is missing', async () => {
     mockedAccess.mockImplementation(async (candidate) => {
       if (String(candidate) === '/opt/homebrew/bin/codex') return
       throw new Error('ENOENT')
