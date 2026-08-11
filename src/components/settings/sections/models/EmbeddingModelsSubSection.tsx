@@ -1,4 +1,4 @@
-import { Trash2 } from 'lucide-react'
+import { Edit, Trash2 } from 'lucide-react'
 import { App, Notice } from 'obsidian'
 
 import { DEFAULT_EMBEDDING_MODELS } from '../../../../constants'
@@ -7,6 +7,7 @@ import { getEmbeddingModelClient } from '../../../../core/rag/embedding'
 import YoloPlugin from '../../../../main'
 import { ConfirmModal } from '../../../modals/ConfirmModal'
 import { AddEmbeddingModelModal } from '../../modals/AddEmbeddingModelModal'
+import { EditEmbeddingModelModal } from '../../modals/EditEmbeddingModelModal'
 
 type EmbeddingModelsSubSectionProps = {
   app: App
@@ -92,6 +93,19 @@ export function EmbeddingModelsSubSection({
                 <td>{embeddingModel.dimension}</td>
                 <td>
                   <div className="yolo-settings-actions">
+                    <button
+                      onClick={() =>
+                        new EditEmbeddingModelModal(
+                          app,
+                          plugin,
+                          embeddingModel,
+                        ).open()
+                      }
+                      className="clickable-icon"
+                      title="Edit model"
+                    >
+                      <Edit />
+                    </button>
                     {!DEFAULT_EMBEDDING_MODELS.some(
                       (v) => v.id === embeddingModel.id,
                     ) && (
