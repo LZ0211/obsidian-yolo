@@ -122,6 +122,8 @@ export type MemoryIndexStore = {
 export type MemoryIndexMaintenanceStore = {
   close?(): Promise<void> | void
   forceClose?(): void
+  /** Raw sqlite runtime; the recall orchestrator builds the embedding store from it. */
+  getRuntime(): Promise<SqliteNativeRuntimeFacade>
   rebuildEdges(input: {
     partition: MemoryPartition
     localIds: readonly string[]
@@ -351,7 +353,8 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
     await this.getRuntime()
   }
 
-  private async getRuntime(): Promise<SqliteNativeRuntimeFacade> {
+  /** Exposed so the recall orchestrator can build the embedding store. */
+  public async getRuntime(): Promise<SqliteNativeRuntimeFacade> {
     if (this.forceClosed) {
       throw new MemoryIndexUnavailableError('SQLite memory index is closed')
     }
@@ -1310,6 +1313,9 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
 
 class UnavailableMemoryIndexStore implements MemoryIndexMaintenanceStore {
   readonly capability = 'unavailable' as const
+  async getRuntime(): Promise<SqliteNativeRuntimeFacade> {
+    throw new MemoryIndexUnavailableError('SQLite memory index is unavailable')
+  }
   async reconcilePartition(): Promise<void> {
     return
   }

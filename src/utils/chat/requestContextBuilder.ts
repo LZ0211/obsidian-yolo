@@ -12,11 +12,22 @@ import type {
   SystemPromptSnapshotStore,
 } from '../../core/agent/systemPromptSnapshotStore'
 import { runMemoryAgentWithFallback } from '../../core/memory/memoryAgent'
+import { MemoryEmbeddingStore } from '../../core/memory/memoryEmbeddings'
+import {
+  buildMemoryPartition,
+  type MemoryIndexMaintenanceStore,
+} from '../../core/memory/memoryIndex'
 import type { MemoryIndexRuntimeHandle } from '../../core/memory/memoryIndexRuntime'
+import {
+  MAX_RECALL_RECENT_USER_MESSAGES,
+  MemoryRecallOrchestrator,
+} from '../../core/memory/memoryRecallOrchestrator'
 import { executeSingleTurn } from '../../core/ai/single-turn'
 import { getChatModelClient } from '../../core/llm/manager'
+import { getEmbeddingModelClient } from '../../core/rag/embedding'
 import {
   getMemoryPromptContext,
+  loadMemorySourceSnapshot,
   resolveMemoryFilePaths,
 } from '../../core/memory/memoryManager'
 import {
@@ -695,6 +706,7 @@ export class RequestContextBuilder {
         }
       : await this.resolveSystemPromptSnapshot({
           conversationId,
+          messages,
           hasTools,
           hasMemoryTools,
           hasOnDemandTools,
@@ -1722,6 +1734,7 @@ ${entries}
    */
   private async resolveSystemPromptSnapshot({
     conversationId,
+    messages,
     hasTools,
     hasMemoryTools,
     hasOnDemandTools,
@@ -1730,6 +1743,7 @@ ${entries}
     mode,
   }: {
     conversationId: string
+    messages: ChatMessage[]
     hasTools: boolean
     hasMemoryTools: boolean
     hasOnDemandTools: boolean
@@ -1739,10 +1753,12 @@ ${entries}
   }): Promise<SystemPromptSnapshot> {
     const build = async (): Promise<SystemPromptSnapshot> => {
       const systemSections = await this.buildSystemPromptSections(
+        messages,
         hasTools,
         hasMemoryTools,
         hasOnDemandTools,
         runtimeModePrompt,
+        compaction,
       )
       const systemContent = systemSections
         .map((section) =>
@@ -1858,10 +1874,12 @@ ${entries}
    * byte-for-byte. Buckets are assigned per the breakdown spec.
    */
   private async buildSystemPromptSections(
+    messages: ChatMessage[],
     hasTools: boolean,
     hasMemoryTools: boolean,
     hasOnDemandTools: boolean,
-    runtimeModePrompt?: string,
+    runtimeModePrompt: string | undefined,
+    compaction: ChatConversationCompactionLike | null | undefined,
   ): Promise<SystemPromptSections> {
     const sections: SystemPromptSections = []
     const currentAssistant = this.getCurrentAssistant()
@@ -1870,7 +1888,11 @@ ${entries}
     // skills / system text can be counted independently. Order MUST match the
     // legacy parts[] order in `buildCustomInstructionsSection`.
     const customInstructionSubsections =
-      await this.buildCustomInstructionsSubsections(hasMemoryTools)
+      await this.buildCustomInstructionsSubsections(
+        messages,
+        hasMemoryTools,
+        compaction,
+      )
     sections.push(...customInstructionSubsections)
 
     const baseBehaviorContent = this.buildDefaultBehaviorSection(
@@ -1951,7 +1973,9 @@ ${entries}
    * second path that re-reads memory files or skill entries.
    */
   private async buildCustomInstructionsSubsections(
+    messages: ChatMessage[],
     hasMemoryTools: boolean,
+    compaction: ChatConversationCompactionLike | null | undefined,
   ): Promise<SystemPromptSections> {
     const sections: SystemPromptSections = []
     const currentAssistant = this.getCurrentAssistant()
@@ -1973,24 +1997,35 @@ ${resolvedAssistantSystemPrompt}
       }
     }
 
-    // Memory block — bucket: memory
+    // Memory block — bucket: memory. Stable profile/preferences come from the
+    // full markdown snapshot; dynamic recall comes from the SQLite memory
+    // index (jieba keywords → three-path RRF fusion) so the migrated memory
+    // subsystem actually feeds production conversations.
     const memoryContext = await getMemoryPromptContext({
       app: this.app,
       settings: this.settings,
       assistantId: currentAssistant?.id,
     })
-    if (memoryContext.global || memoryContext.assistant) {
-      const memoryParts: string[] = []
-      if (memoryContext.global) {
-        memoryParts.push(`<global>
+    const memoryParts: string[] = []
+    if (memoryContext.global) {
+      memoryParts.push(`<global>
 ${memoryContext.global}
 </global>`)
-      }
-      if (memoryContext.assistant) {
-        memoryParts.push(`<assistant>
+    }
+    if (memoryContext.assistant) {
+      memoryParts.push(`<assistant>
 ${memoryContext.assistant}
 </assistant>`)
-      }
+    }
+    const recalledMemoryBlock = await this.buildIndexedMemoryRecallBlock(
+      messages,
+      compaction,
+      currentAssistant?.id,
+    )
+    if (recalledMemoryBlock) {
+      memoryParts.push(recalledMemoryBlock)
+    }
+    if (memoryParts.length > 0) {
       sections.push({
         bucket: 'memory',
         id: 'memory.context',
@@ -2499,5 +2534,89 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
       fallback:
         memoryModel.id === model.id ? undefined : { providerClient, model },
     })
+  }
+
+  /**
+   * Dynamic memory recall from the SQLite memory index: builds a
+   * jieba-enhanced recall target from the recent user messages, runs the
+   * three-path RRF retrieval (lexical + vector + graph), and renders the
+   * fused entries into a `<recalled_memory>` block. Returns null when the
+   * index is unavailable (md-only fallback) or nothing matched.
+   */
+  private async buildIndexedMemoryRecallBlock(
+    messages: ChatMessage[],
+    compaction: ChatConversationCompactionLike | null | undefined,
+    assistantId: string | undefined,
+  ): Promise<string | null> {
+    if (!this.memoryIndexRuntime) return null
+    try {
+      const store = await this.memoryIndexRuntime.getStore()
+      if (store.capability !== 'sqlite') return null
+
+      const recentUserMessages = messages
+        .filter((message): message is ChatUserMessage => message.role === 'user')
+        .slice(-MAX_RECALL_RECENT_USER_MESSAGES)
+        .map((message) =>
+          message.content
+            ? editorStateToPlainText(message.content, {
+                ignoreMentionableTypes: ['model'],
+              })
+            : '',
+        )
+        .filter(Boolean)
+      const latestQuery = recentUserMessages.at(-1) ?? ''
+      if (!latestQuery.trim()) return null
+
+      const partition = buildMemoryPartition({
+        scope: assistantId ? 'assistant' : 'global',
+        ...(assistantId ? { assistantId } : {}),
+      })
+      const snapshot = await loadMemorySourceSnapshot({
+        app: this.app,
+        settings: this.settings,
+        scope: partition.scope,
+        assistantId: partition.assistantId ?? undefined,
+      })
+
+      const orchestrator = new MemoryRecallOrchestrator(
+        store as never,
+        new MemoryEmbeddingStore(
+          await (store as unknown as MemoryIndexMaintenanceStore).getRuntime(),
+        ),
+        async (query: string): Promise<number[] | null> => {
+          const embeddingModelId = this.settings.embeddingModelId?.trim()
+          if (!embeddingModelId) return null
+          try {
+            const client = getEmbeddingModelClient({
+              settings: this.settings,
+              embeddingModelId,
+            })
+            return await client.getEmbedding(query)
+          } catch (error) {
+            console.warn(
+              '[YOLO][Memory] embedding unavailable for recall',
+              error,
+            )
+            return null
+          }
+        },
+      )
+
+      const context = await orchestrator.recall(
+        {
+          latestQuery,
+          recentUserMessages,
+          compactionSummary:
+            getLatestChatConversationCompaction(compaction)?.summary,
+          assistantId,
+        },
+        partition,
+        snapshot.sourceFileFingerprint,
+      )
+      return orchestrator.render(context, (_key, fallback) => fallback)
+    } catch (error) {
+      console.warn('[YOLO][Memory] indexed recall unavailable', error)
+      return null
+    }
   }
 }

@@ -3,6 +3,7 @@ import type { LLMProvider } from '../../types/provider.types'
 import { executeSingleTurn } from '../ai/single-turn'
 import type { BaseLLMProvider } from '../llm/base'
 
+import { cutForSearchWithJieba } from './memoryJiebaTokenizer'
 import {
   extractMemoryQueryKeywords,
   normalizeMemoryText,
@@ -117,6 +118,14 @@ const findMatchingKnownKeywords = (
 const isReferential = (query: string): boolean =>
   CJK_REFERENTIAL_RE.test(query) || ENGLISH_REFERENTIAL_RE.test(query)
 
+/**
+ * jieba-enhanced variant of {@link buildMemoryRecallTarget}: when the
+ * jieba-engine component is available, lexical keywords come from jieba's
+ * search-engine mode (accurate Chinese word segmentation — long words plus
+ * sub-tokens); otherwise it falls back to the built-in tokenizer. Callers
+ * with an async context (requestContextBuilder, recall orchestration) use
+ * this instead of the synchronous build.
+ */
 export const buildMemoryRecallTarget = (
   input: MemoryRecallTargetInput,
 ): MemoryRecallTarget => {
@@ -131,6 +140,56 @@ export const buildMemoryRecallTarget = (
     MAX_KNOWN_MEMORY_KEYWORDS,
   )
   const latestKeywords = extractMemoryQueryKeywords(projection.latestQuery)
+  const referential = isReferential(projection.latestQuery)
+  const confidence = referential
+    ? 0.2
+    : latestKeywords.length >= 2
+      ? 0.9
+      : latestKeywords.length === 1
+        ? 0.55
+        : 0.2
+
+  return {
+    query: projection.context,
+    keywords,
+    entities: latestKeywords.filter((keyword) => /[a-z0-9_./-]/.test(keyword)),
+    categories: ['profile', 'preferences', 'other'],
+    scopes: input.assistantId ? ['assistant', 'global'] : ['global'],
+    sector: null,
+    confidence,
+    isReferential: referential,
+    source: 'lexical',
+  }
+}
+
+/**
+ * jieba-enhanced variant of {@link buildMemoryRecallTarget}: when the
+ * jieba-engine component is available, lexical keywords come from jieba's
+ * search-engine mode (accurate Chinese word segmentation — long words plus
+ * sub-tokens); otherwise it falls back to the built-in tokenizer. Callers
+ * with an async context (requestContextBuilder, recall orchestration) use
+ * this instead of the synchronous build.
+ */
+export const buildMemoryRecallTargetWithJieba = async (
+  input: MemoryRecallTargetInput,
+): Promise<MemoryRecallTarget> => {
+  const projection = buildContext(input)
+  const [jiebaContextKeywords, jiebaLatestKeywords] = await Promise.all([
+    cutForSearchWithJieba(projection.context),
+    cutForSearchWithJieba(projection.latestQuery),
+  ])
+  const lexicalKeywords =
+    jiebaContextKeywords ?? extractMemoryQueryKeywords(projection.context)
+  const knownKeywords = findMatchingKnownKeywords(
+    input.knownMemoryKeywords,
+    projection.context,
+  )
+  const keywords = [...new Set([...knownKeywords, ...lexicalKeywords])].slice(
+    0,
+    MAX_KNOWN_MEMORY_KEYWORDS,
+  )
+  const latestKeywords =
+    jiebaLatestKeywords ?? extractMemoryQueryKeywords(projection.latestQuery)
   const referential = isReferential(projection.latestQuery)
   const confidence = referential
     ? 0.2
