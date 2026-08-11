@@ -1,5 +1,10 @@
 import { IDBFactory, IDBObjectStore } from 'fake-indexeddb'
 
+// fake-indexeddb transactions are slow under heavy parallel jest load (the
+// full suite runs at 50% workers); the default 30s per-test budget is too
+// tight and produces load-dependent timeouts.
+jest.setTimeout(60_000)
+
 import {
   IndexedDbDataAdapter,
   MODULE_DEVICE_LOCAL_DATABASE_NAMESPACE_KEY,
