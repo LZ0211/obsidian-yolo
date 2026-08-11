@@ -315,6 +315,34 @@ const tabCompletionTriggerSchema = z
     acceptMode: 'insert',
   })
 
+export const agentShareTokenScopeSchema = z.union([
+  z.object({
+    kind: z.literal('agent'),
+    agentId: z.string(),
+  }),
+  z.object({
+    kind: z.literal('workspaceRoot'),
+    rootHash: z.string(),
+    issuedForAgentId: z.string(),
+  }),
+])
+export type AgentShareTokenScope = z.infer<typeof agentShareTokenScopeSchema>
+
+export const agentShareTokenRecordSchema = z.object({
+  id: z.string(),
+  tokenHash: z.string(),
+  tokenHashVersion: z.literal('hmac-sha256-v1'),
+  scope: agentShareTokenScopeSchema,
+  label: z.string().optional(),
+  createdAt: z.number(),
+  lastUsedAt: z.number().optional(),
+  revokedAt: z.number().optional(),
+  plaintext: z.string().optional(),
+  expiresAt: z.number().optional(),
+  disabled: z.boolean().optional(),
+})
+export type AgentShareTokenRecord = z.infer<typeof agentShareTokenRecordSchema>
+
 /**
  * Workspace agent policy (migrated from the local fork): the agent's home
  * directory and read/write boundary rules around it.
@@ -364,6 +392,7 @@ export const workspaceAgentSchema = z.object({
   disabled: z.boolean().optional(),
   behaviorOverrides: workspaceAgentBehaviorOverridesSchema.optional(),
   workspacePolicy: workspaceAgentPolicySchema,
+  shareTokens: z.array(agentShareTokenRecordSchema).optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
 })
@@ -900,6 +929,7 @@ export const yoloSettingsSchema = z.object({
 
   // Workspace agent instances (inherit an assistant template + override)
   workspaceAgents: resilientArraySchema(workspaceAgentSchema),
+  currentWorkspaceAgentId: z.string().optional(),
 
   // Currently selected assistant ID
   currentAssistantId: z.string().optional(),

@@ -69,6 +69,7 @@ export type AssistantToolOverridePreference = z.infer<
 export const assistantToolPreferenceSchema = z.object({
   enabled: z.boolean().optional(),
   approvalMode: assistantToolApprovalModeSchema.optional(),
+  disclosureMode: assistantToolDisclosureModeSchema.optional(),
 })
 
 export type AssistantToolPreference = z.infer<
@@ -110,6 +111,23 @@ export const workspaceAccessPolicySchema = z.object({
 
 export type WorkspaceAccessPolicy = z.infer<typeof workspaceAccessPolicySchema>
 
+export const assistantModeSchema = z.enum(['ask', 'agent', 'agent-full'])
+export type AssistantMode = z.infer<typeof assistantModeSchema>
+
+export const assistantModePolicySchema = z.union([
+  z.object({
+    kind: z.literal('fixed'),
+    mode: assistantModeSchema,
+  }),
+  z.object({
+    kind: z.literal('switchable'),
+    defaultMode: assistantModeSchema,
+    allowedModes: z.array(assistantModeSchema).min(1),
+  }),
+])
+
+export type AssistantModePolicy = z.infer<typeof assistantModePolicySchema>
+
 // Assistant type definition
 export const assistantSchema = z.object({
   id: z.string(),
@@ -139,10 +157,12 @@ export const assistantSchema = z.object({
   workspaceScope: assistantWorkspaceScopeSchema.optional(),
   workspaceAccessPolicy: workspaceAccessPolicySchema.optional(),
   enableProjectInstructions: z.boolean().optional(),
+  delegatable: z.boolean().optional(),
   // Per-agent focus sync (current file pointer injection in sidebar chat).
   includeCurrentFileContent: z.boolean().optional(),
   // Per-agent time awareness (<current_time> prefix on new user messages).
   timeContextEnabled: z.boolean().optional(),
+  modePolicy: assistantModePolicySchema.optional(),
   createdAt: z.number().optional(),
   updatedAt: z.number().optional(),
 })

@@ -148,15 +148,6 @@ export const it: DeepPartial<TranslationKeys> = {
       exportConversation: 'Esporta conversazione nel vault',
       moreActions: 'Altre azioni',
     },
-    chat: {
-      exportSuccess: 'Chat esportata in {path}',
-      exportError: 'Impossibile esportare la conversazione',
-      workingDirectory: {
-        locked: 'La directory di lavoro è bloccata',
-        select: 'Seleziona directory di lavoro',
-        clear: 'Cancella directory di lavoro',
-      },
-    },
     composer: {
       title: 'Sparkle',
       subtitle:
@@ -655,14 +646,6 @@ export const it: DeepPartial<TranslationKeys> = {
       manageAll: 'Gestisci tutti…',
     },
     agent: {
-      workspaceAgents: 'Agent dello spazio di lavoro',
-      newWorkspaceAgent: 'Nuovo agent dello spazio di lavoro',
-      workspaceAgentsDesc: "Istanza di agent legata a una directory di lavoro: eredita un template e limita l'accesso ai file alla workspace root.",
-      deleteWorkspaceAgentTitle: 'Conferma eliminazione agent dello spazio di lavoro',
-      deleteWorkspaceAgentMessagePrefix: "Eliminare definitivamente l'agent dello spazio di lavoro",
-      deleteWorkspaceAgentMessageSuffix: '? Questa azione non è reversibile.',
-      templateBadge: 'Template',
-      disabledBadge: 'disattivato',
       title: 'Agent',
       desc: "Gestisci la disponibilità globale degli strumenti. Dopo l'abilitazione, gli strumenti possono essere selezionati dagli agent; l'uso effettivo va comunque abilitato nel singolo agent.",
       globalCapabilities: 'Capacità globali',
@@ -670,13 +653,15 @@ export const it: DeepPartial<TranslationKeys> = {
       tools: 'Strumenti',
       toolsCount: '{count} strumenti',
       toolsCountWithEnabled: '{count} strumenti (abilitati {enabled})',
+      toolsLoading: 'Caricamento strumenti...',
+      toolsError: 'Caricamento strumenti non riuscito',
       mcpLoadingStatus: 'Caricamento di {count} MCP…',
       mcpErrorStatus: '{count} MCP non connessi',
       skills: 'Competenze',
       skillsCount: '{count} competenze',
       skillsCountWithEnabled: '{count} competenze (abilitate {enabled})',
       skillsGlobalDesc:
-        'Le skill vengono rilevate dalle skill integrate, dai file {path}/*.md e dai pacchetti {path}/<folder>/SKILL.md. Disabilitale qui per bloccarle su tutti gli agent.',
+        'Le skill vengono rilevate dalle skill integrate e da {path}/**/*.md (escludendo Skills.md quando applicabile). Disabilitale qui per bloccarle su tutti gli agent.',
       yoloBaseDir: 'Cartella base YOLO',
       yoloBaseDirDesc:
         'Inserisci un percorso relativo al vault (senza / iniziale). Esempio: YOLO nella radice del vault, oppure setting/YOLO nella cartella setting.',
@@ -697,15 +682,16 @@ export const it: DeepPartial<TranslationKeys> = {
       yoloBaseDirConflictMessage:
         '{target} esiste già e contiene file. Nessun contenuto è stato spostato per evitare sovrascritture o fusioni. Scegli una cartella vuota o inesistente.',
       skillsSourcePath:
-        'Origine: skill integrate + {path}/*.md + {path}/<folder>/SKILL.md',
+        'Origine: skill integrate + {path}/*.md + {path}/**/SKILL.md',
       refreshSkills: 'Aggiorna',
       skillsEmptyHint:
-        'Nessuna skill trovata. Crea un file Markdown o una cartella contenente SKILL.md in {path}.',
+        'Nessuna skill trovata. Crea file markdown skill sotto {path}.',
+      readOnlySkill: 'Sola lettura (gestita esternamente)',
       createSkillTemplates: 'Inizializza sistema Skills',
       skillsTemplateCreated: 'Sistema Skills inizializzato in {path}.',
       importSkill: 'Importa Skill',
       importSkillDesc:
-        'Importa skill in {path}. I file Markdown mantengono il nome; le cartelle mantengono il nome, SKILL.md e tutte le risorse.',
+        'Importa pacchetti skill in {path}. Supporta file .md singoli o cartelle standard Agent Skills.',
       importSkillDropzoneText: 'Trascina file o cartelle skill qui',
       importSkillBrowseFiles: 'Sfoglia File',
       importSkillBrowseFolder: 'Sfoglia Cartella',
@@ -718,12 +704,29 @@ export const it: DeepPartial<TranslationKeys> = {
       importSkillReadError: 'Impossibile leggere i file.',
       importSkillErrTooDeep:
         'Il pacchetto skill supera la profondità massima di importazione di {depth}. Non è stato importato nulla.',
+      importSkillErrTooLarge:
+        'Il pacchetto skill è troppo grande per essere importato: {error}',
       importSkillWriteError: 'Impossibile importare {name}: {error}',
       importSkillErrHeader: '"{name}" non può essere importato:',
       importSkillErrNoSkillMd: 'file SKILL.md mancante nella cartella',
       importSkillErrNoFrontmatter:
         'intestazione metadati (---) mancante in cima al file',
       importSkillErrNoName: 'campo "name" mancante nei metadati',
+      importSkillErrNameTooLong: '"name" troppo lungo (massimo 64 caratteri)',
+      importSkillErrNameUppercase: '"name" deve essere tutto minuscolo',
+      importSkillErrNameHyphenEdge:
+        '"name" non può iniziare o terminare con un trattino',
+      importSkillErrNameDoubleHyphen:
+        '"name" non può contenere trattini consecutivi (--)',
+      importSkillErrNameInvalidChars:
+        '"name" può contenere solo lettere minuscole, numeri e trattini',
+      importSkillErrNameMismatch:
+        '"name" deve corrispondere al nome della cartella',
+      importSkillErrNoDescription: 'campo "description" mancante nei metadati',
+      importSkillErrDescTooLong:
+        '"description" troppo lungo (massimo 1024 caratteri)',
+      importSkillErrCompatTooLong:
+        '"compatibility" troppo lungo (massimo 500 caratteri)',
       importSkillConflictTitle: 'Skill già esistente',
       importSkillConflictMessage:
         'Esiste già una skill con lo stesso nome. Vuoi sovrascriverla?',
@@ -734,16 +737,15 @@ export const it: DeepPartial<TranslationKeys> = {
       importSkillUnsafePath:
         'Percorso non sicuro rifiutato in "{name}": {path}',
       importSkillDuplicateInBatch:
-        'Destinazione di importazione duplicata in questo batch: "{name}" (da "{source}"). Viene mantenuta solo la prima occorrenza.',
+        'Nome skill duplicato in questo batch: "{name}" (da "{source}"). Viene mantenuta solo la prima occorrenza.',
       deleteSkillTitle: 'Elimina skill',
       deleteSkillMessage:
-        'Sei sicuro di voler eliminare il pacchetto skill "{name}", incluse tutte le risorse? Questa azione non può essere annullata.',
+        'Sei sicuro di voler eliminare "{name}"? Questa azione non può essere annullata.',
       deleteSkillConfirm: 'Elimina',
       deleteSkillSuccess: '"{name}" è stata eliminata.',
       deleteSkillError: 'Impossibile eliminare "{name}": {error}',
-      deleteSkillNotFound: 'Skill non trovata',
       deleteSkillBatchMessage:
-        'Sei sicuro di voler eliminare {count} skill, incluse le risorse dei pacchetti? Questa azione non può essere annullata.',
+        'Sei sicuro di voler eliminare {count} skill? Questa azione non può essere annullata.',
       deleteSkillBatchSuccess: 'Eliminate {count} skill.',
       deleteSkillBatchBtn: 'Elimina',
       deleteSkillSelectAll: 'Seleziona tutto',
@@ -766,6 +768,7 @@ export const it: DeepPartial<TranslationKeys> = {
       toolsGroupBuiltinVault: 'Vault',
       toolsGroupBuiltinContext: 'Contesto e memoria',
       toolsGroupBuiltinExternal: 'Esterno',
+      toolsGroupBuiltinInjected: 'Strumenti iniettati',
       noMcpTools: 'Nessuno strumento personalizzato (MCP) rilevato',
       toolsEnabledCount: '{count} abilitati',
       manageTools: 'Gestisci strumenti',
@@ -774,10 +777,6 @@ export const it: DeepPartial<TranslationKeys> = {
       enableToolDisclosureDesc:
         'Gli strumenti opzionali partono con descrizioni brevi, poi caricano i dettagli completi quando servono. Consigliato quando sono abilitati molti strumenti MCP. Nota: questo meccanismo dipende dalle capacità di tool-use del modello — alcuni modelli potrebbero non riconoscere in modo affidabile gli strumenti caricati in questo modo.',
       descriptionColumn: 'Descrizione',
-      builtinMetaSearchLabel: 'Cerca metadati',
-      builtinMetaSearchDesc: 'Cerca metadati indicizzati e campi di file parsificati con un DSL di query vincolato, restituendo i file corrispondenti.',
-      builtinSendAttachmentLabel: 'Invia allegato',
-      builtinSendAttachmentDesc: 'Invia un file del vault come allegato alla chat bot corrente.',
       builtinFsListLabel: 'Leggi vault',
       builtinFsListDesc: 'Elenca la struttura delle directory del vault',
       builtinFsSearchLabel: 'Cerca nel vault',
@@ -791,14 +790,14 @@ export const it: DeepPartial<TranslationKeys> = {
       builtinContextCompactLabel: 'Compatta contesto',
       builtinContextCompactDesc:
         'Comprimi la cronologia meno recente in un riepilogo',
+      builtinContextManageLabel: 'Set di gestione del contesto',
+      builtinContextManageDesc:
+        'Comprimi la cronologia precedente in un riepilogo o escludi i risultati storici degli strumenti dal contesto visibile al modello',
       builtinToolSearchLabel: 'Carica strumento',
       builtinToolSearchDesc:
         'Carica gli schemi completi degli strumenti su richiesta',
       builtinFsEditLabel: 'Modifica testo',
       builtinFsEditDesc: 'Modifica il testo di un singolo file',
-      builtinBashLabel: 'Terminale virtuale',
-      builtinBashDesc:
-        'Cerca e ispeziona i file del vault, più operazioni su percorsi mkdir/mv/rm',
       safetyControls: 'Controlli di sicurezza',
       safetyControlsDesc:
         'Configura una revisione aggiuntiva prima che gli agent eseguano operazioni rischiose sui file.',
@@ -808,6 +807,8 @@ export const it: DeepPartial<TranslationKeys> = {
       builtinFsEditOpsLabel: 'Set modifica file',
       builtinFsEditOpsDesc:
         'Modifica testo mirato o scrive il contenuto completo del file',
+      builtinFsFileOpsLabel: 'Set operazioni percorsi',
+      builtinFsFileOpsDesc: 'Elimina o sposta file e cartelle, e crea cartelle',
       builtinMemoryOpsLabel: 'Set strumenti memoria',
       builtinMemoryOpsDesc: 'Aggiungi, aggiorna ed elimina memoria',
       builtinMemoryAddLabel: 'Aggiungi memoria',
@@ -827,21 +828,57 @@ export const it: DeepPartial<TranslationKeys> = {
         'Recupera il contenuto completo di un singolo URL tramite il provider configurato.',
       builtinWebOpsLabel: 'Set strumenti ricerca web',
       builtinWebOpsDesc: 'Ricerca web e scraping di pagine',
-      builtinJsEvalLabel: 'Sandbox di analisi',
+      builtinJsEvalLabel: 'Esecuzione JavaScript',
       builtinJsEvalDesc:
-        'Esegue JavaScript in una sandbox isolata per calcoli precisi, statistiche in batch ed elaborazione dati; le capacità di ricerca, lettura del vault e rete si concedono singolarmente.',
+        'Esegue JavaScript in un ambiente isolato per gestire compiti su cui gli LLM sono inaffidabili. Può comportare rischi',
       builtinTerminalCommandLabel: 'Comandi del terminale',
       builtinTerminalCommandDesc:
-        'Esegue comandi nel terminale locale, solo desktop',
+        'Esegue comandi nel terminale locale. Solo desktop.',
       builtinDelegateSubagentLabel: 'Delega a subagent',
       builtinDelegateSubagentDesc:
         'Avvia in modo asincrono un subagent temporaneo e isolato per completare un task autonomo.',
+      subagentTimeoutSectionTitle: 'Timeout subagent',
+      subagentTimeoutSectionDesc:
+        'Protezione anti-blocco per le chiamate delegate ai subagent. Una delega senza progressi oltre la scadenza viene chiusa come timeout e, dopo timeout ripetuti, attiva un interruttore per conversazione.',
+      subagentTimeoutMs: 'Timeout',
+      subagentTimeoutMsDesc:
+        'Tempo massimo (ms) di silenzio prima che una delega subagent in esecuzione venga interrotta e chiusa come timeout.',
+      subagentMaxConsecutiveTimeouts: 'Soglia interruttore',
+      subagentMaxConsecutiveTimeoutsDesc:
+        'Timeout consecutivi che mettono in pausa le nuove deleghe per questa conversazione fino al termine del cooldown.',
+      subagentCooldownMs: 'Cooldown interruttore',
+      subagentCooldownMsDesc:
+        'Per quanto tempo (ms) le nuove deleghe restano in pausa dopo l’attivazione dell’interruttore.',
+      subagentResultMaxChars: 'Limite risultato subagent',
+      subagentResultMaxCharsDesc:
+        'Numero massimo di caratteri del risultato di un subagent copiato nella conversazione principale. I risultati eccessivi mantengono una finestra iniziale e finale unite da un marcatore di troncamento; il risultato completo resta nella sessione del subagent.',
+      forkContextTurns: 'Turni contesto subagent',
+      forkContextTurnsDesc:
+        'Messaggi della conversazione principale composti nel prompt di un subagent delegato quando usa il fork di contesto last_turns. Snapshot in sola lettura; le modifiche hanno effetto senza riavvio.',
       builtinTodoWriteLabel: 'Lista delle attività',
       builtinTodoWriteDesc:
         "Consente all'agente di pianificare e tracciare autonomamente i progressi su task in più fasi. Solo modalità agente.",
       builtinAskUserQuestionLabel: "Chiedi all'utente",
       builtinAskUserQuestionDesc:
         "Chiede all'utente quando mancano informazioni necessarie e riprende dopo la risposta.",
+      builtinProjectLabel: 'Gestione Progetti',
+      builtinProjectDesc:
+        "Crea e gestisci file di progetto e attività durevoli nella directory Projects gestita dall'host. Solo per agenti genitori; i subagent sono bloccati.",
+      builtinBrowserScrollLabel: 'Scorri Pagina Browser',
+      builtinBrowserScrollDesc:
+        "Scorri verso l'alto o verso il basso una pagina web Obsidian aperta (Web Viewer / .url). Solo mutazione locale della vista; richiede un page_id esatto. Solo desktop.",
+      builtinBrowserNavigateLabel: 'Naviga Pagina Browser',
+      builtinBrowserNavigateDesc:
+        "Naviga una pagina web Obsidian aperta verso un nuovo URL. Solo https/http; gli altri scheme sono rifiutati. Richiede un page_id esatto e l'approvazione. Solo desktop.",
+      builtinBrowserClickLabel: 'Clicca Elemento Browser',
+      builtinBrowserClickDesc:
+        "Clicca un elemento unico visibile in una pagina web Obsidian aperta. Campi sensibili/credenziali, selettori file e contenuti iframe sono bloccati. Richiede un page_id esatto e l'approvazione. Solo desktop.",
+      builtinBrowserTypeLabel: 'Digita nella Pagina Browser',
+      builtinBrowserTypeDesc:
+        "Digita testo in un elemento unico modificabile in una pagina web Obsidian aperta. I campi credenziali/segreti sono bloccati; il testo digitato viene oscurato. Richiede un page_id esatto e l'approvazione. Solo desktop.",
+      builtinBrowserOpsLabel: 'Automazione Browser',
+      builtinBrowserOpsDesc:
+        'Interagisci con una pagina web Obsidian aperta: scorri, naviga, clicca o digita. naviga/clicca/digita richiedono approvazione; i campi credenziali sono bloccati e il testo digitato viene oscurato. Solo desktop.',
       editorDefaultName: 'Nuovo agent',
       editorIntro:
         'Configura le capacità, il modello e il comportamento di questo agent.',
@@ -887,7 +924,6 @@ export const it: DeepPartial<TranslationKeys> = {
       toolApproval: 'Approvazione',
       toolApprovalFullAccess: 'Accesso completo',
       toolApprovalRequire: 'Richiedi approvazione',
-      toolApprovalDangerousOnly: 'Approva solo operazioni pericolose',
       toolDisclosureAuto: 'Auto',
       toolDisclosureAutoSelect: 'Selezione automatica',
       toolDisclosureAlways: 'In contesto',
@@ -896,7 +932,6 @@ export const it: DeepPartial<TranslationKeys> = {
       editorEnabled: 'Abilitato',
       editorDisabled: 'Disabilitato',
       editorModel: 'Modello',
-      editorModelDesc: 'Seleziona il modello usato da questo agent',
       followDefaultModel: 'Segui modello predefinito',
       editorModelCurrent: 'Corrente: {model}',
       editorTemperature: 'Temperatura',
@@ -964,6 +999,115 @@ export const it: DeepPartial<TranslationKeys> = {
       mcpServerError: 'Avvio non riuscito',
       mcpServerConfigCopied: 'Configurazione MCP copiata.',
       mcpServerCopyFailed: 'Impossibile copiare la configurazione MCP.',
+      workspaceAgents: 'Agent workspace',
+      workspaceAgentsDesc:
+        "Istanze di agent associate a directory di lavoro. Ciascuna deriva da un template e limita l'accesso ai file a una root di workspace.",
+      newWorkspaceAgent: 'Nuovo agent workspace',
+      deleteWorkspaceAgentTitle: 'Conferma eliminazione agent workspace',
+      deleteWorkspaceAgentMessagePrefix:
+        "Sei sicuro di voler eliminare l'agent workspace",
+      deleteWorkspaceAgentMessageSuffix:
+        '? Questa azione non può essere annullata.',
+      disabledBadge: 'disabilitato',
+      templateBadge: 'Template',
+      editorTokenTitle: 'Token di accesso',
+      editorTokenDesc:
+        "Genera un token monouso per l'accesso web. I token vengono mostrati solo al momento della creazione.",
+      editorTokenCreate: 'Crea token',
+      editorTokenGenerate: 'Genera',
+      editorTokenScope: 'Ambito',
+      editorTokenScopeAgent: 'Solo agente corrente',
+      editorTokenScopeRoot: 'Tutti gli agenti nella stessa directory',
+      editorTokenLabel: 'Etichetta',
+      editorTokenLabelPlaceholder: 'es. CI/CD, accesso mobile',
+      editorTokenStatus: 'Stato',
+      editorTokenCreated: 'Creato',
+      editorTokenSecret: 'Token',
+      editorTokenCopyWarning:
+        "Copia questo token ora. Puoi anche copiarlo in seguito dall'elenco.",
+      editorTokenCopy: 'Copia',
+      editorTokenCopied: 'Token copiato negli appunti.',
+      editorTokenCopyFailed: 'Impossibile copiare il token.',
+      editorTokenDismiss: 'Fatto',
+      editorTokenError: 'Operazione sul token fallita.',
+      editorTokenEmpty: 'Nessun token. Clicca "Crea token" per emetterne uno.',
+      editorTokenUnnamed: '(Senza nome)',
+      editorTokenStatusValid: 'Valido',
+      editorTokenStatusExpired: 'Scaduto',
+      editorTokenStatusDisabled: 'Disabilitato',
+      editorTokenStatusRootMismatch: 'Area di lavoro cambiata',
+      editorTokenStatusRootMismatchHint:
+        'Questo token è stato emesso per una radice di area di lavoro precedente e non autorizza più le richieste.',
+      editorTokenShow: 'Mostra token',
+      editorTokenHide: 'Nascondi token',
+      editorTokenEdit: 'Modifica',
+      editorTokenDelete: 'Elimina',
+      editorTokenDeleteConfirm:
+        'Eliminare questo token? Le sessioni in corso verranno terminate.',
+      editorTokenExpiry: 'Data di scadenza',
+      editorTokenNoExpiry: 'Nessuna scadenza',
+      editorTokenExpiryDesc:
+        'Lasciare vuoto per nessuna scadenza. Valido fino alla fine del giorno selezionato.',
+      editorTokenDialogCreateTitle: 'Crea token',
+      editorTokenDialogEditTitle: 'Modifica token',
+      editorAgentModes: 'Modalità agente',
+      editorAgentModesDesc:
+        'La modalità Ask è sempre disponibile. Consenti a questo agente di workspace di utilizzare la modalità Agent.',
+      editorEnableAgent: 'Abilita agente',
+      editorEnableAgentDesc:
+        "Se disabilitato, questo agente workspace viene nascosto dal selettore chat e l'accesso web è bloccato.",
+      editorModeAgent: 'Agent',
+      editorModeAgentDesc: 'Strumenti per attività complesse',
+      editorModeYolo: 'YOLO',
+      editorModeYoloDesc:
+        'Auto-approvazione degli strumenti per attività complesse',
+      toolsGroupBuiltinScheduling: 'Attivita pianificate',
+      builtinConversationHistoryLabel: 'Cronologia conversazioni',
+      builtinConversationHistoryDesc:
+        'Cerca e leggi le conversazioni precedenti come contesto storico limitato e di sola consultazione.',
+      builtinMetaSearchLabel: 'Cerca nei metadati',
+      builtinMetaSearchDesc:
+        'Cerca nei metadati indicizzati e nei file corrispondenti',
+      builtinScheduledTaskOpsLabel: 'Set attività pianificate',
+      builtinScheduledTaskOpsDesc:
+        'Crea, aggiorna, elimina, elenca, ottieni ed esegui subito attività pianificate',
+      builtinScheduledTaskCreateLabel: 'Crea attività pianificata',
+      builtinScheduledTaskCreateDesc:
+        'Crea una nuova attività agent pianificata con schedulazione cron, a intervalli o una tantum.',
+      builtinScheduledTaskUpdateLabel: 'Aggiorna attività pianificata',
+      builtinScheduledTaskUpdateDesc:
+        'Aggiorna una attività pianificata esistente tramite id.',
+      builtinScheduledTaskDeleteLabel: 'Elimina attività pianificata',
+      builtinScheduledTaskDeleteDesc:
+        'Elimina una attività pianificata esistente tramite id.',
+      builtinScheduledTaskListLabel: 'Elenca attività pianificate',
+      builtinScheduledTaskListDesc:
+        'Elenca le attività pianificate, filtrabili per stato abilitato.',
+      builtinScheduledTaskGetLabel: 'Ottieni attività pianificata',
+      builtinScheduledTaskGetDesc:
+        'Ottieni una singola attività pianificata tramite id.',
+      builtinScheduledTaskRunNowLabel: 'Esegui subito attività pianificata',
+      builtinScheduledTaskRunNowDesc:
+        "Accoda immediatamente un'attività pianificata per l'esecuzione.",
+      builtinSendAttachmentLabel: 'Invia allegato',
+      builtinSendAttachmentDesc:
+        'Invia un file del vault come allegato alla chat bot corrente.',
+      builtinMd2htmlLabel: 'Nota → HTML',
+      builtinMd2htmlDesc:
+        'Esporta una nota come file HTML autonomo accanto alla nota.',
+      builtinMd2pdfLabel: 'Nota → PDF',
+      builtinMd2pdfDesc:
+        "Esporta una nota in PDF tramite l'esportazione PDF di Obsidian.",
+      builtinCanvas2pngLabel: 'Canvas → PNG',
+      builtinCanvas2pngDesc:
+        'Esporta la scheda Canvas attiva come immagine PNG.',
+      editorTabTokens: 'Token',
+      deleteSkillNotFound: 'Skill non trovata',
+      builtinBashLabel: 'Terminale virtuale',
+      builtinBashDesc:
+        'Cerca e ispeziona i file del vault, più operazioni su percorsi mkdir/mv/rm',
+      toolApprovalDangerousOnly: 'Approva solo operazioni pericolose',
+      editorModelDesc: 'Seleziona il modello usato da questo agent',
     },
     workspaceAgents: {
       sectionTitle: 'Agent dello spazio di lavoro',
@@ -1951,6 +2095,11 @@ export const it: DeepPartial<TranslationKeys> = {
     selectModel: 'Seleziona modello',
     uploadImage: 'Carica immagine',
     uploadFile: 'Aggiungi file',
+    workingDirectory: {
+      select: 'Seleziona directory di lavoro',
+      clear: 'Cancella directory di lavoro',
+      locked: 'La directory di lavoro è bloccata',
+    },
     dropFilesHint: 'Rilascia per aggiungere file',
     imageUnsupportedByModel:
       'Questo modello non dichiara il supporto alle immagini. Abilita la modalità di input "Vision" nelle impostazioni del modello per allegare immagini.',

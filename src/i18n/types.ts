@@ -140,11 +140,6 @@ export type TranslationKeys = {
     chat?: {
       exportSuccess?: string
       exportError?: string
-      workingDirectory?: {
-        locked?: string
-        select?: string
-        clear?: string
-      }
     }
     composer: {
       title: string
@@ -485,18 +480,12 @@ export type TranslationKeys = {
       title?: string
       desc?: string
       globalCapabilities?: string
-      workspaceAgents?: string
-      newWorkspaceAgent?: string
-      workspaceAgentsDesc?: string
-      deleteWorkspaceAgentTitle?: string
-      deleteWorkspaceAgentMessagePrefix?: string
-      deleteWorkspaceAgentMessageSuffix?: string
-      templateBadge?: string
-      disabledBadge?: string
       mcpServerCount?: string
       tools?: string
       toolsCount?: string
       toolsCountWithEnabled?: string
+      toolsLoading?: string
+      toolsError?: string
       mcpLoadingStatus?: string
       mcpErrorStatus?: string
       skills?: string
@@ -517,6 +506,7 @@ export type TranslationKeys = {
       skillsSourcePath?: string
       refreshSkills?: string
       skillsEmptyHint?: string
+      readOnlySkill?: string
       createSkillTemplates?: string
       skillsTemplateCreated?: string
       importSkill?: string
@@ -532,11 +522,21 @@ export type TranslationKeys = {
       importSkillInvalidFile?: string
       importSkillReadError?: string
       importSkillErrTooDeep?: string
+      importSkillErrTooLarge?: string
       importSkillWriteError?: string
       importSkillErrHeader?: string
       importSkillErrNoSkillMd?: string
       importSkillErrNoFrontmatter?: string
       importSkillErrNoName?: string
+      importSkillErrNameTooLong?: string
+      importSkillErrNameUppercase?: string
+      importSkillErrNameHyphenEdge?: string
+      importSkillErrNameDoubleHyphen?: string
+      importSkillErrNameInvalidChars?: string
+      importSkillErrNameMismatch?: string
+      importSkillErrNoDescription?: string
+      importSkillErrDescTooLong?: string
+      importSkillErrCompatTooLong?: string
       importSkillConflictTitle?: string
       importSkillConflictMessage?: string
       importSkillConflictMessageList?: string
@@ -558,7 +558,6 @@ export type TranslationKeys = {
       deleteSkillConfirm?: string
       deleteSkillSuccess?: string
       deleteSkillError?: string
-      deleteSkillNotFound?: string
       deleteSkillBatchMessage?: string
       deleteSkillBatchSuccess?: string
       deleteSkillBatchBtn?: string
@@ -581,6 +580,7 @@ export type TranslationKeys = {
       toolsGroupBuiltinVault?: string
       toolsGroupBuiltinContext?: string
       toolsGroupBuiltinExternal?: string
+      toolsGroupBuiltinInjected?: string
       noMcpTools?: string
       toolsEnabledCount?: string
       manageTools?: string
@@ -594,10 +594,6 @@ export type TranslationKeys = {
       enableAllTools?: string
       disableAllTools?: string
       descriptionColumn?: string
-      builtinMetaSearchLabel?: string
-      builtinMetaSearchDesc?: string
-      builtinSendAttachmentLabel?: string
-      builtinSendAttachmentDesc?: string
       builtinFsListLabel?: string
       builtinFsListDesc?: string
       builtinFsSearchLabel?: string
@@ -608,18 +604,20 @@ export type TranslationKeys = {
       builtinContextPruneToolResultsDesc?: string
       builtinContextCompactLabel?: string
       builtinContextCompactDesc?: string
+      builtinContextManageLabel?: string
+      builtinContextManageDesc?: string
       builtinToolSearchLabel?: string
       builtinToolSearchDesc?: string
       builtinFsEditLabel?: string
       builtinFsEditDesc?: string
-      builtinBashLabel?: string
-      builtinBashDesc?: string
       fsEditReviewToggle?: string
       fsEditReviewToggleDesc?: string
       safetyControls?: string
       safetyControlsDesc?: string
       builtinFsEditOpsLabel?: string
       builtinFsEditOpsDesc?: string
+      builtinFsFileOpsLabel?: string
+      builtinFsFileOpsDesc?: string
       builtinMemoryOpsLabel?: string
       builtinMemoryOpsDesc?: string
       builtinMemoryAddLabel?: string
@@ -642,10 +640,36 @@ export type TranslationKeys = {
       builtinTerminalCommandDesc?: string
       builtinDelegateSubagentLabel?: string
       builtinDelegateSubagentDesc?: string
+      // Parent subagent timeout + breaker config (Task 6).
+      subagentTimeoutSectionTitle?: string
+      subagentTimeoutSectionDesc?: string
+      subagentTimeoutMs?: string
+      subagentTimeoutMsDesc?: string
+      subagentMaxConsecutiveTimeouts?: string
+      subagentMaxConsecutiveTimeoutsDesc?: string
+      subagentCooldownMs?: string
+      subagentCooldownMsDesc?: string
+      subagentResultMaxChars?: string
+      subagentResultMaxCharsDesc?: string
+      // Parent-context fork config (Task 8).
+      forkContextTurns?: string
+      forkContextTurnsDesc?: string
       builtinTodoWriteLabel?: string
       builtinTodoWriteDesc?: string
       builtinAskUserQuestionLabel?: string
       builtinAskUserQuestionDesc?: string
+      builtinProjectLabel?: string
+      builtinProjectDesc?: string
+      builtinBrowserScrollLabel?: string
+      builtinBrowserScrollDesc?: string
+      builtinBrowserNavigateLabel?: string
+      builtinBrowserNavigateDesc?: string
+      builtinBrowserClickLabel?: string
+      builtinBrowserClickDesc?: string
+      builtinBrowserTypeLabel?: string
+      builtinBrowserTypeDesc?: string
+      builtinBrowserOpsLabel?: string
+      builtinBrowserOpsDesc?: string
       editorDefaultName?: string
       editorIntro?: string
       editorTabProfile?: string
@@ -703,7 +727,6 @@ export type TranslationKeys = {
       toolApproval?: string
       toolApprovalFullAccess?: string
       toolApprovalRequire?: string
-      toolApprovalDangerousOnly?: string
       toolDisclosureAuto?: string
       toolDisclosureAutoSelect?: string
       toolDisclosureAlways?: string
@@ -818,6 +841,93 @@ export type TranslationKeys = {
       jsSandboxVaultReadMaxKbDesc?: string
       jsSandboxDbMaxLimit?: string
       jsSandboxDbMaxLimitDesc?: string
+      workspaceAgents?: string
+      workspaceAgentsDesc?: string
+      newWorkspaceAgent?: string
+      deleteWorkspaceAgentTitle?: string
+      deleteWorkspaceAgentMessagePrefix?: string
+      deleteWorkspaceAgentMessageSuffix?: string
+      disabledBadge?: string
+      templateBadge?: string
+      editorTokenTitle?: string
+      editorTokenDesc?: string
+      editorTokenCreate?: string
+      editorTokenGenerate?: string
+      editorTokenScope?: string
+      editorTokenScopeAgent?: string
+      editorTokenScopeRoot?: string
+      editorTokenLabel?: string
+      editorTokenLabelPlaceholder?: string
+      editorTokenStatus?: string
+      editorTokenCreated?: string
+      editorTokenSecret?: string
+      editorTokenCopyWarning?: string
+      editorTokenCopy?: string
+      editorTokenCopied?: string
+      editorTokenCopyFailed?: string
+      editorTokenDismiss?: string
+      editorTokenError?: string
+      editorTokenEmpty?: string
+      editorTokenUnnamed?: string
+      editorTokenStatusValid?: string
+      editorTokenStatusExpired?: string
+      editorTokenStatusDisabled?: string
+      editorTokenStatusRootMismatch?: string
+      editorTokenStatusRootMismatchHint?: string
+      editorTokenShow?: string
+      editorTokenHide?: string
+      editorTokenEdit?: string
+      editorTokenDelete?: string
+      editorTokenDeleteTitle?: string
+      editorTokenDeleteConfirm?: string
+      editorTokenExpiry?: string
+      editorTokenNoExpiry?: string
+      editorTokenExpiryDesc?: string
+      editorTokenDialogCreateTitle?: string
+      editorTokenDialogEditTitle?: string
+      editorAgentModes?: string
+      editorAgentModesDesc?: string
+      editorEnableAgent?: string
+      editorEnableAgentDesc?: string
+      editorModeAgent?: string
+      editorModeAgentDesc?: string
+      editorModeYolo?: string
+      editorModeYoloDesc?: string
+      toolsGroupBuiltinScheduling?: string
+      builtinConversationHistoryLabel?: string
+      builtinConversationHistoryDesc?: string
+      builtinMetaSearchLabel?: string
+      builtinMetaSearchDesc?: string
+      builtinScheduledTaskOpsLabel?: string
+      builtinScheduledTaskOpsDesc?: string
+      builtinScheduledTaskCreateLabel?: string
+      builtinScheduledTaskCreateDesc?: string
+      builtinScheduledTaskUpdateLabel?: string
+      builtinScheduledTaskUpdateDesc?: string
+      builtinScheduledTaskDeleteLabel?: string
+      builtinScheduledTaskDeleteDesc?: string
+      builtinScheduledTaskListLabel?: string
+      builtinScheduledTaskListDesc?: string
+      builtinScheduledTaskGetLabel?: string
+      builtinScheduledTaskGetDesc?: string
+      builtinScheduledTaskRunNowLabel?: string
+      builtinScheduledTaskRunNowDesc?: string
+      builtinSendAttachmentLabel?: string
+      builtinSendAttachmentDesc?: string
+      builtinMd2htmlLabel?: string
+      builtinMd2htmlDesc?: string
+      builtinMd2pdfLabel?: string
+      builtinMd2pdfDesc?: string
+      builtinCanvas2pngLabel?: string
+      builtinCanvas2pngDesc?: string
+      editorTabTokens?: string
+      editorDelegatable?: string
+      editorDelegatableDesc?: string
+
+      deleteSkillNotFound?: string
+      builtinBashLabel?: string
+      builtinBashDesc?: string
+      toolApprovalDangerousOnly?: string
     }
     jsSandbox?: {
       openSettings?: string
@@ -1888,6 +1998,11 @@ export type TranslationKeys = {
     uploadImage: string
     uploadFile?: string
     dropFilesHint?: string
+    workingDirectory?: {
+      select?: string
+      clear?: string
+      locked?: string
+    }
     imageUnsupportedByModel?: string
     unsupportedFileType?: string
     processImagesFailed?: string

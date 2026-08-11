@@ -6078,6 +6078,24 @@ button.yolo-agent-chip--more:hover {
   font-size: var(--font-ui-smaller);
   padding: 1px 6px;
 }
+.yolo-agent-card-badge--disabled {
+  border: 1px solid color-mix(in srgb, var(--text-muted) 60%, transparent);
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  padding: 1px 6px;
+}
+.yolo-agent-card-badge--template {
+  border: 1px solid color-mix(in srgb, var(--text-faint) 50%, transparent);
+  border-radius: var(--radius-s);
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  padding: 1px 6px;
+  margin-right: 4px;
+}
+.yolo-agent-template-name {
+  color: var(--text-muted);
+}
 .yolo-agent-desc {
   margin-top: var(--size-2-2);
   color: var(--text-muted);
@@ -6573,6 +6591,11 @@ button.yolo-agent-chip--more:hover {
 .yolo-agent-workspace-group.is-disabled {
   opacity: 0.55;
   pointer-events: none;
+}
+.yolo-agent-workspace-disabled-hint {
+  margin-top: var(--size-2-2);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
 }
 .yolo-agent-workspace-group--include {
   border-color: color-mix(
@@ -7263,38 +7286,9 @@ button.yolo-agent-chip--more:hover {
 .yolo-string-list-chip-remove {
   flex: 0 0 auto;
 }
-/* Restored from backup/pre-rollback-2026-08-10 (migration gap) */
-.yolo-agent-card-badge--disabled {
-
-  border: 1px solid color-mix(in srgb, var(--text-muted) 60%, transparent);
-  border-radius: var(--radius-s);
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-  padding: 1px 6px;
-}
-.yolo-agent-card-badge--template {
-
-  border: 1px solid color-mix(in srgb, var(--text-faint) 50%, transparent);
-  border-radius: var(--radius-s);
-  color: var(--text-faint);
-  font-size: var(--font-ui-smaller);
-  padding: 1px 6px;
-  margin-right: 4px;
-}
-.yolo-agent-template-name {
-
-  color: var(--text-muted);
-}
-.yolo-agent-workspace-disabled-hint {
-
-  margin-top: var(--size-2-2);
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-}
 /* --- Share-token list rows --------------------------------------------------
  * 7-column layout matching .yolo-mcp-servers-header below. */
 .yolo-agent-tokens-header {
-
   display: grid;
   grid-template-columns: minmax(100px, 1fr) auto 90px 90px minmax(140px, 1.5fr) 64px auto;
   gap: var(--size-4-3);
@@ -7305,16 +7299,13 @@ button.yolo-agent-chip--more:hover {
   color: var(--text-muted);
 }
 .yolo-agent-tokens-header > div {
-
   padding: var(--size-4-1);
 }
 .yolo-mcp-server-row.yolo-agent-token-row {
-
   grid-template-columns: minmax(100px, 1fr) auto 90px 90px minmax(140px, 1.5fr) 64px auto;
   gap: var(--size-4-3);
 }
 .yolo-agent-token-date {
-
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);
   overflow: hidden;
@@ -7322,14 +7313,12 @@ button.yolo-agent-chip--more:hover {
   white-space: nowrap;
 }
 .yolo-agent-token-empty {
-
   padding: var(--size-4-6) 0;
   text-align: center;
 }
 /* Generated-token reveal card — shown once after creation so the user can
  * copy the plaintext. */
 .yolo-agent-token-generated-card {
-
   padding: var(--size-4-4);
   margin-bottom: var(--size-4-4);
   border: 1px solid var(--background-modifier-border);
@@ -7337,13 +7326,11 @@ button.yolo-agent-chip--more:hover {
   background: var(--background-primary);
 }
 .yolo-agent-token-generated-card-desc {
-
   margin-bottom: var(--size-4-2);
   font-size: var(--font-ui-small);
   color: var(--text-muted);
 }
 .yolo-agent-token-textarea {
-
   width: 100%;
   padding: var(--size-4-2);
   font-family: var(--font-monospace);
@@ -7355,7 +7342,6 @@ button.yolo-agent-chip--more:hover {
   resize: none;
 }
 .yolo-agent-token-generated-card-actions {
-
   display: flex;
   justify-content: flex-end;
   gap: var(--size-4-2);
@@ -7364,7 +7350,6 @@ button.yolo-agent-chip--more:hover {
 /* Status badge — colours mimic Obsidian's built-in status pills so they fit
  * the surrounding settings UI without a new colour token. */
 .yolo-agent-token-status-badge {
-
   display: inline-flex;
   align-items: center;
   padding: 2px var(--size-4-2);
@@ -7376,27 +7361,22 @@ button.yolo-agent-chip--more:hover {
   white-space: nowrap;
 }
 .yolo-agent-token-status-valid {
-
   background: rgba(50, 168, 82, 0.18);
   color: var(--color-green, #2e8b57);
 }
 .yolo-agent-token-status-expired {
-
   background: rgba(255, 165, 0, 0.18);
   color: var(--color-orange, #c87f00);
 }
 .yolo-agent-token-status-disabled {
-
   background: rgba(120, 120, 120, 0.18);
   color: var(--text-muted);
 }
 .yolo-agent-token-status-root_mismatch {
-
   background: rgba(220, 50, 50, 0.18);
   color: var(--color-red, #c0392b);
 }
 .yolo-agent-token-secret {
-
   display: flex;
   align-items: center;
   gap: var(--size-4-1);
@@ -7407,7 +7387,6 @@ button.yolo-agent-chip--more:hover {
   background: var(--background-modifier-hover);
 }
 .yolo-agent-token-secret-text {
-
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -7420,7 +7399,6 @@ button.yolo-agent-chip--more:hover {
  * .yolo-agent-system-prompt-overlay so it doesn't depend on Obsidian's
  * modal JS to become visible. */
 .yolo-agent-token-dialog-overlay {
-
   position: fixed;
   inset: 0;
   z-index: var(--layer-modal, 100);
@@ -7431,7 +7409,6 @@ button.yolo-agent-chip--more:hover {
   background: var(--background-modifier-cover, rgba(0, 0, 0, 0.45));
 }
 .yolo-agent-token-dialog {
-
   display: flex;
   flex-direction: column;
   width: min(480px, 92vw);
@@ -7445,12 +7422,10 @@ button.yolo-agent-chip--more:hover {
   color: var(--text-normal);
 }
 .yolo-agent-token-dialog-title {
-
   font-size: var(--font-ui-large);
   font-weight: var(--font-medium);
 }
 .yolo-agent-token-dialog-content {
-
   display: flex;
   flex-direction: column;
   gap: var(--size-4-3);
@@ -7458,7 +7433,6 @@ button.yolo-agent-chip--more:hover {
   overflow: auto;
 }
 .yolo-agent-token-dialog-content label {
-
   display: flex;
   flex-direction: column;
   gap: var(--size-4-1);
@@ -7466,114 +7440,9 @@ button.yolo-agent-chip--more:hover {
 .yolo-agent-token-dialog-content input[type='text'],
 .yolo-agent-token-dialog-content input[type='date'],
 .yolo-agent-token-dialog-content select {
-
   width: 100%;
 }
 .yolo-agent-token-dialog-actions {
-
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--size-4-2);
-}
-/* Workspace agents section (inherits Assistant template + workspace policy) */
-.yolo-workspace-agents-section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--size-4-2);
-  margin-top: var(--size-4-2);
-}
-.yolo-workspace-agents-item {
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-m);
-  background: var(--background-secondary);
-  padding: var(--size-4-2);
-}
-.yolo-workspace-agents-item-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--size-2-2);
-  margin-right: var(--size-2-2);
-}
-.yolo-workspace-agents-item-editor {
-  display: flex;
-  flex-direction: column;
-  gap: var(--size-4-2);
-  margin-top: var(--size-4-2);
-  padding: var(--size-4-2) 0 0 var(--size-4-2);
-  border-left: 2px solid var(--background-modifier-border);
-}
-.yolo-workspace-agents-item-actions-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--size-2-2);
-}
-.yolo-workspace-agents-tool-overrides-button {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--size-2-2);
-  padding: var(--size-2-2) var(--size-4-2);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-s);
-  background: transparent;
-  color: var(--text-normal);
-  cursor: pointer;
-}
-.yolo-workspace-agents-tool-overrides-button:hover {
-  background: var(--background-modifier-hover);
-}
-/* Inline override panels (tool / skill) — embedded in the settings page */
-.yolo-workspace-agents-tool-overrides-modal,
-.yolo-workspace-agents-skill-overrides-modal {
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-m);
-  background: var(--background-primary);
-  padding: var(--size-4-2);
-  margin-top: var(--size-4-2);
-}
-.yolo-workspace-agent-tool-overrides,
-.yolo-workspace-agent-skill-overrides {
-  display: flex;
-  flex-direction: column;
-  gap: var(--size-4-2);
-}
-.yolo-workspace-agent-tool-overrides-head,
-.yolo-workspace-agent-skill-overrides-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--size-4-2);
-  font-weight: var(--font-semibold);
-}
-.yolo-workspace-agent-tool-overrides-list,
-.yolo-workspace-agent-skill-overrides-list {
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-s);
-  max-height: 320px;
-  overflow-y: auto;
-}
-.yolo-workspace-agent-tool-override-row,
-.yolo-workspace-agent-skill-override-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--size-4-2);
-  padding: var(--size-2-2) var(--size-4-2);
-  border-bottom: 1px solid var(--background-modifier-border);
-}
-.yolo-workspace-agent-tool-override-row:last-child,
-.yolo-workspace-agent-skill-override-row:last-child {
-  border-bottom: none;
-}
-.yolo-workspace-agent-tool-override-name,
-.yolo-workspace-agent-skill-override-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.yolo-workspace-agent-tool-overrides-actions,
-.yolo-workspace-agent-skill-overrides-actions {
   display: flex;
   justify-content: flex-end;
   gap: var(--size-4-2);

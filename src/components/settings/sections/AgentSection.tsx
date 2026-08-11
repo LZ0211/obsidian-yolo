@@ -1,13 +1,5 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import {
-  BookOpen,
-  Copy,
-  Cpu,
-  Folder,
-  Plus,
-  Trash2,
-  Wrench,
-} from 'lucide-react'
+import { BookOpen, Copy, Cpu, Folder, Plus, Trash2, Wrench } from 'lucide-react'
 import { App, Platform, SuggestModal } from 'obsidian'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
@@ -17,23 +9,27 @@ import { useSettings } from '../../../contexts/settings-context'
 import { getAssistantModelDisplayLabel } from '../../../core/agent/assistant-model'
 import {
   FILE_EDIT_GROUP_TOOL_NAME,
-  MEMORY_OPS_GROUP_TOOL_NAME,
   WEB_OPS_GROUP_TOOL_NAME,
   WEB_OPS_SPLIT_ACTION_TOOL_NAMES,
   getBuiltinToolUiMeta,
+  isConsolidatedGroupEnabled,
 } from '../../../core/agent/builtinToolUiMeta'
+import { CONSOLIDATED_TOOL_ACTIONS } from '../../../core/agent/consolidated-tools'
 import { isDefaultAssistantId } from '../../../core/agent/default-assistant'
 import { getEnabledAssistantToolNames } from '../../../core/agent/tool-preferences'
+import { isInjectedBridgeToolName } from '../../../core/mcp/injectionBridge'
 import {
   LOCAL_FS_EDIT_TOOL_NAMES,
+  LOCAL_FS_PATH_OPERATION_TOOL_NAMES,
   LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
+  USER_FACING_LOCAL_TOOL_SHORT_NAMES,
   getLocalFileTools,
 } from '../../../core/mcp/localFileTools'
 import { McpManager } from '../../../core/mcp/mcpManager'
 import { humanizeSkillName } from '../../../core/skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../../../core/skills/skillPolicy'
 import { useLiteSkillEntries } from '../../../hooks/useLiteSkillEntries'
-import type { WorkspaceAgent } from '../../../settings/schema/setting.types'
+import { WorkspaceAgent } from '../../../settings/schema/setting.types'
 import { Assistant } from '../../../types/assistant.types'
 import { McpServerState, McpServerStatus } from '../../../types/mcp.types'
 import { renderAssistantIcon } from '../../../utils/assistant-icon'
@@ -44,7 +40,6 @@ import { ConfirmModal } from '../../modals/ConfirmModal'
 import { AgentSkillsModal } from '../modals/AgentSkillsModal'
 import { AgentToolsModal } from '../modals/AgentToolsModal'
 import { AssistantsModal } from '../modals/AssistantsModal'
-import { WorkspaceAgentEditorModal } from '../modals/WorkspaceAgentEditorModal'
 
 import { AgentAutoContextCompactionSection } from './AgentAutoContextCompactionSection'
 import { AgentCliPathSection } from './AgentCliPathSection'
@@ -57,6 +52,9 @@ type AgentSectionProps = {
 }
 
 const EDIT_FS_TOOL_NAME_SET = new Set<string>(LOCAL_FS_EDIT_TOOL_NAMES)
+const PATH_FS_TOOL_NAME_SET = new Set<string>(
+  LOCAL_FS_PATH_OPERATION_TOOL_NAMES,
+)
 const SPLIT_MEMORY_TOOL_NAME_SET = new Set<string>(
   LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
 )
@@ -65,8 +63,8 @@ const SPLIT_WEB_TOOL_NAME_SET = new Set<string>(WEB_OPS_SPLIT_ACTION_TOOL_NAMES)
 class TemplatePickerModal extends SuggestModal<Assistant> {
   constructor(
     app: App,
-    private readonly assistants: Assistant[],
-    private readonly onPick: (id: string) => void,
+    private assistants: Assistant[],
+    private onPick: (id: string) => void,
   ) {
     super(app)
     this.setPlaceholder('Select a template…')
@@ -75,9 +73,9 @@ class TemplatePickerModal extends SuggestModal<Assistant> {
   getSuggestions(query: string): Assistant[] {
     const q = query.toLowerCase()
     return this.assistants.filter(
-      (assistant) =>
-        assistant.name.toLowerCase().includes(q) ||
-        (assistant.description ?? '').toLowerCase().includes(q),
+      (a) =>
+        a.name.toLowerCase().includes(q) ||
+        (a.description ?? '').toLowerCase().includes(q),
     )
   }
 
@@ -101,6 +99,7 @@ export function AgentSection({ app }: AgentSectionProps) {
   const { t } = useLanguage()
   const plugin = usePlugin()
   const assistants = settings.assistants || []
+  const workspaceAgents = settings.workspaceAgents || []
   const [mcpManager, setMcpManager] = useState<McpManager | null>(null)
   const [mcpServers, setMcpServers] = useState<McpServerState[]>([])
   const [mcpManagerLoading, setMcpManagerLoading] = useState(true)
@@ -159,90 +158,6 @@ export function AgentSection({ app }: AgentSectionProps) {
       initialAssistantId,
       initialCreate,
     )
-    modal.open()
-  }
-
-  const workspaceAgents = settings.workspaceAgents ?? []
-
-  const handleOpenWorkspaceAgentEditor = (agentId: string) => {
-    new WorkspaceAgentEditorModal(app, plugin, agentId).open()
-  }
-
-  const handleNewWorkspaceAgent = () => {
-    if (assistants.length === 0) {
-      handleOpenAssistantsModal(undefined, true)
-      return
-    }
-    const openEditorWithTemplate = (templateId: string) => {
-      const now = Date.now()
-      const agent: WorkspaceAgent = {
-        id: crypto.randomUUID(),
-        name: t(
-          'settings.workspaceAgents.defaultName',
-          'New workspace agent',
-        ),
-        templateId,
-        workspacePolicy: {
-          workspaceRoot: '/',
-          readAllowlist: [],
-          readDenylist: [],
-          writeDenylist: [],
-        },
-        createdAt: now,
-        updatedAt: now,
-      }
-      void setSettings({
-        ...settings,
-        workspaceAgents: [...workspaceAgents, agent],
-      })
-        .then(() => handleOpenWorkspaceAgentEditor(agent.id))
-        .catch((error: unknown) => {
-          console.error('Failed to create workspace agent', error)
-        })
-    }
-    if (assistants.length === 1) {
-      openEditorWithTemplate(assistants[0].id)
-      return
-    }
-    new TemplatePickerModal(app, assistants, openEditorWithTemplate).open()
-  }
-
-  const handleDeleteWorkspaceAgent = (agent: WorkspaceAgent) => {
-    let confirmed = false
-
-    const modal = new ConfirmModal(app, {
-      title: t(
-        'settings.agent.deleteWorkspaceAgentTitle',
-        'Confirm delete workspace agent',
-      ),
-      message: `${t(
-        'settings.agent.deleteWorkspaceAgentMessagePrefix',
-        'Are you sure you want to delete workspace agent',
-      )} "${agent.name}"${t(
-        'settings.agent.deleteWorkspaceAgentMessageSuffix',
-        '? This action cannot be undone.',
-      )}`,
-      ctaText: t('common.delete'),
-      onConfirm: () => {
-        confirmed = true
-      },
-    })
-
-    modal.onClose = () => {
-      if (!confirmed) return
-      void (async () => {
-        const updatedAgents = workspaceAgents.filter(
-          (candidate) => candidate.id !== agent.id,
-        )
-        await setSettings({
-          ...settings,
-          workspaceAgents: updatedAgents,
-        })
-      })().catch((error: unknown) => {
-        console.error('Failed to delete workspace agent', error)
-      })
-    }
-
     modal.open()
   }
 
@@ -306,6 +221,68 @@ export function AgentSection({ app }: AgentSectionProps) {
     modal.open()
   }
 
+  const handleOpenWorkspaceAgentModal = (workspaceAgentId?: string) => {
+    const modal = new AssistantsModal(app, plugin, undefined, false, {
+      workspaceAgentId,
+    })
+    modal.open()
+  }
+
+  const handleNewWorkspaceAgent = () => {
+    if (assistants.length === 0) {
+      handleOpenAssistantsModal(undefined, true)
+      return
+    }
+    if (assistants.length === 1) {
+      const modal = new AssistantsModal(app, plugin, undefined, false, {
+        workspaceAgentTemplateId: assistants[0].id,
+      })
+      modal.open()
+      return
+    }
+    new TemplatePickerModal(app, assistants, (templateId) => {
+      const modal = new AssistantsModal(app, plugin, undefined, false, {
+        workspaceAgentTemplateId: templateId,
+      })
+      modal.open()
+    }).open()
+  }
+
+  const handleDeleteWorkspaceAgent = (agent: WorkspaceAgent) => {
+    let confirmed = false
+
+    const modal = new ConfirmModal(app, {
+      title: t(
+        'settings.agent.deleteWorkspaceAgentTitle',
+        'Confirm delete workspace agent',
+      ),
+      message: `${t('settings.agent.deleteWorkspaceAgentMessagePrefix', 'Are you sure you want to delete workspace agent')} "${agent.name}"${t('settings.agent.deleteWorkspaceAgentMessageSuffix', '? This action cannot be undone.')}`,
+      ctaText: t('common.delete'),
+      onConfirm: () => {
+        confirmed = true
+      },
+    })
+
+    modal.onClose = () => {
+      if (!confirmed) return
+      void (async () => {
+        const updatedAgents = workspaceAgents.filter((a) => a.id !== agent.id)
+        await setSettings({
+          ...settings,
+          workspaceAgents: updatedAgents,
+          currentWorkspaceAgentId:
+            settings.currentWorkspaceAgentId === agent.id
+              ? updatedAgents[0]?.id
+              : settings.currentWorkspaceAgentId,
+        })
+      })().catch((error: unknown) => {
+        console.error('Failed to delete workspace agent', error)
+      })
+    }
+
+    modal.open()
+  }
+
   const handleOpenToolsModal = () => {
     const modal = new AgentToolsModal(app, plugin)
     modal.open()
@@ -351,15 +328,26 @@ export function AgentSection({ app }: AgentSectionProps) {
       .filter(
         (tool) =>
           !EDIT_FS_TOOL_NAME_SET.has(tool.name) &&
+          !PATH_FS_TOOL_NAME_SET.has(tool.name) &&
           !SPLIT_MEMORY_TOOL_NAME_SET.has(tool.name) &&
-          !SPLIT_WEB_TOOL_NAME_SET.has(tool.name),
+          !SPLIT_WEB_TOOL_NAME_SET.has(tool.name) &&
+          (USER_FACING_LOCAL_TOOL_SHORT_NAMES.includes(tool.name) ||
+            isInjectedBridgeToolName(tool.name)),
       )
       .map((tool) => {
         const meta = getBuiltinToolUiMeta(tool.name)
+        const groupActions = (
+          CONSOLIDATED_TOOL_ACTIONS as Record<
+            string,
+            readonly string[] | undefined
+          >
+        )[tool.name]
         return {
           id: tool.name,
           label: meta ? t(meta.labelKey, meta.labelFallback) : tool.name,
-          enabled: !(toolOptions[tool.name]?.disabled ?? false),
+          enabled: groupActions
+            ? isConsolidatedGroupEnabled(toolOptions, tool.name, groupActions)
+            : !(toolOptions[tool.name]?.disabled ?? false),
         }
       })
 
@@ -378,20 +366,9 @@ export function AgentSection({ app }: AgentSectionProps) {
       enabled: editSplitToolEnabled,
     }
 
-    const memorySplitToolEnabled = LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES.every(
-      (toolName) =>
-        !(toolOptions[toolName]?.disabled ?? false) &&
-        !(toolOptions[MEMORY_OPS_GROUP_TOOL_NAME]?.disabled ?? false),
-    )
-    const memoryOpsMeta = getBuiltinToolUiMeta(MEMORY_OPS_GROUP_TOOL_NAME)
-    if (!memoryOpsMeta) {
-      throw new Error('Missing built-in tool UI metadata for memory_ops')
-    }
-    const memoryOpsTool = {
-      id: MEMORY_OPS_GROUP_TOOL_NAME,
-      label: t(memoryOpsMeta.labelKey, memoryOpsMeta.labelFallback),
-      enabled: memorySplitToolEnabled,
-    }
+    // `fs_file_ops` and `memory_ops` are now advertised by getLocalFileTools()
+    // and therefore already present in `tools`; only the synthetic groups
+    // (`fs_edit_ops`, `web_ops`) are constructed by hand.
 
     const webSplitToolEnabled = WEB_OPS_SPLIT_ACTION_TOOL_NAMES.every(
       (toolName) =>
@@ -411,11 +388,9 @@ export function AgentSection({ app }: AgentSectionProps) {
     const fsReadIndex = tools.findIndex((tool) => tool.id === 'fs_read')
     if (fsReadIndex >= 0) {
       tools.splice(fsReadIndex, 0, fileEditTool)
-      tools.splice(fsReadIndex + 1, 0, memoryOpsTool)
-      tools.splice(fsReadIndex + 2, 0, webOpsTool)
+      tools.splice(fsReadIndex + 1, 0, webOpsTool)
     } else {
       tools.push(fileEditTool)
-      tools.push(memoryOpsTool)
       tools.push(webOpsTool)
     }
 
@@ -807,7 +782,7 @@ export function AgentSection({ app }: AgentSectionProps) {
           <div className="yolo-agent-grid">
             {workspaceAgents.map((agent) => {
               const template = assistants.find(
-                (candidate) => candidate.id === agent.templateId,
+                (tpl) => tpl.id === agent.templateId,
               )
               return (
                 <article
@@ -815,11 +790,11 @@ export function AgentSection({ app }: AgentSectionProps) {
                   className="yolo-agent-card yolo-agent-card--clickable"
                   role="button"
                   tabIndex={0}
-                  onClick={() => handleOpenWorkspaceAgentEditor(agent.id)}
+                  onClick={() => handleOpenWorkspaceAgentModal(agent.id)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault()
-                      handleOpenWorkspaceAgentEditor(agent.id)
+                      handleOpenWorkspaceAgentModal(agent.id)
                     }
                   }}
                 >
@@ -869,9 +844,7 @@ export function AgentSection({ app }: AgentSectionProps) {
                           <ul className="yolo-agent-card-menu-list">
                             <DropdownMenu.Item
                               asChild
-                              onSelect={() =>
-                                handleDeleteWorkspaceAgent(agent)
-                              }
+                              onSelect={() => handleDeleteWorkspaceAgent(agent)}
                             >
                               <li className="yolo-agent-card-menu-item yolo-agent-card-menu-danger">
                                 <span className="yolo-agent-card-menu-icon">
@@ -926,8 +899,49 @@ export function AgentSection({ app }: AgentSectionProps) {
                 </article>
               )
             })}
+            <article
+              className="yolo-agent-create-card"
+              role="button"
+              tabIndex={0}
+              onClick={() => handleNewWorkspaceAgent()}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  handleNewWorkspaceAgent()
+                }
+              }}
+            >
+              <div className="yolo-agent-create-card-icon">
+                <Plus size={28} />
+              </div>
+              <div className="yolo-agent-create-card-text">
+                {t('settings.agent.newWorkspaceAgent', 'New workspace agent')}
+              </div>
+            </article>
           </div>
-        ) : null}
+        ) : (
+          <div className="yolo-agent-grid">
+            <article
+              className="yolo-agent-create-card"
+              role="button"
+              tabIndex={0}
+              onClick={() => handleNewWorkspaceAgent()}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  handleNewWorkspaceAgent()
+                }
+              }}
+            >
+              <div className="yolo-agent-create-card-icon">
+                <Plus size={28} />
+              </div>
+              <div className="yolo-agent-create-card-text">
+                {t('settings.agent.newWorkspaceAgent', 'New workspace agent')}
+              </div>
+            </article>
+          </div>
+        )}
       </section>
 
       <section className="yolo-agent-block">

@@ -11,6 +11,10 @@ type AssistantsModalComponentProps = {
   plugin: YoloPlugin
   initialAssistantId?: string
   initialCreate?: boolean
+  workspaceAgentId?: string
+  workspaceAgentTemplateId?: string
+  workspaceAgentName?: string
+  workspaceRoot?: string
 }
 
 export class AssistantsModal extends ReactModal<AssistantsModalComponentProps> {
@@ -19,21 +23,33 @@ export class AssistantsModal extends ReactModal<AssistantsModalComponentProps> {
     plugin: YoloPlugin,
     initialAssistantId?: string,
     initialCreate?: boolean,
+    workspaceAgentOptions?: {
+      workspaceAgentId?: string
+      workspaceAgentTemplateId?: string
+      workspaceAgentName?: string
+      workspaceRoot?: string
+    },
   ) {
     super({
       app: app,
       Component: AssistantsModalComponentWrapper,
-      props: { app, plugin, initialAssistantId, initialCreate },
+      props: {
+        app,
+        plugin,
+        initialAssistantId,
+        initialCreate,
+        ...workspaceAgentOptions,
+      },
       options: {
         title:
-          initialAssistantId || initialCreate
+          initialAssistantId || initialCreate || workspaceAgentOptions
             ? undefined
-            : plugin.t('settings.agent.agents', 'Agents'),
+            : plugin.t('settings.assistants.title', 'Agent Templates'),
       },
       plugin: plugin,
     })
     this.modalEl.classList.add('yolo-modal--wide')
-    if (initialAssistantId || initialCreate) {
+    if (initialAssistantId || initialCreate || workspaceAgentOptions) {
       this.modalEl.classList.add('yolo-modal--agent-direct-edit')
     }
   }
@@ -44,6 +60,10 @@ function AssistantsModalComponentWrapper({
   plugin,
   initialAssistantId,
   initialCreate,
+  workspaceAgentId,
+  workspaceAgentTemplateId,
+  workspaceAgentName,
+  workspaceRoot,
   onClose,
 }: AssistantsModalComponentProps & { onClose: () => void }) {
   return (
@@ -59,6 +79,10 @@ function AssistantsModalComponentWrapper({
         onClose={onClose}
         initialAssistantId={initialAssistantId}
         initialCreate={initialCreate}
+        workspaceAgentId={workspaceAgentId}
+        workspaceAgentTemplateId={workspaceAgentTemplateId}
+        workspaceAgentName={workspaceAgentName}
+        workspaceRoot={workspaceRoot}
       />
     </SettingsProvider>
   )

@@ -8,8 +8,33 @@ export type BuiltinToolUiMeta = {
 }
 
 export const FILE_EDIT_GROUP_TOOL_NAME = 'fs_edit_ops'
+export const FILE_OPS_GROUP_TOOL_NAME = 'fs_file_ops'
 export const MEMORY_OPS_GROUP_TOOL_NAME = 'memory_ops'
 export const WEB_OPS_GROUP_TOOL_NAME = 'web_ops'
+
+export type BuiltinToolOptionLike = {
+  disabled?: boolean
+  actionOptions?: Record<string, { disabled?: boolean }>
+}
+
+/**
+ * Enabled state of a consolidated group tool (`fs_file_ops`, `memory_ops`,
+ * `scheduled_task_ops`, `context_manage`). The group is enabled only when the
+ * group-level `disabled` is unset AND every action's `actionOptions[action]`
+ * is not disabled. After the 82→83 migration each legacy split-tool `disabled`
+ * became `actionOptions[action].disabled`, so this mirrors the old "all split
+ * tools enabled" check.
+ */
+export const isConsolidatedGroupEnabled = (
+  toolOptions: Record<string, BuiltinToolOptionLike | undefined>,
+  toolName: string,
+  actions: readonly string[],
+): boolean => {
+  const option = toolOptions[toolName]
+  if (option?.disabled) return false
+  const actionOptions = option?.actionOptions ?? {}
+  return actions.every((action) => !actionOptions[action]?.disabled)
+}
 
 export const WEB_OPS_SPLIT_ACTION_TOOL_NAMES = [
   'web_search',
@@ -91,6 +116,13 @@ export const BUILTIN_TOOL_UI_META: Record<string, BuiltinToolUiMeta> = {
     labelFallback: 'File Editing Toolset',
     descFallback:
       'Grouped file editing tools: targeted text edits and full-file writes.',
+  },
+  [FILE_OPS_GROUP_TOOL_NAME]: {
+    labelKey: 'settings.agent.builtinFsFileOpsLabel',
+    descKey: 'settings.agent.builtinFsFileOpsDesc',
+    labelFallback: 'Path Operation Toolset',
+    descFallback:
+      'Grouped file path operations: delete files or folders, create folders, and move paths.',
   },
   [MEMORY_OPS_GROUP_TOOL_NAME]: {
     labelKey: 'settings.agent.builtinMemoryOpsLabel',
@@ -196,6 +228,7 @@ const BUILTIN_TOOL_CATEGORY_MAP: Record<string, BuiltinToolCategory> = {
   fs_edit: 'vault',
   bash: 'vault',
   [FILE_EDIT_GROUP_TOOL_NAME]: 'vault',
+  [FILE_OPS_GROUP_TOOL_NAME]: 'vault',
   context_prune_tool_results: 'context',
   context_compact: 'context',
   load_tool_schemas: 'context',

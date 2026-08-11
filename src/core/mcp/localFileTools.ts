@@ -368,6 +368,14 @@ const LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION = {
   fs_write: 'write',
 } as const
 
+// Retired path-operation tools kept for the agent editor's toolset grouping
+// (fs_file_ops); the bash tool covers path operations via vaultFileOps.
+export const LOCAL_FS_PATH_OPERATION_TOOL_NAMES = [
+  'fs_delete',
+  'fs_create_dir',
+  'fs_move',
+] as const
+
 export const LOCAL_FS_SPLIT_ACTION_TOOL_NAMES = Object.keys(
   LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION,
 ) as Array<keyof typeof LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION>

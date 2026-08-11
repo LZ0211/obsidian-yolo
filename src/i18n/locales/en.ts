@@ -132,15 +132,6 @@ export const en: TranslationKeys = {
       exportConversation: 'Export conversation to vault',
       moreActions: 'More actions',
     },
-    chat: {
-      exportSuccess: 'Exported chat to {path}',
-      exportError: 'Could not export conversation',
-      workingDirectory: {
-        locked: 'Working directory is locked',
-        select: 'Select working directory',
-        clear: 'Clear working directory',
-      },
-    },
     composer: {
       title: 'Sparkle',
       subtitle:
@@ -645,14 +636,6 @@ export const en: TranslationKeys = {
       manageAll: 'Manage all…',
     },
     agent: {
-    workspaceAgents: 'Workspace Agents',
-        newWorkspaceAgent: 'New workspace agent',
-        workspaceAgentsDesc: 'Agent instances bound to working directories. Each derives from a template and limits its file access to a workspace root.',
-        deleteWorkspaceAgentTitle: 'Confirm delete workspace agent',
-        deleteWorkspaceAgentMessagePrefix: 'Are you sure you want to delete workspace agent',
-        deleteWorkspaceAgentMessageSuffix: '? This action cannot be undone.',
-        templateBadge: 'Template',
-        disabledBadge: 'disabled',
       title: 'Agent',
       desc: 'Manage global tool availability. Enabled tools become selectable by agents; actual use must still be enabled in each agent.',
       globalCapabilities: 'Global capabilities',
@@ -660,13 +643,15 @@ export const en: TranslationKeys = {
       tools: 'Tools',
       toolsCount: '{count} tools',
       toolsCountWithEnabled: '{count} tools (enabled {enabled})',
+      toolsLoading: 'Loading tools...',
+      toolsError: 'Unable to load tools',
       mcpLoadingStatus: 'Loading {count} MCP…',
       mcpErrorStatus: '{count} MCP failed to connect',
       skills: 'Skills',
       skillsCount: '{count} skills',
       skillsCountWithEnabled: '{count} skills (enabled {enabled})',
       skillsGlobalDesc:
-        'Skills are discovered from built-in skills, {path}/*.md files, and {path}/<folder>/SKILL.md packages. Disable a skill here to block it for all agents.',
+        'Skills are discovered from built-in skills and {path}/**/*.md (excluding Skills.md where applicable). Disable a skill here to block it for all agents.',
       yoloBaseDir: 'YOLO base folder',
       yoloBaseDirDesc:
         'Enter a vault-relative path (without a leading /). Example: use YOLO at vault root, or setting/YOLO under the setting folder.',
@@ -687,15 +672,16 @@ export const en: TranslationKeys = {
       yoloBaseDirConflictMessage:
         '{target} already exists and contains files. Nothing was moved to avoid overwriting or merging data. Choose an empty or nonexistent folder.',
       skillsSourcePath:
-        'Source: built-in skills + {path}/*.md + {path}/<folder>/SKILL.md',
+        'Source: built-in skills + {path}/*.md + {path}/**/SKILL.md',
       refreshSkills: 'Refresh',
       skillsEmptyHint:
-        'No skills found. Create a Markdown file or a folder containing SKILL.md under {path}.',
+        'No skills found. Create skill markdown files under {path}.',
+      readOnlySkill: 'Read-only (managed externally)',
       createSkillTemplates: 'Initialize Skills system',
       skillsTemplateCreated: 'Skills system initialized in {path}.',
       importSkill: 'Import Skill',
       importSkillDesc:
-        'Import skills into {path}. Markdown files keep their filenames; folders keep their names, SKILL.md, and all package resources.',
+        'Import skill packages into {path}. Supports single .md files or Agent Skills standard folders.',
       importSkillDropzoneText: 'Drag & drop skill files or folders here',
       importSkillBrowseFiles: 'Browse Files',
       importSkillBrowseFolder: 'Browse Folder',
@@ -708,12 +694,26 @@ export const en: TranslationKeys = {
       importSkillReadError: 'Failed to read files.',
       importSkillErrTooDeep:
         'Skill package exceeds the maximum import depth of {depth}. Nothing was imported.',
+      importSkillErrTooLarge: 'Skill package is too large to import: {error}',
       importSkillWriteError: 'Failed to import {name}: {error}',
       importSkillErrHeader: '"{name}" cannot be imported:',
       importSkillErrNoSkillMd: 'missing SKILL.md file in folder',
       importSkillErrNoFrontmatter:
         'missing metadata header (---) at the top of the file',
       importSkillErrNoName: 'missing "name" field in metadata',
+      importSkillErrNameTooLong: '"name" is too long (max 64 characters)',
+      importSkillErrNameUppercase: '"name" must be all lowercase',
+      importSkillErrNameHyphenEdge: '"name" cannot start or end with a hyphen',
+      importSkillErrNameDoubleHyphen:
+        '"name" cannot contain consecutive hyphens (--)',
+      importSkillErrNameInvalidChars:
+        '"name" can only contain lowercase letters, numbers, and hyphens',
+      importSkillErrNameMismatch: '"name" must match the folder name',
+      importSkillErrNoDescription: 'missing "description" field in metadata',
+      importSkillErrDescTooLong:
+        '"description" is too long (max 1024 characters)',
+      importSkillErrCompatTooLong:
+        '"compatibility" is too long (max 500 characters)',
       importSkillConflictTitle: 'Skill already exists',
       importSkillConflictMessage:
         'A skill with the same name already exists. Do you want to overwrite it?',
@@ -723,7 +723,7 @@ export const en: TranslationKeys = {
       importSkillConflictSkip: 'Skip conflicts',
       importSkillUnsafePath: 'Refused unsafe path in "{name}": {path}',
       importSkillDuplicateInBatch:
-        'Duplicate import destination in this batch: "{name}" (from "{source}"). Only the first occurrence is kept.',
+        'Duplicate skill name in this batch: "{name}" (from "{source}"). Only the first occurrence is kept.',
       importSkillFromUrlPlaceholder: 'Paste a GitHub URL (repo / blob / tree)',
       importSkillFromUrlFetch: 'Fetch',
       importSkillFromUrlFetching: 'Fetching...',
@@ -738,13 +738,12 @@ export const en: TranslationKeys = {
       importSkillFromUrlFetchError: 'Failed to fetch from GitHub: {error}',
       deleteSkillTitle: 'Delete skill',
       deleteSkillMessage:
-        'Are you sure you want to delete the "{name}" skill package, including all resources? This cannot be undone.',
+        'Are you sure you want to delete "{name}"? This cannot be undone.',
       deleteSkillConfirm: 'Delete',
       deleteSkillSuccess: '"{name}" has been deleted.',
       deleteSkillError: 'Failed to delete "{name}": {error}',
-      deleteSkillNotFound: 'Skill not found',
       deleteSkillBatchMessage:
-        'Are you sure you want to delete {count} skill(s), including package resources? This cannot be undone.',
+        'Are you sure you want to delete {count} skill(s)? This cannot be undone.',
       deleteSkillBatchSuccess: 'Deleted {count} skill(s).',
       deleteSkillBatchBtn: 'Delete',
       deleteSkillSelectAll: 'Select all',
@@ -766,6 +765,7 @@ export const en: TranslationKeys = {
       toolsGroupBuiltinVault: 'Vault',
       toolsGroupBuiltinContext: 'Context & Memory',
       toolsGroupBuiltinExternal: 'External',
+      toolsGroupBuiltinInjected: 'Injected Tools',
       noMcpTools: 'No custom tools (MCP) discovered yet',
       toolsEnabledCount: '{count} enabled',
       manageTools: 'Manage tools',
@@ -780,10 +780,6 @@ export const en: TranslationKeys = {
       enableAllTools: 'Enable all',
       disableAllTools: 'Disable all',
       descriptionColumn: 'Description',
-      builtinMetaSearchLabel: 'Search Metadata',
-      builtinMetaSearchDesc: 'Search indexed metadata and parsed file fields with a constrained query DSL and return matching files.',
-      builtinSendAttachmentLabel: 'Send Attachment',
-      builtinSendAttachmentDesc: 'Send a vault file as an attachment to the current bot chat.',
       builtinFsListLabel: 'Read Vault',
       builtinFsListDesc: 'List vault directory structure',
       builtinFsSearchLabel: 'Search Vault',
@@ -796,13 +792,13 @@ export const en: TranslationKeys = {
         'Exclude past tool results from future context. Note: this tool may break the prompt cache and increase request cost.',
       builtinContextCompactLabel: 'Compact Context',
       builtinContextCompactDesc: 'Compress earlier conversation into a summary',
+      builtinContextManageLabel: 'Context Management Toolset',
+      builtinContextManageDesc:
+        'Compact earlier history into a summary, or prune historical tool results from model-visible context',
       builtinToolSearchLabel: 'Load Tool',
       builtinToolSearchDesc: 'Load full schemas for on-demand tools',
       builtinFsEditLabel: 'Text Editing',
       builtinFsEditDesc: 'Edit text in a single file',
-      builtinBashLabel: 'Virtual terminal',
-      builtinBashDesc:
-        'Search and inspect vault files, plus mkdir/mv/rm path operations',
       safetyControls: 'Safety Controls',
       safetyControlsDesc:
         'Configure extra review behavior before agents perform risky file operations.',
@@ -811,6 +807,9 @@ export const en: TranslationKeys = {
         'When enabled, agent fs_edit changes open inline/apply review before writing the file.',
       builtinFsEditOpsLabel: 'File Editing Toolset',
       builtinFsEditOpsDesc: 'Edit targeted text or write full file content',
+      builtinFsFileOpsLabel: 'Path Operation Toolset',
+      builtinFsFileOpsDesc:
+        'Delete or move files and folders, and create folders',
       builtinMemoryOpsLabel: 'Memory Toolset',
       builtinMemoryOpsDesc: 'Add, update, and delete memory',
       builtinMemoryAddLabel: 'Add Memory',
@@ -830,21 +829,56 @@ export const en: TranslationKeys = {
         'Fetch the full content of a single URL through a configured search provider.',
       builtinWebOpsLabel: 'Web Search Toolset',
       builtinWebOpsDesc: 'Web search and page scraping',
-      builtinJsEvalLabel: 'Analysis Sandbox',
-      builtinJsEvalDesc:
-        'Run JavaScript in an isolated sandbox for precise computation, batch statistics, and data processing; grant retrieval, vault read-only, and network capabilities individually.',
+      builtinJsEvalLabel: 'JavaScript Execution',
+      builtinJsEvalDesc: 'Run JavaScript in an isolated environment.',
       builtinTerminalCommandLabel: 'Terminal Commands',
       builtinTerminalCommandDesc:
-        'Run commands in the local terminal, desktop-only',
+        'Run commands in the local terminal. Desktop-only.',
       builtinDelegateSubagentLabel: 'Delegate Subagent',
       builtinDelegateSubagentDesc:
         'Dispatch an isolated temporary subagent to complete a self-contained task asynchronously.',
+      subagentTimeoutSectionTitle: 'Subagent timeout',
+      subagentTimeoutSectionDesc:
+        'Hang protection for delegated subagent calls. A delegation with no progress past the deadline settles as timeout and, after repeated timeouts, trips a per-conversation breaker.',
+      subagentTimeoutMs: 'Timeout',
+      subagentTimeoutMsDesc:
+        'Maximum quiet time (ms) before a running subagent delegation is aborted and settled as timeout.',
+      subagentMaxConsecutiveTimeouts: 'Breaker threshold',
+      subagentMaxConsecutiveTimeoutsDesc:
+        'Consecutive timeouts that pause new delegation for this conversation until the cooldown elapses.',
+      subagentCooldownMs: 'Breaker cooldown',
+      subagentCooldownMsDesc:
+        'How long (ms) new delegation stays paused after the breaker trips.',
+      subagentResultMaxChars: 'Subagent result cap',
+      subagentResultMaxCharsDesc:
+        'Maximum characters of a child subagent result copied back into the parent conversation. Oversized results keep a head and tail window joined by a truncation marker; the full result stays in the child session.',
+      forkContextTurns: 'Subagent context turns',
+      forkContextTurnsDesc:
+        'Parent messages composed into a delegated subagent prompt when it uses the last_turns context fork. A read-only snapshot; changing this takes effect without a restart.',
       builtinTodoWriteLabel: 'Task List',
       builtinTodoWriteDesc:
         'Let the agent plan and track multi-step task progress autonomously. Agent mode only.',
       builtinAskUserQuestionLabel: 'Ask User',
       builtinAskUserQuestionDesc:
         'Ask the user a question when required information is missing, then resume after the answer.',
+      builtinProjectLabel: 'Project Management',
+      builtinProjectDesc:
+        'Create and manage durable project and task files under the host-managed Projects directory. Parent-only; child subagents are blocked.',
+      builtinBrowserScrollLabel: 'Scroll Browser Page',
+      builtinBrowserScrollDesc:
+        'Scroll an open Obsidian web page (Web Viewer / .url) up or down. Local view mutation only; requires an exact page_id. Desktop-only.',
+      builtinBrowserNavigateLabel: 'Navigate Browser Page',
+      builtinBrowserNavigateDesc:
+        'Navigate an open Obsidian web page to a new URL. https/http only; other schemes rejected. Requires an exact page_id and approval. Desktop-only.',
+      builtinBrowserClickLabel: 'Click Browser Element',
+      builtinBrowserClickDesc:
+        'Click a unique visible element in an open Obsidian web page. Sensitive/credential fields, file pickers, and iframe contents are blocked. Requires an exact page_id and approval. Desktop-only.',
+      builtinBrowserTypeLabel: 'Type in Browser Page',
+      builtinBrowserTypeDesc:
+        'Type text into a unique editable element in an open Obsidian web page. Credential/secret fields are hard-blocked; typed text is redacted. Requires an exact page_id and approval. Desktop-only.',
+      builtinBrowserOpsLabel: 'Browser Automation',
+      builtinBrowserOpsDesc:
+        'Interact with an open Obsidian web page: scroll, navigate, click, or type. navigate/click/type require approval; credential fields are hard-blocked and typed text is redacted. Desktop-only.',
       editorDefaultName: 'New agent',
       editorIntro: "Configure this agent's capabilities, model, and behavior.",
       editorTabProfile: 'Profile',
@@ -910,7 +944,6 @@ export const en: TranslationKeys = {
       toolApproval: 'Approval',
       toolApprovalFullAccess: 'Full access',
       toolApprovalRequire: 'Require approval',
-      toolApprovalDangerousOnly: 'Approve dangerous operations',
       toolDisclosureAuto: 'Auto',
       toolDisclosureAutoSelect: 'Auto select',
       toolDisclosureAlways: 'In context',
@@ -1047,6 +1080,113 @@ export const en: TranslationKeys = {
       jsSandboxDbMaxLimit: 'Max semantic rows',
       jsSandboxDbMaxLimitDesc:
         'Upper bound on semantic search results. Path reads are not affected. Range 1–100.',
+      workspaceAgents: 'Workspace Agents',
+      workspaceAgentsDesc:
+        'Agent instances bound to working directories. Each derives from a template and limits its file access to a workspace root.',
+      newWorkspaceAgent: 'New workspace agent',
+      deleteWorkspaceAgentTitle: 'Confirm delete workspace agent',
+      deleteWorkspaceAgentMessagePrefix:
+        'Are you sure you want to delete workspace agent',
+      deleteWorkspaceAgentMessageSuffix: '? This action cannot be undone.',
+      disabledBadge: 'disabled',
+      templateBadge: 'Template',
+      editorTokenTitle: 'Share Tokens',
+      editorTokenDesc:
+        'Generate a one-time token for web access. Tokens are shown only once upon creation.',
+      editorTokenCreate: 'Create Token',
+      editorTokenGenerate: 'Generate',
+      editorTokenScope: 'Scope',
+      editorTokenScopeAgent: 'Current agent only',
+      editorTokenScopeRoot: 'All agents in same workspace root',
+      editorTokenLabel: 'Label',
+      editorTokenLabelPlaceholder: 'e.g. CI/CD, mobile access',
+      editorTokenStatus: 'Status',
+      editorTokenCreated: 'Created',
+      editorTokenSecret: 'Token',
+      editorTokenCopyWarning:
+        'Copy this token now. You can also copy it later from the list below.',
+      editorTokenCopy: 'Copy',
+      editorTokenCopied: 'Token copied to clipboard.',
+      editorTokenCopyFailed: 'Failed to copy token.',
+      editorTokenDismiss: 'Done',
+      editorTokenError: 'Token operation failed.',
+      editorTokenEmpty: 'No tokens yet. Click "Create Token" to issue one.',
+      editorTokenUnnamed: '(Unnamed)',
+      editorTokenStatusValid: 'Valid',
+      editorTokenStatusExpired: 'Expired',
+      editorTokenStatusDisabled: 'Disabled',
+      editorTokenStatusRootMismatch: 'Workspace changed',
+      editorTokenStatusRootMismatchHint:
+        'This token was issued for a previous workspace root and no longer authorizes requests.',
+      editorTokenShow: 'Show token',
+      editorTokenHide: 'Hide token',
+      editorTokenEdit: 'Edit',
+      editorTokenDelete: 'Delete',
+      editorTokenDeleteTitle: 'Delete share token',
+      editorTokenDeleteConfirm:
+        'Delete this share token? Existing sessions using it will be ended.',
+      editorTokenExpiry: 'Expiry date',
+      editorTokenNoExpiry: 'No expiry',
+      editorTokenExpiryDesc:
+        'Leave empty for no expiry. The token is valid through the end of the selected day.',
+      editorTokenDialogCreateTitle: 'Create share token',
+      editorTokenDialogEditTitle: 'Edit share token',
+      editorAgentModes: 'Agent mode',
+      editorAgentModesDesc:
+        'Ask mode is always available. Allow this workspace agent to use Agent mode in the chat window.',
+      editorEnableAgent: 'Enable agent',
+      editorEnableAgentDesc:
+        'When disabled, this workspace agent is hidden from the chat selector and web access is blocked.',
+      editorModeAgent: 'Agent',
+      editorModeAgentDesc: 'Tools for complex tasks',
+      editorModeYolo: 'YOLO',
+      editorModeYoloDesc: 'Auto-approve tool calls for complex tasks',
+      toolsGroupBuiltinScheduling: 'Scheduled Tasks',
+      builtinConversationHistoryLabel: 'Conversation History',
+      builtinConversationHistoryDesc:
+        'Search and read prior conversations as bounded, read-only historical context.',
+      builtinMetaSearchLabel: 'Search Metadata',
+      builtinMetaSearchDesc: 'Search indexed metadata and matching files',
+      builtinScheduledTaskOpsLabel: 'Scheduled Tasks Toolset',
+      builtinScheduledTaskOpsDesc:
+        'Create, update, delete, list, get, and run scheduled tasks',
+      builtinScheduledTaskCreateLabel: 'Create Scheduled Task',
+      builtinScheduledTaskCreateDesc:
+        'Create a new scheduled agent task with a cron, interval, or one-time schedule.',
+      builtinScheduledTaskUpdateLabel: 'Update Scheduled Task',
+      builtinScheduledTaskUpdateDesc:
+        'Update an existing scheduled task by id.',
+      builtinScheduledTaskDeleteLabel: 'Delete Scheduled Task',
+      builtinScheduledTaskDeleteDesc:
+        'Delete an existing scheduled task by id.',
+      builtinScheduledTaskListLabel: 'List Scheduled Tasks',
+      builtinScheduledTaskListDesc:
+        'List scheduled tasks, optionally filtered by enabled status.',
+      builtinScheduledTaskGetLabel: 'Get Scheduled Task',
+      builtinScheduledTaskGetDesc: 'Get a single scheduled task by id.',
+      builtinScheduledTaskRunNowLabel: 'Run Scheduled Task Now',
+      builtinScheduledTaskRunNowDesc:
+        'Immediately enqueue a scheduled task for execution.',
+      builtinSendAttachmentLabel: 'Send Attachment',
+      builtinSendAttachmentDesc:
+        'Send a vault file as an attachment to the current bot chat.',
+      builtinMd2htmlLabel: 'Note → HTML',
+      builtinMd2htmlDesc:
+        'Convert a note into a self-contained HTML file next to the source.',
+      builtinMd2pdfLabel: 'Note → PDF',
+      builtinMd2pdfDesc:
+        "Export a note to PDF via Obsidian's core export command.",
+      builtinCanvas2pngLabel: 'Canvas → PNG',
+      builtinCanvas2pngDesc: 'Export the active Canvas tab as a PNG image.',
+      editorTabTokens: 'Tokens',
+      editorDelegatable: 'Allow subagent delegation',
+      editorDelegatableDesc:
+        'Allow another Agent to select this template as a specialist child role.',
+      deleteSkillNotFound: 'Skill not found',
+      builtinBashLabel: 'Virtual terminal',
+      builtinBashDesc:
+        'Search and inspect vault files, plus mkdir/mv/rm path operations',
+      toolApprovalDangerousOnly: 'Approve dangerous operations',
     },
     jsSandbox: {
       openSettings: 'Configure analysis sandbox',
@@ -2214,6 +2354,11 @@ export const en: TranslationKeys = {
     selectModel: 'Select model',
     uploadImage: 'Upload image',
     uploadFile: 'Add file',
+    workingDirectory: {
+      select: 'Select working directory',
+      clear: 'Clear working directory',
+      locked: 'Working directory is locked',
+    },
     dropFilesHint: 'Drop to add files',
     imageUnsupportedByModel:
       'This model has not declared image support. Enable the "Vision" input modality in the model settings to attach images.',

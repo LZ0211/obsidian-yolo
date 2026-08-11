@@ -1,30 +1,21 @@
-import { Check, FileText, Folder, Plus, X } from 'lucide-react'
+import { FileText, Folder, Plus, X } from 'lucide-react'
 import { App, TFile, TFolder, Vault } from 'obsidian'
 import { useMemo } from 'react'
 
 import { useLanguage } from '../../../contexts/language-context'
-import { AssistantWorkspaceScope } from '../../../types/assistant.types'
-import { ObsidianToggle } from '../../common/ObsidianToggle'
+import { normalizePathSlashes } from '../../../core/paths/normalizePath'
+import { type WorkspaceAgentPolicy } from '../../../settings/schema/setting.types'
 import { FolderPickerModal } from '../modals/FolderPickerModal'
 
 type AgentWorkspaceScopeEditorProps = {
   app: App
   vault: Vault
-  value: AssistantWorkspaceScope | undefined
-  onChange: (next: AssistantWorkspaceScope) => void
+  value: WorkspaceAgentPolicy
+  onChange: (next: WorkspaceAgentPolicy) => void
 }
-
-const EMPTY_SCOPE: AssistantWorkspaceScope = {
-  enabled: false,
-  include: [],
-  exclude: [],
-}
-
-const normalize = (raw: string): string =>
-  raw.replace(/^\/+/, '').replace(/\/+$/, '')
 
 function getPathKind(vault: Vault, path: string): 'folder' | 'file' {
-  const abstract = vault.getAbstractFileByPath(normalize(path))
+  const abstract = vault.getAbstractFileByPath(normalizePathSlashes(path))
   if (abstract instanceof TFile) return 'file'
   if (abstract instanceof TFolder) return 'folder'
   return 'folder'
@@ -37,177 +28,255 @@ export function AgentWorkspaceScopeEditor({
   onChange,
 }: AgentWorkspaceScopeEditorProps) {
   const { t } = useLanguage()
-  const scope = value ?? EMPTY_SCOPE
+  const rootPath: string = normalizePathSlashes(value.workspaceRoot)
+  const hasRoot = rootPath.length > 0
 
-  const includeItems = useMemo(
-    () => scope.include.map(normalize),
-    [scope.include],
+  const readAllowlist: string[] = useMemo(
+    () => value.readAllowlist.map((p: string) => normalizePathSlashes(p)),
+    [value.readAllowlist],
   )
-  const excludeItems = useMemo(
-    () => scope.exclude.map(normalize),
-    [scope.exclude],
+  const readDenylist: string[] = useMemo(
+    () => value.readDenylist.map((p: string) => normalizePathSlashes(p)),
+    [value.readDenylist],
+  )
+  const writeDenylist: string[] = useMemo(
+    () => value.writeDenylist.map((p: string) => normalizePathSlashes(p)),
+    [value.writeDenylist],
   )
 
-  const setEnabled = (next: boolean) => onChange({ ...scope, enabled: next })
-
-  const addInclude = () => {
+  const setWorkspaceRoot = () => {
     new FolderPickerModal(
       app,
       vault,
-      [...includeItems, ...excludeItems],
-      true,
+      [value.workspaceRoot],
+      false,
       (picked) => {
-        const np = normalize(picked)
-        if (includeItems.includes(np)) return
-        onChange({ ...scope, include: [...includeItems, np] })
+        const newRoot =
+          picked === '/' ? '/' : `/${normalizePathSlashes(picked)}`
+        const rootChanged = newRoot !== value.workspaceRoot
+        onChange({
+          ...value,
+          workspaceRoot: newRoot,
+          ...(rootChanged ? { readDenylist: [], writeDenylist: [] } : {}),
+        })
       },
     ).open()
   }
 
-  const addExclude = () => {
+  const addPath = (
+    current: string[],
+    update: (next: string[]) => void,
+    exclude: string[],
+    scopeRoot?: string,
+  ) => {
     new FolderPickerModal(
       app,
       vault,
-      [...includeItems, ...excludeItems],
+      [value.workspaceRoot, ...current, ...exclude],
       true,
       (picked) => {
-        const np = normalize(picked)
-        if (excludeItems.includes(np)) return
-        onChange({ ...scope, exclude: [...excludeItems, np] })
+        const normalizedPicked = normalizePathSlashes(picked)
+        if (current.includes(normalizedPicked)) return
+        update([...current, normalizedPicked])
       },
+      scopeRoot,
     ).open()
   }
 
-  const removeInclude = (idx: number) => {
-    const next = includeItems.slice()
-    next.splice(idx, 1)
-    onChange({ ...scope, include: next })
-  }
-
-  const removeExclude = (idx: number) => {
-    const next = excludeItems.slice()
-    next.splice(idx, 1)
-    onChange({ ...scope, exclude: next })
+  const removePath = (
+    current: string[],
+    index: number,
+    update: (next: string[]) => void,
+  ) => {
+    const next = current.slice()
+    next.splice(index, 1)
+    update(next)
   }
 
   return (
     <div className="yolo-agent-workspace">
-      <div className="yolo-agent-workspace-toggle-row">
-        <div className="yolo-agent-workspace-toggle-main">
-          <div className="yolo-agent-workspace-toggle-title">
-            {t(
-              'settings.agent.workspace.enableTitle',
-              'Restrict directory access',
-            )}
-          </div>
-          <div className="yolo-agent-workspace-toggle-desc">
-            {t(
-              'settings.agent.workspace.enableDesc',
-              'When off, this agent can access the entire vault. When on, the rules below apply.',
-            )}
-          </div>
-        </div>
-        <ObsidianToggle value={scope.enabled} onChange={setEnabled} />
-      </div>
+      <ScopeGroup
+        title={t('settings.agent.workspace.rootTitle', 'Workspace root')}
+        description={t(
+          'settings.agent.workspace.rootDesc',
+          'All relative reads and writes are resolved under this root.',
+        )}
+        badge="ROOT"
+        addLabel={t('settings.agent.workspace.pick', 'Pick')}
+        items={[value.workspaceRoot || '/']}
+        vault={vault}
+        onAdd={setWorkspaceRoot}
+        emptyHint="/"
+      />
 
       <ScopeGroup
-        variant="include"
-        title={t('settings.agent.workspace.includeTitle', 'Allow')}
-        description={t(
-          'settings.agent.workspace.includeDesc',
-          'Only read/write files under these paths',
+        title={t(
+          'settings.agent.workspace.readExtraTitle',
+          'Extra readable paths',
         )}
-        badge={t('settings.agent.workspace.includeBadge', 'INCLUDE')}
+        description={t(
+          'settings.agent.workspace.readExtraDesc',
+          'Additional readable paths outside the workspace root.',
+        )}
+        badge="READ"
         addLabel={t('common.add', 'Add')}
-        items={includeItems}
-        disabled={!scope.enabled}
+        items={readAllowlist}
         vault={vault}
-        onAdd={addInclude}
-        onRemove={removeInclude}
+        onAdd={() =>
+          addPath(
+            readAllowlist,
+            (next) => onChange({ ...value, readAllowlist: next }),
+            [...readDenylist, ...writeDenylist],
+          )
+        }
+        onRemove={(index) =>
+          removePath(readAllowlist, index, (next) =>
+            onChange({ ...value, readAllowlist: next }),
+          )
+        }
         emptyHint={t(
-          'settings.agent.workspace.includeEmpty',
-          'Leave empty to allow everything except the exclude list below.',
+          'settings.agent.workspace.readExtraEmpty',
+          'No extra readable paths.',
         )}
       />
 
       <ScopeGroup
-        variant="exclude"
-        title={t('settings.agent.workspace.excludeTitle', 'Deny')}
+        title={t('settings.agent.workspace.readExcludeTitle', 'Read deny list')}
         description={t(
-          'settings.agent.workspace.excludeDesc',
-          'Excluded from the allow range (higher priority)',
+          'settings.agent.workspace.readExcludeDesc',
+          'Subpaths hidden from reads, search, metadata, and mentions.',
         )}
-        badge={t('settings.agent.workspace.excludeBadge', 'EXCLUDE')}
+        badge="DENY READ"
         addLabel={t('common.add', 'Add')}
-        items={excludeItems}
-        disabled={!scope.enabled}
+        items={readDenylist}
         vault={vault}
-        onAdd={addExclude}
-        onRemove={removeExclude}
-        emptyHint={t('settings.agent.workspace.excludeEmpty', 'No exclusions.')}
+        disabled={!hasRoot}
+        disabledHint={t(
+          'settings.agent.workspace.denyDisabledHint',
+          'Set a workspace root first to configure deny lists.',
+        )}
+        onAdd={() =>
+          addPath(
+            readDenylist,
+            (next) => onChange({ ...value, readDenylist: next }),
+            [...readAllowlist, ...writeDenylist],
+            rootPath,
+          )
+        }
+        onRemove={(index) =>
+          removePath(readDenylist, index, (next) =>
+            onChange({ ...value, readDenylist: next }),
+          )
+        }
+        emptyHint={t(
+          'settings.agent.workspace.readExcludeEmpty',
+          'No read exclusions.',
+        )}
+      />
+
+      <ScopeGroup
+        title={t(
+          'settings.agent.workspace.writeExcludeTitle',
+          'Write deny list',
+        )}
+        description={t(
+          'settings.agent.workspace.writeExcludeDesc',
+          'Subpaths where writes, edits, deletes, and moves are blocked.',
+        )}
+        badge="DENY WRITE"
+        addLabel={t('common.add', 'Add')}
+        items={writeDenylist}
+        vault={vault}
+        disabled={!hasRoot}
+        disabledHint={t(
+          'settings.agent.workspace.denyDisabledHint',
+          'Set a workspace root first to configure deny lists.',
+        )}
+        onAdd={() =>
+          addPath(
+            writeDenylist,
+            (next) => onChange({ ...value, writeDenylist: next }),
+            [...readAllowlist, ...readDenylist],
+            rootPath,
+          )
+        }
+        onRemove={(index) =>
+          removePath(writeDenylist, index, (next) =>
+            onChange({ ...value, writeDenylist: next }),
+          )
+        }
+        emptyHint={t(
+          'settings.agent.workspace.writeExcludeEmpty',
+          'No write exclusions.',
+        )}
       />
     </div>
   )
 }
 
 type ScopeGroupProps = {
-  variant: 'include' | 'exclude'
   title: string
   description: string
   badge: string
   addLabel: string
   items: string[]
-  disabled: boolean
   vault: Vault
   onAdd: () => void
-  onRemove: (idx: number) => void
+  onRemove?: (index: number) => void
   emptyHint: string
+  disabled?: boolean
+  disabledHint?: string
 }
 
 function ScopeGroup({
-  variant,
   title,
   description,
   badge,
   addLabel,
   items,
-  disabled,
   vault,
   onAdd,
   onRemove,
   emptyHint,
+  disabled,
+  disabledHint,
 }: ScopeGroupProps) {
   return (
     <div
-      className={`yolo-agent-workspace-group yolo-agent-workspace-group--${variant}${
-        disabled ? ' is-disabled' : ''
-      }`}
+      className={`yolo-agent-workspace-group yolo-agent-workspace-group--include${disabled ? ' is-disabled' : ''}`}
     >
       <div className="yolo-agent-workspace-group-head">
-        <span className="yolo-agent-workspace-badge">
-          {variant === 'include' ? <Check size={11} /> : <X size={11} />}
-          <span>{badge}</span>
-        </span>
+        <span className="yolo-agent-workspace-badge">{badge}</span>
         <div className="yolo-agent-workspace-group-title">{title}</div>
         <div className="yolo-agent-workspace-group-desc">{description}</div>
-        <button
-          type="button"
-          className="yolo-agent-workspace-add"
-          onClick={() => onAdd()}
-          disabled={disabled}
-        >
-          <Plus size={12} />
-          <span>{addLabel}</span>
-        </button>
+        {disabled ? (
+          disabledHint ? (
+            <div className="yolo-agent-workspace-disabled-hint">
+              {disabledHint}
+            </div>
+          ) : null
+        ) : (
+          <button
+            type="button"
+            className="yolo-agent-workspace-add"
+            onClick={onAdd}
+          >
+            <Plus size={12} />
+            <span>{addLabel}</span>
+          </button>
+        )}
       </div>
       {items.length === 0 ? (
         <div className="yolo-agent-workspace-empty">{emptyHint}</div>
       ) : (
         <div className="yolo-agent-workspace-rows">
-          {items.map((path, idx) => {
+          {items.map((path, index) => {
             const kind = getPathKind(vault, path)
             return (
-              <div key={`${path}__${idx}`} className="yolo-agent-workspace-row">
+              <div
+                key={`${path}__${index}`}
+                className="yolo-agent-workspace-row"
+              >
                 <span className="yolo-agent-workspace-row-icon">
                   {kind === 'folder' ? (
                     <Folder size={14} />
@@ -219,18 +288,19 @@ function ScopeGroup({
                   className="yolo-agent-workspace-row-path"
                   title={path || '/'}
                 >
-                  {path === '' ? '/' : path}
+                  {path || '/'}
                 </span>
                 <span className="yolo-agent-workspace-row-kind">{kind}</span>
-                <button
-                  type="button"
-                  className="yolo-agent-workspace-row-remove"
-                  onClick={() => onRemove(idx)}
-                  disabled={disabled}
-                  aria-label="remove"
-                >
-                  <X size={14} />
-                </button>
+                {onRemove ? (
+                  <button
+                    type="button"
+                    className="yolo-agent-workspace-row-remove"
+                    onClick={() => onRemove(index)}
+                    aria-label="remove"
+                  >
+                    <X size={14} />
+                  </button>
+                ) : null}
               </div>
             )
           })}
