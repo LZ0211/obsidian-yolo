@@ -1,6 +1,10 @@
 import { App, TFile, TFolder, normalizePath } from 'obsidian'
 
+import { sha256Hex } from '../../utils/common/content-hash'
 import { getYoloBaseDir } from '../paths/yoloPaths'
+
+import { buildMemoryKey, buildMemoryPartition } from './memoryIndex'
+import type { MemoryPartition, MemorySourceEntry } from './memoryTypes'
 
 type AssistantLike = {
   id: string
@@ -8,7 +12,10 @@ type AssistantLike = {
   systemPrompt?: string
 }
 
-type MemorySettingsLike = {
+export type MemorySettingsLike = {
+  advancedMemoryIndexEnabled?: boolean
+  memoryReflectionEnabled?: boolean
+  memoryAgentModelId?: string
   yolo?: {
     baseDir?: string
   }
@@ -17,6 +24,15 @@ type MemorySettingsLike = {
 }
 
 export type MemoryScope = 'global' | 'assistant'
+export type MemorySourceSnapshot = Readonly<{
+  partition: MemoryPartition
+  sourcePath: string
+  sourceFileFingerprint: string
+  parserVersion: string
+  entries: readonly MemorySourceEntry[]
+  valid: boolean
+  content?: string
+}>
 type MemoryCategory = 'profile' | 'preferences' | 'other'
 type MemorySectionKey = 'profile' | 'preferences' | 'other'
 
@@ -37,6 +53,7 @@ type MemorySectionBlock = {
 type MemoryEntryOccurrence = {
   id: string
   content: string
+  keywords: string[]
   lineIndex: number
   sectionKey: MemorySectionKey
 }
@@ -48,7 +65,30 @@ export type MemoryPromptContext = {
 
 const MEMORY_DIR_NAME = 'memory'
 const GLOBAL_MEMORY_FILE_NAME = 'global.md'
+const MEMORY_PARSER_VERSION = 'memory-markdown-v1'
 const ENTRY_LINE_REGEX = /^\s*[-*]\s+([^:：]+)\s*[:：]\s*(.*)$/
+const ENTRY_KEYWORDS_REGEX = /\s*<!--\s*keywords:\s*(.*?)\s*-->\s*$/i
+const MEMORY_MARKDOWN_ESCAPED_CHARACTERS = new Set([
+  '\\',
+  '`',
+  '*',
+  '_',
+  '{',
+  '}',
+  '[',
+  ']',
+  '(',
+  ')',
+  '#',
+  '+',
+  '-',
+  '.',
+  '!',
+  '|',
+  '<',
+  '>',
+  '~',
+])
 
 const MEMORY_SECTIONS: MemorySectionDefinition[] = [
   {
@@ -149,8 +189,12 @@ const getMemoryDirPath = (settings?: MemorySettingsLike): string => {
   return normalizePath(`${getYoloBaseDir(settings)}/${MEMORY_DIR_NAME}`)
 }
 
+const normalizeMemoryPath = (path: string): string => {
+  return normalizePath(path.replace(/\\/gu, '/').replace(/\/+/gu, '/'))
+}
+
 const getGlobalMemoryPath = (settings?: MemorySettingsLike): string => {
-  return normalizePath(
+  return normalizeMemoryPath(
     `${getMemoryDirPath(settings)}/${GLOBAL_MEMORY_FILE_NAME}`,
   )
 }
@@ -166,10 +210,6 @@ const getAssistantById = (
   return (
     settings?.assistants?.find((assistant) => assistant.id === targetId) ?? null
   )
-}
-
-const hasAssistantInstructions = (assistant: AssistantLike | null): boolean => {
-  return Boolean(assistant?.systemPrompt?.trim())
 }
 
 const getAssistantMemoryPath = ({
@@ -191,7 +231,7 @@ const getAssistantMemoryPath = ({
     duplicateIndex === 0
       ? `${baseFileName}.md`
       : `${baseFileName} (${duplicateIndex + 1}).md`
-  return normalizePath(`${getMemoryDirPath(settings)}/${fileName}`)
+  return normalizeMemoryPath(`${getMemoryDirPath(settings)}/${fileName}`)
 }
 
 const getSectionDefinitionByKey = (
@@ -276,7 +316,7 @@ const getPrimarySectionBlock = (
 
 const parseEntryLine = (
   line: string,
-): { id: string; content: string } | null => {
+): { id: string; content: string; keywords: string[] } | null => {
   const match = line.match(ENTRY_LINE_REGEX)
   if (!match) {
     return null
@@ -285,10 +325,139 @@ const parseEntryLine = (
   if (!id) {
     return null
   }
+  const rawContent = match[2] ?? ''
+  const keywordMatch = rawContent.match(ENTRY_KEYWORDS_REGEX)
+  const keywords = keywordMatch
+    ? keywordMatch[1]
+        .split(',')
+        .map((keyword) => unescapeMemoryMarkdownValue(keyword.trim()))
+        .filter(Boolean)
+    : []
+  const content = keywordMatch
+    ? rawContent.replace(keywordMatch[0], '')
+    : rawContent
   return {
     id,
-    content: match[2] ?? '',
+    content: unescapeMemoryMarkdownValue(content).trim(),
+    keywords,
   }
+}
+
+const escapeMemoryMarkdownValue = (value: string): string => {
+  let escaped = ''
+  for (const character of value) {
+    if (MEMORY_MARKDOWN_ESCAPED_CHARACTERS.has(character)) {
+      escaped += '\\'
+    }
+    escaped += character
+  }
+  return escaped
+}
+
+const unescapeMemoryMarkdownValue = (value: string): string => {
+  let unescaped = ''
+  let escaped = false
+  for (const character of value) {
+    if (escaped) {
+      unescaped += MEMORY_MARKDOWN_ESCAPED_CHARACTERS.has(character)
+        ? character
+        : `\\${character}`
+      escaped = false
+    } else if (character === '\\') {
+      escaped = true
+    } else {
+      unescaped += character
+    }
+  }
+  return escaped ? `${unescaped}\\` : unescaped
+}
+
+const normalizeSnapshotString = (value: string): string => {
+  return value.normalize('NFC').trim()
+}
+
+const normalizeSnapshotKeywords = (keywords: readonly string[]): string[] => {
+  const normalized = keywords
+    .map((keyword) => normalizeSnapshotString(keyword).slice(0, 80))
+    .filter(Boolean)
+  return [...new Set(normalized)].sort((left, right) =>
+    left < right ? -1 : left > right ? 1 : 0,
+  )
+}
+
+const parseMemorySourceEntries = async ({
+  content,
+  partition,
+  sourcePath,
+}: {
+  content: string
+  partition: MemoryPartition
+  sourcePath: string
+}): Promise<{ entries: readonly MemorySourceEntry[]; valid: boolean }> => {
+  const lines = content.split('\n')
+  const blocks = parseSectionBlocks(lines)
+  const entries: MemorySourceEntry[] = []
+  const seenKeys = new Set<string>()
+  const seenSectionKeys = new Set<MemorySectionKey>()
+  let valid = true
+
+  for (const block of blocks) {
+    if (seenSectionKeys.has(block.key)) {
+      valid = false
+    }
+    seenSectionKeys.add(block.key)
+
+    for (
+      let lineIndex = block.startLineIndex;
+      lineIndex < block.endLineIndex;
+      lineIndex += 1
+    ) {
+      const line = lines[lineIndex] ?? ''
+      const parsed = parseEntryLine(line)
+      if (!parsed) {
+        if (/^\s*[-*]\s+/u.test(line)) {
+          valid = false
+        }
+        continue
+      }
+
+      const localId = normalizeSnapshotString(parsed.id)
+      const entryContent = normalizeSnapshotString(parsed.content)
+      const keywords = normalizeSnapshotKeywords(parsed.keywords)
+      if (!localId || !entryContent) {
+        valid = false
+        continue
+      }
+
+      const memoryKey = buildMemoryKey(partition.partitionKey, localId)
+      if (seenKeys.has(memoryKey)) {
+        valid = false
+      }
+      seenKeys.add(memoryKey)
+
+      const category = block.key
+      const entryFingerprint = await sha256Hex(
+        JSON.stringify({
+          partitionKey: normalizeSnapshotString(partition.partitionKey),
+          localId,
+          category,
+          content: entryContent,
+          keywords,
+        }),
+      )
+      entries.push({
+        localId,
+        content: entryContent,
+        keywords,
+        category,
+        partition,
+        sourcePath,
+        entryFingerprint,
+      })
+    }
+  }
+
+  return { entries, valid }
 }
 
 const getEntryOccurrencesInBlock = ({
@@ -311,6 +480,7 @@ const getEntryOccurrencesInBlock = ({
     entries.push({
       id: parsed.id,
       content: parsed.content,
+      keywords: parsed.keywords,
       lineIndex: index,
       sectionKey: block.key,
     })
@@ -440,6 +610,42 @@ const ensureSectionBlock = ({
   return parseSectionBlocks(lines)
 }
 
+type VaultFileCacheEntry = {
+  mtime: number
+  value: unknown
+}
+
+// Memory and prompt files are re-read on every agent turn even though they
+// rarely change. Cache the parsed result keyed by (app, path, mtime); Obsidian
+// keeps file metadata fresh, so an unchanged mtime reuses the last read instead
+// of hitting disk, parsing, and hashing again.
+const vaultFileReadCache = new WeakMap<App, Map<string, VaultFileCacheEntry>>()
+
+const readVaultFileCached = async <T>(
+  app: App,
+  canonicalPath: string,
+  read: (content: string) => Promise<T> | T,
+): Promise<T | null> => {
+  const existing = app.vault.getAbstractFileByPath(canonicalPath)
+  if (!existing || !(existing instanceof TFile)) {
+    return null
+  }
+  const mtime = existing.stat.mtime
+  let perApp = vaultFileReadCache.get(app)
+  if (!perApp) {
+    perApp = new Map()
+    vaultFileReadCache.set(app, perApp)
+  }
+  const cached = perApp.get(canonicalPath)
+  if (cached && cached.mtime === mtime) {
+    return cached.value as T
+  }
+  const content = await app.vault.read(existing)
+  const value = await read(content)
+  perApp.set(canonicalPath, { mtime, value })
+  return value
+}
+
 const readMemoryContentIfExists = async ({
   app,
   filePath,
@@ -447,17 +653,17 @@ const readMemoryContentIfExists = async ({
   app: App
   filePath: string
 }): Promise<string | null> => {
-  const existing = app.vault.getAbstractFileByPath(filePath)
-  if (!existing || !(existing instanceof TFile)) {
-    return null
-  }
-
-  const content = await app.vault.read(existing)
+  const content = await readVaultFileCached(
+    app,
+    normalizeMemoryPath(filePath),
+    (value) => value,
+  )
+  if (content == null) return null
   const trimmed = content.trim()
   return trimmed.length > 0 ? trimmed : null
 }
 
-const resolveEffectiveScope = ({
+const resolveMemoryScope = ({
   settings,
   requestedScope,
   assistantId,
@@ -477,11 +683,8 @@ const resolveEffectiveScope = ({
   }
 
   const assistant = getAssistantById(settings, assistantId)
-  if (!assistant || !hasAssistantInstructions(assistant)) {
-    return {
-      scope: 'global',
-      targetAssistantId: null,
-    }
+  if (!assistant) {
+    throw new Error('Assistant not found for assistant memory scope.')
   }
 
   return {
@@ -498,8 +701,8 @@ const getScopeFilePath = ({
   settings?: MemorySettingsLike
   scope: MemoryScope
   assistantId?: string
-}): { path: string; scope: MemoryScope } => {
-  const resolved = resolveEffectiveScope({
+}): { path: string; scope: MemoryScope; partition: MemoryPartition } => {
+  const resolved = resolveMemoryScope({
     settings,
     requestedScope: scope,
     assistantId,
@@ -509,6 +712,7 @@ const getScopeFilePath = ({
     return {
       path: getGlobalMemoryPath(settings),
       scope: 'global',
+      partition: buildMemoryPartition({ scope: 'global' }),
     }
   }
 
@@ -526,18 +730,94 @@ const getScopeFilePath = ({
       assistant,
     }),
     scope: 'assistant',
+    partition: buildMemoryPartition({
+      scope: 'assistant',
+      assistantId: assistant.id,
+    }),
   }
 }
+
+export const MAX_MEMORY_CONTENT_CHARS = 8_000
 
 const normalizeMemoryContent = (value: unknown, fieldName: string): string => {
   if (typeof value !== 'string') {
     throw new Error(`${fieldName} must be a string.`)
   }
-  const normalized = value.trim()
+  const normalized = value
+    .trim()
+    .replace(/\r?\n|\r/gu, ' ')
+    .replace(/\s{2,}/gu, ' ')
   if (normalized.length === 0) {
     throw new Error(`${fieldName} cannot be empty.`)
   }
+  if (
+    (fieldName === 'content' || fieldName === 'new_content') &&
+    normalized.length > MAX_MEMORY_CONTENT_CHARS
+  ) {
+    throw new Error(
+      `${fieldName} exceeds the ${MAX_MEMORY_CONTENT_CHARS}-character limit.`,
+    )
+  }
   return normalized
+}
+
+const normalizeMemoryKeywords = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return []
+  return [
+    ...new Set(
+      value
+        .filter((keyword): keyword is string => typeof keyword === 'string')
+        .map((keyword) => keyword.trim().slice(0, 80))
+        .filter(Boolean),
+    ),
+  ].slice(0, 12)
+}
+
+const renderMemoryEntryLine = ({
+  id,
+  content,
+  keywords,
+}: {
+  id: string
+  content: string
+  keywords: string[]
+}): string => {
+  const metadata =
+    keywords.length > 0
+      ? ` <!-- keywords: ${keywords.map(escapeMemoryMarkdownValue).join(', ')} -->`
+      : ''
+  return `- ${id}: ${escapeMemoryMarkdownValue(content)}${metadata}`
+}
+
+type MemoryWriteResult = {
+  id: string
+  scope: MemoryScope
+  filePath: string
+  skipped?: true
+}
+
+type SourceCommittedCallback = (input: {
+  partition: MemoryPartition
+  sourcePath: string
+}) => void | Promise<void>
+
+const notifySourceCommitted = async ({
+  callback,
+  partition,
+  sourcePath,
+}: {
+  callback?: SourceCommittedCallback
+  partition: MemoryPartition
+  sourcePath: string
+}): Promise<void> => {
+  if (!callback) {
+    return
+  }
+  try {
+    await callback({ partition, sourcePath })
+  } catch {
+    return
+  }
 }
 
 const withMemoryFileLock = async <T>({
@@ -593,7 +873,7 @@ export async function getMemoryPromptContext({
   })
 
   const assistant = getAssistantById(settings, assistantId)
-  if (!assistant || !hasAssistantInstructions(assistant)) {
+  if (!assistant) {
     return {
       global,
       assistant: null,
@@ -616,8 +896,7 @@ export async function getMemoryPromptContext({
 
 /**
  * Resolve the exact memory file paths that {@link getMemoryPromptContext} would
- * read for the given assistant, mirroring its decision (assistant memory is
- * only read when the assistant has instructions). Used by the system-prompt
+ * read for the given assistant, mirroring its decision. Used by the system-prompt
  * snapshot fingerprint: the assistant memory path depends on sibling
  * same-named assistants (duplicate index), so adding/renaming a sibling can
  * change which file the current assistant reads — that must invalidate the
@@ -633,34 +912,182 @@ export const resolveMemoryFilePaths = ({
   const assistant = getAssistantById(settings, assistantId)
   return {
     global: getGlobalMemoryPath(settings),
-    assistant:
-      assistant && hasAssistantInstructions(assistant)
-        ? getAssistantMemoryPath({ settings, assistant })
-        : null,
+    assistant: assistant
+      ? getAssistantMemoryPath({ settings, assistant })
+      : null,
   }
+}
+
+const readMemorySourceSnapshot = async ({
+  app,
+  partition,
+  sourcePath,
+}: {
+  app: App
+  partition: MemoryPartition
+  sourcePath: string
+}): Promise<MemorySourceSnapshot> => {
+  const canonicalPath = normalizeMemoryPath(sourcePath)
+  const cached = await readVaultFileCached(
+    app,
+    canonicalPath,
+    async (content) => {
+      const parsed = await parseMemorySourceEntries({
+        content,
+        partition,
+        sourcePath: canonicalPath,
+      })
+      return {
+        partition,
+        sourcePath: canonicalPath,
+        sourceFileFingerprint: await sha256Hex(content),
+        parserVersion: MEMORY_PARSER_VERSION,
+        entries: parsed.entries,
+        valid: parsed.valid,
+        content,
+      }
+    },
+  )
+  if (cached) return cached
+  // No readable TFile: a missing path is a valid empty snapshot, a folder is not.
+  const existing = app.vault.getAbstractFileByPath(canonicalPath)
+  return {
+    partition,
+    sourcePath: canonicalPath,
+    sourceFileFingerprint: await sha256Hex(''),
+    parserVersion: MEMORY_PARSER_VERSION,
+    entries: [],
+    valid: existing === null,
+    content: '',
+  }
+}
+
+export async function loadMemorySourceSnapshot({
+  app,
+  settings,
+  scope,
+  assistantId,
+}: {
+  app: App
+  settings?: MemorySettingsLike
+  scope: MemoryScope
+  assistantId?: string
+}): Promise<MemorySourceSnapshot> {
+  const { path, partition } = getScopeFilePath({
+    settings,
+    scope: normalizeMemoryScope(scope),
+    assistantId,
+  })
+  return await readMemorySourceSnapshot({
+    app,
+    partition,
+    sourcePath: path,
+  })
+}
+
+export async function loadMemorySourceSnapshotAtPath({
+  app,
+  partition,
+  sourcePath,
+}: {
+  app: App
+  partition: MemoryPartition
+  sourcePath: string
+}): Promise<MemorySourceSnapshot> {
+  return await readMemorySourceSnapshot({ app, partition, sourcePath })
+}
+
+export async function loadMemorySourceSnapshots({
+  app,
+  settings,
+  assistantId,
+}: {
+  app: App
+  settings?: MemorySettingsLike
+  assistantId?: string
+}): Promise<readonly MemorySourceSnapshot[]> {
+  const global = await readMemorySourceSnapshot({
+    app,
+    partition: buildMemoryPartition({ scope: 'global' }),
+    sourcePath: getGlobalMemoryPath(settings),
+  })
+  const snapshots: MemorySourceSnapshot[] = [global]
+  const assistant = getAssistantById(settings, assistantId)
+  if (!assistant) {
+    return snapshots
+  }
+
+  snapshots.push(
+    await readMemorySourceSnapshot({
+      app,
+      partition: buildMemoryPartition({
+        scope: 'assistant',
+        assistantId: assistant.id,
+      }),
+      sourcePath: getAssistantMemoryPath({ settings, assistant }),
+    }),
+  )
+  return snapshots
+}
+
+export function resolveMemoryPartitionByPath({
+  settings,
+  path,
+}: {
+  settings?: MemorySettingsLike
+  path: string
+}): MemoryPartition | null {
+  const canonicalPath = normalizeMemoryPath(path)
+  if (canonicalPath === getGlobalMemoryPath(settings)) {
+    return buildMemoryPartition({ scope: 'global' })
+  }
+
+  for (const assistant of settings?.assistants ?? []) {
+    if (
+      normalizeMemoryPath(getAssistantMemoryPath({ settings, assistant })) ===
+      canonicalPath
+    ) {
+      return buildMemoryPartition({
+        scope: 'assistant',
+        assistantId: assistant.id,
+      })
+    }
+  }
+  return null
 }
 
 export async function memoryAdd({
   app,
   settings,
   content,
+  keywords,
   category,
   scope,
   assistantId,
   onInternalWrite,
+  onSourceCommitted,
+  shouldWrite,
 }: {
   app: App
   settings?: MemorySettingsLike
   content: unknown
+  keywords?: unknown
   category?: unknown
   scope?: unknown
   assistantId?: string
   onInternalWrite?: (path: string) => void
-}): Promise<{ id: string; scope: MemoryScope; filePath: string }> {
+  onSourceCommitted?: SourceCommittedCallback
+  shouldWrite?: () => boolean | Promise<boolean>
+}): Promise<MemoryWriteResult> {
   const normalizedContent = normalizeMemoryContent(content, 'content')
+  const normalizedKeywords = normalizeMemoryKeywords(keywords)
   const normalizedCategory = normalizeMemoryCategory(category)
   const normalizedScope = normalizeMemoryScope(scope)
-  const { path, scope: effectiveScope } = getScopeFilePath({
+  const {
+    path,
+    scope: effectiveScope,
+    partition,
+  } = getScopeFilePath({
     settings,
     scope: normalizedScope,
     assistantId,
@@ -669,6 +1096,9 @@ export async function memoryAdd({
   return await withMemoryFileLock({
     filePath: path,
     task: async () => {
+      if (!((await shouldWrite?.()) ?? true)) {
+        return { id: '', scope: effectiveScope, filePath: path, skipped: true }
+      }
       onInternalWrite?.(path)
       const file = await ensureMemoryFile({
         app,
@@ -711,8 +1141,24 @@ export async function memoryAdd({
         insertIndex -= 1
       }
 
-      lines.splice(insertIndex, 0, `- ${id}: ${normalizedContent}`)
+      lines.splice(
+        insertIndex,
+        0,
+        renderMemoryEntryLine({
+          id,
+          content: normalizedContent,
+          keywords: normalizedKeywords,
+        }),
+      )
+      if (!((await shouldWrite?.()) ?? true)) {
+        return { id: '', scope: effectiveScope, filePath: path, skipped: true }
+      }
       await writeLinesToFile({ app, file, lines })
+      await notifySourceCommitted({
+        callback: onSourceCommitted,
+        partition,
+        sourcePath: path,
+      })
 
       return {
         id,
@@ -728,22 +1174,33 @@ export async function memoryUpdate({
   settings,
   id,
   newContent,
+  keywords,
   scope,
   assistantId,
   onInternalWrite,
+  onSourceCommitted,
+  shouldWrite,
 }: {
   app: App
   settings?: MemorySettingsLike
   id: unknown
   newContent: unknown
+  keywords?: unknown
   scope?: unknown
   assistantId?: string
   onInternalWrite?: (path: string) => void
-}): Promise<{ id: string; scope: MemoryScope; filePath: string }> {
+  onSourceCommitted?: SourceCommittedCallback
+  shouldWrite?: () => boolean | Promise<boolean>
+}): Promise<MemoryWriteResult> {
   const normalizedId = normalizeMemoryContent(id, 'id')
   const normalizedContent = normalizeMemoryContent(newContent, 'new_content')
+  const normalizedKeywords = normalizeMemoryKeywords(keywords)
   const normalizedScope = normalizeMemoryScope(scope)
-  const { path, scope: effectiveScope } = getScopeFilePath({
+  const {
+    path,
+    scope: effectiveScope,
+    partition,
+  } = getScopeFilePath({
     settings,
     scope: normalizedScope,
     assistantId,
@@ -752,6 +1209,14 @@ export async function memoryUpdate({
   return await withMemoryFileLock({
     filePath: path,
     task: async () => {
+      if (!((await shouldWrite?.()) ?? true)) {
+        return {
+          id: normalizedId,
+          scope: effectiveScope,
+          filePath: path,
+          skipped: true,
+        }
+      }
       onInternalWrite?.(path)
       const file = await ensureMemoryFile({
         app,
@@ -774,8 +1239,26 @@ export async function memoryUpdate({
         throw new Error(`Memory id not found: ${normalizedId}`)
       }
 
-      lines[matchedEntry.lineIndex] = `- ${normalizedId}: ${normalizedContent}`
+      lines[matchedEntry.lineIndex] = renderMemoryEntryLine({
+        id: normalizedId,
+        content: normalizedContent,
+        keywords:
+          keywords === undefined ? matchedEntry.keywords : normalizedKeywords,
+      })
+      if (!((await shouldWrite?.()) ?? true)) {
+        return {
+          id: normalizedId,
+          scope: effectiveScope,
+          filePath: path,
+          skipped: true,
+        }
+      }
       await writeLinesToFile({ app, file, lines })
+      await notifySourceCommitted({
+        callback: onSourceCommitted,
+        partition,
+        sourcePath: path,
+      })
 
       return {
         id: normalizedId,
@@ -793,6 +1276,8 @@ export async function memoryDelete({
   scope,
   assistantId,
   onInternalWrite,
+  onSourceCommitted,
+  shouldWrite,
 }: {
   app: App
   settings?: MemorySettingsLike
@@ -800,10 +1285,16 @@ export async function memoryDelete({
   scope?: unknown
   assistantId?: string
   onInternalWrite?: (path: string) => void
-}): Promise<{ id: string; scope: MemoryScope; filePath: string }> {
+  onSourceCommitted?: SourceCommittedCallback
+  shouldWrite?: () => boolean | Promise<boolean>
+}): Promise<MemoryWriteResult> {
   const normalizedId = normalizeMemoryContent(id, 'id')
   const normalizedScope = normalizeMemoryScope(scope)
-  const { path, scope: effectiveScope } = getScopeFilePath({
+  const {
+    path,
+    scope: effectiveScope,
+    partition,
+  } = getScopeFilePath({
     settings,
     scope: normalizedScope,
     assistantId,
@@ -812,6 +1303,14 @@ export async function memoryDelete({
   return await withMemoryFileLock({
     filePath: path,
     task: async () => {
+      if (!((await shouldWrite?.()) ?? true)) {
+        return {
+          id: normalizedId,
+          scope: effectiveScope,
+          filePath: path,
+          skipped: true,
+        }
+      }
       onInternalWrite?.(path)
       const file = await ensureMemoryFile({
         app,
@@ -835,7 +1334,20 @@ export async function memoryDelete({
       }
 
       lines.splice(matchedEntry.lineIndex, 1)
+      if (!((await shouldWrite?.()) ?? true)) {
+        return {
+          id: normalizedId,
+          scope: effectiveScope,
+          filePath: path,
+          skipped: true,
+        }
+      }
       await writeLinesToFile({ app, file, lines })
+      await notifySourceCommitted({
+        callback: onSourceCommitted,
+        partition,
+        sourcePath: path,
+      })
 
       return {
         id: normalizedId,

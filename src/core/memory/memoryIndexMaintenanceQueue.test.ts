@@ -1,0 +1,270 @@
+import { buildMemoryPartition } from './memoryIndex'
+import type { MemoryIndexMaintenanceStore } from './memoryIndex'
+import { MemoryIndexMaintenanceQueue } from './memoryIndexMaintenanceQueue'
+import type { MemorySourceSnapshot } from './memoryManager'
+
+const deferred = () => {
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
+const makeSnapshot = (
+  partition: ReturnType<typeof buildMemoryPartition>,
+  fingerprint: string,
+): MemorySourceSnapshot => ({
+  partition,
+  sourcePath:
+    partition.scope === 'global'
+      ? 'YOLO/memory/global.md'
+      : `YOLO/memory/${partition.assistantId}.md`,
+  sourceFileFingerprint: fingerprint,
+  parserVersion: 'test-v1',
+  entries: [],
+  valid: true,
+})
+
+const makeStore = (
+  reconcilePartition: MemoryIndexMaintenanceStore['reconcilePartition'],
+): jest.Mocked<MemoryIndexMaintenanceStore> =>
+  ({
+    capability: 'sqlite',
+    reconcilePartition: jest.fn(reconcilePartition),
+    query: jest.fn(async () => []),
+    isPartitionReady: jest.fn(async () => true),
+    reinforce: jest.fn(async () => undefined),
+    markDirty: jest.fn(async () => undefined),
+    rebuildEdges: jest.fn(async () => undefined),
+    expandViaEdges: jest.fn(async ({ seeds }) => seeds),
+    deletePartition: jest.fn(async () => undefined),
+    findPartitionBySourcePath: jest.fn(async () => null),
+    runReflection: jest.fn(async () => undefined),
+  }) as unknown as jest.Mocked<MemoryIndexMaintenanceStore>
+
+describe('MemoryIndexMaintenanceQueue', () => {
+  it('coalesces only pending reconciliation work for the same partition', async () => {
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const first = deferred()
+    const reconciled: string[] = []
+    const store = makeStore(async (input) => {
+      reconciled.push(input.sourceFileFingerprint)
+      if (input.sourceFileFingerprint === 'one') await first.promise
+    })
+    let snapshot = makeSnapshot(partition, 'one')
+    const queue = new MemoryIndexMaintenanceQueue({
+      store,
+      getSourceSnapshot: async () => snapshot,
+    })
+
+    queue.enqueueReconcile({ partition, sourcePath: snapshot.sourcePath })
+    await Promise.resolve()
+    snapshot = makeSnapshot(partition, 'two')
+    queue.enqueueReconcile({ partition, sourcePath: snapshot.sourcePath })
+    snapshot = makeSnapshot(partition, 'three')
+    queue.enqueueReconcile({ partition, sourcePath: snapshot.sourcePath })
+    first.resolve()
+    await queue.drain()
+
+    expect(reconciled).toEqual(['one', 'three'])
+    expect(store.rebuildEdges).toHaveBeenCalledTimes(2)
+  })
+
+  it('runs at most two partition lanes concurrently', async () => {
+    const gates = [deferred(), deferred(), deferred()]
+    let active = 0
+    let maxActive = 0
+    const store = makeStore(async (input) => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      const index = Number(input.partition.assistantId)
+      await gates[index].promise
+      active -= 1
+    })
+    const snapshots = new Map<string, MemorySourceSnapshot>()
+    const queue = new MemoryIndexMaintenanceQueue({
+      store,
+      getSourceSnapshot: async (partition) =>
+        snapshots.get(partition.partitionKey)!,
+    })
+
+    for (let index = 0; index < 3; index += 1) {
+      const partition = buildMemoryPartition({
+        scope: 'assistant',
+        assistantId: String(index),
+      })
+      const snapshot = makeSnapshot(partition, String(index))
+      snapshots.set(partition.partitionKey, snapshot)
+      queue.enqueueReconcile({ partition, sourcePath: snapshot.sourcePath })
+    }
+    await Promise.resolve()
+    expect(active).toBe(2)
+    gates[0].resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(maxActive).toBe(2)
+    gates[1].resolve()
+    gates[2].resolve()
+    await queue.drain()
+  })
+
+  it('continues later reconciliation after graph maintenance fails', async () => {
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const reconciled: string[] = []
+    const store = makeStore(async (input) => {
+      reconciled.push(input.sourceFileFingerprint)
+    })
+    store.rebuildEdges.mockRejectedValueOnce(new Error('graph unavailable'))
+    let snapshot = makeSnapshot(partition, 'one')
+    const queue = new MemoryIndexMaintenanceQueue({
+      store,
+      getSourceSnapshot: async () => snapshot,
+    })
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      queue.enqueueReconcile({ partition, sourcePath: snapshot.sourcePath })
+      await queue.drain()
+      snapshot = makeSnapshot(partition, 'two')
+      queue.enqueueReconcile({ partition, sourcePath: snapshot.sourcePath })
+      await queue.drain()
+
+      expect(reconciled).toEqual(['one', 'two'])
+      expect(store.rebuildEdges).toHaveBeenCalledTimes(2)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('schedules the optional reflection runner after reconciliation', async () => {
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const snapshot = makeSnapshot(partition, 'one')
+    const store = makeStore(async () => undefined)
+    const runReflectionModel = jest.fn(async () => '{}')
+    const queue = new MemoryIndexMaintenanceQueue({
+      store,
+      getSourceSnapshot: async () => snapshot,
+      isReflectionEnabled: () => true,
+      runReflectionModel,
+      clock: () => 123,
+    })
+
+    queue.enqueueReconcile({ partition, sourcePath: snapshot.sourcePath })
+    await queue.drain()
+
+    expect(store.runReflection).toHaveBeenCalledWith({
+      partition,
+      nowMs: 123,
+      runModel: runReflectionModel,
+      signal: expect.any(AbortSignal),
+    })
+  })
+
+  it('aborts an in-flight reflection when its partition is cancelled', async () => {
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const snapshot = makeSnapshot(partition, 'one')
+    const store = makeStore(async () => undefined)
+    const reflectionStarted = deferred()
+    let reflectionSignal: AbortSignal | undefined
+    store.runReflection.mockImplementation(async (input) => {
+      reflectionSignal = input.signal
+      reflectionStarted.resolve()
+      await new Promise<void>((resolve) =>
+        input.signal?.addEventListener('abort', () => resolve(), {
+          once: true,
+        }),
+      )
+    })
+    const queue = new MemoryIndexMaintenanceQueue({
+      store,
+      getSourceSnapshot: async () => snapshot,
+      isReflectionEnabled: () => true,
+      runReflectionModel: async () => '{}',
+    })
+
+    queue.enqueueReconcile({ partition, sourcePath: snapshot.sourcePath })
+    await reflectionStarted.promise
+    queue.cancelPartition(partition.partitionKey)
+    await queue.drain()
+
+    expect(reflectionSignal?.aborted).toBe(true)
+  })
+
+  it('passes the lane abort signal into reconciliation work', async () => {
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const snapshot = makeSnapshot(partition, 'one')
+    const reconcileStarted = deferred()
+    let reconcileSignal: AbortSignal | undefined
+    const store = makeStore(async (input) => {
+      reconcileSignal = input.signal
+      reconcileStarted.resolve()
+      await new Promise<void>((resolve) =>
+        input.signal?.addEventListener('abort', () => resolve(), {
+          once: true,
+        }),
+      )
+    })
+    const queue = new MemoryIndexMaintenanceQueue({
+      store,
+      getSourceSnapshot: async () => snapshot,
+    })
+
+    queue.enqueueReconcile({ partition, sourcePath: snapshot.sourcePath })
+    await reconcileStarted.promise
+    queue.cancelPartition(partition.partitionKey)
+    await queue.drain()
+
+    expect(reconcileSignal?.aborted).toBe(true)
+  })
+
+  it('marks excess pending partitions durably dirty', async () => {
+    const gate = deferred()
+    const store = makeStore(async () => gate.promise)
+    const snapshots = new Map<string, MemorySourceSnapshot>()
+    const queue = new MemoryIndexMaintenanceQueue({
+      store,
+      getSourceSnapshot: async (partition) =>
+        snapshots.get(partition.partitionKey)!,
+      maxActiveWorkers: 1,
+      maxPendingPartitions: 2,
+    })
+
+    for (let index = 0; index < 4; index += 1) {
+      const partition = buildMemoryPartition({
+        scope: 'assistant',
+        assistantId: String(index),
+      })
+      const snapshot = makeSnapshot(partition, String(index))
+      snapshots.set(partition.partitionKey, snapshot)
+      queue.enqueueReconcile({ partition, sourcePath: snapshot.sourcePath })
+    }
+    await Promise.resolve()
+
+    expect(store.markDirty).toHaveBeenCalledWith({
+      partition: buildMemoryPartition({
+        scope: 'assistant',
+        assistantId: '3',
+      }),
+      reason: 'maintenance queue capacity exceeded',
+    })
+    gate.resolve()
+    await queue.drain()
+  })
+
+  it('returns from shutdown after the bounded drain timeout', async () => {
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const store = makeStore(async () => new Promise<void>(() => undefined))
+    const snapshot = makeSnapshot(partition, 'one')
+    const queue = new MemoryIndexMaintenanceQueue({
+      store,
+      getSourceSnapshot: async () => snapshot,
+    })
+    queue.enqueueReconcile({ partition, sourcePath: snapshot.sourcePath })
+    await Promise.resolve()
+
+    const startedAt = Date.now()
+    await queue.shutdown(20)
+
+    expect(Date.now() - startedAt).toBeLessThan(250)
+  })
+})
