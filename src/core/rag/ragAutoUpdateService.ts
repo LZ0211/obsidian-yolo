@@ -1,6 +1,12 @@
 import { minimatch } from 'minimatch'
 import { TAbstractFile, TFile, TFolder } from 'obsidian'
 
+import { testEmbeddingModelHealth } from '../llm/health-check'
+import {
+  getProtectedVaultPathRules,
+  isProtectedVaultPath,
+} from '../paths/protectedPaths'
+import { getYoloBaseDir } from '../paths/yoloPaths'
 import { YoloSettings } from '../../settings/schema/setting.types'
 import {
   type AutomaticRetrySchedule,
@@ -180,13 +186,46 @@ export class RagAutoUpdateService {
     if (!id || !settings.embeddingModels.some((m) => m.id === id)) {
       return false
     }
-    return true
+    return this.isEmbeddingModelAvailable(settings)
+  }
+
+  /**
+   * The embedding model is usable when it resolves to a provider that carries
+   * credentials (API key) or a reachable base URL (local runtimes like
+   * Ollama/LM Studio). Without either, an auto-update run would fail on the
+   * first embedding call and burn the automatic retry budget for nothing.
+   */
+  private isEmbeddingModelAvailable(settings: YoloSettings): boolean {
+    const id = settings.embeddingModelId
+    if (!id) return false
+    const model = settings.embeddingModels.find((m) => m.id === id)
+    if (!model) return false
+    const provider = settings.providers.find(
+      (p) => p.id === model.providerId,
+    )
+    if (!provider) return false
+    return Boolean(provider.apiKey?.trim() || provider.baseUrl?.trim())
+  }
+
+  private isWithinUpdateInterval(settings: YoloSettings): boolean {
+    const intervalHours = settings.ragOptions.autoUpdateIntervalHours ?? 0
+    if (intervalHours <= 0) return false
+    const lastRunAt = settings.ragOptions.lastAutoUpdateAt ?? 0
+    return (
+      lastRunAt > 0 &&
+      Date.now() - lastRunAt < intervalHours * 60 * 60 * 1000
+    )
   }
 
   private markDirty(path: string, options?: { requiresFullScan?: boolean }) {
     const settings = this.getSettings()
     if (!this.isAutoUpdateEnabled(settings)) return
     if (this.getRetryCount() >= MAX_AUTOMATIC_RETRIES) return
+    // Host-managed data (session persistence, memory, projects zone) is never
+    // indexable; changes there must not trigger reconciliation at all.
+    if (isProtectedVaultPath(path, getProtectedVaultPathRules(settings))) {
+      return
+    }
     if (
       !options?.requiresFullScan &&
       !this.isPathSelectedByIncludeExclude(path, settings)
@@ -207,6 +246,17 @@ export class RagAutoUpdateService {
       return
     }
 
+    if (this.isWithinUpdateInterval(settings)) {
+      // Throttle: wait out the remainder of the configured minimum interval
+      // between auto-update runs, then reconcile everything accumulated.
+      const elapsedMs =
+        Date.now() - (settings.ragOptions.lastAutoUpdateAt ?? 0)
+      const intervalMs =
+        (settings.ragOptions.autoUpdateIntervalHours ?? 0) * 60 * 60 * 1000
+      this.scheduleAutoUpdate(intervalMs - elapsedMs)
+      return
+    }
+
     this.scheduleAutoUpdate(RagAutoUpdateService.EDIT_IDLE_WINDOW_MS)
   }
 
@@ -224,8 +274,37 @@ export class RagAutoUpdateService {
     const { includePatterns = [], excludePatterns = [] } =
       settings?.ragOptions ?? {}
     if (excludePatterns.some((p) => minimatch(path, p))) return false
+    // Mirrors the index scope: when the user excluded the YOLO base directory
+    // from indexing, changes inside it must not trigger updates either.
+    if (settings?.ragOptions?.excludeYoloBaseDir) {
+      const baseDir = getYoloBaseDir(settings)
+      if (path === baseDir || path.startsWith(`${baseDir}/`)) {
+        return false
+      }
+    }
     if (!includePatterns || includePatterns.length === 0) return true
     return includePatterns.some((p) => minimatch(path, p))
+  }
+
+  /**
+   * Live probe: reuse the provider-settings connectivity test to verify an
+   * embedding request can actually pass through before committing to a run.
+   * Runs only when an update is about to fire, so a dead endpoint never burns
+   * the automatic retry budget.
+   */
+  private async isEmbeddingModelReachable(): Promise<boolean> {
+    const settings = this.getSettings()
+    const id = settings.embeddingModelId
+    const model = settings.embeddingModels.find((m) => m.id === id)
+    if (!model) return false
+    try {
+      const result = await testEmbeddingModelHealth(settings, model, {
+        signal: new AbortController().signal,
+      })
+      return result.status === 'ok'
+    } catch {
+      return false
+    }
   }
 
   private scheduleAutoUpdate(delayMs: number) {
@@ -258,6 +337,16 @@ export class RagAutoUpdateService {
         RagAutoUpdateService.SUCCESS_COOLDOWN_MS -
           (Date.now() - this.lastRunFinishedAt),
       )
+      return
+    }
+
+    if (!(await this.isEmbeddingModelReachable())) {
+      // The embedding model cannot serve requests right now; abandon the run
+      // instead of failing it, so the retry budget stays quiet. Pending paths
+      // are kept so a later reachable run (triggered by the next edit)
+      // reconciles everything accumulated.
+      this.hasRecoveredRetry = false
+      this.hasPendingTransientRetry = false
       return
     }
 

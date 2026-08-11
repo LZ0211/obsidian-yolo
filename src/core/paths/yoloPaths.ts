@@ -18,6 +18,9 @@ export const YOLO_ANKI_IMPORT_JOURNAL_DIR_NAME = 'anki-import-journals'
 // runtime state (CLI session index, model catalog cache, ...) intentionally
 // stays under the hidden root; see `ensureUserDataRootDir`.
 export const YOLO_USER_DATA_DIR_NAME = 'data'
+export const YOLO_PROJECTS_DIR_NAME = 'Projects'
+export const SESSION_JOURNAL_SQLITE_FILE_NAME = 'sessions.sqlite'
+export const CONVERSATION_JOURNAL_SQLITE_FILE_NAME = 'conversation.sqlite'
 export const YOLO_MODULE_SETTINGS_DIR_NAME = 'module-settings'
 export const YOLO_MODULE_INTENT_DIR_NAME = 'module-intent-v1'
 export const YOLO_COMPONENT_INTENT_DIR_NAME = 'component-intent-v1'
@@ -31,6 +34,7 @@ export const LEGACY_VECTOR_DB_FILE_NAME = '.smtcmp_vector_db.tar.gz'
 type YoloSettingsLike = {
   yolo?: {
     baseDir?: string
+    projectsDir?: string
   }
 }
 
@@ -60,6 +64,20 @@ export const normalizeVaultRelativeDir = (
 
 export const getYoloBaseDir = (settings?: YoloSettingsLike | null): string => {
   return normalizeVaultRelativeDir(settings?.yolo?.baseDir)
+}
+
+/** Host-managed project zone root (protected from agent tools and indexing). */
+export const getYoloProjectsDir = (
+  settings?: YoloSettingsLike | null,
+): string => {
+  // A settings-aware override may be added later; the default is a top-level
+  // vault-visible Projects directory independent of `yolo.baseDir`.
+  const configured = (settings?.yolo?.projectsDir ?? '').trim()
+  const normalized = configured
+    .replace(/^(\.\/)+/, '')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+  return normalizePath(normalized || YOLO_PROJECTS_DIR_NAME)
 }
 
 /** True when a vault-relative path contains a segment Obsidian will not index. */

@@ -2,15 +2,31 @@ jest.mock('obsidian', () => ({
   TAbstractFile: class {},
   TFile: class {},
   TFolder: class {},
+  Platform: {
+    isDesktop: true,
+    isMobile: false,
+    isIosApp: false,
+    isAndroidApp: false,
+  },
+  normalizePath: (value: string): string => value,
+}))
+
+jest.mock('../llm/health-check', () => ({
+  testEmbeddingModelHealth: jest.fn(),
 }))
 
 import type { YoloSettings } from '../../settings/schema/setting.types'
+import { testEmbeddingModelHealth } from '../llm/health-check'
 
 import { RagAutoUpdateService } from './ragAutoUpdateService'
+
+const mockProbe = testEmbeddingModelHealth as jest.Mock
 
 describe('RagAutoUpdateService', () => {
   beforeEach(() => {
     jest.useFakeTimers()
+    mockProbe.mockReset()
+    mockProbe.mockResolvedValue({ status: 'ok', totalMs: 1 })
   })
 
   afterEach(() => {
@@ -18,14 +34,16 @@ describe('RagAutoUpdateService', () => {
   })
 
   const flushAsync = async () => {
-    await Promise.resolve()
-    await Promise.resolve()
+    for (let i = 0; i < 8; i += 1) {
+      await Promise.resolve()
+    }
   }
 
   const createService = () => {
     const settings = {
       embeddingModelId: 'test-embed',
-      embeddingModels: [{ id: 'test-embed' }],
+      embeddingModels: [{ id: 'test-embed', providerId: 'test-provider' }],
+      providers: [{ id: 'test-provider', baseUrl: 'http://localhost' }],
       ragOptions: {
         enabled: true,
         autoUpdateEnabled: true,

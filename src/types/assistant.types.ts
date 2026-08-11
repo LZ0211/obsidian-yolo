@@ -107,6 +107,19 @@ export const workspaceAccessPolicySchema = z.object({
   readExtraIncludes: z.array(z.string()).default([]),
   readExcludes: z.array(z.string()).default([]),
   writeExcludes: z.array(z.string()).default([]),
+  protectedPaths: z
+    .array(
+      z.union([
+        z.object({ kind: z.literal('prefix'), path: z.string() }),
+        z.object({ kind: z.literal('exact'), path: z.string() }),
+        z.object({
+          kind: z.literal('namePrefix'),
+          dir: z.string(),
+          name: z.string(),
+        }),
+      ]),
+    )
+    .optional(),
 })
 
 export type WorkspaceAccessPolicy = z.infer<typeof workspaceAccessPolicySchema>

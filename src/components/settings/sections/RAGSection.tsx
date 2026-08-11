@@ -289,6 +289,9 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
   const [embeddingConcurrencyInput, setEmbeddingConcurrencyInput] = useState(
     String(settings.ragOptions.embeddingConcurrency ?? 10),
   )
+  const [autoUpdateIntervalInput, setAutoUpdateIntervalInput] = useState(
+    String(settings.ragOptions.autoUpdateIntervalHours ?? 0),
+  )
   const [showAdvancedRagSettings, setShowAdvancedRagSettings] = useState(false)
   const [permanentFailuresExpanded, setPermanentFailuresExpanded] =
     useState(false)
@@ -325,6 +328,12 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
       String(settings.ragOptions.embeddingConcurrency ?? 10),
     )
   }, [settings.ragOptions.embeddingConcurrency])
+
+  useEffect(() => {
+    setAutoUpdateIntervalInput(
+      String(settings.ragOptions.autoUpdateIntervalHours ?? 0),
+    )
+  }, [settings.ragOptions.autoUpdateIntervalHours])
 
   const applySettingsUpdate = useCallback(
     (patch: RagSettingsPatch, errorMessage: string = RAG_UPDATE_ERROR) => {
@@ -908,6 +917,43 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                 })
               }}
             />
+          </ObsidianSetting>
+
+          <ObsidianSetting
+            name={t('settings.rag.autoUpdate', '自动更新索引')}
+            desc={t(
+              'settings.rag.autoUpdateDesc',
+              '开启后会在文档发生变化时于后台自动增量更新索引。',
+            )}
+            className="yolo-settings-card"
+          >
+            <ObsidianToggle
+              value={settings.ragOptions.autoUpdateEnabled !== false}
+              onChange={(value) => {
+                applySettingsUpdate({
+                  ragOptions: {
+                    autoUpdateEnabled: value,
+                  },
+                })
+              }}
+            />
+          </ObsidianSetting>
+
+          <ObsidianSetting
+            name={t('settings.rag.lastIndexedAt', '最近同步')}
+            desc={t(
+              'settings.rag.lastIndexedAtDesc',
+              '最近一次成功完成知识库索引或后台同步的时间。',
+            )}
+            className="yolo-settings-card"
+          >
+            <span className="yolo-rag-last-sync">
+              {(settings.ragOptions.lastAutoUpdateAt ?? 0) > 0
+                ? new Date(
+                    settings.ragOptions.lastAutoUpdateAt,
+                  ).toLocaleString()
+                : '—'}
+            </span>
           </ObsidianSetting>
 
           <ObsidianSetting
@@ -1518,6 +1564,43 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                         const clamped = Math.max(1, Math.min(24, parsed))
                         if (clamped !== parsed) {
                           setEmbeddingConcurrencyInput(String(clamped))
+                        }
+                      }}
+                    />
+                  </ObsidianSetting>
+
+                  <ObsidianSetting
+                    name={t('settings.rag.autoUpdateInterval', '最小间隔(小时)')}
+                    desc={t(
+                      'settings.rag.autoUpdateIntervalDesc',
+                      '到达该间隔才会触发自动更新；用于避免频繁重建。',
+                    )}
+                    className="yolo-settings-card"
+                  >
+                    <ObsidianTextInput
+                      value={autoUpdateIntervalInput}
+                      placeholder="24"
+                      onChange={(value) => {
+                        setAutoUpdateIntervalInput(value)
+                        const intervalHours = parseIntegerInput(value)
+                        if (intervalHours !== null && intervalHours >= 0) {
+                          applySettingsUpdate({
+                            ragOptions: {
+                              autoUpdateIntervalHours: intervalHours,
+                            },
+                          })
+                        }
+                      }}
+                      onBlur={() => {
+                        const intervalHours = parseIntegerInput(
+                          autoUpdateIntervalInput,
+                        )
+                        if (intervalHours === null || intervalHours < 0) {
+                          setAutoUpdateIntervalInput(
+                            String(
+                              settings.ragOptions.autoUpdateIntervalHours ?? 0,
+                            ),
+                          )
                         }
                       }}
                     />
