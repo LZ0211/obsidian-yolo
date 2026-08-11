@@ -28,6 +28,7 @@ import {
   getLastAssistantPromptTokens,
 } from './compaction'
 import { AgentLlmTurnExecutor } from './llm-turn-executor'
+import { applyLoopPolicy } from './loop-policy'
 import { createAgentLoopWorker } from './loop-worker'
 import type { ResponsesContinuation } from './responsesContinuation'
 import {
@@ -187,6 +188,33 @@ export class NativeAgentRuntime implements AgentRuntime {
     // non-Responses providers and after handle-reset fallback turns.
     let responsesContinuation: ResponsesContinuation | undefined = undefined
 
+    /**
+     * Run a continuing default decision (`llm_request`/`tool_phase`) through
+     * the registered main-thread loop policy BEFORE the runtime acts on it.
+     * Returns true when the policy stops the decision; the caller then sends
+     * the worker a `stop` message so it settles the run as completed. Returns
+     * false immediately when no policy is registered (byte-for-byte default).
+     */
+    const shouldStopByLoopPolicy = async (
+      message: Extract<AgentWorkerOutbound, { type: 'llm_request' | 'tool_phase' }>,
+    ): Promise<boolean> => {
+      const policy = this.loopConfig.policy
+      if (!policy) return false
+      const result = await applyLoopPolicy({
+        input: {
+          conversationId: input.conversationId,
+          branchId: input.branchId ?? '',
+          iteration: message.type === 'llm_request' ? message.iteration : 0,
+          defaultDecision:
+            message.type === 'llm_request'
+              ? { type: 'llm_request', nextIteration: message.iteration }
+              : { type: 'tool_phase' },
+        },
+        policy,
+      })
+      return result.type === 'stop'
+    }
+
     const runCompletion = new Promise<void>((resolve, reject) => {
       const handleWorkerMessage = (message: AgentWorkerOutbound): void => {
         if (message.runId !== runId) {
@@ -199,6 +227,10 @@ export class NativeAgentRuntime implements AgentRuntime {
               case 'llm_request': {
                 if (abortSignal.aborted) {
                   worker.postMessage({ type: 'abort', runId })
+                  return
+                }
+                if (await shouldStopByLoopPolicy(message)) {
+                  worker.postMessage({ type: 'stop', runId })
                   return
                 }
 
@@ -359,6 +391,10 @@ export class NativeAgentRuntime implements AgentRuntime {
               case 'tool_phase': {
                 if (abortSignal.aborted) {
                   worker.postMessage({ type: 'abort', runId })
+                  return
+                }
+                if (await shouldStopByLoopPolicy(message)) {
+                  worker.postMessage({ type: 'stop', runId })
                   return
                 }
 

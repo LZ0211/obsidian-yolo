@@ -70,6 +70,11 @@ self.onmessage = (event) => {
         emit({ type: 'done', runId: message.runId, reason: 'aborted' })
         return
       }
+      case 'stop': {
+        if (!state || state.runId !== message.runId) return
+        emit({ type: 'done', runId: message.runId, reason: 'completed' })
+        return
+      }
       case 'llm_result': {
         if (!state || state.runId !== message.runId) return
         if (state.aborted) {

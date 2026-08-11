@@ -1,3 +1,4 @@
+import type { AgentLoopPolicy } from './loop-policy'
 import type {
   AssistantToolApprovalMode,
   WorkspaceAccessPolicy,
@@ -144,6 +145,13 @@ export type AgentRuntimeLoopConfig = {
   enableTools: boolean
   maxAutoIterations: number
   includeBuiltinTools: boolean
+  /**
+   * Optional main-thread loop policy. Runs before the runtime acts on a
+   * continuing decision (`llm_request`/`tool_phase`); can only turn a
+   * continuing decision into a terminal stop, never bypass approval or raise
+   * budgets.
+   */
+  policy?: AgentLoopPolicy
 }
 
 export type AgentWorkerInbound =
@@ -166,6 +174,11 @@ export type AgentWorkerInbound =
     }
   | {
       type: 'abort'
+      runId: string
+    }
+  | {
+      /** Main-thread loop policy asked to stop; settles the run as completed. */
+      type: 'stop'
       runId: string
     }
 

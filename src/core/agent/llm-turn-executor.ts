@@ -27,6 +27,7 @@ import {
   type SingleTurnExecutionResult,
   executeSingleTurn,
 } from '../ai/single-turn'
+import { normalizeAgentFinishReason } from './finish-reason'
 import {
   type ResponsesContinuation,
   supportsResponsesStatefulContinuation,
@@ -128,6 +129,8 @@ type AgentLlmTurnExecutorOutput = {
    * providers and after stateless/fallback turns.
    */
   responsesContinuation?: ResponsesContinuation
+  /** Normalized provider finish reason (canonical kind + raw value). */
+  finishReason: ReturnType<typeof normalizeAgentFinishReason>
 }
 
 export class AgentLlmTurnExecutor {
@@ -514,6 +517,7 @@ export class AgentLlmTurnExecutor {
       requestTools: tools,
       requestReasoning,
       responsesContinuation: this.buildResponsesContinuation(turnResult),
+      finishReason: normalizeAgentFinishReason(turnResult.finishReason ?? null),
     }
   }
 
