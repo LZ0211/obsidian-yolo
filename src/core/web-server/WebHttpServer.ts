@@ -1,3 +1,4 @@
+// eslint-disable-next-line import/no-nodejs-modules -- type-only import，编译后消失，无运行时 node 依赖
 import { type IncomingMessage, type ServerResponse } from 'node:http'
 
 import { loadDesktopNodeModuleSync } from '../../utils/platform/desktopNodeModule'

@@ -1,3 +1,4 @@
+/* eslint-disable import/no-nodejs-modules -- 测试文件运行在 Node 环境，允许直接引入 node 内置模块进行 mock */
 import { readFileSync } from 'node:fs'
 import * as path from 'node:path'
 
