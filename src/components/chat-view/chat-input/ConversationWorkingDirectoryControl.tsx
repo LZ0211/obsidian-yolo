@@ -34,7 +34,7 @@ export function ConversationWorkingDirectoryControl({
         onClick={onOpenPicker}
       >
         <span className="yolo-chat-user-input-submit-button-icons">
-          <FolderClosed size={14} />
+          {locked ? <LockKeyhole size={14} /> : <FolderClosed size={14} />}
         </span>
       </button>
       {displayValue ? (
