@@ -317,6 +317,12 @@ export type TranslationKeys = {
       defaultChatModelDesc: string
       chatTitleModel: string
       chatTitleModelDesc: string
+      memoryAgentModel: string
+      memoryAgentModelDesc: string
+      advancedMemoryIndexEnabled?: string
+      advancedMemoryIndexEnabledDesc?: string
+      memoryReflectionEnabled?: string
+      memoryReflectionEnabledDesc?: string
       streamFallbackRecovery?: string
       streamFallbackRecoveryDesc?: string
       primaryRequestTimeout?: string
@@ -1251,6 +1257,16 @@ export type TranslationKeys = {
       noChatModelsConfigured: string
       noEmbeddingModelsConfigured: string
       noRerankModels?: string
+      modelIdRequired?: string
+      embeddingModelAlreadyAdded?: string
+      providerIdMissing?: string
+      performanceWarningTitle?: string
+      performanceWarningMessage?: string
+      invalidDimension?: string
+      modelNotFound?: string
+      dimensionUpdatedRebuild?: string
+      noRerankProvider?: string
+      invalidModelData?: string
     }
     rag: {
       title: string

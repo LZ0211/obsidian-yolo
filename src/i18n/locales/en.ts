@@ -352,6 +352,15 @@ export const en: TranslationKeys = {
       chatTitleModel: 'Conversation title model',
       chatTitleModelDesc:
         'Choose the model used for automatic conversation naming.',
+      memoryAgentModel: 'Memory agent model',
+      memoryAgentModelDesc:
+        'Choose the lightweight model used to extract, summarize, and update long-term memory.',
+      advancedMemoryIndexEnabled: 'Advanced memory index',
+      advancedMemoryIndexEnabledDesc:
+        'Build an optional desktop-only SQLite index for advanced memory recall. When disabled or unavailable, recall falls back to lexical matching. The index is derived data and can be rebuilt from Markdown memory.',
+      memoryReflectionEnabled: 'Memory reflection',
+      memoryReflectionEnabledDesc:
+        'Generate background reflective memories from the advanced index. This desktop-only feature requires Advanced memory index; when unavailable, recall continues with lexical matching. Reflections are derived index data and can be rebuilt without changing Markdown memory.',
       streamFallbackRecovery: 'Enable automatic recovery',
       streamFallbackRecoveryDesc:
         'When the streaming primary request times out or fails, retry once with a non-streaming fallback.',
@@ -1468,7 +1477,7 @@ export const en: TranslationKeys = {
         noModels: 'No models configured under this provider',
         deleteModel: 'Delete model',
         deleteChatModelBlocked:
-          'Cannot delete the model currently selected as chat or title model',
+          'Cannot delete the model currently selected as chat, title, or memory agent model',
         deleteEmbeddingModelBlocked:
           'Cannot delete the currently selected embedding model',
         deleteEmbeddingModelInProgress: 'Deleting embedding model…',
@@ -1572,6 +1581,16 @@ export const en: TranslationKeys = {
       dimensionPlaceholder: '1536',
       noChatModelsConfigured: 'No chat models configured',
       noEmbeddingModelsConfigured: 'No embedding models configured',
+      modelIdRequired: 'Model ID is required',
+      embeddingModelAlreadyAdded: 'This embedding model has already been added',
+      providerIdMissing: 'Provider with this ID does not exist',
+      performanceWarningTitle: 'Performance warning',
+      performanceWarningMessage: 'This model outputs {dimension} dimensions, but the optimized dimensions for database indexing are: {supported}.\n\nThis may result in slower search performance.\n\nDo you want to continue anyway?',
+      invalidDimension: 'Invalid dimension value',
+      modelNotFound: 'Model not found',
+      dimensionUpdatedRebuild: 'Dimension updated. Please rebuild the index for this model to refresh existing vectors.',
+      noRerankProvider: 'No providers support rerank. Please configure an OpenAI-compatible provider (e.g. SiliconFlow, OpenRouter) first.',
+      invalidModelData: 'Invalid model data',
     },
     rag: {
       title: 'Knowledge base',

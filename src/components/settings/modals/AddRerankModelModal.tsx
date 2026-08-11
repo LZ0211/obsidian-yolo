@@ -73,7 +73,7 @@ export class AddRerankModelModal extends ReactModal<AddRerankModelModalComponent
       Component: AddRerankModelModalComponent,
       props: { plugin, provider },
       options: {
-        title: 'Add rerank model',
+        title: plugin.t('settings.models.addRerankModel', 'Add rerank model'),
       },
       plugin: plugin,
     })
@@ -208,7 +208,7 @@ function AddRerankModelModalComponent({
       <div className="yolo-no-models" style={{ padding: '1rem 0' }}>
         {t(
           'settings.models.noRerankProvider',
-          'No providers support rerank. Please configure an OpenAI-compatible provider (e.g. SiliconFlow, OpenRouter) first.',
+          t('settings.models.noRerankProvider', 'No providers support rerank. Please configure an OpenAI-compatible provider (e.g. SiliconFlow, OpenRouter) first.'),
         )}
       </div>
     )

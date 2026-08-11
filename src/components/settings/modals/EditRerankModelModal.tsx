@@ -26,7 +26,7 @@ export class EditRerankModelModal extends ReactModal<EditRerankModelModalCompone
       Component: EditRerankModelModalComponent,
       props: { plugin, model },
       options: {
-        title: 'Edit rerank model',
+        title: plugin.t('settings.models.editRerankModel', 'Edit rerank model'),
       },
       plugin: plugin,
     })
@@ -75,7 +75,7 @@ function EditRerankModelModalComponent({
         const modelIndex = rerankModels.findIndex((m) => m.id === model.id)
 
         if (modelIndex === -1) {
-          new Notice('Model not found')
+          new Notice(t('settings.models.modelNotFound', 'Model not found'))
           return
         }
 
@@ -97,7 +97,7 @@ function EditRerankModelModalComponent({
         }
         const parsed = rerankModelSchema.safeParse(nextModel)
         if (!parsed.success) {
-          new Notice(parsed.error.errors[0]?.message ?? 'Invalid model data')
+          new Notice(parsed.error.errors[0]?.message ?? t('settings.models.invalidModelData', 'Invalid model data'))
           return
         }
         rerankModels[modelIndex] = parsed.data

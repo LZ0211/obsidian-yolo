@@ -79,7 +79,7 @@ export class AddEmbeddingModelModal extends ReactModal<AddEmbeddingModelModalCom
       Component: AddEmbeddingModelModalComponent,
       props: { plugin, provider },
       options: {
-        title: 'Add custom embedding model', // Will be translated in component
+        title: plugin.t('settings.models.addEmbeddingModel', 'Add embedding model'),
       },
       plugin: plugin,
     })
@@ -276,7 +276,7 @@ function AddEmbeddingModelModalComponent({
       }
 
       if (!formData.model || formData.model.trim().length === 0) {
-        throw new Error('Model ID is required')
+        throw new Error(t('settings.models.modelIdRequired', 'Model ID is required'))
       }
 
       isSubmittingRef.current = true
@@ -294,7 +294,7 @@ function AddEmbeddingModelModalComponent({
       )
 
       if (duplicatedModel) {
-        throw new Error('This embedding model has already been added')
+        throw new Error(t('settings.models.embeddingModelAlreadyAdded', 'This embedding model has already been added'))
       }
 
       const existingIds = plugin.settings.embeddingModels.map((m) => m.id)
@@ -305,7 +305,7 @@ function AddEmbeddingModelModalComponent({
           (provider) => provider.id === formData.providerId,
         )
       ) {
-        throw new Error('Provider with this ID does not exist')
+        throw new Error(t('settings.models.providerIdMissing', 'Provider with this ID does not exist'))
       }
 
       const providerClient = getProviderClient({

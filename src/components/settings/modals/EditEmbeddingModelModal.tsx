@@ -69,7 +69,7 @@ function EditEmbeddingModelModalComponent({
         ? parseInt(formData.dimension, 10)
         : undefined
       if (!dimension || isNaN(dimension) || dimension <= 0) {
-        new Notice('Invalid dimension value')
+        new Notice(t('settings.models.invalidDimension', 'Invalid dimension value'))
         return
       }
 
@@ -80,7 +80,7 @@ function EditEmbeddingModelModalComponent({
         const modelIndex = embeddingModels.findIndex((m) => m.id === model.id)
 
         if (modelIndex === -1) {
-          new Notice('Model not found')
+          new Notice(t('settings.models.modelNotFound', 'Model not found'))
           return
         }
 
@@ -124,7 +124,7 @@ function EditEmbeddingModelModalComponent({
 
         if (dimensionChanged) {
           new Notice(
-            'Dimension updated. Please rebuild the index for this model to refresh existing vectors.',
+            t('settings.models.dimensionUpdatedRebuild', 'Dimension updated. Please rebuild the index for this model to refresh existing vectors.'),
           )
         } else {
           new Notice(t('common.success'))
