@@ -1,4 +1,4 @@
-import React from 'react'
+import * as React from 'react'
 
 /**
  * Whether the active workspace agent allows Agent mode in the chat input.
