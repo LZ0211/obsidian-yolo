@@ -199,7 +199,10 @@ import {
   runReadOnlySql,
 } from './database/sqlite/sqliteDatabaseExplorer'
 import type { RetrievalTrace } from './core/rag/retrievalTraceTypes'
-import type { VectorBackendStatus } from './database/modules/rag/VectorStore'
+import type {
+  VectorBackendStatus,
+  VectorNamespace,
+} from './database/modules/rag/VectorStore'
 import {
   buildFailedRetrievalInspectStatus,
   composeRetrievalInspectStatus,
@@ -3989,11 +3992,50 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
   }
 
 
+  private buildCurrentEmbeddingNamespace(): VectorNamespace | null {
+    return this.buildEmbeddingNamespaceForModelId(
+      this.settings.embeddingModelId,
+    )
+  }
+
+  private buildEmbeddingNamespaceForModelId(
+    embeddingModelId: string | null | undefined,
+  ): VectorNamespace | null {
+    if (!embeddingModelId) {
+      return null
+    }
+    const configuredModel = this.settings.embeddingModels.find(
+      (item) => item.id === embeddingModelId,
+    )
+    if (!configuredModel) {
+      return null
+    }
+    return {
+      provider: 'embedding',
+      model: configuredModel.model ?? configuredModel.id,
+      dimension: configuredModel.dimension,
+      distanceMetric: 'cosine',
+    }
+  }
+
   async getVectorBackendStatus(): Promise<VectorBackendStatus> {
-    const dbManager = await this.getDbManager()
-    const store = dbManager.getVectorStore()
-    if (!store) throw new Error('RAG backend is not available.')
-    return store.getStatus()
+    const namespace = this.buildCurrentEmbeddingNamespace()
+    const store = (await this.getDbManager()).getVectorStore()
+    if (!store) {
+      throw new Error('RAG backend is not available.')
+    }
+    const status = await store.getStatus(namespace ?? undefined)
+    if (!namespace) {
+      return {
+        ...status,
+        rebuildRequired: false,
+      }
+    }
+    const stats = await store.getStats(namespace).catch(() => null)
+    return {
+      ...status,
+      rebuildRequired: !stats || stats.chunkCount <= 0,
+    }
   }
 
   openRagLogModal(): void {
