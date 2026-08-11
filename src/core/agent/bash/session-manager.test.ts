@@ -13,6 +13,9 @@ jest.mock('./system-proxy-bridge', () => ({
   getSystemProxyBridgeUrl: jest.fn().mockResolvedValue(null),
 }))
 
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+
 import { backgroundTaskCompletionBus } from '../background-task/completion-bus'
 
 import {
@@ -23,6 +26,14 @@ import {
 
 describe('terminal command session-manager', () => {
   const originalIdleWaitMs = sessionManagerTimings.idleWaitMs
+  // The tests run bash with `cwd: '/tmp'`. On Windows `path.resolve('/tmp')`
+  // resolves to `<drive>:\tmp` (e.g. `D:\tmp`), which does not exist by
+  // default — create it so the suite is platform-independent.
+  const TMP_DIR = path.resolve('/tmp')
+
+  beforeAll(async () => {
+    await fs.mkdir(TMP_DIR, { recursive: true })
+  })
 
   afterEach(() => {
     jest.useRealTimers()
