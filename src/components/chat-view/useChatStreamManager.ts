@@ -1,7 +1,7 @@
 import { UseMutationResult, useMutation } from '@tanstack/react-query'
 import { findUnifiedAgentById, getUnifiedAgentList } from '../../core/agent/workspaceAgentResolver'
 import { Platform, TFile } from 'obsidian'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { useApp } from '../../contexts/app-context'
 import { useMcp } from '../../contexts/mcp-context'
@@ -70,6 +70,7 @@ import {
   type ChatModeRuntime,
   resolveChatModeRuntime,
 } from './chat-runtime-profiles'
+import { useAgentConversationState } from './useAgentConversationState'
 import type { ContextBreakdownInputs } from './useContextBreakdown'
 
 type UseChatStreamManagerParams = {
@@ -189,10 +190,6 @@ export type UseChatStreamManager = {
   >
 }
 
-const isRunSummaryActive = (summary: AgentConversationRunSummary): boolean => {
-  return summary.isActive
-}
-
 /**
  * Sidebar Chat contextual injections.
  */
@@ -310,10 +307,20 @@ export function useChatStreamManager({
   const baseCompactionStateRef = useRef<ChatConversationCompactionState>(
     compaction ?? [],
   )
-  const [currentConversationRunSummary, setCurrentConversationRunSummary] =
-    useState<AgentConversationRunSummary>(() =>
-      plugin.getAgentService().getConversationRunSummary(currentConversationId),
-    )
+  // Pure shadow of AgentService's run status for `currentConversationId` — no
+  // write path bypasses AgentService for this value (unlike `chatMessages`/
+  // `compactionState`/`pendingCompactionAnchorMessageId`, which still have
+  // legitimate direct writes elsewhere and stay as-is; see the 2026-08-11
+  // architecture-governance audit). Safe to source purely from the
+  // subscription instead of a manually-forwarded `useState`.
+  const agentConversationState = useAgentConversationState(
+    plugin.getAgentService(),
+    currentConversationId,
+  )
+  const currentConversationRunSummary = useMemo(
+    () => buildAgentConversationRunSummary(agentConversationState),
+    [agentConversationState],
+  )
 
   const buildVisibleConversationMessages = useCallback(
     (baseMessages: ChatMessage[]): ChatMessage[] => {
@@ -359,51 +366,9 @@ export function useChatStreamManager({
 
   const syncVisibleConversationState = useCallback(
     (baseMessages?: ChatMessage[]) => {
-      const resolvedBaseMessages =
-        baseMessages ?? baseConversationMessagesRef.current
-      const visibleMessages =
-        buildVisibleConversationMessages(resolvedBaseMessages)
-      setChatMessages(visibleMessages)
-
-      const branchSummaries = Array.from(
-        activeBranchRunsRef.current.values(),
-      ).map((branch) => {
-        const state = branchStateMapRef.current.get(branch.branchConversationId)
-        return state ? buildAgentConversationRunSummary(state) : null
-      })
-      const activeSummaries = branchSummaries.filter(
-        (summary): summary is AgentConversationRunSummary =>
-          summary !== null && isRunSummaryActive(summary),
-      )
-      if (activeSummaries.length > 0) {
-        const anchorMessageIds = new Set(
-          activeSummaries.flatMap((summary) =>
-            summary.anchorMessageId ? [summary.anchorMessageId] : [],
-          ),
-        )
-        const hasWaitingApproval = activeSummaries.some(
-          (summary) => summary.isWaitingApproval,
-        )
-        const hasWaitingUserInput = activeSummaries.some(
-          (summary) => summary.isWaitingUserInput,
-        )
-        setCurrentConversationRunSummary({
-          conversationId: currentConversationId,
-          anchorMessageId:
-            anchorMessageIds.size === 1
-              ? anchorMessageIds.values().next().value
-              : undefined,
-          status: 'running',
-          isRunning: activeSummaries.some((summary) => summary.isRunning),
-          isActive: true,
-          isAbortable: activeSummaries.some((summary) => summary.isAbortable),
-          isQueueable: activeSummaries.some((summary) => summary.isQueueable),
-          isWaitingApproval: hasWaitingApproval,
-          isWaitingUserInput: hasWaitingUserInput,
-        })
-      }
+      setChatMessages(baseMessages ?? baseConversationMessagesRef.current)
     },
-    [buildVisibleConversationMessages, currentConversationId, setChatMessages],
+    [setChatMessages],
   )
 
   const handleAutoPromoteTransportMode = useCallback(
@@ -431,22 +396,18 @@ export function useChatStreamManager({
         return
       }
 
-      if (activeBranchRunsRef.current.size === 0) {
-        setCurrentConversationRunSummary(runSummary)
-      }
       syncVisibleConversationState(state.messages)
       setCompactionState(state.compaction ?? [])
       setPendingCompactionAnchorMessageId(
         state.pendingCompactionAnchorMessageId ?? null,
       )
-      if (!runSummary.isActive && activeBranchRunsRef.current.size === 0) {
+      if (!runSummary.isActive) {
         return
       }
 
-      const visibleMessages = buildVisibleConversationMessages(state.messages)
       if (
-        visibleMessages.length > 0 &&
-        !visibleMessages.some(
+        state.messages.length > 0 &&
+        !state.messages.some(
           (message) =>
             message.role === 'assistant' &&
             message.metadata?.generationState === 'streaming',
@@ -456,14 +417,11 @@ export function useChatStreamManager({
       }
     }
 
-    // Reset summary on conversation switch — syncConversationState below
-    // bails out early for fresh/idle conversations and would otherwise leave
-    // stale flags (e.g. isWaitingUserInput) from the previous conversation
-    // bleeding into the new one's input-box guards.
-    setCurrentConversationRunSummary(
-      agentService.getConversationRunSummary(currentConversationId),
-    )
-
+    // `currentConversationRunSummary` no longer needs a reset here: it's
+    // sourced from `useAgentConversationState`, which re-derives a fresh
+    // snapshot for the new `currentConversationId` synchronously during
+    // render (see that hook) — no stale-flag carryover from the previous
+    // conversation to guard against.
     syncConversationState(agentService.getState(currentConversationId))
 
     const unsubscribe = agentService.subscribe(
@@ -481,7 +439,6 @@ export function useChatStreamManager({
     plugin,
     setCompactionState,
     setPendingCompactionAnchorMessageId,
-    buildVisibleConversationMessages,
     syncVisibleConversationState,
   ])
 
