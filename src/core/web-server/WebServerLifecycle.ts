@@ -24,10 +24,36 @@ export type WebServerLifecycleOptions<
 export class WebServerLifecycle<TSettings extends WebRuntimeSettingsHolder> {
   private server: WebHttpServer | null = null
   private boundKey: string | null = null
+  /**
+   * 在飞的 reconcile（单飞串行化）。首启空 token 时 `ensureWebRuntimeToken`
+   * 经 saveSettings 落库会同步触发 settings 变更监听 → reconcile 再入，与首轮
+   * 并发时 server 仍为 null，若各自建 server 会双 listen（EADDRINUSE 误报）。
+   * 再入调用共享此 promise；首轮完成后按最新 settings 重新评估（boundKey
+   * 匹配即返回，开关翻转则 stop）。
+   */
+  private reconcileInFlight: Promise<void> | null = null
 
   constructor(private readonly options: WebServerLifecycleOptions<TSettings>) {}
 
   async reconcile(): Promise<void> {
+    const inFlight = this.reconcileInFlight
+    if (inFlight != null) {
+      await inFlight
+      return this.reconcile()
+    }
+
+    const run = this.runReconcile()
+    this.reconcileInFlight = run
+    try {
+      await run
+    } finally {
+      if (this.reconcileInFlight === run) {
+        this.reconcileInFlight = null
+      }
+    }
+  }
+
+  private async runReconcile(): Promise<void> {
     const settings = this.options.getSettings()
     const runtime = settings.webRuntime
     if (!runtime.enabled) {
