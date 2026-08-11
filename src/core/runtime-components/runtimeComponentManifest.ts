@@ -23,6 +23,7 @@ const IDS = new Set<RuntimeComponentId>([
   'pdf-engine',
   'bash-engine',
   'jieba-engine',
+  'sqlite-engine',
 ])
 export const MAX_RUNTIME_COMPONENT_BYTES = 16 * 1024 * 1024
 

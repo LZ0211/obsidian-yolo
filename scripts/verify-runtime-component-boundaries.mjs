@@ -9,6 +9,8 @@ const forbidden = [
   'node_modules/pdfjs-dist/',
   'node_modules/pdf-lib/',
   'node_modules/@pdf-lib/',
+  'node_modules/sql.js/',
+  'node_modules/@tootallnate/quickjs-emscripten/',
   'inline-pdfjs-worker',
 ]
 for (const dependency of forbidden) {
@@ -21,7 +23,7 @@ for (const dependency of forbidden) {
 const expectedClosures = {
   tokenizer: ['node_modules/gpt-tokenizer/'],
   'pdf-engine': ['node_modules/pdfjs-dist/', 'node_modules/pdf-lib/'],
-  'jieba-engine': ['node_modules/jieba-wasm/'],
+  'sqlite-engine': ['node_modules/sql.js/'],
 }
 for (const [componentId, dependencies] of Object.entries(expectedClosures)) {
   const metafile = JSON.parse(
@@ -37,6 +39,19 @@ for (const [componentId, dependencies] of Object.entries(expectedClosures)) {
       )
     }
   }
+}
+
+// jieba-engine inlines its wasm glue and binary as a string into the worker
+// script, so it never appears in the esbuild metafile. Verify the built
+// entry contains the inlined marker instead.
+const jiebaEntry = await readFile(
+  'runtime-components/jieba-engine/dist/entry.js',
+  'utf8',
+)
+if (!jiebaEntry.includes('jieba_rs_wasm')) {
+  throw new Error(
+    'Runtime component jieba-engine is missing the inlined jieba-wasm worker',
+  )
 }
 
 console.log('Runtime component boundaries verified')

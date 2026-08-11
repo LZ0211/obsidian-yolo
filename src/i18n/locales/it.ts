@@ -491,6 +491,11 @@ export const it: DeepPartial<TranslationKeys> = {
           impact:
             'Disattivandolo, indicizzazione e ricerca semantica non funzionano.',
         },
+        sqliteEngine: {
+          name: 'Motore SQLite (mobile)',
+          description: 'Database sql.js WASM usata come archivio di memoria su piattaforme senza node:sqlite.',
+          impact: "Disattivandolo, l'indice di memoria non funziona su mobile; il desktop non è influenzato.",
+        },
         jiebaEngine: {
           name: 'Motore jieba',
           description: "Segmentazione cinese (jieba-rs WASM) in un worker, usata dall'indice di memoria per l'estrazione accurata delle parole chiave.",

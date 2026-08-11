@@ -434,6 +434,11 @@ export const zh: TranslationKeys = {
           description: '保存并检索本地知识库索引。',
           impact: '关闭后将无法建立索引或进行语义检索。',
         },
+        sqliteEngine: {
+          name: 'SQLite 引擎（移动端）',
+          description: 'sql.js WASM 数据库，移动端无 node:sqlite 时替代记忆存储。',
+          impact: '关闭后移动端记忆索引不可用；桌面端不受影响。',
+        },
         jiebaEngine: {
           name: '结巴分词引擎',
           description: 'worker 线程中运行的结巴中文分词（jieba-rs WASM），用于记忆索引的关键词提取。',

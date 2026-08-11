@@ -1,6 +1,6 @@
 /** @type {import('ts-jest').JestConfigWithTsJest} **/
 module.exports = {
-  roots: ['<rootDir>/src', '<rootDir>/modules'],
+  roots: ['<rootDir>/src', '<rootDir>/modules', '<rootDir>/runtime-components'],
   testEnvironment: 'node',
   setupFilesAfterEnv: ['<rootDir>/__mocks__/runtimeComponentTestSetup.ts'],
   transform: {

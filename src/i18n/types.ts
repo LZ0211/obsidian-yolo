@@ -421,6 +421,7 @@ export type TranslationKeys = {
         pgliteEngine: { name: string; description: string; impact: string }
         bashEngine: { name: string; description: string; impact: string }
         jiebaEngine?: { name: string; description: string; impact: string }
+        sqliteEngine?: { name: string; description: string; impact: string }
         statuses: {
           missing: string
           downloading: string

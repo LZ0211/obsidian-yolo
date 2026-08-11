@@ -3,6 +3,8 @@ export type RuntimeComponentId =
   | 'pdf-engine'
   | 'pglite-engine'
   | 'bash-engine'
+  | 'jieba-engine'
+  | 'sqlite-engine'
 
 export type RuntimeComponentDefinition<TApi = unknown> = Readonly<{
   id: RuntimeComponentId

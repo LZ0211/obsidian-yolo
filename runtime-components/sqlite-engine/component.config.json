@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "sqlite-engine",
+  "platforms": ["desktop", "mobile"],
+  "nameKey": "settings.modules.runtimeComponents.sqliteEngine.name",
+  "descriptionKey": "settings.modules.runtimeComponents.sqliteEngine.description",
+  "impactKey": "settings.modules.runtimeComponents.sqliteEngine.impact",
+  "entry": "dist/entry.js"
+}

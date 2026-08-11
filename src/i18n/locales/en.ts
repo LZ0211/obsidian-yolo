@@ -484,6 +484,11 @@ export const en: TranslationKeys = {
           description: 'Stores and searches the local knowledge-base index.',
           impact: 'Turning this off disables indexing and semantic search.',
         },
+        sqliteEngine: {
+          name: 'SQLite engine (mobile)',
+          description: 'sql.js WASM database used as the memory store on platforms without node:sqlite.',
+          impact: 'Turning this off disables the memory index on mobile; desktop is unaffected.',
+        },
         jiebaEngine: {
           name: 'Jieba engine',
           description: 'Chinese word segmentation (jieba-rs WASM) in a worker thread, used by the memory index for accurate keyword extraction.',

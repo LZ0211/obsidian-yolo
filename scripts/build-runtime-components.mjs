@@ -12,7 +12,13 @@ process.chdir(root)
 const production = process.argv.includes('--production')
 const check = process.argv.includes('--check')
 const componentRoot = path.resolve('runtime-components')
-const allowedIds = new Set(['tokenizer', 'pdf-engine', 'bash-engine', 'jieba-engine'])
+const allowedIds = new Set([
+  'tokenizer',
+  'pdf-engine',
+  'bash-engine',
+  'jieba-engine',
+  'sqlite-engine',
+])
 const nodeBuiltins = new Set([
   ...builtinModules,
   ...builtinModules.map((name) => `node:${name}`),
@@ -190,7 +196,74 @@ function componentPlugins(componentId) {
   if (componentId === 'jieba-engine') {
     plugins.push(jiebaWorkerInlinePlugin())
   }
+  if (componentId === 'sqlite-engine') {
+    plugins.push(sqliteWasmInlinePlugin(), sqliteNodeBuiltinsStubPlugin())
+  }
   return plugins
+}
+
+/**
+ * sql.js's emscripten glue guards Node-only initialization behind
+ * environment detection (`require("fs")`/`require("path")`/`require("crypto")`).
+ * Those branches never execute in the Obsidian renderer, so stub them out
+ * (same pattern as the bash-engine zlib stub).
+ */
+function sqliteNodeBuiltinsStubPlugin() {
+  return {
+    name: 'runtime-sqlite-node-builtins-stub',
+    setup(build) {
+      for (const specifier of ['node:fs', 'node:path', 'node:crypto', 'fs', 'path', 'crypto']) {
+        build.onResolve({ filter: new RegExp(`^${specifier.replaceAll(':', '\\:')}$`) }, () => ({
+          path: 'sqlite-node-builtin-stub',
+          namespace: 'runtime-stub',
+        }))
+      }
+      build.onLoad(
+        { filter: /^sqlite-node-builtin-stub$/, namespace: 'runtime-stub' },
+        () => ({
+          contents: [
+            "const unavailable = () => { throw new Error('Node builtins are unavailable in this environment') }",
+            'export default unavailable',
+            'export const readFileSync = unavailable',
+            'export const writeFileSync = unavailable',
+            'export const existsSync = unavailable',
+            'export const randomFillSync = unavailable',
+            'export const resolve = (p) => p',
+            'export const dirname = (p) => p',
+            'export const join = (...parts) => parts.join("/")',
+            'export const basename = (p) => p',
+            '',
+          ].join('\n'),
+          loader: 'js',
+        }),
+      )
+    },
+  }
+}
+
+function sqliteWasmInlinePlugin() {
+  return {
+    name: 'runtime-sqlite-wasm',
+    setup(build) {
+      build.onResolve({ filter: /^virtual:sql-js-wasm$/ }, () => ({
+        path: 'sqlite-wasm',
+        namespace: 'runtime-wasm',
+      }))
+      build.onLoad(
+        { filter: /^sqlite-wasm$/, namespace: 'runtime-wasm' },
+        async () => ({
+          contents: `export default ${JSON.stringify(
+            (
+              await readFile(
+                path.resolve('node_modules/sql.js/dist/sql-wasm.wasm'),
+              )
+            ).toString('base64'),
+          )}`,
+          loader: 'js',
+        }),
+      )
+    },
+  }
 }
 
 function jiebaWorkerInlinePlugin() {

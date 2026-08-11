@@ -3,6 +3,7 @@ export type RuntimeComponentId =
   | 'pdf-engine'
   | 'bash-engine'
   | 'jieba-engine'
+  | 'sqlite-engine'
 
 export type TokenizerComponentApi = Readonly<{
   count(text: string): number
@@ -200,11 +201,50 @@ export type BashEngineComponentApi = Readonly<{
   dispose(): void
 }>
 
+/** Minimal vault-adapter surface the sqlite-engine component needs. */
+export type SqliteEngineVaultAdapter = {
+  exists(path: string): Promise<boolean>
+  readBinary(path: string): Promise<ArrayBuffer>
+  writeBinary(path: string, data: ArrayBuffer): Promise<void>
+  rename(oldPath: string, newPath: string): Promise<void>
+}
+
+export type SqliteEngineFacade = {
+  exec(sql: string, params?: unknown[]): void
+  query<T>(sql: string, params?: unknown[]): T[]
+  queryOne<T>(sql: string, params?: unknown[]): T | undefined
+  prepare(sql: string): {
+    all: (...params: unknown[]) => unknown[]
+    get: (...params: unknown[]) => unknown
+    run: (...params: unknown[]) => unknown
+  }
+  transaction<T>(fn: (runtime: SqliteEngineFacade) => T): T
+  close(): void
+  getStatus(): { status: string; dbPath: string; isOpen: boolean }
+  flush(): Promise<void>
+}
+
+/**
+ * sql.js-backed SQLite (in-memory + debounced vault-file export) for
+ * platforms without node:sqlite. The returned facade is a plain object owned
+ * by the caller, independent of the component instance — safe to use after
+ * the lease is released.
+ */
+export type SqliteEngineComponentApi = Readonly<{
+  openSqliteJsRuntime(options: {
+    relativePath: string
+    adapter: SqliteEngineVaultAdapter
+    flushDebounceMs?: number
+  }): Promise<SqliteEngineFacade>
+  dispose(): void
+}>
+
 export type RuntimeComponentApiMap = {
   tokenizer: TokenizerComponentApi
   'pdf-engine': PdfEngineComponentApi
   'bash-engine': BashEngineComponentApi
   'jieba-engine': JiebaComponentApi
+  'sqlite-engine': SqliteEngineComponentApi
 }
 
 export type RuntimeComponentDefinition<

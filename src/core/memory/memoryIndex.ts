@@ -1,8 +1,9 @@
-import type { App } from 'obsidian'
+import { type App, FileSystemAdapter } from 'obsidian'
 
 import type { SqliteNativeRuntimeFacade } from '../../database/sqlite/sqliteNativeRuntime'
 import { sha256Hex } from '../../utils/common/content-hash'
 import { getAbsoluteYoloMemoryIndexPath } from '../paths/yoloPaths'
+import { acquireRuntimeComponent } from '../runtime-components/runtimeComponentAccess'
 
 import {
   MAX_GRAPH_CANDIDATES,
@@ -368,8 +369,7 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
       )
     if (this.runtime && this.runtimePath === path) return this.runtime
     const previousRuntime = this.runtime
-    const module = await import('../../database/sqlite/sqliteNativeRuntime')
-    const runtime = module.openSqliteRuntime({ dbPath: path })
+    const runtime = await this.openRuntime(path)
     try {
       initializeMemoryIndexSchema(runtime)
     } catch (error) {
@@ -382,10 +382,60 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
     return runtime
   }
 
+  /** node:sqlite on desktop; the sqlite-engine component everywhere else. */
+  private async openRuntime(
+    absolutePath: string,
+  ): Promise<SqliteNativeRuntimeFacade> {
+    try {
+      const module = await import('../../database/sqlite/sqliteNativeRuntime')
+      return module.openSqliteRuntime({ dbPath: absolutePath })
+    } catch (error) {
+      // No node:sqlite (mobile) or it failed to load: fall back to the
+      // sqlite-engine runtime component (sql.js in-memory + vault file).
+      const adapter = this.options.app.vault.adapter
+      const basePath =
+        adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null
+      if (!basePath) {
+        throw new MemoryIndexUnavailableError(
+          'SQLite memory index is unavailable: no vault adapter',
+          { cause: error },
+        )
+      }
+      const relativePath = absolutePath.startsWith(basePath)
+        ? absolutePath.slice(basePath.length).replace(/^[\\/]+/, '')
+        : absolutePath
+      try {
+        const lease = await acquireRuntimeComponent('sqlite-engine')
+        try {
+          // The facade is a plain object owned by the caller; the component
+          // instance only provides the factory, so releasing the lease here
+          // does not invalidate the open database.
+          return (await lease.api.openSqliteJsRuntime({
+            relativePath,
+            adapter,
+          })) as unknown as SqliteNativeRuntimeFacade
+        } finally {
+          lease.release()
+        }
+      } catch (componentError) {
+        throw new MemoryIndexUnavailableError(
+          'SQLite memory index is unavailable: sqlite-engine failed',
+          { cause: componentError },
+        )
+      }
+    }
+  }
+
   async close(): Promise<void> {
     if (this.forceClosed) return
     await this.operationChain.catch(() => undefined)
-    this.runtime?.close()
+    const runtime = this.runtime
+    if (runtime) {
+      // sql.js keeps the database in memory; flush before dropping it.
+      const flushable = runtime as Partial<{ flush(): Promise<void> }>
+      await flushable.flush?.()
+      runtime.close()
+    }
     this.runtime = null
     this.runtimePath = null
   }
