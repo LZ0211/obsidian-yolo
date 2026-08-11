@@ -1534,6 +1534,14 @@ export function ProvidersAndModelsSection({
           otherChatModels.length > 0 ? otherChatModels[0].id : ''
       }
 
+      // Check if the memory extraction model is from this provider and reassign
+      if (
+        associatedChatModels.some((m) => m.id === settings.memoryAgentModelId)
+      ) {
+        newSettings.memoryAgentModelId =
+          otherChatModels.length > 0 ? otherChatModels[0].id : ''
+      }
+
       // Check if current embedding model is from this provider and reassign
       if (
         associatedEmbeddingModels.some(
@@ -1603,10 +1611,11 @@ export function ProvidersAndModelsSection({
   const handleDeleteChatModel = (modelId: string) => {
     if (
       modelId === settings.chatModelId ||
-      modelId === settings.chatTitleModelId
+      modelId === settings.chatTitleModelId ||
+      modelId === settings.memoryAgentModelId
     ) {
       new Notice(
-        'Cannot remove model that is currently selected as chat model or conversation title model',
+        'Cannot remove model that is currently selected as chat, title, or memory agent model',
       )
       return
     }
@@ -1676,10 +1685,11 @@ export function ProvidersAndModelsSection({
         if (
           !value &&
           (modelId === settings.chatModelId ||
-            modelId === settings.chatTitleModelId)
+            modelId === settings.chatTitleModelId ||
+            modelId === settings.memoryAgentModelId)
         ) {
           new Notice(
-            'Cannot disable model that is currently selected as chat model or conversation title model',
+            'Cannot disable model that is currently selected as chat, title, or memory agent model',
           )
           await setSettings({
             ...settings,

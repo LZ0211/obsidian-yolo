@@ -100,6 +100,11 @@ export function DefaultModelsAndPromptsSection({
     [buildGroupedChatOptions],
   )
 
+  const memoryAgentModelGroupedOptions = useMemo(
+    () => buildGroupedChatOptions(RECOMMENDED_MODELS_FOR_CHAT_TITLE),
+    [buildGroupedChatOptions],
+  )
+
   const chatModelGroupedOptions = useMemo(
     () => buildGroupedChatOptions(RECOMMENDED_MODELS_FOR_CHAT),
     [buildGroupedChatOptions],
@@ -178,6 +183,55 @@ export function DefaultModelsAndPromptsSection({
                 commitSettingsUpdate(
                   { chatTitleModelId: value },
                   'chatTitleModelId',
+                )
+              }}
+            />
+          </ObsidianSetting>
+
+          <ObsidianSetting
+            name={t('settings.defaults.memoryAgentModel')}
+            desc={t('settings.defaults.memoryAgentModelDesc')}
+            className="yolo-models-select-card"
+          >
+            <ObsidianDropdown
+              value={settings.memoryAgentModelId ?? ''}
+              groupedOptions={memoryAgentModelGroupedOptions}
+              onChange={(value) => {
+                commitSettingsUpdate(
+                  { memoryAgentModelId: value },
+                  'memoryAgentModelId',
+                )
+              }}
+            />
+          </ObsidianSetting>
+
+          <ObsidianSetting
+            name={t('settings.defaults.advancedMemoryIndexEnabled')}
+            desc={t('settings.defaults.advancedMemoryIndexEnabledDesc')}
+            className="yolo-models-select-card"
+          >
+            <ObsidianToggle
+              value={settings.advancedMemoryIndexEnabled === true}
+              onChange={(value) => {
+                commitSettingsUpdate(
+                  { advancedMemoryIndexEnabled: value },
+                  'advancedMemoryIndexEnabled',
+                )
+              }}
+            />
+          </ObsidianSetting>
+
+          <ObsidianSetting
+            name={t('settings.defaults.memoryReflectionEnabled')}
+            desc={t('settings.defaults.memoryReflectionEnabledDesc')}
+            className="yolo-models-select-card"
+          >
+            <ObsidianToggle
+              value={settings.memoryReflectionEnabled === true}
+              onChange={(value) => {
+                commitSettingsUpdate(
+                  { memoryReflectionEnabled: value },
+                  'memoryReflectionEnabled',
                 )
               }}
             />

@@ -301,7 +301,12 @@ function ConnectivityTestPanel({
   const { t } = useLanguage()
   const plugin = usePlugin()
   const { settings, setSettings } = useSettings()
-  const { chatModelId, chatTitleModelId, embeddingModelId } = settings
+  const {
+    chatModelId,
+    chatTitleModelId,
+    memoryAgentModelId,
+    embeddingModelId,
+  } = settings
   const [deletingEmbeddingModelIds, setDeletingEmbeddingModelIds] = useState(
     () => new Set<string>(),
   )
@@ -310,10 +315,11 @@ function ConnectivityTestPanel({
     (modelId: string) => {
       if (
         modelId === settings.chatModelId ||
-        modelId === settings.chatTitleModelId
+        modelId === settings.chatTitleModelId ||
+        modelId === settings.memoryAgentModelId
       ) {
         new Notice(
-          'Cannot remove model that is currently selected as chat model or conversation title model',
+          'Cannot remove model that is currently selected as chat, title, or memory agent model',
         )
         return
       }
@@ -383,12 +389,16 @@ function ConnectivityTestPanel({
   )
 
   const getChatDeleteState = (modelId: string) => {
-    if (modelId === chatModelId || modelId === chatTitleModelId) {
+    if (
+      modelId === chatModelId ||
+      modelId === chatTitleModelId ||
+      modelId === memoryAgentModelId
+    ) {
       return {
         disabled: true,
         reason: t(
           'settings.models.connectivityTest.deleteChatModelBlocked',
-          '无法删除当前选中的聊天或标题模型',
+          '无法删除当前选中的聊天、标题或记忆模型',
         ),
       }
     }
