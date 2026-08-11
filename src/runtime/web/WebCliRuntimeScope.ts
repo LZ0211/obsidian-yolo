@@ -1,0 +1,360 @@
+/**
+ * WebCliRuntimeScope（Phase B Step 4 重写）
+ *
+ * Web 端 CLI 运行时的 CliRuntimeScope 实现，不再代理遗留 `/api/cli/*` 端点，
+ * 改为 RemoteChatRuntimeAdapter（`/api/chat-runtime/*` 契约协议）背书：会话
+ * 列表/置顶/重命名/删除、控制器快照与事件全部走契约端点。渲染层（ChatSidebarTabs
+ * buildRuntime）与编排层（CliRuntimeScope）各自持有独立的 adapter 实例，但都
+ * 指向同一服务端 runtime（服务端按 runtimeId:conversationId 缓存实例），状态一致。
+ */
+import type {
+  ChatRuntime,
+  ChatRuntimeSnapshot,
+  ChatSessionSummary,
+} from '../../core/chat-runtime/contract'
+import { RemoteChatRuntimeAdapter } from '../../core/chat-runtime/remote/RemoteChatRuntimeAdapter'
+import type { CliConversationController } from '../../core/cli-runtime/conversation-controller'
+import type { CliRuntimeScope } from '../../core/cli-runtime/coordinator'
+import type { CliSessionService } from '../../core/cli-runtime/session-service'
+import type {
+  CliRuntime,
+  CliRuntimeConfiguration,
+  CliRuntimeId,
+  CliRuntimeRunState,
+  CliSessionHydration,
+  CliSessionRef,
+} from '../../core/cli-runtime/types'
+
+import { createWebRemoteTransport } from './remoteChatTransport'
+
+type CliSnapshot = ReturnType<CliConversationController['getSnapshot']>
+
+/** master 的 session-service 不导出 CliSessionListItem（backup 有），本地
+ *  补齐同名字面类型（backup 的该类型 = CliSessionMetadata & 会话列表字段）。 */
+type CliSessionListItem = {
+  ref: CliSessionRef
+  title: string
+  preview?: string
+  updatedAt: number
+  hasOverlay: boolean
+  assistantId?: string
+  lastOpenedAt?: number
+  isPinned: boolean
+  pinnedAt?: number
+}
+
+const toCliSnapshot = (
+  snapshot: ChatRuntimeSnapshot,
+  runtimeId: CliRuntimeId,
+): CliSnapshot => ({
+  surfaceId: `${runtimeId}:${snapshot.conversationId ?? ''}`,
+  runtimeId,
+  messages: snapshot.messages,
+  compactionBoundaries: snapshot.compactionBoundaries,
+  sessionRef: (snapshot.sessionRef as CliSessionRef | null) ?? null,
+  runState: snapshot.runState as CliRuntimeRunState,
+  error: snapshot.error,
+  // master 的 CliConversationSnapshot 无 failure 字段（backup 有，契约快照
+  // 不携带失效分类），configuration 透传。
+  configuration: snapshot.configuration as CliRuntimeConfiguration | null,
+})
+
+const toSessionListItem = (
+  summary: ChatSessionSummary,
+): CliSessionListItem => ({
+  ref: summary.ref as CliSessionRef,
+  title: summary.title,
+  ...(summary.preview !== undefined ? { preview: summary.preview } : {}),
+  updatedAt: summary.updatedAt,
+  hasOverlay: false,
+  isPinned: summary.isPinned === true,
+})
+
+/** 编排层用的 CliConversationController：契约 adapter 快照/事件/命令的薄包装。 */
+class WebCliConversationController {
+  private currentSnapshot: CliSnapshot
+  private readonly listeners = new Set<() => void>()
+  private readonly unsubscribe: () => void
+
+  constructor(
+    private readonly adapter: RemoteChatRuntimeAdapter,
+    runtimeId: CliRuntimeId,
+  ) {
+    this.currentSnapshot = toCliSnapshot(adapter.getSnapshot(), runtimeId)
+    this.unsubscribe = adapter.subscribe(() => {
+      this.currentSnapshot = toCliSnapshot(adapter.getSnapshot(), runtimeId)
+      for (const listener of [...this.listeners]) listener()
+    })
+  }
+
+  getSnapshot(): CliSnapshot {
+    return this.currentSnapshot
+  }
+
+  getConversationId(): string | null {
+    return this.currentSnapshot.sessionRef?.nativeSessionId ?? null
+  }
+
+  getConversationEpoch(): number {
+    return 0
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  bindConversation(_conversationId: string): void {
+    // Web 端会话由服务端 runtime 绑定，本地无 conversation 绑定。
+  }
+
+  resetSession(): void {
+    this.currentSnapshot = {
+      ...this.currentSnapshot,
+      sessionRef: null,
+      messages: [],
+      compactionBoundaries: [],
+      runState: 'idle',
+      error: null,
+    }
+    for (const listener of [...this.listeners]) listener()
+  }
+
+  async hydrateSession(ref: CliSessionRef): Promise<CliSessionHydration> {
+    await this.adapter.openSession(ref)
+    // 会话绑定经 SSE session.changed 异步到达；等待它落到本地快照。
+    const deadline = Date.now() + 2000
+    while (
+      (this.adapter.getSnapshot().sessionRef as CliSessionRef | null) === null &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    const snapshot = this.adapter.getSnapshot()
+    return {
+      ref: (snapshot.sessionRef as CliSessionRef | null) ?? ref,
+      messages: [...snapshot.messages],
+      compactionBoundaries: [...(snapshot.compactionBoundaries ?? [])],
+    }
+  }
+
+  async ensureReady(): Promise<void> {
+    return undefined
+  }
+
+  async sendTurn({
+    userMessage,
+    content,
+  }: {
+    userMessage: { id: string }
+    content: string
+  }): Promise<void> {
+    await this.adapter.sendTurn({
+      content,
+      messageId: userMessage.id,
+      baseRevision: 0,
+      messageGeneration: 0,
+    })
+  }
+
+  async updateConfiguration(update: {
+    modelId?: string | null
+    reasoningEffort?: string | null
+  }): Promise<void> {
+    await this.adapter.updateConfiguration(update)
+  }
+
+  async cancel(): Promise<void> {
+    await this.adapter.cancel()
+  }
+
+  async rewriteTurn(): Promise<void> {}
+  async rollbackToTurn(): Promise<void> {}
+  async respondApproval(): Promise<void> {}
+  async respondQuestion(): Promise<void> {}
+  async updatePermissionProfile(): Promise<void> {}
+  async compact(): Promise<void> {}
+  async listSkills(): Promise<unknown[]> {
+    return []
+  }
+
+  close(): void {
+    this.unsubscribe()
+    this.listeners.clear()
+  }
+}
+
+export type WebCliRuntimeScopeOptions = {
+  baseUrl: string
+  sessionId?: string | null
+  fetchImpl?: typeof fetch
+  EventSourceImpl?: typeof EventSource | undefined
+}
+
+const RUNTIME_IDS: readonly CliRuntimeId[] = ['claude-code', 'codex']
+
+export function createWebCliRuntimeScope(
+  options: WebCliRuntimeScopeOptions,
+): CliRuntimeScope & {
+  /** 渲染层共享的契约 ChatRuntime（ChatSidebarTabs buildRuntime 注入用）。
+   *  `conversationId` 绑定 web-native 适配器实例（会话级实例化，与服务端
+   *  native runtime 的按会话缓存一致）。 */
+  getChatRuntime(
+    runtimeId: CliRuntimeId,
+    conversationId?: string | null,
+  ): ChatRuntime
+} {
+  const adapters = new Map<string, RemoteChatRuntimeAdapter>()
+  const controllers = new Map<CliRuntimeId, WebCliConversationController>()
+
+  const getAdapter = (
+    runtimeId: CliRuntimeId,
+    conversationId?: string | null,
+  ): RemoteChatRuntimeAdapter => {
+    const key = `${runtimeId}:${conversationId ?? ''}`
+    let adapter = adapters.get(key)
+    if (!adapter) {
+      const transport = createWebRemoteTransport({
+        baseUrl: options.baseUrl,
+        sessionId: options.sessionId,
+        fetchImpl: options.fetchImpl,
+        EventSourceImpl: options.EventSourceImpl,
+      })
+      // The adapter is the web-native contract runtime; the conversation id
+      // keys the server-side native runtime instance (stream/turn/permission
+      // all resolve `conversationId` from the adapter).
+      adapter = new RemoteChatRuntimeAdapter(
+        runtimeId,
+        transport,
+        conversationId ?? '',
+      )
+      adapters.set(key, adapter)
+    }
+    return adapter
+  }
+
+  const getController = (
+    runtimeId: CliRuntimeId,
+  ): WebCliConversationController => {
+    let controller = controllers.get(runtimeId)
+    if (!controller) {
+      controller = new WebCliConversationController(
+        getAdapter(runtimeId),
+        runtimeId,
+      )
+      controllers.set(runtimeId, controller)
+    }
+    return controller
+  }
+
+  const listSessions = async (): Promise<CliSessionListItem[]> => {
+    const results = await Promise.all(
+      RUNTIME_IDS.map(async (runtimeId) => {
+        try {
+          const result = await getAdapter(runtimeId).listSessions()
+          return result.ok ? result.sessions : []
+        } catch {
+          return []
+        }
+      }),
+    )
+    return results.flat().map(toSessionListItem)
+  }
+
+  const sessionService = {
+    listSessions: async () => {
+      const items = await listSessions()
+      return items.map((item) => item.ref) as never
+    },
+    discoverSessions: async () => {
+      const sessions = await listSessions()
+      return { sessions, errors: {} }
+    },
+    recordOpenedSession: async () => undefined,
+    recordUserDisplay: async () => undefined,
+    getRememberedConfiguration: async () => ({}),
+    renameSession: async (ref: CliSessionRef, title: string) => {
+      await getAdapter(ref.runtimeId).renameSession(ref, title)
+    },
+    recordTurnEditSummary: async () => undefined,
+    rebindOverlay: async () => undefined,
+    rememberConfiguration: async () => undefined,
+    rememberContextUsage: async () => undefined,
+    restoreUserDisplays: async (
+      _ref: CliSessionRef,
+      messages: readonly import('../../types/chat').ChatMessage[],
+    ) => messages,
+    restoreSessionOverlay: async (
+      _ref: CliSessionRef,
+      messages: readonly import('../../types/chat').ChatMessage[],
+    ) => ({
+      messages,
+      turnConfigurationByUserMessageId: {},
+    }),
+    setPinned: async (ref: CliSessionRef, pinned: boolean) => {
+      await getAdapter(ref.runtimeId).setSessionPinned(ref, pinned)
+    },
+    removeOverlay: async (ref: CliSessionRef) => {
+      const result = await getAdapter(ref.runtimeId).deleteSession(ref)
+      return result.ok
+    },
+  } as unknown as CliSessionService
+
+  const toCliRuntime = (runtimeId: CliRuntimeId): CliRuntime => {
+    const adapter = getAdapter(runtimeId)
+    return {
+      runtimeId,
+      openSession: async (ref: CliSessionRef) => {
+        await adapter.openSession(ref)
+        const snapshot = adapter.getSnapshot()
+        return {
+          ref,
+          messages: [...snapshot.messages],
+          compactionBoundaries: [...(snapshot.compactionBoundaries ?? [])],
+        }
+      },
+      ensureReady: async () => undefined,
+      getConfiguration: async () =>
+        adapter.getSnapshot().configuration as CliRuntimeConfiguration | null,
+      updateConfiguration: async (update: {
+        modelId?: string | null
+        reasoningEffort?: string | null
+      }) => {
+        await adapter.updateConfiguration(update)
+        return adapter.getSnapshot().configuration as CliRuntimeConfiguration | null
+      },
+      sendTurn: async () => undefined,
+      rewriteTurn: async () => undefined,
+      rollbackToTurn: async () => undefined,
+      cancel: async () => undefined,
+      respondApproval: async () => true,
+      respondQuestion: async () => true,
+      subscribe: () => () => undefined,
+      dispose: async () => undefined,
+    } as unknown as CliRuntime
+  }
+
+  return {
+    sessionService,
+    chatRuntimeActions: {} as never,
+    resolveRuntime: toCliRuntime,
+    selectConversationRuntime: (runtimeId) =>
+      getController(runtimeId) as unknown as CliConversationController,
+    createConversationRuntime: (runtimeId) =>
+      getController(runtimeId) as unknown as CliConversationController,
+    selectConversationSession: (ref) =>
+      getController(ref.runtimeId) as unknown as CliConversationController,
+    getModelCatalogSnapshot: () => new Map(),
+    subscribeToModelCatalog: () => () => undefined,
+    warmModelCatalog: async () => undefined,
+    warmConversationRuntime: async () => undefined,
+    getChatRuntime: (runtimeId, conversationId) =>
+      getAdapter(runtimeId, conversationId),
+    dispose: async () => {
+      for (const controller of controllers.values()) controller.close()
+      controllers.clear()
+      for (const adapter of adapters.values()) await adapter.dispose()
+      adapters.clear()
+    },
+  }
+}
