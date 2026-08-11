@@ -240,9 +240,11 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
   const app = useApp()
   const plugin = usePlugin()
   const agentService = plugin.getAgentService()
-  // 注入分支（Web 端）：组装层经 buildRuntime 注入会话绑定的契约 ChatRuntime，
-  // 桥接成主面 actions；桌面宿主无 YoloRuntimeProvider（useOptionalYoloRuntime
-  // 返回 null）恒走 createYoloChatRuntimeActions 原路径。
+  // 注入分支（契约/CLI 面预留）：组装层经 buildRuntime 注入会话绑定的契约
+  // ChatRuntime，桥接成主面 actions。Web 端 yolo 主面当前不触发（webChatMount
+  // 不传 buildRuntime），仍走 createYoloChatRuntimeActions(agentService)——
+  // web 端 agentService 代理已路由 /api/agent/*（createWebYoloRuntime.ts）；
+  // 桌面宿主无 YoloRuntimeProvider（useOptionalYoloRuntime 返回 null）恒走原路径。
   const yoloRuntime = useOptionalYoloRuntime()
   const [injectedRuntime, setInjectedRuntime] = useState<ChatRuntime | null>(
     null,
@@ -262,8 +264,8 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
         console.error('[YOLO] Failed to dispose injected runtime:', error)
       })
     }
-    // 注意：依赖 props.buildRuntime 的函数身份——组装层（webChatMount）必须
-    // useCallback memoize，否则每次 render 都会重建 SSE adapter。
+    // 注意：依赖 props.buildRuntime 的函数身份——未来契约面接入时组装层
+    // 必须 memoize，否则每次 render 都会重建 SSE adapter。
   }, [props.buildRuntime, yoloRuntime])
   const runtimeActions = useMemo(
     () =>

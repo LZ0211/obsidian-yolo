@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import React, { useState } from 'react'
+import React from 'react'
 import { type Root, createRoot } from 'react-dom/client'
 
 import type { ChatProps, ChatRef } from '../components/chat-view/Chat'
@@ -21,30 +21,24 @@ type ChatTabsMountProps = {
   chatRef: React.RefObject<ChatRef>
   initialChatProps?: ChatProps
   getCliRuntimeScope?: ChatProps['getCliRuntimeScope']
-  buildRuntime?: ChatProps['buildRuntime']
   onConversationContextChange?: ChatProps['onConversationContextChange']
 }
 
-// Task 11 硬性要求：传给 ChatSidebarTabs 的 buildRuntime 必须 memoize——
-// Chat 的注入 effect 依赖 props.buildRuntime 的函数身份（Chat.tsx 注释），
-// 身份不稳会导致每次 render 重建 SSE adapter（dispose/重建循环）。这里用
-// useState 惰性初始化冻结首次传入的身份：本树按 tab 挂载一次，会话/智能体
-// 切换由组装层重建整个 React tree（webChatTabs.createTab 每 tab 一次），
-// 不存在「冻结后需要跟随更新」的场景。
+// Web 端 yolo 主面不注入契约 runtime（buildRuntime）——直接走 Chat 桌面路径
+// createYoloChatRuntimeActions(agentService)，web agentService 代理已路由到
+// /api/agent/*（createWebYoloRuntime.ts），服务端 agentRoutes 全量接线。
+// 契约注入保留给未来 CLI/契约面（Chat.tsx 注入分支），届时再由本层按需传递。
 function ChatTabsMount({
   chatRef,
   initialChatProps,
   getCliRuntimeScope,
-  buildRuntime,
   onConversationContextChange,
 }: ChatTabsMountProps): React.ReactElement {
-  const [stableBuildRuntime] = useState(() => buildRuntime)
   return React.createElement(ChatSidebarTabs, {
     chatRef,
     placement: 'tab',
     initialChatProps,
     getCliRuntimeScope,
-    buildRuntime: stableBuildRuntime,
     onConversationContextChange,
   })
 }
@@ -60,8 +54,10 @@ export type RenderChatOptions = {
   initialChatProps?: ChatProps
   /** Desktop-only: bridges the CLI runtime scope through web-server routes. */
   getCliRuntimeScope?: ChatProps['getCliRuntimeScope']
-  /** 契约 runtime 装配注入（Web 端 RemoteChatRuntimeAdapter）。 */
-  buildRuntime?: ChatProps['buildRuntime']
+  // 注意：不再提供 buildRuntime——yolo 主面走 Chat 桌面路径
+  // （createYoloChatRuntimeActions(agentService)，web agentService 代理
+  // /api/agent/*）；契约注入（Chat.tsx buildRuntime 分支）保留给未来
+  // CLI/契约面，届时恢复本字段并按需传递。
 }
 
 export function renderChatIntoTarget(
@@ -118,7 +114,6 @@ export function renderChatIntoTarget(
                             chatRef={chatRef}
                             initialChatProps={options?.initialChatProps}
                             getCliRuntimeScope={options?.getCliRuntimeScope}
-                            buildRuntime={options?.buildRuntime}
                             onConversationContextChange={
                               options?.onConversationContextChange
                             }

@@ -236,10 +236,10 @@ export function createChatTabManager(
     } catch {
       sessionId = null
     }
-    // 当前会话 id（per-tab）：onConversationContextChange 跟踪，buildRuntime
-    // 每次装配读它做会话绑定（Task 11 报告疑虑 1 的组装层约定——master Chat
-    // 自持 currentConversationId，注入 effect 不监听它）。
-    let currentConversationId: string | null = null
+    // 注意：本 tab 不再跟踪 currentConversationId——yolo 主面不走契约注入，
+    // 会话绑定由服务端 /api/agent/* 路由内的 conversationId 完成；tab 标题
+    // 更新由下方 onConversationContextChange 的 currentConversationTitle 驱动
+    // （见 buildRuntime 删除注释）。
     const resolveCliScope = () => {
       cliScope ??= createWebCliRuntimeScope({
         baseUrl: window.location.origin,
@@ -248,20 +248,15 @@ export function createChatTabManager(
       })
       return cliScope
     }
-    // Chat 侧的 getCliRuntimeScope 契约是 Promise；buildRuntime 仍可用同步
-    // 解析，避免每次组装都多一跳微任务。
+    // Chat 侧的 getCliRuntimeScope 契约是 Promise：懒解析 CLI scope，仅在
+    // ChatView 桌面路径的 CLI 分支被消费；此处解析无副作用。
     const getCliRuntimeScope = async () => resolveCliScope()
-    // Task 11 契约签名 (runtime: YoloRuntime) => ChatRuntime：装配会话绑定的
-    // web-native 契约 runtime（RemoteChatRuntimeAdapter 背书，'yolo' 主面）。
-    // 函数身份由 webChatMount 的 ChatTabsMount memoize（每 tab 冻结）；会话
-    // 级重绑定在服务端 /api/chat-runtime/* 落地后由组装层重建 tab 树实现
-    // （Task 11 报告疑虑 2）。
-    const buildRuntime = (
-      _yoloRuntime: YoloRuntime,
-    ): import('../core/chat-runtime/contract').ChatRuntime => {
-      const scope = resolveCliScope()
-      return scope.getChatRuntime('yolo', currentConversationId)
-    }
+    // 不再定义 buildRuntime：yolo 主面直接走 Chat 桌面路径
+    // createYoloChatRuntimeActions(agentService)——web 端 agentService 代理
+    // 已路由 /api/agent/tool/approve|abort、/api/agent/abort/:runId
+    // （createWebYoloRuntime.ts），服务端 agentRoutes 已全量接线；契约注入
+    // （Chat.tsx buildRuntime 分支 + RemoteChatRuntimeAdapter）保留给未来
+    // CLI/契约面，届时由 webChatMount 按需传入，不再经本 tab 管理器装配。
 
     // Render the chat
     const { root, unmount } = renderChatIntoTarget(
@@ -273,9 +268,7 @@ export function createChatTabManager(
         agentModeAllowed: getAgentModeAllowed(),
         initialChatProps: options?.initialChatProps,
         getCliRuntimeScope,
-        buildRuntime,
         onConversationContextChange: (context) => {
-          currentConversationId = context.currentConversationId ?? null
           const conversationTitle = context.currentConversationTitle
           // Keep the assistant name as the tab title until a real conversation
           // title exists — don't overwrite with the "New chat" fallback.
