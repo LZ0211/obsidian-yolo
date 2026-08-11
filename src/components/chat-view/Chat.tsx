@@ -24,6 +24,7 @@ import {
   resolveAssistantTimeContextEnabled,
 } from '../../core/agent/assistant-capabilities'
 import { resolveAssistantModelId } from '../../core/agent/assistant-model'
+import { getMemoryIndexRuntimeHandle } from '../../core/memory/memoryIndexRuntime'
 import { getLatestAssistantContextUsage } from '../../core/agent/compaction'
 import { DEFAULT_ASSISTANT_ID } from '../../core/agent/default-assistant'
 import { findUnifiedAgentById } from '../../core/agent/workspaceAgentResolver'
@@ -322,6 +323,10 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
         agentService.getPromptSourceWatcher().getRevision(),
       promptSourcePathsCallback: (paths) =>
         agentService.getPromptSourceWatcher().setWatchedPaths(paths),
+      memoryIndexRuntime: getMemoryIndexRuntimeHandle(
+        app,
+        () => effectiveSettings,
+      ),
     })
   }, [app, effectiveSettings, agentService])
 

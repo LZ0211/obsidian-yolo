@@ -275,6 +275,7 @@ export async function* streamResolvedAgentRunEvents({
   loopConfig,
   input,
   activity,
+  persistState,
   agentService,
 }: {
   conversationId: string
@@ -282,6 +283,7 @@ export async function* streamResolvedAgentRunEvents({
   loopConfig: AgentRuntimeLoopConfig
   input: AgentRuntimeRunInput
   activity?: AgentRunActivity
+  persistState?: boolean
   agentService: AgentService
 }): AsyncIterable<YoloAgentEvent> {
   const queue = new AsyncEventQueue<YoloAgentEvent>()
@@ -315,7 +317,7 @@ export async function* streamResolvedAgentRunEvents({
   void agentService
     .run({
       conversationId,
-      persistState: false,
+      persistState: persistState ?? false,
       loopConfig,
       input,
       activity,

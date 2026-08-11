@@ -947,13 +947,13 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
             )}
             className="yolo-settings-card"
           >
-            <span className="yolo-rag-last-sync">
+            <div className="yolo-rag-last-sync">
               {(settings.ragOptions.lastAutoUpdateAt ?? 0) > 0
                 ? new Date(
                     settings.ragOptions.lastAutoUpdateAt,
                   ).toLocaleString()
                 : '—'}
-            </span>
+            </div>
           </ObsidianSetting>
 
           <ObsidianSetting

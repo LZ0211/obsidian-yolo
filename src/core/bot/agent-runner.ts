@@ -287,6 +287,7 @@ export async function runBotAgentTurn(
       sourceUserMessageId,
       loopConfig: chatModeRuntime.loopConfig,
       input,
+      persistState: true,
       agentService,
     })) {
       switch (event.type) {

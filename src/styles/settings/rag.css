@@ -807,3 +807,12 @@
     overflow-y: auto;
   }
 }
+
+.yolo-rag-last-sync {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}

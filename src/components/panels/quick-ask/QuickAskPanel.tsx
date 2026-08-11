@@ -25,6 +25,7 @@ import { materializeTextEditPlan } from '../../../core/edits/textEditEngine'
 import { parseTextEditPlan } from '../../../core/edits/textEditPlan'
 import { LLMModelNotFoundException } from '../../../core/llm/exception'
 import { getChatModelClient } from '../../../core/llm/manager'
+import { getMemoryIndexRuntimeHandle } from '../../../core/memory/memoryIndexRuntime'
 import { listLiteSkillEntries } from '../../../core/skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../../../core/skills/skillPolicy'
 import type {
@@ -629,14 +630,15 @@ export function QuickAskPanel({
     const assistantPrompt = selectedAssistant?.systemPrompt || ''
     const combinedSystemPrompt =
       `${globalSystemPrompt}\n\n${assistantPrompt}`.trim()
+    const requestSettings = {
+      ...settings,
+      currentAssistantId: selectedAssistant?.id,
+      systemPrompt: combinedSystemPrompt,
+    }
 
     return new RequestContextBuilder(
       app,
-      {
-        ...settings,
-        currentAssistantId: selectedAssistant?.id,
-        systemPrompt: combinedSystemPrompt,
-      },
+      requestSettings,
       {
         includeSkills: mode === 'agent' || mode === 'ask',
         systemPromptSnapshotStore: plugin
@@ -649,6 +651,10 @@ export function QuickAskPanel({
             .getAgentService()
             .getPromptSourceWatcher()
             .setWatchedPaths(paths),
+        memoryIndexRuntime: getMemoryIndexRuntimeHandle(
+          app,
+          () => requestSettings,
+        ),
       },
     )
   }, [app, mode, selectedAssistant, settings, plugin])

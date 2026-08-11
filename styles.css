@@ -3815,6 +3815,14 @@ button.yolo-mcp-tool-description-toggle.is-expanded {
     overflow-y: auto;
   }
 }
+.yolo-rag-last-sync {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
 /* Template Section Styles */
 .yolo-templates-container {
   display: flex;
