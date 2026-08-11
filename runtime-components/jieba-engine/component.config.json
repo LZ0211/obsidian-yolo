@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "jieba-engine",
+  "platforms": ["desktop", "mobile"],
+  "nameKey": "settings.modules.runtimeComponents.jiebaEngine.name",
+  "descriptionKey": "settings.modules.runtimeComponents.jiebaEngine.description",
+  "impactKey": "settings.modules.runtimeComponents.jiebaEngine.impact",
+  "entry": "dist/entry.js"
+}

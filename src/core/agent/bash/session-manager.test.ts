@@ -13,7 +13,7 @@ jest.mock('./system-proxy-bridge', () => ({
   getSystemProxyBridgeUrl: jest.fn().mockResolvedValue(null),
 }))
 
-import * as fs from 'node:fs'
+import { mkdir } from 'node:fs/promises'
 import * as path from 'node:path'
 
 import { backgroundTaskCompletionBus } from '../background-task/completion-bus'
@@ -36,7 +36,7 @@ describeOnNonWindows('terminal command session-manager', () => {
   const TMP_DIR = path.resolve('/tmp')
 
   beforeAll(async () => {
-    await fs.mkdir(TMP_DIR, { recursive: true })
+    await mkdir(TMP_DIR, { recursive: true })
   })
 
   afterEach(() => {

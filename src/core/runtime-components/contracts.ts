@@ -2,9 +2,20 @@ export type RuntimeComponentId =
   | 'tokenizer'
   | 'pdf-engine'
   | 'bash-engine'
+  | 'jieba-engine'
 
 export type TokenizerComponentApi = Readonly<{
   count(text: string): number
+  dispose(): void
+}>
+
+/** Chinese word segmentation (jieba-rs WASM) in a dedicated worker thread. */
+export type JiebaComponentApi = Readonly<{
+  /**
+   * Search-engine mode: long words plus their sub-tokens, e.g.
+   * "北京烤鸭" → ["北京", "烤鸭", "北京烤鸭"].
+   */
+  cutForSearch(text: string): Promise<string[]>
   dispose(): void
 }>
 
@@ -193,6 +204,7 @@ export type RuntimeComponentApiMap = {
   tokenizer: TokenizerComponentApi
   'pdf-engine': PdfEngineComponentApi
   'bash-engine': BashEngineComponentApi
+  'jieba-engine': JiebaComponentApi
 }
 
 export type RuntimeComponentDefinition<

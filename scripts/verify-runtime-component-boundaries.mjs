@@ -21,6 +21,7 @@ for (const dependency of forbidden) {
 const expectedClosures = {
   tokenizer: ['node_modules/gpt-tokenizer/'],
   'pdf-engine': ['node_modules/pdfjs-dist/', 'node_modules/pdf-lib/'],
+  'jieba-engine': ['node_modules/jieba-wasm/'],
 }
 for (const [componentId, dependencies] of Object.entries(expectedClosures)) {
   const metafile = JSON.parse(

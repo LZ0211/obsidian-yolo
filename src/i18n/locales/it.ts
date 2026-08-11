@@ -491,6 +491,11 @@ export const it: DeepPartial<TranslationKeys> = {
           impact:
             'Disattivandolo, indicizzazione e ricerca semantica non funzionano.',
         },
+        jiebaEngine: {
+          name: 'Motore jieba',
+          description: "Segmentazione cinese (jieba-rs WASM) in un worker, usata dall'indice di memoria per l'estrazione accurata delle parole chiave.",
+          impact: 'Disattivandolo, la segmentazione cinese ripiega su quella integrata (Intl.Segmenter + bigrammi).',
+        },
         bashEngine: {
           name: 'Motore Bash',
           description:

@@ -484,6 +484,11 @@ export const en: TranslationKeys = {
           description: 'Stores and searches the local knowledge-base index.',
           impact: 'Turning this off disables indexing and semantic search.',
         },
+        jiebaEngine: {
+          name: 'Jieba engine',
+          description: 'Chinese word segmentation (jieba-rs WASM) in a worker thread, used by the memory index for accurate keyword extraction.',
+          impact: 'Turning this off falls back to the built-in segmentation (Intl.Segmenter + bigrams) for Chinese memory keywords.',
+        },
         bashEngine: {
           name: 'Bash engine',
           description:

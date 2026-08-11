@@ -15,6 +15,19 @@
       "sha256": "1797c24e23f62885705d0aef617728b139583586bd3d47dd574a0e45ed49fbd6"
     },
     {
+      "id": "jieba-engine",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "nameKey": "settings.modules.runtimeComponents.jiebaEngine.name",
+      "descriptionKey": "settings.modules.runtimeComponents.jiebaEngine.description",
+      "impactKey": "settings.modules.runtimeComponents.jiebaEngine.impact",
+      "entry": "runtime-components/jieba-engine/dist/entry.js",
+      "byteSize": 5359250,
+      "sha256": "5946b0079a3e48f8b644a70f5d9a28374adeef7581b5cc18e17acc912310f7a6"
+    },
+    {
       "id": "pdf-engine",
       "platforms": [
         "desktop",

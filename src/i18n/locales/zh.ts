@@ -434,6 +434,11 @@ export const zh: TranslationKeys = {
           description: '保存并检索本地知识库索引。',
           impact: '关闭后将无法建立索引或进行语义检索。',
         },
+        jiebaEngine: {
+          name: '结巴分词引擎',
+          description: 'worker 线程中运行的结巴中文分词（jieba-rs WASM），用于记忆索引的关键词提取。',
+          impact: '关闭后中文记忆关键词回退到内置分词（Intl.Segmenter + 二元组）。',
+        },
         bashEngine: {
           name: 'Bash 引擎',
           description:

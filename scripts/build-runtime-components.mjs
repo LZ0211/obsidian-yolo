@@ -12,7 +12,7 @@ process.chdir(root)
 const production = process.argv.includes('--production')
 const check = process.argv.includes('--check')
 const componentRoot = path.resolve('runtime-components')
-const allowedIds = new Set(['tokenizer', 'pdf-engine', 'bash-engine'])
+const allowedIds = new Set(['tokenizer', 'pdf-engine', 'bash-engine', 'jieba-engine'])
 const nodeBuiltins = new Set([
   ...builtinModules,
   ...builtinModules.map((name) => `node:${name}`),
@@ -187,7 +187,53 @@ function componentPlugins(componentId) {
       },
     })
   }
+  if (componentId === 'jieba-engine') {
+    plugins.push(jiebaWorkerInlinePlugin())
+  }
   return plugins
+}
+
+function jiebaWorkerInlinePlugin() {
+  return {
+    name: 'runtime-jieba-worker',
+    setup(build) {
+      build.onResolve({ filter: /^virtual:jieba-worker-script$/ }, () => ({
+        path: 'jieba-worker',
+        namespace: 'runtime-worker',
+      }))
+      build.onLoad(
+        { filter: /^jieba-worker$/, namespace: 'runtime-worker' },
+        async () => {
+          const glue = await readFile(
+            path.resolve('node_modules/jieba-wasm/pkg/web/jieba_rs_wasm.js'),
+            'utf8',
+          )
+          const wasm = await readFile(
+            path.resolve('node_modules/jieba-wasm/pkg/web/jieba_rs_wasm_bg.wasm'),
+          )
+          const wasmBase64 = wasm.toString('base64')
+          const workerScript = [
+            glue,
+            'const wasmBytes = Uint8Array.from(atob(' +
+              JSON.stringify(wasmBase64) +
+              '), (c) => c.charCodeAt(0));',
+            'initSync({ module: wasmBytes });',
+            "self.onmessage = (event) => {",
+            "  const request = event.data;",
+            "  try {",
+            "    if (request.type !== 'cut_for_search') throw new Error('unknown request');",
+            "    const tokens = cut_for_search(request.text, true);",
+            "    self.postMessage({ type: 'result', id: request.id, tokens });",
+            "  } catch (error) {",
+            "    self.postMessage({ type: 'error', id: request.id, message: String(error && error.message || error) });",
+            "  }",
+            "};",
+          ].join('\n')
+          return { contents: workerScript, loader: 'js' }
+        },
+      )
+    },
+  }
 }
 
 function bashEngineZlibStubPlugin() {

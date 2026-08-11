@@ -120,6 +120,7 @@
     "fzstd": "0.1.1",
     "gpt-tokenizer": "^3.4.0",
     "groq-sdk": "^0.7.0",
+    "jieba-wasm": "^2.4.0",
     "jszip": "^3.10.1",
     "just-bash": "3.2.0",
     "langchain": "^0.3.2",
