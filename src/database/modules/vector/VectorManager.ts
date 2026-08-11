@@ -402,7 +402,7 @@ export class VectorManager {
         content: doc.content,
         contentHash,
         metadata: meta,
-        mtime: file.stat.mtime,
+        mtime: Math.round(file.stat.mtime),
       })
     }
     return chunks
@@ -480,7 +480,7 @@ export class VectorManager {
           content,
           contentHash,
           metadata: { page: pageNum, startLine: 1, endLine: lineCount },
-          mtime: file.stat.mtime,
+          mtime: Math.round(file.stat.mtime),
         })
       } else {
         const docs = await pageSplitter.createDocuments([trimmed])
@@ -494,7 +494,7 @@ export class VectorManager {
             content,
             contentHash,
             metadata: { page: pageNum, startLine: from, endLine: to },
-            mtime: file.stat.mtime,
+            mtime: Math.round(file.stat.mtime),
           })
         }
       }
@@ -545,7 +545,7 @@ export class VectorManager {
     for (const file of candidateFiles) {
       if (file.stat.size === 0) continue
       const existing = indexedFiles.get(file.path)
-      if (existing == null || existing.mtime !== file.stat.mtime) {
+      if (existing == null || existing.mtime !== Math.round(file.stat.mtime)) {
         filesToChunkify.push(file)
       }
     }
@@ -650,7 +650,7 @@ export class VectorManager {
         const { fileWrite, permanentFailed } =
           await this.buildVectorStoreFileWrite(
             file,
-            file.stat.mtime,
+            Math.round(file.stat.mtime),
             chunks,
             embeddingModel,
             signal,
