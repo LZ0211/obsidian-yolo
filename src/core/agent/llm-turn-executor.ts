@@ -28,6 +28,7 @@ import {
   executeSingleTurn,
 } from '../ai/single-turn'
 import { normalizeAgentFinishReason } from './finish-reason'
+import { withProviderConcurrency } from './providerConcurrencyLimiter'
 import {
   type ResponsesContinuation,
   supportsResponsesStatefulContinuation,
@@ -281,35 +282,39 @@ export class AgentLlmTurnExecutor {
       )
       const providerStart = Date.now()
       let recordedFirstToken = false
-      turnResult = await executeSingleTurn({
-        providerClient: this.input.providerClient,
-        model: this.input.model,
-        request: {
-          model: this.input.model.model,
-          messages: requestMessages,
-          temperature: this.input.requestParams?.temperature,
-          top_p: this.input.requestParams?.top_p,
-          max_tokens: this.input.requestParams?.max_tokens,
-          ...(requestReasoning !== undefined
-            ? { reasoningLevel: requestReasoning }
-            : {}),
-          // Forward the per-run continuation handle. Only ever present on
-          // Responses-capable providers; other providers ignore `continuation`
-          // and stay byte-for-byte on the message-history path.
-          ...(this.input.responsesContinuation
-            ? { continuation: this.input.responsesContinuation }
-            : {}),
-        },
-        tools,
-        signal: this.input.abortSignal,
-        deliveryMode,
-        primaryRequestTimeoutMs:
-          this.input.requestParams?.primaryRequestTimeoutMs,
-        streamFallbackRecoveryEnabled:
-          this.input.requestParams?.streamFallbackRecoveryEnabled,
-        geminiTools: this.input.geminiTools,
-        debugTraceId: debugTrace?.id,
-        onStreamDelta: ({ contentDelta, reasoningDelta, chunk, toolCalls }) => {
+      turnResult = await withProviderConcurrency(
+        this.input.model.providerId,
+        () =>
+          executeSingleTurn({
+            providerClient: this.input.providerClient,
+            model: this.input.model,
+            request: {
+              model: this.input.model.model,
+              messages: requestMessages,
+              temperature: this.input.requestParams?.temperature,
+              top_p: this.input.requestParams?.top_p,
+              max_tokens: this.input.requestParams?.max_tokens,
+              ...(requestReasoning !== undefined
+                ? { reasoningLevel: requestReasoning }
+                : {}),
+              // Forward the per-run continuation handle. Only ever present on
+              // Responses-capable providers; other providers ignore
+              // `continuation` and stay byte-for-byte on the message-history
+              // path.
+              ...(this.input.responsesContinuation
+                ? { continuation: this.input.responsesContinuation }
+                : {}),
+            },
+            tools,
+            signal: this.input.abortSignal,
+            deliveryMode,
+            primaryRequestTimeoutMs:
+              this.input.requestParams?.primaryRequestTimeoutMs,
+            streamFallbackRecoveryEnabled:
+              this.input.requestParams?.streamFallbackRecoveryEnabled,
+            geminiTools: this.input.geminiTools,
+            debugTraceId: debugTrace?.id,
+            onStreamDelta: ({ contentDelta, reasoningDelta, chunk, toolCalls }) => {
           if (reasoningDelta) reasoningTracker.observeReasoning()
 
           let metadata = assistantMessage.metadata
@@ -397,7 +402,9 @@ export class AgentLlmTurnExecutor {
           }
           this.input.onAssistantMessage(assistantMessage)
         },
-      })
+          }),
+        this.input.abortSignal,
+      )
       if (!recordedFirstToken) {
         updateLLMDebugTrace(debugTrace?.id, {
           providerFirstTokenMs: Date.now() - providerStart,
