@@ -187,6 +187,9 @@ export function workspaceAgentPolicyToRuntimeAccessPolicy(
   }
 }
 
+// 本类不实现 Task 4 的 ChatRuntime 契约：它是 web 层的 run 提交服务（会话
+// 落库 + AgentService 分发 + 事件投影），ChatRuntime 由后续 remote adapter
+// 在其上补全能力面。
 export class WebChatRuntimeAdapter {
   constructor(private readonly options: WebChatRuntimeAdapterOptions) {}
 

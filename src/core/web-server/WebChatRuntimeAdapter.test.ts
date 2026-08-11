@@ -562,4 +562,88 @@ describe('WebChatRuntimeAdapter.prepareRun', () => {
     expect(runCalls[0].input.branchLabel).toBe('Branch A')
     expect(runCalls[0].input.toolCapabilityMode).toBe('agent')
   })
+
+  it('creates a missing conversation through ChatManager with the web external-agent origin', async () => {
+    const { agentService, runCalls } = makeAgentService()
+    const backend = makeConversationBackend()
+    const adapter = new WebChatRuntimeAdapter({
+      app: {} as unknown as App,
+      chatManager: backend.chatManager,
+      loadConversation: backend.loadConversation,
+      getSettings: () => makeSettings(),
+      getAgentService: () => agentService,
+      getMcpManager: async () => makeMcpManager(),
+    })
+
+    const prepared = await adapter.prepareRun(
+      {
+        conversationId: 'conv-1',
+        messages: [makeMessage('user-1', 'user', 'hi')],
+      },
+      makeActiveAgent(),
+    )
+    await prepared.execute({
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    })
+
+    const createChatMock = (
+      backend.chatManager as unknown as { createChat: jest.Mock }
+    ).createChat
+    expect(createChatMock).toHaveBeenCalledTimes(1)
+    expect(createChatMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'conv-1',
+        title: 'New chat',
+        origin: 'external-agent',
+      }),
+    )
+    expect(runCalls).toHaveLength(1)
+  })
+
+  it('falls back to the loaded conversation when a concurrent createChat races the file', async () => {
+    const { agentService, runCalls } = makeAgentService()
+    const existing = {
+      id: 'conv-1',
+      title: 'New chat',
+      messages: [],
+      createdAt: 0,
+      updatedAt: 0,
+      schemaVersion: 1,
+      origin: 'external-agent',
+    } as StoredChatConversation
+    // 并发语义：首次读取未命中 → createChat 因文件已存在抛错 → 回读命中
+    // （另一个 web 请求刚完成了创建）。
+    const loadConversation = jest
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue(existing)
+    const createChat = jest.fn(async () => {
+      throw new Error('File already exists: YOLO/data/chats/v1_conv-1.json')
+    })
+    const adapter = new WebChatRuntimeAdapter({
+      app: {} as unknown as App,
+      chatManager: { createChat } as unknown as ChatManager,
+      loadConversation,
+      getSettings: () => makeSettings(),
+      getAgentService: () => agentService,
+      getMcpManager: async () => makeMcpManager(),
+    })
+
+    const prepared = await adapter.prepareRun(
+      {
+        conversationId: 'conv-1',
+        messages: [makeMessage('user-1', 'user', 'hi')],
+      },
+      makeActiveAgent(),
+    )
+    await prepared.execute({
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    })
+
+    expect(loadConversation).toHaveBeenCalledTimes(2)
+    expect(createChat).toHaveBeenCalledTimes(1)
+    expect(runCalls).toHaveLength(1)
+  })
 })
