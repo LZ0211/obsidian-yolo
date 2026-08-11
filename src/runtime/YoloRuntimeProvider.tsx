@@ -25,3 +25,11 @@ export function useYoloRuntime(): YoloRuntime {
   }
   return runtime
 }
+
+/**
+ * 非抛出版本：桌面宿主不挂 YoloRuntimeProvider，Chat.tsx 仅在
+ * buildRuntime 注入（Web 端）存在时消费 runtime，缺省回退 null。
+ */
+export function useOptionalYoloRuntime(): YoloRuntime | null {
+  return useContext(YoloRuntimeContext)
+}

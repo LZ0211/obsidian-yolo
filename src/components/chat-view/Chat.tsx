@@ -24,17 +24,10 @@ import {
   resolveAssistantTimeContextEnabled,
 } from '../../core/agent/assistant-capabilities'
 import { resolveAssistantModelId } from '../../core/agent/assistant-model'
-import { getMemoryIndexRuntimeHandle } from '../../core/memory/memoryIndexRuntime'
 import { getLatestAssistantContextUsage } from '../../core/agent/compaction'
 import { DEFAULT_ASSISTANT_ID } from '../../core/agent/default-assistant'
 import { findUnifiedAgentById } from '../../core/agent/workspaceAgentResolver'
-import { normalizePathSlashes } from '../../core/paths/normalizePath'
-import {
-  isConversationFileScopeLocked,
-  resolveConversationFileScope,
-} from '../../core/workspace/conversationFileScope'
-import { FolderPickerModal } from '../settings/modals/FolderPickerModal'
-import { ConversationWorkingDirectoryControl } from './chat-input/ConversationWorkingDirectoryControl'
+import type { ChatRuntime } from '../../core/chat-runtime/contract'
 import {
   type ChatRuntimeId,
   type CliRuntimeScope,
@@ -42,6 +35,11 @@ import {
   createYoloChatRuntimeActions,
   isCliRuntimeAvailable,
 } from '../../core/cli-runtime'
+import { getMemoryIndexRuntimeHandle } from '../../core/memory/memoryIndexRuntime'
+import {
+  isConversationFileScopeLocked,
+  resolveConversationFileScope,
+} from '../../core/workspace/conversationFileScope'
 import type { ChatLeafPlacement } from '../../features/chat/chatLeafSessionManager'
 import { useChatHighlightSession } from '../../features/editor/selection-highlight/useChatHighlightSession'
 import {
@@ -50,6 +48,8 @@ import {
 } from '../../hooks/useChatHistory'
 import { useChatManager } from '../../hooks/useJsonManagers'
 import { useLiteSkillEntries } from '../../hooks/useLiteSkillEntries'
+import type { YoloRuntime } from '../../runtime/yoloRuntime.types'
+import { useOptionalYoloRuntime } from '../../runtime/YoloRuntimeProvider'
 import type {
   ChatConversationCompactionState,
   ChatMessage,
@@ -91,9 +91,11 @@ import {
 import ChatUserInput from './chat-input/ChatUserInput'
 import type { ChatUserInputProps } from './chat-input/ChatUserInput'
 import { CliRuntimeControls } from './chat-input/CliRuntimeControls'
+import { ConversationWorkingDirectoryControl } from './chat-input/ConversationWorkingDirectoryControl'
 import MentionableBadge from './chat-input/MentionableBadge'
 import type { SlashCommand } from './chat-input/plugins/mention/SkillSlashPlugin'
 import { editorStateToPlainText } from './chat-input/utils/editor-state-to-plain-text'
+import { adaptContractRuntimeToActions } from './chat-runtime-contract-actions-bridge'
 import { ChatHeader } from './ChatHeader'
 import {
   getDisplayedAssistantToolMessages,
@@ -201,6 +203,18 @@ export type ChatRuntimeSnapshot = {
 
 export type ChatProps = {
   cliRuntimeScope?: CliRuntimeScope
+  /**
+   * Web 端懒解析桌面 CLI runtime scope（ChatView 桌面路径直接传同步的
+   * cliRuntimeScope，不传本 prop）。
+   */
+  getCliRuntimeScope?: () => Promise<CliRuntimeScope | null>
+  /**
+   * 组装层（Web 端挂载）注入的契约 ChatRuntime 装配：以 YoloRuntime 为源构建
+   * 会话绑定的 ChatRuntime（RemoteChatRuntimeAdapter 背书）。存在时主面
+   * runtime actions 改走注入的远程 runtime；缺省保留桌面
+   * createYoloChatRuntimeActions(agentService) 路径。
+   */
+  buildRuntime?: (runtime: YoloRuntime) => ChatRuntime
   selectedBlock?: MentionableBlockData
   activeView?: 'chat' | 'composer'
   onChangeView?: (view: 'chat' | 'composer') => void
@@ -226,9 +240,33 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
   const app = useApp()
   const plugin = usePlugin()
   const agentService = plugin.getAgentService()
+  // 注入分支（Web 端）：组装层经 buildRuntime 注入会话绑定的契约 ChatRuntime，
+  // 桥接成主面 actions；桌面宿主无 YoloRuntimeProvider（useOptionalYoloRuntime
+  // 返回 null）恒走 createYoloChatRuntimeActions 原路径。
+  const yoloRuntime = useOptionalYoloRuntime()
+  const [injectedRuntime, setInjectedRuntime] = useState<ChatRuntime | null>(
+    null,
+  )
+  useEffect(() => {
+    if (!props.buildRuntime || !yoloRuntime) {
+      setInjectedRuntime(null)
+      return
+    }
+    // 装配在 effect 中执行：构造 RemoteChatRuntimeAdapter 会建立 SSE 订阅，
+    // 不能在 render 期间触发；StrictMode 双执行由 cleanup 兜底 dispose。
+    const built = props.buildRuntime(yoloRuntime)
+    setInjectedRuntime(built)
+    return () => {
+      setInjectedRuntime(null)
+      void built.dispose()
+    }
+  }, [props.buildRuntime, yoloRuntime])
   const runtimeActions = useMemo(
-    () => createYoloChatRuntimeActions(agentService),
-    [agentService],
+    () =>
+      injectedRuntime
+        ? adaptContractRuntimeToActions(injectedRuntime)
+        : createYoloChatRuntimeActions(agentService),
+    [agentService, injectedRuntime],
   )
   const { settings, setSettings, updateSettings } = useSettings()
   const quickAccessSkillEntries = useLiteSkillEntries(app, { settings })
@@ -248,7 +286,24 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
   } = useChatHistory()
   const chatManager = useChatManager()
   const seededRuntimeSnapshot = props.seededRuntimeSnapshot
-  const cliRuntimeScope = props.cliRuntimeScope
+  // Web 端懒解析注入的 CLI scope（远程组装）；桌面路径不传
+  // getCliRuntimeScope，恒回退同步 cliRuntimeScope prop，零行为变化。
+  const [resolvedCliRuntimeScope, setResolvedCliRuntimeScope] =
+    useState<CliRuntimeScope | null>(null)
+  useEffect(() => {
+    if (!props.getCliRuntimeScope) {
+      setResolvedCliRuntimeScope(null)
+      return
+    }
+    let cancelled = false
+    void props.getCliRuntimeScope().then((scope) => {
+      if (!cancelled) setResolvedCliRuntimeScope(scope)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [props.getCliRuntimeScope])
+  const cliRuntimeScope = resolvedCliRuntimeScope ?? props.cliRuntimeScope
   const cliRuntimeAvailable = isCliRuntimeAvailable()
   const chatMountedRef = useRef(true)
   useEffect(() => {
@@ -555,7 +610,8 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     [selectedAssistant],
   )
   const displayedConversationWorkingDirectory =
-    explicitConversationWorkingDirectory ?? effectiveConversationWorkingDirectory
+    explicitConversationWorkingDirectory ??
+    effectiveConversationWorkingDirectory
   const conversationWorkingDirectoryLocked =
     isLoadingConversation || isConversationFileScopeLocked(chatMessages)
   const workingDirectoryControl = useMemo(
