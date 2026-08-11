@@ -48,7 +48,6 @@ import {
   ChatConversationCompaction,
   ChatConversationCompactionState,
   ChatMessage,
-  ChatToolMessage,
 } from '../../types/chat'
 import { ConversationOverrideSettings } from '../../types/conversation-settings.types'
 import {
@@ -94,14 +93,6 @@ type UseChatStreamManagerParams = {
   assistantIdOverride?: string
   compaction?: ChatConversationCompactionState
   onRunSettled?: (result: { aborted: boolean; failed: boolean }) => void
-}
-
-type ActiveBranchRun = {
-  branchId: string
-  branchConversationId: string
-  sourceUserMessageId: string
-  branchModelId: string
-  branchLabel: string
 }
 
 type BranchRetryTarget = {
@@ -228,51 +219,6 @@ const buildChatContextualInjections = ({
   return injections
 }
 
-const annotateBranchMessages = (
-  messages: ChatMessage[],
-  branch: ActiveBranchRun,
-  branchState: AgentConversationState,
-): ChatMessage[] => {
-  const branchRunSummary = buildAgentConversationRunSummary(branchState)
-
-  return messages.map((message) => {
-    if (message.role === 'assistant') {
-      return {
-        ...message,
-        metadata: {
-          ...message.metadata,
-          sourceUserMessageId: branch.sourceUserMessageId,
-          branchId: branch.branchId,
-          branchModelId: branch.branchModelId,
-          branchLabel: branch.branchLabel,
-          branchConversationId: branch.branchConversationId,
-          branchRunStatus: branchState.status,
-          branchWaitingApproval: branchRunSummary.isWaitingApproval,
-        },
-      }
-    }
-
-    if (message.role === 'tool') {
-      const toolMessage: ChatToolMessage = {
-        ...message,
-        metadata: {
-          ...message.metadata,
-          sourceUserMessageId: branch.sourceUserMessageId,
-          branchId: branch.branchId,
-          branchModelId: branch.branchModelId,
-          branchLabel: branch.branchLabel,
-          branchConversationId: branch.branchConversationId,
-          branchRunStatus: branchState.status,
-          branchWaitingApproval: branchRunSummary.isWaitingApproval,
-        },
-      }
-      return toolMessage
-    }
-
-    return message
-  })
-}
-
 export function useChatStreamManager({
   setChatMessages,
   setCompactionState,
@@ -299,10 +245,6 @@ export function useChatStreamManager({
   const activeStreamAbortControllersRef = useRef<Map<string, AbortController>>(
     new Map(),
   )
-  const activeBranchRunsRef = useRef<Map<string, ActiveBranchRun>>(new Map())
-  const branchStateMapRef = useRef<Map<string, AgentConversationState>>(
-    new Map(),
-  )
   const baseConversationMessagesRef = useRef<ChatMessage[]>([])
   const baseCompactionStateRef = useRef<ChatConversationCompactionState>(
     compaction ?? [],
@@ -320,48 +262,6 @@ export function useChatStreamManager({
   const currentConversationRunSummary = useMemo(
     () => buildAgentConversationRunSummary(agentConversationState),
     [agentConversationState],
-  )
-
-  const buildVisibleConversationMessages = useCallback(
-    (baseMessages: ChatMessage[]): ChatMessage[] => {
-      const activeBranches = Array.from(activeBranchRunsRef.current.values())
-      if (activeBranches.length === 0) {
-        return baseMessages
-      }
-
-      const result: ChatMessage[] = []
-      for (const message of baseMessages) {
-        result.push(message)
-        if (message.role !== 'user') {
-          continue
-        }
-
-        for (const branch of activeBranches) {
-          if (branch.sourceUserMessageId !== message.id) {
-            continue
-          }
-          const branchState = branchStateMapRef.current.get(
-            branch.branchConversationId,
-          )
-          if (!branchState) {
-            continue
-          }
-          const anchorIndex = branchState.messages.findIndex(
-            (candidate) => candidate.id === branch.sourceUserMessageId,
-          )
-          const responseMessages =
-            anchorIndex >= 0
-              ? branchState.messages.slice(anchorIndex + 1)
-              : branchState.messages
-          result.push(
-            ...annotateBranchMessages(responseMessages, branch, branchState),
-          )
-        }
-      }
-
-      return result
-    },
-    [],
   )
 
   const syncVisibleConversationState = useCallback(
