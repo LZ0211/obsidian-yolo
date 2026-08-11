@@ -25,10 +25,7 @@ import {
   ObsidianDropdown,
   type ObsidianDropdownOptionGroup,
 } from '../../common/ObsidianDropdown'
-import {
-  ObsidianSetting,
-  useObsidianSetting,
-} from '../../common/ObsidianSetting'
+import { ObsidianSetting } from '../../common/ObsidianSetting'
 import { ObsidianTextInput } from '../../common/ObsidianTextInput'
 import { ObsidianToggle } from '../../common/ObsidianToggle'
 import { IndexProgressRing } from '../IndexProgressRing'
@@ -38,28 +35,6 @@ import { IncludedFilesModal } from '../modals/IncludedFilesModal'
 
 const RAG_UPDATE_ERROR = 'Failed to update RAG settings.'
 
-/**
- * 最近同步时间标签。Obsidian 的 Setting 会把 React children 留在 settingEl
- * 之外的容器里，导致内容游离在卡片外——这里手动挂到 setting.controlEl
- * （与 ObsidianToggle 等控件相同的机制）。
- */
-function RagLastSyncLabel({ timestamp }: { timestamp: number }) {
-  const { setting } = useObsidianSetting()
-  const ref = useRef<HTMLSpanElement>(null)
-
-  useEffect(() => {
-    if (!setting || !ref.current) return
-    if (!setting.controlEl.contains(ref.current)) {
-      setting.controlEl.appendChild(ref.current)
-    }
-  }, [setting])
-
-  return (
-    <span ref={ref} className="yolo-rag-last-sync">
-      {timestamp > 0 ? new Date(timestamp).toLocaleString() : '—'}
-    </span>
-  )
-}
 
 type RAGSectionProps = {
   app: App
@@ -972,11 +947,16 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
               '最近一次成功完成知识库索引或后台同步的时间。',
             )}
             className="yolo-settings-card"
-          >
-            <RagLastSyncLabel
-              timestamp={settings.ragOptions.lastAutoUpdateAt ?? 0}
-            />
-          </ObsidianSetting>
+            nameExtra={
+              <span className="yolo-rag-last-sync">
+                {(settings.ragOptions.lastAutoUpdateAt ?? 0) > 0
+                  ? new Date(
+                      settings.ragOptions.lastAutoUpdateAt,
+                    ).toLocaleString()
+                  : '—'}
+              </span>
+            }
+          />
 
           <ObsidianSetting
             name={t('settings.rag.indexPdf', '索引 PDF')}
