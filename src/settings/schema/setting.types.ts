@@ -562,6 +562,22 @@ export const ragBackendSettingsSchema = z.preprocess(
   }),
 )
 
+export const webRuntimeSettingsSchema = z
+  .object({
+    enabled: z.boolean().catch(false),
+    port: z.number().int().min(1).max(65535).catch(18900),
+    host: z.string().min(1).catch('127.0.0.1'),
+    token: z.string().catch(''),
+    maxConcurrentAgentRuns: z.number().int().min(1).max(20).catch(12),
+  })
+  .catch({
+    enabled: false,
+    port: 18900,
+    host: '127.0.0.1',
+    token: '',
+    maxConcurrentAgentRuns: 12,
+  })
+
 export const yoloSettingsSchema = z.object({
   // Version
   version: z.literal(SETTINGS_SCHEMA_VERSION).catch(SETTINGS_SCHEMA_VERSION),
@@ -621,6 +637,7 @@ export const yoloSettingsSchema = z.object({
     lastAutoUpdateAt: 0,
   }),
   ragBackendSettings: ragBackendSettingsSchema,
+  webRuntime: webRuntimeSettingsSchema,
 
   // MCP configuration
   mcp: z

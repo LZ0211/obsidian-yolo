@@ -1999,6 +1999,20 @@ export const it: DeepPartial<TranslationKeys> = {
         "Avvisa quando l'esecuzione corrente di Agent termina senza attendere ulteriori approvazioni.",
       interactionSectionTitle: 'Interazione',
       maintenanceSectionTitle: 'Manutenzione',
+      webRuntimeTitle: 'Web Runtime',
+      webRuntimeDesc:
+        "Configura il punto di accesso browser e l'indirizzo di bind per il runtime web integrato.",
+      webRuntimeEnabled: 'Abilita Web Runtime',
+      webRuntimeEnabledDesc:
+        "Consenti l'avvio del server web UI e API integrato dalle impostazioni del plugin.",
+      webRuntimeHost: 'Host',
+      webRuntimeHostDesc:
+        'Usa 127.0.0.1 per accesso solo locale. Qualsiasi host non di loopback espone il server alla rete.',
+      webRuntimePort: 'Porta',
+      webRuntimePortDesc:
+        'Porta utilizzata dal runtime web. Intervallo valido: da 1 a 65535.',
+      webRuntimeNetworkWarning:
+        'Il server è accessibile dalla rete. Assicurati che il token sia impostato e che il firewall consenta connessioni in entrata sulla porta {{port}}.',
     },
   },
 

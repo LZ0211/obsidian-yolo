@@ -1808,6 +1808,15 @@ export type TranslationKeys = {
       notificationTaskCompletedDesc?: string
       interactionSectionTitle?: string
       maintenanceSectionTitle?: string
+      webRuntimeTitle?: string
+      webRuntimeDesc?: string
+      webRuntimeEnabled?: string
+      webRuntimeEnabledDesc?: string
+      webRuntimeHost?: string
+      webRuntimeHostDesc?: string
+      webRuntimePort?: string
+      webRuntimePortDesc?: string
+      webRuntimeNetworkWarning?: string
     }
     smartSpace?: {
       quickActionsTitle: string
