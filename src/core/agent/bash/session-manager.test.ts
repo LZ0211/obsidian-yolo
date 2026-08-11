@@ -24,7 +24,11 @@ import {
   sessionManagerTimings,
 } from './session-manager'
 
-describe('terminal command session-manager', () => {
+// These tests execute a real bash via PTY and assume a Unix-like shell
+// environment; on Windows they cannot pass even with a POSIX bash present.
+const describeOnNonWindows =
+  process.platform === 'win32' ? describe.skip : describe
+describeOnNonWindows('terminal command session-manager', () => {
   const originalIdleWaitMs = sessionManagerTimings.idleWaitMs
   // The tests run bash with `cwd: '/tmp'`. On Windows `path.resolve('/tmp')`
   // resolves to `<drive>:\tmp` (e.g. `D:\tmp`), which does not exist by
