@@ -44,16 +44,10 @@ export function useAgentConversationState(
 
   const subscribe = useCallback(
     (onStoreChange: () => void) =>
-      agentService.subscribe(
-        conversationId,
-        (state) => {
-          cacheRef.current = { conversationId, state }
-          onStoreChange()
-        },
-        // 上面的 getSnapshot 已经在 id 变化时同步取过一次最新状态，这里
-        // 不需要 AgentService 再补发一次当前值。
-        { emitCurrent: false },
-      ),
+      agentService.subscribe(conversationId, (state) => {
+        cacheRef.current = { conversationId, state }
+        onStoreChange()
+      }),
     [agentService, conversationId],
   )
 
