@@ -1,4 +1,4 @@
-import { App, Notice } from 'obsidian'
+import { App, Notice, TFolder } from 'obsidian'
 import {
   Dispatch,
   MutableRefObject,
@@ -26,7 +26,13 @@ import type { Assistant } from '../../types/assistant.types'
 import type { ChatUserMessage } from '../../types/chat'
 import type { ConversationOverrideSettings } from '../../types/conversation-settings.types'
 import type { ReasoningLevel } from '../../types/reasoning'
+import {
+  isAgentCompatibleWithDirectory,
+  normalizeConversationWorkingDirectory,
+} from '../../core/workspace/conversationFileScope'
+import type { WorkspaceAccessPolicy } from '../../types/assistant.types'
 import { AcknowledgementModal } from '../modals/AcknowledgementModal'
+import { FolderPickerModal } from '../settings/modals/FolderPickerModal'
 
 import { type ChatMode, isAgentChatMode } from './chat-input/ChatModeSelect'
 import {
@@ -76,6 +82,11 @@ export type ChatRuntimePreferencesLateState = {
     action: (isCurrent: () => boolean) => void | Promise<void>,
   ) => Promise<boolean>
   activeHistoryConversationId: string
+  // 工作目录领域（backup 语义）
+  conversationWorkingDirectoryLocked: boolean
+  conversationWorkingDirectory: string | undefined
+  setConversationWorkingDirectory: (directory: string | undefined) => void
+  selectedAssistantFilePolicy: WorkspaceAccessPolicy | undefined
 }
 
 export type UseChatRuntimePreferencesParams = {
@@ -589,6 +600,80 @@ export function useChatRuntimePreferences({
     ],
   )
 
+  // 工作目录领域（backup 语义照抄）：可选性 = 目录存在 + Agent 文件策略
+  // 兼容；弹窗根 = workspace agent 的 home，普通 assistant 为 vault 根；
+  // 冻结（已开始对话/加载中）时选择与变更均被门控。状态经 lateState 读取。
+  const isWorkingDirectorySelectable = useCallback(
+    (folderPath: string) => {
+      let directory: string
+      try {
+        directory = normalizeConversationWorkingDirectory(folderPath || '/')
+      } catch {
+        return false
+      }
+      const vaultPath = directory === '/' ? '' : directory.slice(1)
+      const entry = vaultPath
+        ? app.vault.getAbstractFileByPath(vaultPath)
+        : app.vault.getRoot()
+      if (!(entry instanceof TFolder)) return false
+      return isAgentCompatibleWithDirectory(
+        getLate().selectedAssistantFilePolicy,
+        directory,
+      ).ok
+    },
+    [app.vault, getLate],
+  )
+
+  const handleWorkingDirectoryChange = useCallback(
+    (folderPath: string | undefined) => {
+      const late = getLate()
+      if (late.conversationWorkingDirectoryLocked) return
+      if (folderPath === undefined) {
+        late.setConversationWorkingDirectory(undefined)
+        return
+      }
+      if (!isWorkingDirectorySelectable(folderPath)) {
+        new Notice(
+          t(
+            'chat.workingDirectory.unavailable',
+            'This folder is not available to the selected Agent.',
+          ),
+        )
+        return
+      }
+      const directory = normalizeConversationWorkingDirectory(folderPath || '/')
+      late.setConversationWorkingDirectory(directory)
+    },
+    [getLate, isWorkingDirectorySelectable, t],
+  )
+
+  const handleOpenWorkingDirectoryPicker = useCallback(() => {
+    const late = getLate()
+    if (late.conversationWorkingDirectoryLocked) return
+    const policy = late.selectedAssistantFilePolicy
+    const rootPath = policy?.enabled
+      ? normalizeConversationWorkingDirectory(
+          policy.workspaceRoot.trim() || '/',
+        ).replace(/^\/+/, '')
+      : undefined
+    new FolderPickerModal(
+      app,
+      app.vault,
+      late.conversationWorkingDirectory
+        ? [late.conversationWorkingDirectory.replace(/^\/+/, '')]
+        : [],
+      false,
+      handleWorkingDirectoryChange,
+      rootPath || undefined,
+      isWorkingDirectorySelectable,
+    ).open()
+  }, [
+    app,
+    getLate,
+    handleWorkingDirectoryChange,
+    isWorkingDirectorySelectable,
+  ])
+
   return {
     // 运行时切换状态
     activeRuntimeId,
@@ -617,6 +702,11 @@ export function useChatRuntimePreferences({
     handleConversationAssistantSelect,
     handleChatModeChange,
     handleYoloChange,
+
+    // 工作目录领域
+    isWorkingDirectorySelectable,
+    handleWorkingDirectoryChange,
+    handleOpenWorkingDirectoryPicker,
 
     lateStateRef,
   }

@@ -291,6 +291,8 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     handleConversationAssistantSelect,
     handleChatModeChange,
     handleYoloChange,
+    handleWorkingDirectoryChange,
+    handleOpenWorkingDirectoryPicker,
     lateStateRef: runtimePreferencesLateStateRef,
   } = useChatRuntimePreferences({
     app,
@@ -552,46 +554,27 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
         : '',
     [selectedAssistant],
   )
-  const workingDirectoryControl = useMemo(() => {
-    // The directory locks once the conversation has user messages (backup
-    // semantics from conversationFileScope): changing it mid-conversation
-    // would split the file scope. Fresh conversations are never locked.
-    const isLocked = isConversationFileScopeLocked(chatMessages)
-    const pickWorkingDirectory = () => {
-      new FolderPickerModal(
-        app,
-        app.vault,
-        [conversationWorkingDirectory],
-        false,
-        (picked) => {
-          const normalized = normalizePathSlashes(picked)
-          setConversationOverrides((current) => ({
-            ...(current ?? {}),
-            workingDirectory: normalized,
-          }))
-        },
-        workspaceHome,
-      ).open()
-    }
-    return (
+  const conversationWorkingDirectoryLocked =
+    isLoadingConversation || isConversationFileScopeLocked(chatMessages)
+  const workingDirectoryControl = useMemo(
+    () => (
       <ConversationWorkingDirectoryControl
         value={conversationWorkingDirectory}
         displayValue={toDisplayPath(conversationWorkingDirectory, workspaceHome)}
-        locked={isLocked}
-        onChange={() =>
-          setConversationOverrides((current) => ({
-            ...(current ?? {}),
-            workingDirectory: null,
-          }))
-        }
-        onOpenPicker={pickWorkingDirectory}
+        locked={conversationWorkingDirectoryLocked}
+        onChange={handleWorkingDirectoryChange}
+        onOpenPicker={handleOpenWorkingDirectoryPicker}
       />
-    )
-  }, [
-    app,
-    conversationWorkingDirectory,
-    workspaceHome,
-  ])
+    ),
+    [
+      conversationWorkingDirectory,
+      conversationWorkingDirectoryLocked,
+      handleOpenWorkingDirectoryPicker,
+      handleWorkingDirectoryChange,
+      toDisplayPath,
+      workspaceHome,
+    ],
+  )
 
   // Per-conversation model id (do NOT write back to global settings)
   const [conversationModelId, setConversationModelId] = useState<string>(() => {
@@ -806,6 +789,15 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     conversationOverrides,
     setConversationOverrides,
     selectedAssistant,
+    conversationWorkingDirectoryLocked:
+      isLoadingConversation || isConversationFileScopeLocked(chatMessages),
+    conversationWorkingDirectory,
+    setConversationWorkingDirectory: (directory) =>
+      setConversationOverrides((current) => ({
+        ...(current ?? {}),
+        workingDirectory: directory ?? null,
+      })),
+    selectedAssistantFilePolicy: selectedAssistant?.workspaceAccessPolicy,
     getReasoningLevelForModelId,
     cliPreferenceSettingsRef,
     cliModelCatalog,
