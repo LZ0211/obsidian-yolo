@@ -201,6 +201,12 @@ export class ModuleStartupReconciler {
       this.intents.set(moduleId, current)
 
       if (current === 'enabled') {
+        // 已激活的模块视为就绪：跳过 quiesce 型 reconcile（active 无法
+        // quiesce——reconcile 失败后的重试可能在模块激活后再次触发，导致
+        // "is active and cannot be quiesced"）。
+        if (this.options.runtime.isActive(moduleId)) {
+          continue
+        }
         try {
           const result =
             await this.options.readinessReconciler.ensureModuleReady(moduleId)
