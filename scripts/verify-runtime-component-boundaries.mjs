@@ -10,7 +10,6 @@ const forbidden = [
   'node_modules/pdf-lib/',
   'node_modules/@pdf-lib/',
   'node_modules/sql.js/',
-  'node_modules/@tootallnate/quickjs-emscripten/',
   'inline-pdfjs-worker',
 ]
 for (const dependency of forbidden) {

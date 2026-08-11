@@ -61,38 +61,8 @@ const context = await esbuild.context({
   loader: {
     '.svg': 'dataurl',
   },
-  plugins: [pacProxyAgentStubPlugin()],
+  plugins: [],
 })
-
-/**
- * pac-proxy-agent drags in quickjs-emscripten (a 608KB inlined wasm JS
- * engine) to execute PAC proxy scripts — a rarely used proxy mode. Stub it
- * out so the host bundle stays wasm-free; PAC proxy URLs fail with a clear
- * error instead of silently misbehaving.
- */
-function pacProxyAgentStubPlugin() {
-  return {
-    name: 'pac-proxy-agent-stub',
-    setup(build) {
-      build.onResolve({ filter: /^pac-proxy-agent$/ }, () => ({
-        path: 'pac-proxy-agent-stub',
-        namespace: 'pac-proxy-stub',
-      }))
-      build.onLoad(
-        { filter: /^pac-proxy-agent-stub$/, namespace: 'pac-proxy-stub' },
-        () => ({
-          contents: [
-            'export class PacProxyAgent {',
-            "  constructor() { throw new Error('PAC proxy support is not included in this build') }",
-            '}',
-            '',
-          ].join('\n'),
-          loader: 'js',
-        }),
-      )
-    },
-  }
-}
 
 if (prod) {
   const result = await context.rebuild()
