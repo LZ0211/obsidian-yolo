@@ -103,7 +103,7 @@ type PreparedWebAgentRun = {
   abort: () => boolean
 }
 
-type CompactConversationInput = {
+export type CompactConversationInput = {
   conversationId: string
   messages: ChatMessage[]
   modelId?: string
@@ -112,7 +112,7 @@ type CompactConversationInput = {
   overrides?: ConversationOverrideSettings | null
 }
 
-type ContextBreakdownRouteInput = CompactConversationInput & {
+export type ContextBreakdownRouteInput = CompactConversationInput & {
   compaction?: ChatConversationCompactionLike | null
 }
 

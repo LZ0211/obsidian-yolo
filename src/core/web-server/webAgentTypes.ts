@@ -1,8 +1,43 @@
 import type {
+  ChatConversation,
+  ChatConversationMetadata,
+} from '../../database/json/chat/types'
+import type {
   AgentShareTokenScope,
   WorkspaceAgent,
 } from '../../settings/schema/setting.types'
 import type { Assistant } from '../../types/assistant.types'
+
+/**
+ * Web 会话对会话的绑定（backup 的 types/chat.ts 定义，master 会话类型无此
+ * 字段，由 web 层携带以保留备份的会话访问控制语义）。
+ */
+export type ChatWebBinding = {
+  initialAgentId: string
+  activeAgentId: string
+  rootHash: string
+  accessState?: 'active' | 'orphaned'
+  orphanedReason?:
+    | 'agent_deleted'
+    | 'template_deleted'
+    | 'root_unavailable'
+    | 'agent_invalid'
+  updatedAt?: number
+}
+
+/** web 层视角的会话：master ChatConversation + backup 的 web 专属字段。 */
+export type WebChatConversation = ChatConversation & {
+  workspaceId?: string | null
+  agentInstanceId?: string | null
+  webBinding?: ChatWebBinding | null
+}
+
+/** web 层视角的会话元数据：master ChatConversationMetadata + web 专属字段。 */
+export type WebChatConversationMetadata = ChatConversationMetadata & {
+  workspaceId?: string | null
+  agentInstanceId?: string | null
+  webBinding?: ChatWebBinding | null
+}
 
 export type EffectiveWorkspaceAgent = WorkspaceAgent &
   Pick<
