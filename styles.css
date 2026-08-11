@@ -2928,6 +2928,43 @@ button.yolo-mcp-tool-description-toggle.is-expanded {
   border-color: color-mix(in srgb, var(--text-error) 25%, transparent);
   background: color-mix(in srgb, var(--text-error) 10%, transparent);
 }
+.yolo-rag-inspect-list {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--size-4-2);
+  overflow: hidden;
+  min-width: 0;
+}
+.yolo-rag-inspect-row {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  padding: var(--size-2-2) var(--size-4-2);
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2-2);
+}
+.yolo-rag-inspect-label {
+  display: inline;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+.yolo-rag-inspect-value {
+  display: inline;
+  min-width: 0;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .yolo-rag-inline-status {
   display: flex;
   flex-direction: column;
@@ -2968,7 +3005,8 @@ button.yolo-mcp-tool-description-toggle.is-expanded {
   height: 100%;
   border-radius: inherit;
   background: var(--interactive-accent);
-  transition: width 160ms ease;
+  /* layout-property animation (progress bar width); motion-policy exempt */
+  transition: width var(--yolo-anim-duration-exit) var(--yolo-anim-ease-out);
 }
 /* RAG maintenance row: title + inline status + actions */
 .yolo-rag-maintenance-setting .setting-item-info {
@@ -3059,35 +3097,31 @@ button.yolo-mcp-tool-description-toggle.is-expanded {
   inset: 0;
 }
 .yolo-index-current-file-text.is-entering {
-  animation: yolo-index-file-enter 120ms var(--yolo-anim-ease-out);
+  animation: yolo-index-file-enter var(--yolo-anim-duration-feedback) var(--yolo-anim-ease-out);
 }
 .yolo-index-current-file-text.is-leaving {
-  animation: yolo-index-file-leave 120ms var(--yolo-anim-ease-out);
+  animation: yolo-index-file-leave var(--yolo-anim-duration-feedback) var(--yolo-anim-ease-out);
 }
 @keyframes yolo-index-file-enter {
   from {
     opacity: 0.35;
     transform: translateY(5px);
-    filter: blur(1px);
   }
 
   to {
     opacity: 1;
     transform: translateY(0);
-    filter: blur(0);
   }
 }
 @keyframes yolo-index-file-leave {
   from {
     opacity: 1;
     transform: translateY(0);
-    filter: blur(0);
   }
 
   to {
     opacity: 0;
     transform: translateY(-5px);
-    filter: blur(1px);
   }
 }
 @media (max-width: 900px) {
@@ -3176,6 +3210,331 @@ button.yolo-mcp-tool-description-toggle.is-expanded {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.yolo-rag-log-modal-shell {
+  width: min(1040px, calc(100vw - 96px));
+  max-width: min(1040px, calc(100vw - 96px));
+  height: min(760px, calc(100vh - 96px));
+  max-height: min(760px, calc(100vh - 96px));
+  overflow: hidden;
+}
+.yolo-rag-log-modal-shell .modal-content {
+  height: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+.yolo-rag-log-modal {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+.yolo-rag-log-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--size-4-4);
+  margin-bottom: var(--size-4-3);
+  min-width: 0;
+}
+.yolo-rag-log-toolbar-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.yolo-rag-log-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--size-4-2);
+}
+.yolo-rag-log-inspect-list {
+  flex: 0 0 auto;
+  margin-bottom: var(--size-4-4);
+}
+.yolo-rag-log-inspect-list .yolo-rag-inspect-row {
+  background: color-mix(
+    in srgb,
+    var(--background-secondary) 78%,
+    var(--background-primary) 22%
+  );
+}
+.yolo-rag-log-inspect-row--failed {
+  max-width: 100%;
+  border-color: color-mix(in srgb, var(--text-error) 20%, transparent);
+  background: color-mix(in srgb, var(--text-error) 8%, transparent);
+}
+.yolo-rag-log-content {
+  display: grid;
+  grid-template-columns: 330px minmax(0, 1fr);
+  gap: var(--size-4-4);
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.yolo-rag-log-list,
+.yolo-rag-log-detail {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.yolo-rag-log-list {
+  overflow-y: auto;
+}
+.yolo-rag-log-detail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.yolo-rag-log-list-header,
+.yolo-rag-log-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-medium);
+}
+.yolo-rag-log-trace-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--size-2-1);
+  width: 100%;
+  height: auto;
+  min-height: unset;
+  min-width: 0;
+  border: 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+  border-radius: 0;
+  padding: var(--size-4-3);
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  text-align: left;
+  line-height: inherit;
+  white-space: normal;
+  cursor: pointer;
+}
+.yolo-rag-log-trace-row:hover {
+  background: var(--background-modifier-hover);
+}
+.yolo-rag-log-trace-row.is-selected {
+  background: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+  box-shadow: inset 3px 0 0 var(--interactive-accent);
+}
+.yolo-rag-log-trace-row .yolo-rag-status-pill {
+  min-height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.yolo-rag-log-trace-meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--size-4-2);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-bottom: var(--size-2-2);
+  min-width: 0;
+}
+.yolo-rag-log-trace-meta > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.yolo-rag-log-trace-meta > .yolo-rag-status-pill {
+  justify-self: end;
+  flex-shrink: 0;
+}
+.yolo-rag-log-query {
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+  line-height: 1.45;
+  min-width: 0;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.yolo-rag-log-detail-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--size-4-3);
+}
+.yolo-rag-log-empty,
+.yolo-rag-log-error {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding: var(--size-4-3);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+.yolo-rag-log-section {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary);
+  margin-bottom: var(--size-4-3);
+  overflow: hidden;
+}
+.yolo-rag-log-section-title {
+  padding: var(--size-4-2) var(--size-4-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-medium);
+}
+.yolo-rag-log-section-body {
+  padding: var(--size-4-3);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  line-height: var(--line-height-normal);
+  overflow-wrap: anywhere;
+}
+.yolo-rag-log-section-subtext {
+  margin-top: var(--size-2-2);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+.yolo-rag-log-code {
+  font-family: var(--font-monospace);
+  color: var(--text-normal);
+}
+.yolo-rag-log-timing-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--size-4-2);
+}
+.yolo-rag-log-timing-overview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--size-4-2);
+  margin-bottom: var(--size-4-3);
+}
+.yolo-rag-log-timing-overview-card {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-3);
+  background: color-mix(in srgb, var(--background-secondary) 82%, transparent);
+  min-width: 0;
+}
+.yolo-rag-log-timing-overview-card.is-total {
+  grid-column: span 2;
+  background: color-mix(
+    in srgb,
+    var(--interactive-accent) 10%,
+    var(--background-secondary) 90%
+  );
+  border-color: color-mix(
+    in srgb,
+    var(--interactive-accent) 24%,
+    var(--background-modifier-border) 76%
+  );
+}
+.yolo-rag-log-timing-overview-label {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-bottom: var(--size-2-2);
+}
+.yolo-rag-log-timing-overview-value {
+  color: var(--text-normal);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+}
+.yolo-rag-log-timing {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-2);
+  min-width: 0;
+}
+.yolo-rag-log-timing-label {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-bottom: var(--size-2-1);
+}
+.yolo-rag-log-timing-value {
+  color: var(--text-normal);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+}
+.yolo-rag-log-evidence {
+  display: grid;
+  gap: var(--size-4-2);
+}
+.yolo-rag-log-evidence-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 54px;
+  gap: var(--size-4-2);
+  align-items: center;
+  font-size: var(--font-ui-small);
+  min-width: 0;
+}
+.yolo-rag-log-evidence-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 900px) {
+  .yolo-rag-log-modal-shell {
+    width: calc(100vw - 48px);
+    max-width: calc(100vw - 48px);
+    height: calc(100vh - 48px);
+    max-height: calc(100vh - 48px);
+  }
+
+  .yolo-rag-log-toolbar {
+    flex-direction: column;
+  }
+
+  .yolo-rag-log-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .yolo-rag-log-content {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(160px, 0.42fr) minmax(220px, 0.58fr);
+    overflow: hidden;
+  }
+
+  .yolo-rag-log-timing-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .yolo-rag-log-timing-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .yolo-rag-log-timing-overview-card.is-total {
+    grid-column: span 1;
+  }
+
+  .yolo-rag-log-list,
+  .yolo-rag-log-detail {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .yolo-rag-log-list {
+    overflow-y: auto;
+  }
 }
 /* Template Section Styles */
 .yolo-templates-container {
