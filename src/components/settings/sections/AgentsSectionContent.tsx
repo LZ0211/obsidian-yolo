@@ -61,6 +61,10 @@ import {
   resolveDefaultDisclosureModeForServer,
 } from '../../../core/agent/tool-preferences'
 import { applyDynamicToolDescriptions } from '../../../core/agent/tool-selection'
+import {
+  getInjectedToolGroupName,
+  isInjectedBridgeToolName,
+} from '../../../core/mcp/injectionBridge'
 import { getJsSandboxSettings } from '../../../core/mcp/jsSandboxSettings'
 import {
   LOCAL_FS_EDIT_TOOL_NAMES,
@@ -1492,16 +1496,26 @@ export function AgentsSectionContent({
         return
       }
 
+      // 注入工具按插件能力分组（注入方自定义组名）；未提供时回退"外部能力"。
+      const injectedGroupName = isInjectedBridgeToolName(toolName)
+        ? getInjectedToolGroupName(toolName)
+        : undefined
       const builtinCategory = isBuiltin
         ? (getBuiltinToolCategory(toolName) ?? 'vault')
         : null
-      const key = isBuiltin ? `__builtin:${builtinCategory}` : serverName
-      const title = isBuiltin
-        ? t(
-            BUILTIN_TOOL_CATEGORY_I18N[builtinCategory!].key,
-            BUILTIN_TOOL_CATEGORY_I18N[builtinCategory!].fallback,
-          )
-        : serverName
+      const key = injectedGroupName
+        ? `__injected:${injectedGroupName}`
+        : isBuiltin
+          ? `__builtin:${builtinCategory}`
+          : serverName
+      const title = injectedGroupName
+        ? injectedGroupName
+        : isBuiltin
+          ? t(
+              BUILTIN_TOOL_CATEGORY_I18N[builtinCategory!].key,
+              BUILTIN_TOOL_CATEGORY_I18N[builtinCategory!].fallback,
+            )
+          : serverName
       const builtinMeta = isBuiltin ? getBuiltinToolUiMeta(toolName) : null
       const displayName = builtinMeta
         ? t(builtinMeta.labelKey, builtinMeta.labelFallback)

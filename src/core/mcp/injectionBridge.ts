@@ -44,8 +44,13 @@ export type YoloInjectionBridge = {
     descriptor: InjectedToolDescriptor,
     handler: InjectedToolHandler,
     sourceId?: string,
+    groupName?: string,
   ): void
-  registerTools(tools: InjectedToolEntry[], sourceId?: string): void
+  registerTools(
+    tools: InjectedToolEntry[],
+    sourceId?: string,
+    groupName?: string,
+  ): void
   unregisterTool(name: string): void
   unregisterBySource(sourceId: string): void
   listTools(): Record<string, string[]>
@@ -55,9 +60,18 @@ class InjectedToolRegistry {
   private readonly tools = new Map<string, InjectedToolRegistryEntry>()
   private readonly listeners = new Set<() => void>()
 
-  set(tool: McpTool, handler: InjectedToolHandler, source: string): void {
-    this.tools.set(tool.name, { tool, handler, source })
+  set(
+    tool: McpTool,
+    handler: InjectedToolHandler,
+    source: string,
+    groupName?: string,
+  ): void {
+    this.tools.set(tool.name, { tool, handler, source, groupName })
     this.notify()
+  }
+
+  getGroupName(name: string): string | undefined {
+    return this.tools.get(name)?.groupName
   }
 
   delete(name: string): boolean {
@@ -127,6 +141,8 @@ type InjectedToolRegistryEntry = {
   tool: McpTool
   handler: InjectedToolHandler
   source: string
+  /** 注入方自定义的插件能力分组名（如 "浏览器自动化插件能力"）。 */
+  groupName?: string
 }
 
 const injectedToolRegistry = new InjectedToolRegistry()
@@ -145,15 +161,20 @@ class YoloInjectionBridgeImpl implements YoloInjectionBridge {
     descriptor: InjectedToolDescriptor,
     handler: InjectedToolHandler,
     sourceId = 'unknown',
+    groupName?: string,
   ): void {
     const source = normalizeSource(sourceId)
-    this.registry.set(toMcpTool(descriptor), handler, source)
+    this.registry.set(toMcpTool(descriptor), handler, source, groupName)
   }
 
-  registerTools(tools: InjectedToolEntry[], sourceId = 'unknown'): void {
+  registerTools(
+    tools: InjectedToolEntry[],
+    sourceId = 'unknown',
+    groupName?: string,
+  ): void {
     const source = normalizeSource(sourceId)
     for (const tool of tools) {
-      this.registry.set(toMcpTool(tool.descriptor), tool.handler, source)
+      this.registry.set(toMcpTool(tool.descriptor), tool.handler, source, groupName)
     }
   }
 
@@ -272,6 +293,13 @@ export function getInjectedBridgeTools(): McpTool[] {
 
 export function isInjectedBridgeToolName(toolName: string): boolean {
   return injectedToolRegistry.has(toolName)
+}
+
+/** 注入工具的自定义插件能力分组名（未提供时回退到"外部能力"分组）。 */
+export function getInjectedToolGroupName(
+  toolName: string,
+): string | undefined {
+  return injectedToolRegistry.getGroupName(toolName)
 }
 
 export function callInjectedBridgeTool(
