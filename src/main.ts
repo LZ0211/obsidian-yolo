@@ -150,8 +150,6 @@ import {
   RuntimeComponentRuntime,
   RuntimeComponentService,
   RuntimeComponentStore,
-  createRuntimeComponentDownloader,
-  resolveRuntimeComponentArtifactSources,
   setRuntimeComponentService,
 } from './core/runtime-components'
 import {
@@ -4497,45 +4495,32 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
       adapter: deviceAdapter,
       rootPath: 'component-device-state-v1',
     })
-    const remoteDownload = createRuntimeComponentDownloader()
+    // Local distribution (no downloader): components ship as sibling files
+    // of the plugin (runtime-components/<id>/entry.js) and install from the
+    // plugin directory on every platform, dev or production. Remote download
+    // was the upstream model; the local fork deliberately dropped it.
     const download = async ({
       descriptor,
-      source,
       signal,
-    }: Parameters<typeof remoteDownload>[0]): Promise<Uint8Array> => {
+    }: {
+      descriptor: { entry: string }
+      signal?: AbortSignal
+    }): Promise<Uint8Array> => {
       if (signal?.aborted) {
         throw new DOMException(
-          'Runtime component download aborted',
+          'Runtime component install aborted',
           'AbortError',
         )
       }
-      if (process.env.NODE_ENV !== 'production') {
-        return new Uint8Array(
-          await this.app.vault.adapter.readBinary(
-            normalizePath(`${store.pluginDir}/${descriptor.entry}`),
-          ),
-        )
-      }
-      return remoteDownload({
-        descriptor,
-        source,
-        ...(signal ? { signal } : {}),
-      })
+      return new Uint8Array(
+        await this.app.vault.adapter.readBinary(
+          normalizePath(`${store.pluginDir}/${descriptor.entry}`),
+        ),
+      )
     }
     const installer = new RuntimeComponentInstaller({
       store,
       download,
-      ...(process.env.NODE_ENV === 'production'
-        ? {
-            resolveDownloadSources: (
-              descriptor: (typeof BAKED_RUNTIME_COMPONENT_REGISTRY.components)[number],
-            ) =>
-              resolveRuntimeComponentArtifactSources(
-                descriptor,
-                BAKED_PLUGIN_VERSION,
-              ),
-          }
-        : {}),
       reportCleanupError: (error) => {
         console.error('[YOLO] Runtime component artifact cleanup failed', error)
       },

@@ -1118,3 +1118,54 @@ button.yolo-assistant-selector-footer-btn:hover {
 .yolo-icon-emoji[data-size='24'] {
   font-size: 24px;
 }
+
+/* Restored from backup/pre-rollback-2026-08-10 (migration gap) */
+.yolo-assistant-selector-tools-status {
+
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  color: var(--text-muted);
+  font-size: var(--font-smallest);
+}
+
+.yolo-assistant-selector-tools-status.is-error {
+
+  color: var(--text-error);
+}
+
+/* Section divider between the templates and the workspace-agents groups in
+ * the AssistantSelector dropdown. Keeps the two concepts visually distinct
+ * so the user can tell at a glance which row is a template vs an agent. */
+.yolo-assistant-selector-section-divider {
+
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 2px;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.yolo-assistant-selector-section-divider::before,
+.yolo-assistant-selector-section-divider::after {
+
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: color-mix(
+    in srgb,
+    var(--background-modifier-border) 60%,
+    transparent
+  );
+}
+
+.yolo-assistant-selector-section-divider-label {
+
+  flex: 0 0 auto;
+}

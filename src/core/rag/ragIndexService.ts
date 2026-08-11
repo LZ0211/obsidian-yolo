@@ -314,6 +314,16 @@ export class RagIndexService {
       status: 'running',
       startedAt,
       updatedAt: startedAt,
+      // A new run must not surface the previous run's progress (e.g. a
+      // completed run showing 100% until the first progress callback lands).
+      phase: undefined,
+      currentFile: undefined,
+      lastCompletedFile: undefined,
+      totalFiles: undefined,
+      completedFiles: undefined,
+      totalChunks: undefined,
+      completedChunks: undefined,
+      waitingForRateLimit: undefined,
       failureKind: undefined,
       failureMessage: undefined,
       failureHttpStatus: undefined,

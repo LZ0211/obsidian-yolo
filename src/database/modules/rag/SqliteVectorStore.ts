@@ -670,6 +670,39 @@ export class SqliteVectorStore
     }
   }
 
+  /**
+   * Status for a concrete namespace directory (as listed by
+   * `listNamespaces()`). `getStatus(namespace)` takes a `VectorNamespace`
+   * object, which callers holding only the namespace id cannot construct.
+   */
+  async getStatusByNamespaceId(
+    namespaceId: string,
+  ): Promise<VectorBackendStatus> {
+    this.assertOpen()
+    this.assertNotClosing()
+    const storagePath = getSqliteDbPath(this.baseDir, namespaceId)
+    if (!fs.existsSync(storagePath)) {
+      return {
+        backend: 'sqlite',
+        readiness: 'ready',
+        rebuildRequired: true,
+        storagePath,
+        executionMode: 'plugin-host',
+        persistenceMode: 'native-sqlite-file',
+        recoveryAction: 'rebuild_index',
+      }
+    }
+    return {
+      backend: 'sqlite',
+      readiness: 'ready',
+      rebuildRequired: false,
+      storagePath,
+      executionMode: 'plugin-host',
+      persistenceMode: 'native-sqlite-file',
+      recoveryAction: 'none',
+    }
+  }
+
   async getQueryEmbedding(
     namespace: VectorNamespace,
     queryHash: string,

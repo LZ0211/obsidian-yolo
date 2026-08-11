@@ -923,10 +923,10 @@ const ChatUserInput = forwardRef<ChatUserInputRef, ChatUserInputProps>(
           {!compact && controlLayout === 'inline' && (
             <div className="yolo-chat-user-input-controls">
               <div className="yolo-chat-user-input-controls__left">
-                {workingDirectoryControl}
                 <FileUploadButton
                   onUpload={(files) => coreRef.current?.uploadFiles(files)}
                 />
+                {workingDirectoryControl}
                 {runtimeControls ?? (
                   <>
                     {renderModelControl()}
@@ -943,10 +943,12 @@ const ChatUserInput = forwardRef<ChatUserInputRef, ChatUserInputProps>(
 
           {!compact && controlLayout === 'composer-toolbar' && (
             <div className="yolo-chat-user-input-send-row">
-              {workingDirectoryControl}
-              <FileUploadButton
-                onUpload={(files) => coreRef.current?.uploadFiles(files)}
-              />
+              <div className="yolo-chat-user-input-send-row__left">
+                <FileUploadButton
+                  onUpload={(files) => coreRef.current?.uploadFiles(files)}
+                />
+                {workingDirectoryControl}
+              </div>
               <div className="yolo-chat-user-input-send-row__right">
                 {renderContextUsageControl()}
                 {renderSubmitControl()}

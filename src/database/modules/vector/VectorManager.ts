@@ -214,7 +214,12 @@ export class VectorManager {
   }> {
     const namespaces = await this.listNamespaces()
     const ns = namespaces[0]
-    const status = await this.vectorStore?.getStatus?.()
+    // Point at the first real namespace database. Without the namespace the
+    // store reports the placeholder `rag/<namespace>` path, which does not
+    // exist — opening it would create an empty database with no tables.
+    const status = ns
+      ? await this.vectorStore?.getStatusByNamespaceId?.(ns)
+      : await this.vectorStore?.getStatus?.()
     return {
       storagePath: status?.storagePath ?? '',
       readiness: status?.readiness ?? 'unsupported',

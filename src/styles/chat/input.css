@@ -4675,3 +4675,226 @@ button.yolo-chat-user-input-file-badge-delete:focus-visible,
     max-height: 350px;
   }
 }
+
+/* Restored from backup/pre-rollback-2026-08-10 (migration gap) */
+/* On mobile ViewToggle collapses to yolo-view-toggle--single and is hidden
+   (display: none), leaving yolo-chat-header-right as the sole flex child of
+   yolo-chat-header. With a single child, justify-content: space-between has
+   nothing to space between and it renders at the flex-start instead of the
+   end. Force it right explicitly regardless of sibling count. */
+body.is-mobile .yolo-chat-header-right {
+
+  margin-left: auto;
+}
+
+body.is-mobile .yolo-chat-header-history {
+
+  display: none;
+}
+
+/*
+ * ChatSurface 契约包装（Chat.tsx 拆分后引入）：原生/CLI 会话面与输入区从容器
+ * 直子变为 .yolo-chat-surface 的直子。这里让包装层接替容器对它们的 flex 约束，
+ * 恢复拆分前的排版——消息区撑满剩余高度、footer 钉底。
+ */
+.yolo-chat-surface {
+
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* 契约未就绪统一加载/空态（P3-3a）：替代旧链数据渲染，居中显示 pending 文案。 */
+.yolo-chat-surface--pending {
+
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-4-3);
+  text-align: center;
+}
+
+.yolo-chat-container--sidebar > .yolo-chat-composer-wrapper,
+.yolo-chat-container--sidebar .yolo-chat-footer {
+
+  box-sizing: border-box;
+  padding-inline: var(--yolo-chat-sidebar-inline-padding);
+}
+
+.yolo-chat-container--sidebar .yolo-chat-conversation-surface {
+
+  margin-inline-end: calc(var(--yolo-chat-sidebar-inline-padding) * -1);
+}
+
+.yolo-chat-container--centered .yolo-chat-footer {
+
+  width: min(100%, var(--yolo-chat-content-max-width));
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* CliSurfaceBody renders ChatConversationPane directly, so the shared footer
+ * is a direct child of `.yolo-cli-chat-layout` (not of the container, which
+ * the direct-child rule above requires). Keep the CLI composer at the same
+ * centered width as the native one. */
+.yolo-chat-container--centered .yolo-cli-chat-layout > .yolo-chat-footer,
+.yolo-chat-container--centered .yolo-cli-chat-layout > .yolo-chat-input-wrapper,
+.yolo-chat-container--centered
+  .yolo-cli-chat-layout
+  > .yolo-chat-user-input-files {
+
+  width: min(100%, var(--yolo-chat-content-max-width));
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.yolo-plan-mode-handoff {
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: min(100%, var(--yolo-chat-content-max-width, 720px));
+  margin: 0 auto 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+}
+
+.yolo-plan-mode-handoff-button {
+
+  padding: 2px 12px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  cursor: pointer;
+}
+
+.yolo-plan-mode-handoff-button:hover {
+
+  background: var(--interactive-accent-hover);
+}
+
+.yolo-chat-container--centered .yolo-chat-conversation-surface {
+
+  margin-inline: calc(var(--yolo-chat-host-inline-padding) * -1);
+}
+
+.yolo-chat-container--workspace-wide-header
+  > .yolo-chat-header--workspace
+  .yolo-view-toggle,
+.yolo-chat-container--workspace-wide-header
+  > .yolo-chat-header--workspace
+  .yolo-chat-header-right {
+
+  pointer-events: auto;
+}
+
+.yolo-chat-container--workspace-wide-header > .yolo-chat-messages,
+.yolo-chat-container--workspace-wide-header > .yolo-chat-composer-wrapper,
+.yolo-chat-container--workspace-wide-header .yolo-chat-footer {
+
+  position: relative;
+  z-index: 1;
+}
+
+.yolo-chat-user-input-send-row__left {
+
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: var(--size-4-1);
+}
+
+.yolo-chat-user-input-controls__left .yolo-chat-user-input-upload-button,
+.yolo-chat-user-input-send-row .yolo-chat-user-input-upload-button,
+.yolo-chat-user-input-controls__left .yolo-chat-working-directory-button,
+.yolo-chat-user-input-send-row .yolo-chat-working-directory-button {
+
+  width: var(--size-4-5);
+  height: var(--size-4-5);
+  padding: 0;
+  gap: 0;
+  border-radius: var(--radius-s);
+  flex: 0 0 auto;
+  justify-content: center;
+  color: var(--text-muted);
+
+  &:hover {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+  }
+}
+
+.yolo-chat-working-directory-control {
+
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: var(--size-2-1);
+}
+
+.yolo-chat-working-directory-button:disabled {
+
+  cursor: default;
+  opacity: 0.62;
+}
+
+.yolo-chat-working-directory-chip {
+
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: min(220px, 38vw);
+  height: var(--size-4-5);
+  padding: 0 var(--size-2-2);
+  gap: var(--size-2-1);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  background: var(--background-primary-alt);
+  font-size: var(--font-smallest);
+}
+
+.yolo-chat-working-directory-chip.is-locked {
+
+  color: var(--text-faint);
+}
+
+.yolo-chat-working-directory-path {
+
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.yolo-chat-working-directory-clear {
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-s);
+  color: inherit;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.yolo-chat-working-directory-clear:hover {
+
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}

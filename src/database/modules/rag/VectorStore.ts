@@ -196,6 +196,8 @@ export type VectorStore = {
   save?(namespace?: VectorNamespace): Promise<void>
   vacuum(namespace?: VectorNamespace): Promise<void>
   getStatus(namespace?: VectorNamespace): Promise<VectorBackendStatus>
+  /** Status for a concrete namespace directory id (see `listNamespaces`). */
+  getStatusByNamespaceId?(namespaceId: string): Promise<VectorBackendStatus>
   search(
     namespace: VectorNamespace,
     embedding: number[],

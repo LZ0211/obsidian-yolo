@@ -12,3 +12,38 @@
   border-left: 1px solid var(--background-modifier-border);
   border-radius: 0;
 }
+
+/* Restored from backup/pre-rollback-2026-08-10 (migration gap) */
+.yolo-cli-chat-surface__error {
+
+  padding: 0 var(--size-4-2);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.yolo-cli-chat-surface__error {
+
+  color: var(--text-error);
+}
+
+.yolo-cli-chat-layout {
+
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.yolo-cli-chat-layout > .yolo-cli-session-list {
+
+  flex: 0 0 auto;
+  max-height: 180px;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.yolo-cli-chat-layout > .yolo-cli-chat-surface {
+
+  flex: 1 1 auto;
+  min-height: 0;
+}

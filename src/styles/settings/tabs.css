@@ -228,3 +228,14 @@
     width: calc(100% - var(--size-4-6) - var(--size-4-6));
   }
 }
+
+/* Restored from backup/pre-rollback-2026-08-10 (migration gap) */
+/* ========================================
+   Settings Tabs Styles
+   ======================================== */
+
+.modal.mod-settings
+  .vertical-tab-content:has(> .yolo-settings-tabs-container) {
+
+  padding-inline: 0;
+}

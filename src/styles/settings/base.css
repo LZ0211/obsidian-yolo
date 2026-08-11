@@ -1202,3 +1202,320 @@ select.yolo-module-settings-select {
     border-left: none !important;
   }
 }
+
+/* Restored from backup/pre-rollback-2026-08-10 (migration gap) */
+.yolo-sqlite-explorer {
+
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  height: auto;
+  max-height: calc(100vh - 120px);
+  max-height: calc(100dvh - 120px);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  overflow: hidden;
+}
+
+.yolo-sqlite-explorer-sidebar {
+
+  min-height: 0;
+  padding: 8px;
+  border-right: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.yolo-sqlite-explorer-sidebar-heading,
+.yolo-sqlite-explorer-toolbar,
+.yolo-sqlite-explorer-pagination {
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.yolo-sqlite-explorer-sidebar-heading {
+
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 4px 4px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.yolo-sqlite-explorer-table {
+
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  margin-bottom: 2px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.yolo-sqlite-explorer-table:hover {
+
+  background: var(--background-modifier-hover);
+}
+
+.yolo-sqlite-explorer-table.is-active {
+
+  background: var(--background-modifier-hover);
+  color: var(--text-accent);
+  box-shadow: inset 2px 0 0 var(--text-accent);
+  font-weight: var(--font-semibold);
+}
+
+.yolo-sqlite-explorer-main {
+
+  display: grid;
+  grid-template-rows: auto auto auto auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.yolo-sqlite-explorer-toolbar {
+
+  min-height: 24px;
+}
+
+.yolo-sqlite-explorer-toolbar strong {
+
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.yolo-sqlite-explorer-count {
+
+  padding: 2px 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.yolo-sqlite-explorer-table-wrap {
+
+  position: relative;
+  min-height: 120px;
+  max-height: calc(100vh - 300px);
+  max-height: calc(100dvh - 300px);
+  overflow-x: auto;
+  overflow-y: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+}
+
+.yolo-sqlite-explorer-table-wrap[aria-busy='true'] {
+
+  opacity: 0.78;
+}
+
+.yolo-sqlite-explorer-loading {
+
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  width: max-content;
+  margin: 4px;
+  padding: 3px 7px;
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  box-shadow: 0 1px 2px var(--background-modifier-box-shadow);
+}
+
+.yolo-sqlite-explorer-table-wrap table {
+
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-ui-smaller);
+}
+
+.yolo-sqlite-explorer-table-wrap th {
+
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-weight: var(--font-semibold);
+}
+
+.yolo-sqlite-explorer-table-wrap th,
+.yolo-sqlite-explorer-table-wrap td {
+
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.yolo-sqlite-explorer-table-wrap td {
+
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.yolo-sqlite-explorer-table-wrap tbody tr:nth-child(even) {
+
+  background: var(--background-modifier-hover);
+}
+
+.yolo-sqlite-explorer-table-wrap tbody tr:hover {
+
+  background: var(--background-modifier-active-hover);
+}
+
+.yolo-sqlite-explorer-cell {
+
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: bottom;
+}
+
+.yolo-sqlite-explorer-cell--blob,
+.yolo-sqlite-explorer-cell--json {
+
+  font-family: var(--font-monospace);
+  font-size: 0.92em;
+}
+
+.yolo-sqlite-explorer-cell--blob {
+
+  color: var(--text-muted);
+}
+
+.yolo-sqlite-explorer-cell--json {
+
+  color: var(--text-accent);
+}
+
+.yolo-sqlite-explorer-sql {
+
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+
+.yolo-sqlite-explorer-sql textarea {
+
+  height: 56px;
+  min-height: 56px;
+  max-height: 56px;
+  resize: none;
+  font-family: var(--font-monospace);
+}
+
+.yolo-sqlite-explorer-pagination {
+
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.yolo-sqlite-explorer-page-button:disabled {
+
+  opacity: 0.35;
+}
+
+.yolo-sqlite-explorer-run[aria-busy='true'],
+.yolo-sqlite-explorer-refresh[aria-busy='true'] {
+
+  opacity: 0.7;
+}
+
+.yolo-sqlite-explorer-truncated {
+
+  color: var(--text-warning);
+  font-size: var(--font-ui-smaller);
+  text-align: right;
+}
+
+.yolo-sqlite-explorer-empty {
+
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+}
+
+.yolo-settings-embedding-db-manage-status-row {
+
+  min-width: 0;
+}
+
+.yolo-settings-embedding-db-manage-toolbar-title {
+
+  color: var(--text-normal);
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-medium);
+}
+
+.yolo-settings-embedding-db-manage-last-updated {
+
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: var(--line-height-normal);
+  word-break: break-word;
+  display: block;
+}
+
+.yolo-settings-embedding-db-manage-progress-cell {
+
+  min-width: 180px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+/* Portal target for custom controls (e.g. secret-input show/hide toggles)
+   that need to live inside a Setting's controlEl, in DOM order alongside
+   sibling addText/addButton controls — see useObsidianSettingPortalContainer. */
+.yolo-setting-control-portal {
+
+  display: inline-flex;
+  align-items: center;
+}
+
+.yolo-assistant-message-metadata--generating
+  .yolo-assistant-message-metadata-toggle-icon,
+.yolo-assistant-message-metadata--settled
+  .yolo-assistant-message-metadata-toggle-icon {
+
+  opacity: 0.68;
+}
+
+/* SQLite explorer error state (local addition) */
+.yolo-sqlite-explorer-error {
+  padding: var(--size-2-2) var(--size-4-2);
+  border: 1px solid var(--background-modifier-error);
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-error);
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+}

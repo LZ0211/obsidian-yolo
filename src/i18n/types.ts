@@ -199,6 +199,7 @@ export type TranslationKeys = {
       skillOverridesTitle?: string
       skillOverridesButton?: string
       skillLoadMode?: string
+      editorTitle?: string
     }
     tabs: {
       models: string
@@ -479,6 +480,14 @@ export type TranslationKeys = {
       title?: string
       desc?: string
       globalCapabilities?: string
+      workspaceAgents?: string
+      newWorkspaceAgent?: string
+      workspaceAgentsDesc?: string
+      deleteWorkspaceAgentTitle?: string
+      deleteWorkspaceAgentMessagePrefix?: string
+      deleteWorkspaceAgentMessageSuffix?: string
+      templateBadge?: string
+      disabledBadge?: string
       mcpServerCount?: string
       tools?: string
       toolsCount?: string

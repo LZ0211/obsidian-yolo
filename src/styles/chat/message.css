@@ -2976,3 +2976,254 @@ button.yolo-mermaid-modal-control:disabled {
     transform: translateY(0);
   }
 }
+
+/* Restored from backup/pre-rollback-2026-08-10 (migration gap) */
+.yolo-pending-submission {
+
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--size-2-1);
+}
+
+.yolo-pending-submission__card {
+
+  width: 100%;
+  opacity: 0.78;
+}
+
+.yolo-pending-submission__footer {
+
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.yolo-pending-submission__action {
+
+  padding: 2px var(--size-4-1);
+  color: var(--text-accent);
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  cursor: pointer;
+}
+
+.yolo-pending-submission__action:hover {
+
+  background: var(--background-modifier-hover);
+}
+
+/* Wrapper hosting the optional CLI surface mode switch. Stays inline so the
+   header flex layout is unchanged; the mode switch hangs below the toggle. */
+.yolo-view-toggle-wrapper {
+
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.yolo-view-toggle-wrapper .yolo-view-toggle {
+
+  margin-right: 0;
+}
+
+.yolo-cli-surface-switch {
+
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  box-shadow: 0 6px 16px
+    color-mix(in srgb, var(--background-modifier-box-shadow) 24%, transparent);
+  z-index: 30;
+  pointer-events: auto;
+}
+
+.yolo-cli-surface-switch__button {
+
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-medium);
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.yolo-cli-surface-switch__button:hover:not(
+    .yolo-cli-surface-switch__button--active
+  ) {
+
+  color: var(--text-normal);
+  background: color-mix(
+    in srgb,
+    var(--background-modifier-hover) 70%,
+    transparent
+  );
+}
+
+.yolo-cli-surface-switch__button--active {
+
+  color: var(--h1-color, var(--interactive-accent));
+  font-weight: var(--font-semibold);
+  background: color-mix(
+    in srgb,
+    var(--background-modifier-hover) 50%,
+    transparent
+  );
+}
+
+.yolo-cli-surface-switch__button:disabled {
+
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Explicit HTML/SVG fences use a bounded preview surface. The header is kept
+ * outside the scroll viewport so its source switch remains reachable. */
+.yolo-chat-messages .yolo-chat-code-preview {
+
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin-block: var(--size-4-3);
+  overflow: hidden;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+}
+
+.yolo-chat-messages .yolo-chat-code-preview-header {
+
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  width: 100%;
+  min-width: 0;
+  padding: var(--size-2-2) var(--size-2-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+}
+
+.yolo-chat-messages .yolo-chat-code-preview-toggle {
+
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--size-2-2);
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.yolo-chat-messages .yolo-chat-code-preview-toggle-icon {
+
+  display: inline-flex;
+}
+
+.yolo-chat-messages
+  :is(.yolo-chat-code-preview-body, .yolo-chat-code-preview-source) {
+
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: auto;
+}
+
+.yolo-chat-messages
+  :is(.yolo-chat-code-preview-body, .yolo-chat-code-preview-source)[hidden] {
+
+  display: none;
+}
+
+.yolo-chat-messages .yolo-chat-code-preview-source pre {
+
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  border-radius: 0;
+}
+
+.yolo-chat-messages .yolo-chat-code-preview-iframe {
+
+  display: block;
+  width: 100%;
+  height: clamp(280px, 45vh, 560px);
+  border: 0;
+  background: white;
+}
+
+.yolo-chat-messages .yolo-chat-code-preview-svg {
+
+  display: block;
+  width: auto;
+  max-width: none;
+  height: auto;
+}
+
+/* Obsidian replaces Mermaid fences with `.mermaid > svg`. Constrain that
+ * wrapper, rather than the message row, so only the diagram scrolls. */
+.yolo-chat-messages .yolo-chat-mermaid-scroll {
+
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  /* clip (not hidden): hidden would make this an implicit y-axis scroll
+   * container and intercept the wheel scroll chain while the cursor is over
+   * the diagram. */
+  overflow-y: clip;
+}
+
+.yolo-chat-messages .yolo-chat-mermaid-scroll > svg {
+
+  display: block;
+  max-width: none;
+  height: auto;
+}
+
+.yolo-chat-messages .yolo-chat-mermaid-frame {
+
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.yolo-chat-messages .yolo-chat-mermaid-host-toolbar {
+
+  min-width: 0;
+  max-width: 100%;
+}
+
+.yolo-chat-messages .yolo-chat-mermaid-host-control {
+
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  max-width: 100%;
+}
+
+/* Mermaid diagram preview button. `setupMermaidViewers` wraps each
+ * `.mermaid` block in a `.yolo-mermaid-viewer` and appends an
+ * `.yolo-mermaid-open-button` overlay; keep the wrapper positioned so the
+ * absolutely-positioned button sits over the diagram corner. */
+.yolo-chat-messages .yolo-markdown-rendered .yolo-mermaid-viewer {
+
+  position: relative;
+  max-width: 100%;
+}
