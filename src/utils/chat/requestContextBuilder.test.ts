@@ -3127,3 +3127,83 @@ describe('RequestContextBuilder module chat mode skill scope (D6)', () => {
     expect(content).toContain('name: outline-skill')
   })
 })
+
+describe('RequestContextBuilder local-folder mentionables', () => {
+  const settings = {
+    systemPrompt: '',
+    currentAssistantId: undefined,
+    assistants: [],
+    chatOptions: {
+      includeCurrentFileContent: true,
+      mentionContextMode: 'light',
+    },
+    skills: {},
+  } as unknown as YoloSettings
+
+  it('renders absolute local folder paths into the compiled prompt', async () => {
+    const app = createMockApp({
+      files: [],
+      fileContents: new Map(),
+    })
+    const builder = new RequestContextBuilder(app as never, settings)
+
+    const result = await builder.compileUserMessagePrompt({
+      message: {
+        ...createUserMessage([
+          { type: 'local-folder', path: 'D:/workspace/project-a' },
+          { type: 'local-folder', path: 'D:/workspace/project-b' },
+        ]),
+        content: createTextEditorState('Summarize these folders'),
+      },
+    })
+
+    const textContent = getTextContent(result.promptContent)
+    expect(textContent).toContain('## Mentioned Local Folders (outside the vault)')
+    expect(textContent).toContain('- `D:/workspace/project-a`')
+    expect(textContent).toContain('- `D:/workspace/project-b`')
+    expect(textContent).toContain(
+      'Absolute filesystem paths — vault file tools cannot reach them.',
+    )
+  })
+
+  it('deduplicates repeated local folder paths', async () => {
+    const app = createMockApp({
+      files: [],
+      fileContents: new Map(),
+    })
+    const builder = new RequestContextBuilder(app as never, settings)
+
+    const result = await builder.compileUserMessagePrompt({
+      message: {
+        ...createUserMessage([
+          { type: 'local-folder', path: 'D:/workspace/project-a' },
+          { type: 'local-folder', path: 'D:/workspace/project-a' },
+        ]),
+        content: createTextEditorState('Summarize'),
+      },
+    })
+
+    const textContent = getTextContent(result.promptContent)
+    const occurrences = textContent.match(/D:\/workspace\/project-a/g) ?? []
+    expect(occurrences.length).toBe(1)
+  })
+
+  it('omits the local folder section when no local folders are mentioned', async () => {
+    const app = createMockApp({
+      files: [],
+      fileContents: new Map(),
+    })
+    const builder = new RequestContextBuilder(app as never, settings)
+
+    const result = await builder.compileUserMessagePrompt({
+      message: {
+        ...createUserMessage([]),
+        content: createTextEditorState('Plain message'),
+      },
+    })
+
+    expect(getTextContent(result.promptContent)).not.toContain(
+      'Mentioned Local Folders',
+    )
+  })
+})
