@@ -78,10 +78,6 @@ import {
 import { createVaultBashFileSystem } from '../agent/bash/vaultBashFileSystem'
 import { createVaultBashSearch } from '../agent/bash/vaultBashSearch'
 import type { PromptSourceWatcher } from '../agent/promptSourceWatcher'
-import type { DelegatedAssistantProfile } from '../agent/subagent/delegated-assistant-profile'
-import { resolveSubagentModelConfig } from '../agent/subagent/model-config'
-import type { SubagentParentContext } from '../agent/subagent/parent-context'
-import type { SubagentSessionGatewayLike } from '../agent/subagent/runner'
 import type { TodoItem } from '../agent/todos-from-messages'
 import type { AgentRunContext } from '../agent/types'
 import {
@@ -2537,7 +2533,17 @@ export async function callLocalFileTool({
   workspaceAccessPolicy?: WorkspaceAccessPolicy
   allowedSkillPaths?: readonly string[]
   runContext?: AgentRunContext
-  subagentParentContext?: SubagentParentContext
+  /**
+   * 仅消费/转发父 subagent 运行上下文的三个字段（工作区策略、request context
+   * builder、父 assistant id）；完整形态见 SubagentParentContext。以结构子集
+   * 就地声明，避免 localFileTools → subagent/* 的静态/type 导入边（madge 对
+   * type-only 导入计边，会与 tool-preferences 回流成环）。
+   */
+  subagentParentContext?: {
+    workspaceAccessPolicy?: WorkspaceAccessPolicy
+    requestContextBuilder: unknown
+    assistantId?: string
+  }
   promptSourceWatcher?: PromptSourceWatcher
   /** Effective approval tier for the bash tool (see tool-gateway.ts). */
   bashApprovalMode?: AssistantToolApprovalMode
@@ -4240,10 +4246,20 @@ export async function callLocalFileTool({
         const modelPreferenceId =
           getOptionalTextArg(args, 'modelPreferenceId')?.trim() ?? ''
 
+        // 全部 subagent 依赖走动态 import——madge 对静态与 type-only 导入都计边，
+        // localFileTools → subagent/* 会经 tool-preferences 回流成环（deps:check
+        // 棘轮基线 271，38 组新增环全部由此造成）。类型一律从动态 import 绑定
+        // 推导，不引入任何 subagent 模块的静态/type-only 导入边。
+        const { runSubagent } = await import('../agent/subagent/runner')
+        type LocalRunSubagentParams = Parameters<typeof runSubagent>[0]
+        type SubagentSessionGatewayLike = NonNullable<
+          LocalRunSubagentParams['sessionGateway']
+        >
+
         // 委托角色路径：delegatedRoleId → Task 2 的 profile 覆盖模型/工具/loop/
         // request context；解析失败（不存在/不可委托/模型不可用）由 resolver 抛错，
         // undefined 返回按未知角色拒绝。
-        let delegatedProfile: DelegatedAssistantProfile | undefined
+        let delegatedProfile: LocalRunSubagentParams['delegatedProfile']
         let selectedModelId: string
         if (delegatedRoleId) {
           const { resolveDelegatedAssistantProfile } = await import(
@@ -4254,8 +4270,12 @@ export async function callLocalFileTool({
             settings,
             assistantId: delegatedRoleId,
             parentWorkspacePolicy: subagentParentContext.workspaceAccessPolicy,
+            // 签名用结构子集（requestContextBuilder: unknown）声明，此处按
+            // resolver 参数真实类型收窄（resolver 现将其标为 _ 前缀暂不使用）。
             parentRequestContextBuilder:
-              subagentParentContext.requestContextBuilder,
+              subagentParentContext.requestContextBuilder as Parameters<
+                typeof resolveDelegatedAssistantProfile
+              >[0]['parentRequestContextBuilder'],
           })
           if (!profile) {
             throw new Error(`Unknown delegated role "${delegatedRoleId}".`)
@@ -4269,6 +4289,9 @@ export async function callLocalFileTool({
           const requestedModelId =
             modelPreferenceId ||
             (getOptionalTextArg(args, 'modelId')?.trim() ?? '')
+          const { resolveSubagentModelConfig } = await import(
+            '../agent/subagent/model-config'
+          )
           const subagentModelConfig = resolveSubagentModelConfig(settings)
           if (subagentModelConfig.allowedModelIds.length === 0) {
             throw new Error(
@@ -4360,7 +4383,6 @@ export async function callLocalFileTool({
           sessionId = spawned.sessionId
           sessionMode = AGENT_SESSION_MODE.PERSISTENT
         }
-        const { runSubagent } = await import('../agent/subagent/runner')
         const accepted = await runSubagent({
           description,
           prompt: taskPrompt,
@@ -4370,7 +4392,9 @@ export async function callLocalFileTool({
             toolCallId: toolCallId ?? '',
             assistantMessageId,
           },
-          parent: subagentParentContext,
+          // 签名结构子集按 runner 的 parent 参数真实类型收窄（调用方总是传入
+          // 完整 SubagentParentContext，运行时无差异）。
+          parent: subagentParentContext as LocalRunSubagentParams['parent'],
           childModel: {
             providerClient: selectedModelClient.providerClient,
             model: selectedModelClient.model,
