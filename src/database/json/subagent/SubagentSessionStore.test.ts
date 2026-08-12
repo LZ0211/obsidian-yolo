@@ -1,5 +1,8 @@
 import { App } from 'obsidian'
-import { SubagentSessionStore } from './SubagentSessionStore'
+import {
+  RevisionConflictError,
+  SubagentSessionStore,
+} from './SubagentSessionStore'
 import { AGENT_SESSION_MODE } from '../../../core/state/contracts'
 import { SUBAGENT_SESSION_STATUS } from '../../../core/state/statuses'
 
@@ -87,5 +90,28 @@ describe('SubagentSessionStore', () => {
     await store.update(row, next)
     const restored = await store.read('v1_sub_abc.json')
     expect(restored?.session.revision).toBe(2)
+  })
+
+  it('compareAndUpdate writes when the expected revision matches', async () => {
+    const app = mockApp()
+    const store = makeStore(app, '/vault/.obsidian/plugins/yolo/subagents')
+    const row = makeSession('sub_abc', 1)
+    await store.create(row)
+    const next = { ...row, session: { ...row.session, revision: 2 } }
+    await store.compareAndUpdate(row, next)
+    const restored = await store.readById('sub_abc')
+    expect(restored?.session.revision).toBe(2)
+  })
+
+  it('compareAndUpdate rejects with RevisionConflictError on revision mismatch', async () => {
+    const app = mockApp()
+    const store = makeStore(app, '/vault/.obsidian/plugins/yolo/subagents')
+    const row = makeSession('sub_abc', 2)
+    await store.create(row)
+    const stale = makeSession('sub_abc', 1)
+    const next = { ...row, session: { ...row.session, revision: 3 } }
+    const conflict = store.compareAndUpdate(stale, next)
+    await expect(conflict).rejects.toThrow(RevisionConflictError)
+    await expect(conflict).rejects.toThrow('expected 1, found 2')
   })
 })

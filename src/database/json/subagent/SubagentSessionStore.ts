@@ -30,8 +30,13 @@ type SubagentSessionStoreOptions = {
 }
 
 export class RevisionConflictError extends Error {
-  constructor(readonly currentRevision: number) {
-    super(`Subagent session revision conflict: expected ${currentRevision}`)
+  constructor(
+    readonly expectedRevision: number,
+    readonly currentRevision: number,
+  ) {
+    super(
+      `Subagent session revision conflict: expected ${expectedRevision}, found ${currentRevision}`,
+    )
   }
 }
 
@@ -66,6 +71,21 @@ export class SubagentSessionStore extends AbstractJsonRepository<
    * reads, so a naive read→update can overwrite a newer row with a stale
    * one while revision still increments. Comparing inside the write queue
    * closes that race.
+   *
+   * Implicit contract:
+   * - The file name is derived from `nextRow` only. Callers must keep
+   *   `sessionId` unchanged between the two rows, otherwise the disk row
+   *   compared against is not the one the caller has in mind.
+   * - When the file does not exist there is no disk revision to compare, so
+   *   the CAS silently writes it (create semantics).
+   *
+   * The read-compare-write all happen inside a single enqueueWrite callback;
+   * the write goes straight to the adapter instead of `this.writeFile`,
+   * because writeFile enqueues again and the inner op would chain behind
+   * this op's own queue tail — a self-wait that never resolves. `this.read`
+   * already ran `ensureRepositoryDir` (including any prepareDataDir
+   * re-resolution), so the directory exists and `this.dataDir` is current
+   * when the file path is built after it.
    */
   public async compareAndUpdate(
     expectedRow: StoredSubagentSession,
@@ -73,15 +93,21 @@ export class SubagentSessionStore extends AbstractJsonRepository<
   ): Promise<void> {
     await this.enqueueWrite(async () => {
       const fileName = this.generateFileName(nextRow)
-      const filePath = normalizePath(path.join(this.dataDir, fileName))
       const current = await this.read(fileName)
       if (
         current &&
         current.session.revision !== expectedRow.session.revision
       ) {
-        throw new RevisionConflictError(current.session.revision)
+        throw new RevisionConflictError(
+          expectedRow.session.revision,
+          current.session.revision,
+        )
       }
-      await this.writeFile(filePath, JSON.stringify(nextRow, null, 2))
+      const filePath = normalizePath(path.join(this.dataDir, fileName))
+      await this.app.vault.adapter.write(
+        filePath,
+        JSON.stringify(nextRow, null, 2),
+      )
     })
   }
 }
