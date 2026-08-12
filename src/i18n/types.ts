@@ -1981,6 +1981,10 @@ export type TranslationKeys = {
     sendMessage: string
     newChat: string
     untitledConversation?: string
+    paneTitle?: {
+      renameAriaLabel?: string
+      editingAriaLabel?: string
+    }
     continueResponse?: string
     messageNavigator?: {
       title?: string
