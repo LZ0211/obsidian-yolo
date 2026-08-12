@@ -57,6 +57,7 @@ import {
   ChatModeSelect,
   type ChatModeSelectValue,
   type ModuleChatModeOption,
+  isModuleChatMode,
   narrowToMentionChatMode,
 } from './ChatModeSelect'
 import { ChatQuickAccess } from './ChatQuickAccess'
@@ -292,7 +293,12 @@ const ChatUserInput = forwardRef<ChatUserInputRef, ChatUserInputProps>(
     )
     const mentionableModels = allowModelMentions ? enabledChatModels : []
 
-    const loadedSkillEntries = useLiteSkillEntries(app, { settings })
+    const isModuleMode =
+      typeof chatMode === 'string' && isModuleChatMode(chatMode)
+    const loadedSkillEntries = useLiteSkillEntries(app, {
+      settings,
+      scope: isModuleMode ? { moduleChatModeId: chatMode } : undefined,
+    })
     const allSkillEntries = quickAccessSkillEntries ?? loadedSkillEntries
     const availableAssistants = useMemo(
       () => getUnifiedAgentList(settings),
@@ -301,13 +307,20 @@ const ChatUserInput = forwardRef<ChatUserInputRef, ChatUserInputProps>(
     const availableSkills = useMemo(() => {
       if (!enableSkills) return []
       if (skillEntries) return skillEntries
-      const currentAssistant = currentAssistantId
-        ? (availableAssistants.find(
-            (assistant) => assistant.id === currentAssistantId,
-          ) ?? null)
-        : null
+      // Module chat modes bypass the assistant gate entirely: the mode's own
+      // skills (already scoped into `allSkillEntries` above) plus every
+      // enabled vault skill, filtered only by the global disabled-skill list
+      // — mirrors the same bypass in `useChatStreamManager`/
+      // `buildCustomInstructionsSubsections`.
+      const currentAssistant = isModuleMode
+        ? null
+        : currentAssistantId
+          ? (availableAssistants.find(
+              (assistant) => assistant.id === currentAssistantId,
+            ) ?? null)
+          : null
 
-      if (!currentAssistant) {
+      if (!isModuleMode && !currentAssistant) {
         return []
       }
 
@@ -325,6 +338,7 @@ const ChatUserInput = forwardRef<ChatUserInputRef, ChatUserInputProps>(
       availableAssistants,
       currentAssistantId,
       enableSkills,
+      isModuleMode,
       skillEntries,
       settings,
     ])

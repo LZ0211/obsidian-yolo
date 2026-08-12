@@ -36,6 +36,7 @@ import {
   resolveProjectInstructionFilePaths,
 } from '../../core/project-instructions'
 import {
+  type LiteSkillScope,
   getLiteSkillDocument,
   listLiteSkillEntries,
 } from '../../core/skills/liteSkills'
@@ -586,6 +587,9 @@ export class RequestContextBuilder {
     /** Module chat mode persona — see `ChatContextPolicy`. */
     modePersonaPrompt?: string
     modePersonaModuleId?: string
+    /** Full running mode id — scopes skill resolution to the mode's own
+     * declared skills. See `ChatModeRuntime.moduleChatModeId`. */
+    moduleChatModeId?: string
     contextPolicy?: ChatContextPolicy
     systemPromptOverride?: string
     systemPromptSnapshotMode: SystemPromptSnapshotMode
@@ -613,6 +617,7 @@ export class RequestContextBuilder {
     runtimeModePrompt,
     modePersonaPrompt,
     modePersonaModuleId,
+    moduleChatModeId,
     contextPolicy,
     systemPromptOverride,
     systemPromptSnapshotMode,
@@ -628,6 +633,9 @@ export class RequestContextBuilder {
     runtimeModePrompt?: string
     modePersonaPrompt?: string
     modePersonaModuleId?: string
+    /** Full running mode id — scopes skill resolution to the mode's own
+     * declared skills. See `ChatModeRuntime.moduleChatModeId`. */
+    moduleChatModeId?: string
     contextPolicy?: ChatContextPolicy
     systemPromptOverride?: string
     systemPromptSnapshotMode: SystemPromptSnapshotMode
@@ -638,6 +646,10 @@ export class RequestContextBuilder {
     if (messages.length === 0) {
       throw new Error('No messages provided')
     }
+
+    const skillScope: LiteSkillScope | undefined = moduleChatModeId
+      ? { moduleChatModeId }
+      : undefined
 
     const compiledMessages = [...messages]
 
@@ -661,6 +673,7 @@ export class RequestContextBuilder {
     if (!lastUserMessage.promptContent) {
       const { promptContent } = await this.compileUserMessagePrompt({
         message: lastUserMessage,
+        scope: skillScope,
       })
       compiledMessages[lastUserMessageIndex] = {
         ...lastUserMessage,
@@ -695,6 +708,7 @@ export class RequestContextBuilder {
 
       const { promptContent } = await this.compileUserMessagePrompt({
         message,
+        scope: skillScope,
       })
       compiledMessages[i] = {
         ...message,
@@ -725,6 +739,7 @@ export class RequestContextBuilder {
           runtimeModePrompt,
           modePersonaPrompt,
           modePersonaModuleId,
+          moduleChatModeId,
           contextPolicy,
           mode: systemPromptSnapshotMode,
         })
@@ -743,6 +758,7 @@ export class RequestContextBuilder {
         messages: compiledMessages,
         snapshotEntries,
         compaction,
+        scope: skillScope,
       })),
     ]
 
@@ -785,6 +801,9 @@ export class RequestContextBuilder {
     runtimeModePrompt?: string
     modePersonaPrompt?: string
     modePersonaModuleId?: string
+    /** Full running mode id — scopes skill resolution to the mode's own
+     * declared skills. See `ChatModeRuntime.moduleChatModeId`. */
+    moduleChatModeId?: string
     contextPolicy?: ChatContextPolicy
     requestTools?: unknown[] | undefined
     systemPromptSnapshotMode: SystemPromptSnapshotMode
@@ -919,10 +938,12 @@ export class RequestContextBuilder {
     messages,
     snapshotEntries,
     compaction,
+    scope,
   }: {
     messages: ChatMessage[]
     snapshotEntries: Record<string, string | ContentPart[]>
     compaction?: ChatConversationCompactionLike | null
+    scope?: LiteSkillScope
   }): Promise<RequestMessage[]> {
     const requestMessages: RequestMessage[] = []
     const prunedToolCallIds = collectContextPrunedToolCallIds(messages)
@@ -950,6 +971,7 @@ export class RequestContextBuilder {
               content: await this.getUserMessageContent({
                 message,
                 snapshotEntries,
+                scope,
               }),
             })
             continue
@@ -1003,6 +1025,7 @@ export class RequestContextBuilder {
           content: await this.getUserMessageContent({
             message,
             snapshotEntries,
+            scope,
           }),
         })
         continue
@@ -1043,9 +1066,11 @@ export class RequestContextBuilder {
   private async getUserMessageContent({
     message,
     snapshotEntries,
+    scope,
   }: {
     message: ChatUserMessage
     snapshotEntries: Record<string, string | ContentPart[]>
+    scope?: LiteSkillScope
   }): Promise<string | ContentPart[]> {
     const withTimeContext = (
       content: string | ContentPart[],
@@ -1129,6 +1154,7 @@ export class RequestContextBuilder {
 
     const selectedSkillsPrompt = await this.buildSelectedSkillsPrompt(
       message.selectedSkills,
+      scope,
     )
     const textContent = `${blockPrompt}${assistantQuotePrompt}${webSelectionPrompt}${officePrompt}${textAttachmentPrompt}${legacyPdfFallbackText}${selectedSkillsPrompt}\n\n${query}\n\n`
     if (imageParts.length === 0 && pdfDocumentParts.length === 0) {
@@ -1163,6 +1189,7 @@ export class RequestContextBuilder {
 
   private async buildSelectedSkillsPrompt(
     selectedSkills?: ChatSelectedSkill[],
+    scope?: LiteSkillScope,
   ): Promise<string> {
     if (!selectedSkills || selectedSkills.length === 0) {
       return ''
@@ -1174,6 +1201,7 @@ export class RequestContextBuilder {
           app: this.app,
           name: skill.name,
           settings: this.settings,
+          scope,
         })
 
         if (document) {
@@ -1382,9 +1410,15 @@ ${message.annotations
   public async compileUserMessagePrompt({
     message,
     onQueryProgressChange,
+    scope,
   }: {
     message: ChatUserMessage
     onQueryProgressChange?: (queryProgress: QueryProgressState) => void
+    /** Scopes skill resolution — see `LiteSkillScope`. Omitted (the default)
+     * for every non-module call site; the module chat mode send path passes
+     * `{ moduleChatModeId }` explicitly. This body compile happens before
+     * runtime-profile resolution, so it cannot infer the mode on its own. */
+    scope?: LiteSkillScope
   }): Promise<{
     promptContent: ChatUserMessage['promptContent']
   }> {
@@ -1409,6 +1443,7 @@ ${message.annotations
           mentionables: message.mentionables,
           selectedSkills: message.selectedSkills,
           onQueryProgressChange,
+          scope,
         }),
       }
     } catch (error) {
@@ -1425,11 +1460,13 @@ ${message.annotations
     mentionables,
     selectedSkills,
     onQueryProgressChange,
+    scope,
   }: {
     prompt: string
     mentionables: Mentionable[]
     selectedSkills?: ChatSelectedSkill[]
     onQueryProgressChange?: (queryProgress: QueryProgressState) => void
+    scope?: LiteSkillScope
   }): Promise<{
     promptContent: ChatUserMessage['promptContent']
   }> {
@@ -1450,6 +1487,7 @@ ${message.annotations
           mentionables,
           selectedSkills,
           onQueryProgressChange,
+          scope,
         }),
       }
     } catch (error) {
@@ -1466,11 +1504,13 @@ ${message.annotations
     mentionables,
     selectedSkills,
     onQueryProgressChange,
+    scope,
   }: {
     query: string
     mentionables: Mentionable[]
     selectedSkills?: ChatSelectedSkill[]
     onQueryProgressChange?: (queryProgress: QueryProgressState) => void
+    scope?: LiteSkillScope
   }): Promise<ChatUserMessage['promptContent']> {
     onQueryProgressChange?.({
       type: 'reading-mentionables',
@@ -1558,8 +1598,10 @@ ${message.annotations
       )
     ).filter((url): url is string => url !== null)
     const imageDataUrls = [...inlineImageDataUrls, ...vaultImageDataUrls]
-    const selectedSkillsPrompt =
-      await this.buildSelectedSkillsPrompt(selectedSkills)
+    const selectedSkillsPrompt = await this.buildSelectedSkillsPrompt(
+      selectedSkills,
+      scope,
+    )
 
     onQueryProgressChange?.({
       type: 'idle',
@@ -1759,6 +1801,7 @@ ${entries}
     runtimeModePrompt,
     modePersonaPrompt,
     modePersonaModuleId,
+    moduleChatModeId,
     contextPolicy,
     mode,
   }: {
@@ -1771,6 +1814,9 @@ ${entries}
     runtimeModePrompt?: string
     modePersonaPrompt?: string
     modePersonaModuleId?: string
+    /** Full running mode id — scopes skill resolution to the mode's own
+     * declared skills. See `ChatModeRuntime.moduleChatModeId`. */
+    moduleChatModeId?: string
     contextPolicy?: ChatContextPolicy
     mode: SystemPromptSnapshotMode
   }): Promise<SystemPromptSnapshot> {
@@ -1783,6 +1829,7 @@ ${entries}
         runtimeModePrompt,
         modePersonaPrompt,
         modePersonaModuleId,
+        moduleChatModeId,
         contextPolicy,
         compaction,
       )
@@ -1808,6 +1855,7 @@ ${entries}
       runtimeModePrompt,
       modePersonaPrompt,
       contextPolicy,
+      moduleChatModeId,
     )
     return store.getOrCreate(conversationId, fingerprint, build, {
       reuseOnly: mode === 'reuse',
@@ -1830,6 +1878,7 @@ ${entries}
     runtimeModePrompt?: string,
     modePersonaPrompt?: string,
     contextPolicy?: ChatContextPolicy,
+    moduleChatModeId?: string,
   ): string {
     // `useAssistant === false` (module chat modes) makes `getCurrentAssistant`
     // return null below, which already changes the `assistant` field of this
@@ -1877,6 +1926,11 @@ ${entries}
         .map((id) => id.trim())
         .sort(),
       currentAssistantId: this.settings.currentAssistantId ?? '',
+      // Distinguishes module modes whose `modePersonaPrompt` text happens to
+      // be identical (unlikely but not disallowed) — the mode's declared
+      // skill set can still differ, and that's what `<available_skills>`
+      // reflects.
+      moduleChatModeId: moduleChatModeId ?? '',
       memoryPaths,
       promptSourceRevision: this.getPromptSourceRevision?.() ?? 0,
       // A context compaction restarts the conversation from a compressed
@@ -1920,6 +1974,7 @@ ${entries}
     runtimeModePrompt: string | undefined,
     modePersonaPrompt: string | undefined,
     modePersonaModuleId: string | undefined,
+    moduleChatModeId: string | undefined,
     contextPolicy: ChatContextPolicy | undefined,
     compaction: ChatConversationCompactionLike | null | undefined,
   ): Promise<SystemPromptSections> {
@@ -1944,6 +1999,7 @@ ${entries}
         useAssistant,
         modePersonaPrompt,
         modePersonaModuleId,
+        moduleChatModeId,
       )
     sections.push(...customInstructionSubsections)
 
@@ -2031,6 +2087,7 @@ ${entries}
     useAssistant = true,
     modePersonaPrompt?: string,
     modePersonaModuleId?: string,
+    moduleChatModeId?: string,
   ): Promise<SystemPromptSections> {
     const sections: SystemPromptSections = []
     const currentAssistant = useAssistant ? this.getCurrentAssistant() : null
@@ -2117,15 +2174,21 @@ ${memoryParts.join('\n\n')}
 
     if (this.includeSkills) {
       const disabledSkillNames = this.settings.skills?.disabledSkillIds ?? []
-      // Module chat modes have no per-mode skills yet (D6) — the allowed set
-      // is every enabled vault skill, bypassing assistant preferences
-      // entirely. Built-in modes keep the exact prior behavior: no assistant
-      // selected means no skills.
+      const skillScope: LiteSkillScope | undefined = moduleChatModeId
+        ? { moduleChatModeId }
+        : undefined
+      // Module chat modes bypass assistant skill preferences entirely: the
+      // allowed set is the mode's own declared skills (scoped by
+      // `moduleChatModeId`) plus every enabled vault skill. Built-in modes
+      // keep the exact prior behavior: no assistant selected means no skills.
       const enabledSkillEntries =
         useAssistant && !currentAssistant
           ? []
           : (
-              await listLiteSkillEntries(this.app, { settings: this.settings })
+              await listLiteSkillEntries(this.app, {
+                settings: this.settings,
+                scope: skillScope,
+              })
             ).filter((skill) =>
               isSkillEnabledForAssistant({
                 assistant: useAssistant ? currentAssistant : null,
@@ -2178,6 +2241,7 @@ ${enabledSkillEntries
               app: this.app,
               name: skill.name,
               settings: this.settings,
+              scope: skillScope,
             }),
           ),
         )

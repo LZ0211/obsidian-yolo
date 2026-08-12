@@ -286,7 +286,6 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     [agentService, injectedRuntime],
   )
   const { settings, setSettings, updateSettings } = useSettings()
-  const quickAccessSkillEntries = useLiteSkillEntries(app, { settings })
   const quickAccessSnippetEntries = useSnippetEntries()
   const { t, language } = useLanguage()
 
@@ -481,6 +480,17 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       : undefined,
     initialReasoningLevel,
     getReasoningLevelForModelId,
+  })
+  // Quick-access skill entries for the composer's `/` menu — scoped to the
+  // active module chat mode's own skills (in addition to the always-included
+  // user/global bucket) so a module's skills are only offered while its mode
+  // is selected. Declared after `chatMode` so the scope can read it; hook
+  // ordering across renders stays stable since this always runs.
+  const quickAccessSkillEntries = useLiteSkillEntries(app, {
+    settings,
+    scope: isModuleChatMode(chatMode)
+      ? { moduleChatModeId: chatMode }
+      : undefined,
   })
   const effectiveSettings = useMemo(
     () => ({
