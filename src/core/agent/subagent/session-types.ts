@@ -259,5 +259,13 @@ export type SubagentBeginRunResult =
       runKey: string
       runSequence: number
       sessionRevision: number
+      /**
+       * 新 run 的实际 prompt（Task 9 意图投递）：原子 claim 的 after_run 意图
+       * 文本（deliveredIntent=true 时），否则输入兜底 prompt。runner 用它构造
+       * 新 run 的首条 user 消息（Task 7 Minor #1：意图文本合入，非旧 prompt）。
+       */
+      prompt: string
+      /** true = 本次 beginRun 原子 claim 了首个 PENDING after_run 意图 */
+      deliveredIntent: boolean
     }
   | SubagentControlRejected

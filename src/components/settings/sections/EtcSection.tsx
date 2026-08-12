@@ -10,6 +10,7 @@ import {
 } from '../../../constants'
 import { useLanguage } from '../../../contexts/language-context'
 import { useSettings } from '../../../contexts/settings-context'
+import { getSubagentSessionService } from '../../../core/agent/subagent/session-service'
 import { isPortableVaultPathSegment } from '../../../core/paths/portableVaultPath'
 import { ensureUserDataRootDir } from '../../../core/paths/yoloManagedData'
 import { hasHiddenYoloBaseDirSegment } from '../../../core/paths/yoloPaths'
@@ -114,7 +115,10 @@ const loadStorageUsage = async (
   ])
 
   const snapshotAndCacheBytes =
-    promptSnapshotBytes + editReviewSnapshotBytes + imageCacheBytes + pdfCacheBytes
+    promptSnapshotBytes +
+    editReviewSnapshotBytes +
+    imageCacheBytes +
+    pdfCacheBytes
 
   return {
     chatHistoryBytes: Math.max(0, chatHistoryBytes - snapshotAndCacheBytes),
@@ -342,6 +346,9 @@ export function EtcSection({ app, plugin, className }: EtcSectionProps) {
           const list = await manager.listChats()
           for (const meta of list) {
             await manager.deleteChat(meta.id)
+            // R6：清空聊天历史时级联删除该父会话下的 subagent durable 会话
+            //（服务未初始化时跳过——getSubagentSessionService 返回 null）
+            await getSubagentSessionService()?.deleteByParent(meta.id)
           }
           // Drop all frozen system prompts so no snapshot outlives its conversation.
           await plugin.warmupAgentService()

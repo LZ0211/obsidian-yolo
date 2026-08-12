@@ -328,6 +328,9 @@ describe('SubagentSessionService', () => {
       runKey: `${spawned.sessionId}:2`,
       runSequence: 2,
       sessionRevision: 2,
+      // 无 PENDING 意图 → 兜底 prompt 原样返回、deliveredIntent=false
+      prompt: 'p2',
+      deliveredIntent: false,
     })
     const afterFirst = await service.query(spawned.sessionId)
     expect(afterFirst?.session.status).toBe(SUBAGENT_SESSION_STATUS.RUNNING)
@@ -372,6 +375,8 @@ describe('SubagentSessionService', () => {
       runKey: `${spawned.sessionId}:3`,
       runSequence: 3,
       sessionRevision: 4,
+      prompt: 'p3',
+      deliveredIntent: false,
     })
     const afterSecond = await service.query(spawned.sessionId)
     expect(afterSecond?.session.nextRunSequence).toBe(4)
@@ -415,5 +420,486 @@ describe('SubagentSessionService', () => {
     expect(missing.accepted).toBe(false)
     if (missing.accepted) throw new Error('expected rejection')
     expect(missing.errorCode).toBe('session_not_found')
+  })
+
+  it('delivers pending after_run intents by requesting a new run (Task 9)', async () => {
+    const requested: Array<{ sessionId: string }> = []
+    const service = await makeService(mockApp(), {
+      onIntentRunRequested: (sessionId) => requested.push({ sessionId }),
+    })
+    const spawned = await service.spawn({
+      title: 't',
+      prompt: 'p',
+      mode: AGENT_SESSION_MODE.PERSISTENT,
+      requestId: 'r1',
+      parentConversationId: 'c',
+      originAssistantMessageId: 'm',
+      originToolCallId: 't',
+      memoryAssistantId: 'x',
+    })
+    if (!spawned.accepted) throw new Error('spawn failed')
+    await service.send({
+      sessionId: spawned.sessionId,
+      messageId: 'm2',
+      text: 'again',
+      delivery: 'after_run',
+      expectedSessionRevision: spawned.sessionRevision,
+      requestId: 'r2',
+    })
+    // run 1 settle → session 回 IDLE + PENDING after_run 意图 → 触发续跑
+    await service.settleRun({
+      sessionId: spawned.sessionId,
+      runKey: spawned.runKey,
+      status: 'completed',
+      result: {
+        status: 'completed',
+        content: 'ok',
+        durationMs: 1,
+        toolUseCount: 0,
+      },
+      completedAt: 2000,
+    })
+    expect(requested).toContainEqual({ sessionId: spawned.sessionId })
+  })
+
+  it('begins a run claiming the first pending after_run intent as its prompt (Task 9)', async () => {
+    const app = mockApp()
+    const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)
+    const service = new SubagentSessionService(store)
+    const spawned = await service.spawn({
+      title: 't',
+      prompt: 'p',
+      mode: AGENT_SESSION_MODE.PERSISTENT,
+      requestId: 'r1',
+      parentConversationId: 'c',
+      originAssistantMessageId: 'm',
+      originToolCallId: 't',
+      memoryAssistantId: 'x',
+    })
+    if (!spawned.accepted) throw new Error('spawn failed')
+    await service.send({
+      sessionId: spawned.sessionId,
+      messageId: 'm2',
+      text: 'intent-1',
+      delivery: 'after_run',
+      expectedSessionRevision: 1,
+      requestId: 'r2',
+    })
+    await service.send({
+      sessionId: spawned.sessionId,
+      messageId: 'm3',
+      text: 'intent-2',
+      delivery: 'after_run',
+      expectedSessionRevision: 2,
+      requestId: 'r3',
+    })
+    const begin = await service.beginRun({
+      sessionId: spawned.sessionId,
+      expectedSessionRevision: 3,
+      prompt: 'fallback',
+    })
+    expect(begin.accepted).toBe(true)
+    if (!begin.accepted) throw new Error('expected acceptance')
+    // FIFO：首个 PENDING after_run 意图被原子 claim，文本即新 run prompt
+    expect(begin.prompt).toBe('intent-1')
+    expect(begin.deliveredIntent).toBe(true)
+    const snapshot = await service.query(spawned.sessionId)
+    expect(snapshot?.recentRuns[1]?.prompt).toBe('intent-1')
+    expect(snapshot?.recentRuns[1]?.runKey).toBe(`${spawned.sessionId}:2`)
+    // 意图 1 → CLAIMED + claimedByRunKey；意图 2 保持 PENDING（下一次投递）
+    const stored = await store.readById(spawned.sessionId)
+    expect(stored?.intents).toHaveLength(2)
+    expect(stored?.intents[0]).toMatchObject({
+      state: 'claimed',
+      claimedByRunKey: `${spawned.sessionId}:2`,
+      text: 'intent-1',
+    })
+    expect(stored?.intents[1]).toMatchObject({
+      state: 'pending',
+      text: 'intent-2',
+    })
+  })
+
+  it('settles a run committing its claimed intents without re-triggering delivery (Task 9)', async () => {
+    const requested: Array<{ sessionId: string }> = []
+    const app = mockApp()
+    const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)
+    const service = new SubagentSessionService(store, {
+      onIntentRunRequested: (sessionId) => requested.push({ sessionId }),
+    })
+    const spawned = await service.spawn({
+      title: 't',
+      prompt: 'p',
+      mode: AGENT_SESSION_MODE.PERSISTENT,
+      requestId: 'r1',
+      parentConversationId: 'c',
+      originAssistantMessageId: 'm',
+      originToolCallId: 't',
+      memoryAssistantId: 'x',
+    })
+    if (!spawned.accepted) throw new Error('spawn failed')
+    await service.send({
+      sessionId: spawned.sessionId,
+      messageId: 'm2',
+      text: 'again',
+      delivery: 'after_run',
+      expectedSessionRevision: 1,
+      requestId: 'r2',
+    })
+    const begin = await service.beginRun({
+      sessionId: spawned.sessionId,
+      expectedSessionRevision: 2,
+      prompt: 'fallback',
+    })
+    expect(begin.accepted).toBe(true)
+    if (!begin.accepted) throw new Error('expected acceptance')
+    // 结算 run 2：CLAIMED 意图 → COMMITTED，PENDING 已不存在 → 不再触发续跑
+    //（否则同一意图会无限循环重新投递）
+    await service.settleRun({
+      sessionId: spawned.sessionId,
+      runKey: begin.runKey,
+      status: 'completed',
+      result: {
+        status: 'completed',
+        content: 'ok',
+        durationMs: 1,
+        toolUseCount: 0,
+      },
+      completedAt: 3000,
+    })
+    const stored = await store.readById(spawned.sessionId)
+    expect(stored?.intents[0]).toMatchObject({
+      state: 'committed',
+      committedRunKey: begin.runKey,
+      text: 'again',
+    })
+    expect(requested).toEqual([])
+  })
+
+  it('recovery scan converts claimed intents of the interrupted run to recovery_required (Task 9)', async () => {
+    const app = mockApp()
+    const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)
+    const service = new SubagentSessionService(store, {
+      isSessionActive: () => false,
+    })
+    const spawned = await service.spawn({
+      title: 't',
+      prompt: 'p',
+      mode: AGENT_SESSION_MODE.PERSISTENT,
+      requestId: 'r1',
+      parentConversationId: 'c',
+      originAssistantMessageId: 'm',
+      originToolCallId: 't',
+      memoryAssistantId: 'x',
+    })
+    if (!spawned.accepted) throw new Error('spawn failed')
+    // run 1 完成后投递 after_run 意图
+    await service.settleRun({
+      sessionId: spawned.sessionId,
+      runKey: spawned.runKey,
+      status: 'completed',
+      result: {
+        status: 'completed',
+        content: 'ok',
+        durationMs: 1,
+        toolUseCount: 0,
+      },
+      completedAt: 2000,
+    })
+    await service.send({
+      sessionId: spawned.sessionId,
+      messageId: 'm2',
+      text: 'again',
+      delivery: 'after_run',
+      expectedSessionRevision: 2,
+      requestId: 'r2',
+    })
+    const begin = await service.beginRun({
+      sessionId: spawned.sessionId,
+      expectedSessionRevision: 3,
+      prompt: 'fallback',
+    })
+    expect(begin.accepted).toBe(true)
+    if (!begin.accepted) throw new Error('expected acceptance')
+    // 崩溃：session 留在 RUNNING（beginRun 已置）→ 扫描把 run 2 置 INTERRUPTED、
+    // 其 claim 的意图置 RECOVERY_REQUIRED
+    await service.recoverInterruptedSessions()
+    const snapshot = await service.query(spawned.sessionId)
+    expect(snapshot?.session.status).toBe(SUBAGENT_SESSION_STATUS.NEEDS_RESUME)
+    expect(snapshot?.recentRuns[1]?.status).toBe(
+      SUBAGENT_RUN_STATUS.INTERRUPTED,
+    )
+    const stored = await store.readById(spawned.sessionId)
+    expect(stored?.intents[0]).toMatchObject({ state: 'recovery_required' })
+  })
+
+  it('recovery scan skips already-recovered sessions with all-terminal runs (Task 9)', async () => {
+    const app = mockApp()
+    const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)
+    const service = new SubagentSessionService(store, {
+      isSessionActive: () => false,
+    })
+    const spawned = await service.spawn({
+      title: 't',
+      prompt: 'p',
+      mode: AGENT_SESSION_MODE.PERSISTENT,
+      requestId: 'r1',
+      parentConversationId: 'c',
+      originAssistantMessageId: 'm',
+      originToolCallId: 't',
+      memoryAssistantId: 'x',
+    })
+    if (!spawned.accepted) throw new Error('spawn failed')
+    const stored = await store.readById(spawned.sessionId)
+    if (!stored) throw new Error('missing row')
+    await store.compareAndUpdate(stored, {
+      ...stored,
+      session: { ...stored.session, status: SUBAGENT_SESSION_STATUS.RUNNING },
+    })
+    const first = await service.recoverInterruptedSessions()
+    expect(first.recovered).toBe(1)
+    const afterFirst = await service.query(spawned.sessionId)
+    expect(afterFirst?.session.status).toBe(
+      SUBAGENT_SESSION_STATUS.NEEDS_RESUME,
+    )
+    // 第二次扫描：run 已终态（INTERRUPTED）→ 跳过，revision 不再空涨
+    const second = await service.recoverInterruptedSessions()
+    expect(second.recovered).toBe(0)
+    const afterSecond = await service.query(spawned.sessionId)
+    expect(afterSecond?.session.revision).toBe(afterFirst?.session.revision)
+  })
+
+  it('queueRecovery only accepts recovery_required intents (Task 9)', async () => {
+    const app = mockApp()
+    const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)
+    const service = new SubagentSessionService(store, {
+      isSessionActive: () => false,
+    })
+    const spawned = await service.spawn({
+      title: 't',
+      prompt: 'p',
+      mode: AGENT_SESSION_MODE.PERSISTENT,
+      requestId: 'r1',
+      parentConversationId: 'c',
+      originAssistantMessageId: 'm',
+      originToolCallId: 't',
+      memoryAssistantId: 'x',
+    })
+    if (!spawned.accepted) throw new Error('spawn failed')
+    // PENDING 意图不可 resend（非 recovery_required——投递路径中）
+    const pending = await service.queueRecovery({
+      sessionId: spawned.sessionId,
+      messageId: 'm2',
+      expectedSessionRevision: 1,
+      action: 'resend',
+      requestId: 'r2',
+    })
+    expect(pending.accepted).toBe(false)
+    if (pending.accepted) throw new Error('expected rejection')
+    expect(pending.errorCode).toBe('queue_recovery_required')
+    // 恢复扫描把 CLAIMED 意图翻成 RECOVERY_REQUIRED 后可 resend/drop
+    await service.send({
+      sessionId: spawned.sessionId,
+      messageId: 'm2',
+      text: 'again',
+      delivery: 'after_run',
+      expectedSessionRevision: 1,
+      requestId: 'r3',
+    })
+    const begin = await service.beginRun({
+      sessionId: spawned.sessionId,
+      expectedSessionRevision: 2,
+      prompt: 'fallback',
+    })
+    expect(begin.accepted).toBe(true)
+    if (!begin.accepted) throw new Error('expected acceptance')
+    await service.recoverInterruptedSessions()
+    const resent = await service.queueRecovery({
+      sessionId: spawned.sessionId,
+      messageId: 'm2',
+      expectedSessionRevision: 4,
+      action: 'resend',
+      requestId: 'r4',
+    })
+    expect(resent.accepted).toBe(true)
+    if (!resent.accepted) throw new Error('expected acceptance')
+    expect(resent.state).toBe('pending')
+    const stored = await store.readById(spawned.sessionId)
+    expect(stored?.intents[0]).toMatchObject({ state: 'pending' })
+    expect(stored?.intents[0]).not.toHaveProperty('claimedByRunKey')
+    // 已 resend（PENDING）不可再 drop——需重新进入 RECOVERY_REQUIRED
+    const dropPending = await service.queueRecovery({
+      sessionId: spawned.sessionId,
+      messageId: 'm2',
+      expectedSessionRevision: 5,
+      action: 'drop',
+      requestId: 'r5',
+    })
+    expect(dropPending.accepted).toBe(false)
+    if (dropPending.accepted) throw new Error('expected rejection')
+    expect(dropPending.errorCode).toBe('queue_recovery_required')
+    // 完整 drop 链：recover(abort) → IDLE → 再 send → beginRun（FIFO 再 claim
+    // m2——resend 保持原数组序）→ 再恢复 → drop m2
+    const recovered = await service.recover({
+      sessionId: spawned.sessionId,
+      expectedSessionRevision: 5,
+      action: 'mark_interrupted_run_aborted',
+      requestId: 'r6',
+    })
+    expect(recovered.accepted).toBe(true)
+    await service.send({
+      sessionId: spawned.sessionId,
+      messageId: 'm3',
+      text: 'again-2',
+      delivery: 'after_run',
+      expectedSessionRevision: 6,
+      requestId: 'r7',
+    })
+    const begin2 = await service.beginRun({
+      sessionId: spawned.sessionId,
+      expectedSessionRevision: 7,
+      prompt: 'fallback',
+    })
+    expect(begin2.accepted).toBe(true)
+    if (!begin2.accepted) throw new Error('expected acceptance')
+    // resend 保持原数组序：FIFO 先投递 m2（m3 仍在更后）
+    expect(begin2.prompt).toBe('again')
+    await service.recoverInterruptedSessions()
+    const dropped = await service.queueRecovery({
+      sessionId: spawned.sessionId,
+      messageId: 'm2',
+      expectedSessionRevision: 9,
+      action: 'drop',
+      requestId: 'r8',
+    })
+    expect(dropped.accepted).toBe(true)
+    if (!dropped.accepted) throw new Error('expected acceptance')
+    expect(dropped.state).toBe('dropped')
+    // m3 未被 claim/恢复，保持 PENDING 可正常投递
+    const finalRow = await store.readById(spawned.sessionId)
+    expect(finalRow?.intents[1]).toMatchObject({
+      state: 'pending',
+      text: 'again-2',
+    })
+  })
+
+  it('claims pending next_boundary intents into a drain payload (Task 9, F1)', async () => {
+    const app = mockApp()
+    const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)
+    const service = new SubagentSessionService(store)
+    const spawned = await service.spawn({
+      title: 't',
+      prompt: 'p',
+      mode: AGENT_SESSION_MODE.PERSISTENT,
+      requestId: 'r1',
+      parentConversationId: 'c',
+      originAssistantMessageId: 'm',
+      originToolCallId: 't',
+      memoryAssistantId: 'x',
+    })
+    if (!spawned.accepted) throw new Error('spawn failed')
+    await service.send({
+      sessionId: spawned.sessionId,
+      messageId: 'm2',
+      text: 'mid-run 1',
+      delivery: 'next_boundary',
+      expectedSessionRevision: 1,
+      requestId: 'r2',
+    })
+    await service.send({
+      sessionId: spawned.sessionId,
+      messageId: 'm3',
+      text: 'mid-run 2',
+      delivery: 'next_boundary',
+      expectedSessionRevision: 2,
+      requestId: 'r3',
+    })
+    const drain = await service.claimNextBoundaryIntents(spawned.sessionId, {
+      runKey: `${spawned.sessionId}:2`,
+      expectedSessionRevision: 3,
+    })
+    expect(drain?.messages.map((message) => message.promptContent)).toEqual([
+      'mid-run 1',
+      'mid-run 2',
+    ])
+    expect(drain?.sourceUserMessageId).toBe('m3')
+    const stored = await store.readById(spawned.sessionId)
+    expect(stored?.intents[0]).toMatchObject({
+      state: 'claimed',
+      claimedByRunKey: `${spawned.sessionId}:2`,
+    })
+    // 二次 claim（同 run）无 PENDING 可投 → null
+    const again = await service.claimNextBoundaryIntents(spawned.sessionId, {
+      runKey: `${spawned.sessionId}:2`,
+      expectedSessionRevision: 4,
+    })
+    expect(again).toBeNull()
+    // revision 落后（并发 send 已写）→ 尽力而为返回 null，不 claim
+    await service.send({
+      sessionId: spawned.sessionId,
+      messageId: 'm4',
+      text: 'mid-run 3',
+      delivery: 'next_boundary',
+      expectedSessionRevision: 4,
+      requestId: 'r4',
+    })
+    const stale = await service.claimNextBoundaryIntents(spawned.sessionId, {
+      runKey: `${spawned.sessionId}:2`,
+      expectedSessionRevision: 4,
+    })
+    expect(stale).toBeNull()
+  })
+
+  it('markOrphaned marks an idle session orphaned (Task 9, R13 semantics)', async () => {
+    const service = await makeService(mockApp())
+    const spawned = await service.spawn({
+      title: 't',
+      prompt: 'p',
+      mode: AGENT_SESSION_MODE.PERSISTENT,
+      requestId: 'r1',
+      parentConversationId: 'c',
+      originAssistantMessageId: 'm',
+      originToolCallId: 't',
+      memoryAssistantId: 'x',
+    })
+    if (!spawned.accepted) throw new Error('spawn failed')
+    const orphaned = await service.markOrphaned({
+      sessionId: spawned.sessionId,
+      expectedSessionRevision: 1,
+    })
+    expect(orphaned.accepted).toBe(true)
+    const snapshot = await service.query(spawned.sessionId)
+    expect(snapshot?.session.status).toBe(SUBAGENT_SESSION_STATUS.ORPHANED)
+    // 已孤儿会话幂等拒绝（不可再 close/recover）
+    const close = await service.close({
+      sessionId: spawned.sessionId,
+      expectedSessionRevision: 2,
+      requestId: 'r2',
+    })
+    expect(close.accepted).toBe(false)
+    if (close.accepted) throw new Error('expected rejection')
+    expect(close.errorCode).toBe('session_not_sendable')
+  })
+
+  it('markOrphaned rejects a stale revision (Task 9)', async () => {
+    const service = await makeService(mockApp())
+    const spawned = await service.spawn({
+      title: 't',
+      prompt: 'p',
+      mode: AGENT_SESSION_MODE.PERSISTENT,
+      requestId: 'r1',
+      parentConversationId: 'c',
+      originAssistantMessageId: 'm',
+      originToolCallId: 't',
+      memoryAssistantId: 'x',
+    })
+    if (!spawned.accepted) throw new Error('spawn failed')
+    const rejected = await service.markOrphaned({
+      sessionId: spawned.sessionId,
+      expectedSessionRevision: 99,
+    })
+    expect(rejected.accepted).toBe(false)
+    if (rejected.accepted) throw new Error('expected rejection')
+    expect(rejected.errorCode).toBe('revision_conflict')
   })
 })

@@ -9,7 +9,7 @@ import {
 } from '../../../database/json/subagent/SubagentSessionStore'
 import type { StoredSubagentSession } from '../../../database/json/subagent/SubagentSessionStore'
 import type { YoloSettings } from '../../../settings/schema/setting.types'
-import type { ChatMessage } from '../../../types/chat'
+import type { ChatMessage, ChatUserMessage } from '../../../types/chat'
 import { ensureUserDataRootDir } from '../../paths/yoloManagedData'
 import { getYoloUserDataRootDir } from '../../paths/yoloPaths'
 import {
@@ -21,6 +21,7 @@ import type {
   SubagentRunStatus,
   SubagentSessionStatus,
 } from '../../state/statuses'
+import type { AgentPendingUserMessageDrain } from '../types'
 
 import {
   SUBAGENT_SESSION_SCHEMA_VERSION,
@@ -28,6 +29,7 @@ import {
   type SubagentBeginRunResult,
   type SubagentCloseInput,
   type SubagentCloseResult,
+  type SubagentControlRejected,
   type SubagentMessageIntent,
   type SubagentQueryOptions,
   type SubagentQueueRecoveryInput,
@@ -334,7 +336,13 @@ export class SubagentSessionService {
     }
   }
 
-  /** queueRecovery：recovery_required 意图显式 resend（置 PENDING）/ drop（置 DROPPED）。 */
+  /**
+   * queueRecovery：recovery_required 意图显式 resend（置 PENDING）/ drop（置
+   * DROPPED）。Task 9（backup resolve_session_queue 守卫）：仅 RECOVERY_REQUIRED
+   * 意图可恢复——PENDING/CLAIMED/COMMITTED 走此路径会把投递中的意图翻回
+   * PENDING（重复投递）或把已提交意图抹成未投递，属数据损坏。联合内无
+   * 'invalid_state'，复用最贴近的 queue_recovery_required（意图不可恢复）。
+   */
   async queueRecovery(
     input: SubagentQueueRecoveryInput,
   ): Promise<SubagentQueueRecoveryResult> {
@@ -365,14 +373,25 @@ export class SubagentSessionService {
         retryable: false,
       }
     }
+    const intent = stored.intents[intentIndex]
+    if (intent.state !== SUBAGENT_MESSAGE_INTENT_STATE.RECOVERY_REQUIRED) {
+      return {
+        accepted: false,
+        errorCode: 'queue_recovery_required',
+        retryable: false,
+      }
+    }
     const nextState =
       input.action === 'resend'
         ? SUBAGENT_MESSAGE_INTENT_STATE.PENDING
         : SUBAGENT_MESSAGE_INTENT_STATE.DROPPED
     const next: StoredSubagentSession = {
       ...stored,
-      intents: stored.intents.map((intent, index) =>
-        index === intentIndex ? { ...intent, state: nextState } : intent,
+      // backup session_message_requeued/dropped 均清空 claim 归属
+      intents: stored.intents.map((candidate, index) =>
+        index === intentIndex
+          ? { ...candidate, state: nextState, claimedByRunKey: undefined }
+          : candidate,
       ),
       session: {
         ...stored.session,
@@ -450,6 +469,12 @@ export class SubagentSessionService {
    * 正确标记 INTERRUPTED），nextRunSequence+1 持久化。
    * 与其余写路径一致：读 → revision 校验 → CAS（RevisionConflictError 按冲突
    * 结果返回，由调用方决定收敛重试）→ 结果。
+   *
+   * Task 9（意图投递）：同一次 CAS 原子 claim 首个 PENDING `after_run` 意图
+   * （FIFO）——意图文本即新 run 的 prompt（Task 7 Minor #1：续跑时意图文本
+   * 合入，而非旧 prompt 兜底）；无 PENDING 意图（手动续跑/重建）时用输入
+   * prompt 兜底。claim 与 run 创建同原子，避免"意图已 claim 但 run 未建"的
+   * 悬挂态；剩余 PENDING 意图留待下一次 settle 触发。
    */
   async beginRun(
     input: SubagentBeginRunInput,
@@ -479,18 +504,37 @@ export class SubagentSessionService {
     }
     const runSequence = stored.session.nextRunSequence
     const runKey = makeSubagentRunKey(stored.session.sessionId, runSequence)
+    const pendingIndex = stored.intents.findIndex(
+      (intent) =>
+        intent.delivery === 'after_run' &&
+        intent.state === SUBAGENT_MESSAGE_INTENT_STATE.PENDING,
+    )
+    const deliveredIntent =
+      pendingIndex !== -1 ? stored.intents[pendingIndex] : undefined
+    const effectivePrompt = deliveredIntent?.text ?? input.prompt
     const run: SubagentRun = {
       sessionId: stored.session.sessionId,
       runSequence,
       runKey,
       promptMessageId: `${runKey}:prompt`,
-      prompt: input.prompt,
+      prompt: effectivePrompt,
       status: SUBAGENT_RUN_STATUS.QUEUED,
       basedOnSessionRevision: stored.session.revision,
     }
     const next: StoredSubagentSession = {
       ...stored,
       runs: [...stored.runs, run],
+      intents: deliveredIntent
+        ? stored.intents.map((intent, index) =>
+            index === pendingIndex
+              ? {
+                  ...intent,
+                  state: SUBAGENT_MESSAGE_INTENT_STATE.CLAIMED,
+                  claimedByRunKey: runKey,
+                }
+              : intent,
+          )
+        : stored.intents,
       session: {
         ...stored.session,
         status: SUBAGENT_SESSION_STATUS.RUNNING,
@@ -518,6 +562,8 @@ export class SubagentSessionService {
       runKey,
       runSequence,
       sessionRevision: next.session.revision,
+      prompt: effectivePrompt,
+      deliveredIntent: deliveredIntent !== undefined,
     }
   }
 
@@ -565,6 +611,21 @@ export class SubagentSessionService {
               }
             : run,
         ),
+        // Task 9：结算时提交本 run claim 的意图（CLAIMED → COMMITTED）。意图
+        // 文本已作为该 run 的 user 消息投递进 transcript，run 结果即投递结果；
+        // 提交后 hasPendingAfterRun 不再命中 → 不会对本 run 重复触发续跑
+        // （否则 PENDING 常驻会无限循环）。中断恢复路径由扫描把 CLAIMED →
+        // RECOVERY_REQUIRED，不经此提交。
+        intents: stored.intents.map((intent) =>
+          intent.state === SUBAGENT_MESSAGE_INTENT_STATE.CLAIMED &&
+          intent.claimedByRunKey === input.runKey
+            ? {
+                ...intent,
+                state: SUBAGENT_MESSAGE_INTENT_STATE.COMMITTED,
+                committedRunKey: input.runKey,
+              }
+            : intent,
+        ),
         ...(input.transcript !== undefined
           ? { latestTranscript: input.transcript }
           : {}),
@@ -608,10 +669,155 @@ export class SubagentSessionService {
   }
 
   /**
+   * claimNextBoundaryIntents（Task 9，Task 6 review F1 follow-up）：run 开始时
+   * 一次性 claim 全部 PENDING `next_boundary` 意图（FIFO），返回 runner 构造
+   * `drainPendingUserMessages` 钩子的投递数据。store 读取是异步的，而
+   * native-runtime 的 llm_request 边界钩子是同步的——无法在边界内 claim，
+   * 因此 run 启动前 claim 到内存，首个边界消费。
+   * 冲突（revision 落后，如并发 send）返回 null：意图保持 PENDING，由下一次
+   * 触发重投。
+   */
+  async claimNextBoundaryIntents(
+    sessionId: string,
+    input: {
+      runKey: string
+      expectedSessionRevision: number
+    },
+  ): Promise<AgentPendingUserMessageDrain | null> {
+    const stored = await this.store.readById(sessionId)
+    if (!stored) return null
+    if (stored.session.revision !== input.expectedSessionRevision) return null
+    const pendingIndexes: number[] = []
+    stored.intents.forEach((intent, index) => {
+      if (
+        intent.delivery === 'next_boundary' &&
+        intent.state === SUBAGENT_MESSAGE_INTENT_STATE.PENDING
+      ) {
+        pendingIndexes.push(index)
+      }
+    })
+    if (pendingIndexes.length === 0) return null
+    const messages: ChatUserMessage[] = pendingIndexes.map((index) => {
+      const intent = stored.intents[index]
+      return {
+        role: 'user',
+        id: intent.messageId,
+        content: null,
+        promptContent: intent.text,
+        mentionables: [],
+      }
+    })
+    const source = messages.at(-1)
+    if (!source) return null
+    const next: StoredSubagentSession = {
+      ...stored,
+      intents: stored.intents.map((intent, index) =>
+        pendingIndexes.includes(index)
+          ? {
+              ...intent,
+              state: SUBAGENT_MESSAGE_INTENT_STATE.CLAIMED,
+              claimedByRunKey: input.runKey,
+            }
+          : intent,
+      ),
+      session: {
+        ...stored.session,
+        revision: stored.session.revision + 1,
+        lastActiveAt: Date.now(),
+      },
+    }
+    try {
+      await this.store.compareAndUpdate(stored, next)
+    } catch (error) {
+      if (error instanceof RevisionConflictError) return null
+      throw error
+    }
+    return { messages, sourceUserMessageId: source.id }
+  }
+
+  /**
+   * markOrphaned（Task 9，Task 3 Important 投递加载域重建）：origin 上下文
+   * 校验失败（parent_orphaned——父会话缺失/origin 消息不存在/工具调用归属
+   * 不符/branch 不匹配）时把会话置 ORPHANED（R13 同款语义：不可续跑、不可
+   * close/recover，仅保留历史）。仅 IDLE/NEEDS_RESUME/RUNNING 可转；
+   * 已归档/已孤儿/关闭中会话幂等拒绝。
+   */
+  async markOrphaned(input: {
+    sessionId: string
+    expectedSessionRevision: number
+  }): Promise<
+    { accepted: true; sessionRevision: number } | SubagentControlRejected
+  > {
+    const stored = await this.store.readById(input.sessionId)
+    if (!stored) {
+      return {
+        accepted: false,
+        errorCode: 'session_not_found',
+        retryable: false,
+      }
+    }
+    if (stored.session.revision !== input.expectedSessionRevision) {
+      return {
+        accepted: false,
+        errorCode: 'revision_conflict',
+        retryable: true,
+        current: this.toSnapshot(stored),
+      }
+    }
+    const { status } = stored.session
+    if (
+      status === SUBAGENT_SESSION_STATUS.ARCHIVED ||
+      status === SUBAGENT_SESSION_STATUS.ORPHANED ||
+      status === SUBAGENT_SESSION_STATUS.CLOSING
+    ) {
+      return {
+        accepted: false,
+        errorCode: 'session_not_sendable',
+        retryable: false,
+      }
+    }
+    const next: StoredSubagentSession = {
+      ...stored,
+      session: {
+        ...stored.session,
+        status: SUBAGENT_SESSION_STATUS.ORPHANED,
+        revision: stored.session.revision + 1,
+        lastActiveAt: Date.now(),
+      },
+    }
+    try {
+      await this.store.compareAndUpdate(stored, next)
+    } catch (error) {
+      if (error instanceof RevisionConflictError) {
+        return {
+          accepted: false,
+          errorCode: 'revision_conflict',
+          retryable: true,
+          current: this.toSnapshot(stored),
+        }
+      }
+      throw error
+    }
+    return {
+      accepted: true,
+      sessionRevision: next.session.revision,
+    }
+  }
+
+  /**
    * recoverInterruptedSessions：扫描全部会话，status ∈ {RUNNING, NEEDS_RESUME}
    * 且无活跃 runtime 的 → 当前 run 置 INTERRUPTED（仅未终态 run），session 置
    * NEEDS_RESUME，revision+1；delegatedRoleId 存在但 resolveDelegatedRole 返回
    * false 的会话置 ORPHANED（R13）。扫描是尽力而为：CAS 冲突跳过该会话。
+   *
+   * Task 9（意图投递）：
+   * - 被中断 run 已 claim 的意图（CLAIMED && claimedByRunKey = 中断 runKey）置
+   *   RECOVERY_REQUIRED（backup run_interrupted 语义：崩溃时投递结果未知，
+   *   必须显式 queueRecovery resend/drop）；PENDING 意图不受影响（未被 claim，
+   *   恢复后可正常再投递）。
+   * - NEEDS_RESUME + 全终态 run（前次扫描已置 INTERRUPTED）且角色可解析的会话
+   *   跳过——恢复扫描的"出口"：不再空转 revision 与 recovered 计数（任务前送
+   *   item 6）。R13 仍生效：角色不可解析的会话照常置 ORPHANED。
    */
   async recoverInterruptedSessions(): Promise<{ recovered: number }> {
     const metas = await this.store.listMetadata()
@@ -630,6 +836,15 @@ export class SubagentSessionService {
 
       const currentRun = this.locateInterruptibleRun(stored)
       const recoveredStatus = this.resolveRecoveredStatus(session)
+      if (
+        session.status === SUBAGENT_SESSION_STATUS.NEEDS_RESUME &&
+        !currentRun &&
+        recoveredStatus === SUBAGENT_SESSION_STATUS.NEEDS_RESUME
+      ) {
+        // 全终态 run 且无需状态变更：跳过（不涨 revision、不计 recovered）
+        continue
+      }
+      const interruptedRunKey = currentRun?.runKey
       const next: StoredSubagentSession = {
         ...stored,
         runs: currentRun
@@ -639,6 +854,17 @@ export class SubagentSessionService {
                 : run,
             )
           : stored.runs,
+        intents: interruptedRunKey
+          ? stored.intents.map((intent) =>
+              intent.state === SUBAGENT_MESSAGE_INTENT_STATE.CLAIMED &&
+              intent.claimedByRunKey === interruptedRunKey
+                ? {
+                    ...intent,
+                    state: SUBAGENT_MESSAGE_INTENT_STATE.RECOVERY_REQUIRED,
+                  }
+                : intent,
+            )
+          : stored.intents,
         session: {
           ...session,
           status: recoveredStatus,

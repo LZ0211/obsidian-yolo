@@ -127,8 +127,7 @@ function makeSession(
 
 function makeDeps(
   settings: YoloSettings,
-  conversationMeta: SubagentParentConversationMeta | null =
-    makeConversationMeta(),
+  conversationMeta: SubagentParentConversationMeta | null = makeConversationMeta(),
 ) {
   const providerClients: object[] = []
   const mcpManagers: object[] = []
@@ -261,21 +260,24 @@ describe('resolveCurrentSubagentParentAuthority', () => {
       'mismatched',
       makeConversationMeta({ conversationId: 'other-conversation' }),
     ],
-  ])('rejects an owning conversation meta that is %s as parent_orphaned', async (_name, conversationMeta) => {
-    const settings = makeSettings()
-    const { deps } = makeDeps(settings, conversationMeta)
+  ])(
+    'rejects an owning conversation meta that is %s as parent_orphaned',
+    async (_name, conversationMeta) => {
+      const settings = makeSettings()
+      const { deps } = makeDeps(settings, conversationMeta)
 
-    await expect(
-      resolveCurrentSubagentParentAuthority(
-        deps,
-        makeSession(),
-        makeParentContext(),
-      ),
-    ).rejects.toMatchObject({
-      accepted: false,
-      errorCode: 'parent_orphaned',
-    })
-  })
+      await expect(
+        resolveCurrentSubagentParentAuthority(
+          deps,
+          makeSession(),
+          makeParentContext(),
+        ),
+      ).rejects.toMatchObject({
+        accepted: false,
+        errorCode: 'parent_orphaned',
+      })
+    },
+  )
 
   it.each([
     ['non-delegatable', { ...role, delegatable: false }, model],
@@ -522,5 +524,181 @@ describe('resolveCurrentSubagentParentAuthority', () => {
     expect(getBuilderAssistantId(authority.requestContextBuilder)).toBe(
       'frozen-parent-assistant',
     )
+  })
+
+  // ── Task 3 Important：投递加载域的 timeline 绑定 parent_orphaned 校验 ──
+
+  const makeDelegatingConversation = (
+    overrides: {
+      originAssistantMessageId?: string
+      toolCallName?: string
+      toolCallId?: string
+      branchId?: string
+    } = {},
+  ): {
+    conversationId: string
+    assistantId?: string
+    messages: Array<{
+      role: 'assistant'
+      id: string
+      content: string
+      toolCallRequests?: Array<{ id: string; name: string }>
+      metadata?: { branchId?: string }
+    }>
+  } => ({
+    conversationId: 'parent-conversation',
+    assistantId: 'ui-assistant',
+    messages: [
+      {
+        role: 'assistant',
+        id: overrides.originAssistantMessageId ?? 'assistant-message',
+        content: 'delegating',
+        toolCallRequests: [
+          {
+            id: overrides.toolCallId ?? 'delegate-call',
+            name: overrides.toolCallName ?? 'yolo_local__delegate_subagent',
+          },
+        ],
+        metadata: {
+          branchId: overrides.branchId ?? 'branch-main',
+        },
+      },
+    ],
+  })
+
+  const makeDepsWithParentConversation = (
+    settings: YoloSettings,
+    conversation: ReturnType<typeof makeDelegatingConversation> | null,
+  ) => {
+    const { deps } = makeDeps(settings)
+    deps.loadParentConversation = jest.fn(async () => conversation)
+    return deps
+  }
+
+  it('accepts a valid origin context (origin message + delegate tool call + branch match)', async () => {
+    const settings = makeSettings()
+    const deps = makeDepsWithParentConversation(
+      settings,
+      makeDelegatingConversation(),
+    )
+
+    const authority = await resolveCurrentSubagentParentAuthority(
+      deps,
+      makeSession(),
+      makeParentContext(),
+    )
+    expect(authority.conversation?.conversationId).toBe('parent-conversation')
+  })
+
+  it('accepts a valid origin when originBranchId is unset (branch check skipped)', async () => {
+    const settings = makeSettings()
+    const deps = makeDepsWithParentConversation(
+      settings,
+      makeDelegatingConversation({ branchId: 'branch-other' }),
+    )
+
+    const authority = await resolveCurrentSubagentParentAuthority(
+      deps,
+      makeSession({ originBranchId: undefined }),
+      makeParentContext(),
+    )
+    expect(authority.conversation?.conversationId).toBe('parent-conversation')
+  })
+
+  it('rejects a missing origin assistant message as parent_orphaned (Task 3)', async () => {
+    const settings = makeSettings()
+    const deps = makeDepsWithParentConversation(
+      settings,
+      makeDelegatingConversation({ originAssistantMessageId: 'ghost-message' }),
+    )
+
+    await expect(
+      resolveCurrentSubagentParentAuthority(
+        deps,
+        makeSession(),
+        makeParentContext(),
+      ),
+    ).rejects.toMatchObject({
+      accepted: false,
+      errorCode: 'parent_orphaned',
+      retryable: false,
+    })
+  })
+
+  it('rejects a non-delegate tool call as parent_orphaned (ownership, Task 3)', async () => {
+    const settings = makeSettings()
+    const deps = makeDepsWithParentConversation(
+      settings,
+      makeDelegatingConversation({ toolCallName: 'yolo_local__fs_read' }),
+    )
+
+    await expect(
+      resolveCurrentSubagentParentAuthority(
+        deps,
+        makeSession(),
+        makeParentContext(),
+      ),
+    ).rejects.toMatchObject({
+      accepted: false,
+      errorCode: 'parent_orphaned',
+      retryable: false,
+    })
+  })
+
+  it('rejects a mismatched tool call id as parent_orphaned (ownership, Task 3)', async () => {
+    const settings = makeSettings()
+    const deps = makeDepsWithParentConversation(
+      settings,
+      makeDelegatingConversation({ toolCallId: 'other-call' }),
+    )
+
+    await expect(
+      resolveCurrentSubagentParentAuthority(
+        deps,
+        makeSession(),
+        makeParentContext(),
+      ),
+    ).rejects.toMatchObject({
+      accepted: false,
+      errorCode: 'parent_orphaned',
+      retryable: false,
+    })
+  })
+
+  it('rejects a branch mismatch as parent_orphaned (Task 3)', async () => {
+    const settings = makeSettings()
+    const deps = makeDepsWithParentConversation(
+      settings,
+      makeDelegatingConversation({ branchId: 'branch-other' }),
+    )
+
+    await expect(
+      resolveCurrentSubagentParentAuthority(
+        deps,
+        makeSession({ originBranchId: 'branch-main' }),
+        makeParentContext(),
+      ),
+    ).rejects.toMatchObject({
+      accepted: false,
+      errorCode: 'parent_orphaned',
+      retryable: false,
+    })
+  })
+
+  it('rejects an unavailable parent conversation as parent_orphaned (Task 3)', async () => {
+    const settings = makeSettings()
+    const deps = makeDepsWithParentConversation(settings, null)
+
+    await expect(
+      resolveCurrentSubagentParentAuthority(
+        deps,
+        makeSession(),
+        makeParentContext(),
+      ),
+    ).rejects.toMatchObject({
+      accepted: false,
+      errorCode: 'parent_orphaned',
+      retryable: false,
+    })
   })
 })

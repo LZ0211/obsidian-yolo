@@ -6,6 +6,10 @@ import type {
   AssistantToolServerPreference,
   WorkspaceAccessPolicy,
 } from '../../../types/assistant.types'
+import type {
+  SerializedChatAssistantMessage,
+  SerializedChatMessage,
+} from '../../../types/chat'
 import type { ChatModel } from '../../../types/chat-model.types'
 import type {
   LLMProvider,
@@ -14,7 +18,9 @@ import type {
 import type { ReasoningLevel } from '../../../types/reasoning'
 import { RequestContextBuilder } from '../../../utils/chat/requestContextBuilder'
 import type { BaseLLMProvider } from '../../llm/base'
+import { getLocalFileToolServerName } from '../../mcp/localFileTools'
 import type { McpManager } from '../../mcp/mcpManager'
+import { getToolName } from '../../mcp/tool-name-utils'
 import { resolveConversationFileScope } from '../../workspace/conversationFileScope'
 import {
   getAssistantToolPreferences,
@@ -28,7 +34,10 @@ import {
 } from '../workspaceAgentResolver'
 import { resolveAssistantWorkspaceAccessPolicy } from '../workspaceScope'
 
-import { SUBAGENT_MAX_AUTO_ITERATIONS } from './constants'
+import {
+  DELEGATE_SUBAGENT_TOOL_SHORT_NAME,
+  SUBAGENT_MAX_AUTO_ITERATIONS,
+} from './constants'
 import {
   type DelegatedAssistantProfile,
   resolveDelegatedAssistantProfile,
@@ -54,6 +63,18 @@ export type SubagentParentConversationMeta = {
   assistantId?: string
 }
 
+/**
+ * Task 3 Important 投递加载域重建的输入：父会话消息时间线。authority 解析时
+ * 校验 origin 上下文仍有效（origin 消息存在性 / delegate 工具调用归属 /
+ * branch 匹配，backup loadOwningConversation 语义）。master 的聊天元数据层
+ * 不携带消息时间线，由调用方（main.ts）经 ChatManager.findById 提供。
+ */
+export type SubagentParentConversationMessages = {
+  conversationId: string
+  assistantId?: string
+  messages: readonly SerializedChatMessage[]
+}
+
 export type SubagentAuthorityResolverDependencies = {
   app: App
   getSettings: () => YoloSettings
@@ -62,6 +83,17 @@ export type SubagentAuthorityResolverDependencies = {
   ) =>
     | Promise<SubagentParentConversationMeta | null>
     | SubagentParentConversationMeta
+    | null
+  /**
+   * Task 3 Important：可选。提供父会话消息时间线时，loadOwningConversationMeta
+   * 额外校验 origin 消息存在性 / delegate 工具调用归属 / branch 匹配（backup
+   * 语义）；缺失时仅做 conversationId 匹配的元数据级校验（旧行为）。
+   */
+  loadParentConversation?: (
+    conversationId: string,
+  ) =>
+    | Promise<SubagentParentConversationMessages | null>
+    | SubagentParentConversationMessages
     | null
   createProviderClient: (input: {
     settings: YoloSettings
@@ -302,5 +334,83 @@ async function loadOwningConversationMeta(
       'The owning conversation is unavailable.',
     )
   }
+  // Task 3 Important（投递加载域重建）：提供消息时间线时校验 origin 上下文
+  // 仍有效——origin 消息在父会话存在、delegate_subagent 工具调用归属匹配、
+  // branch 匹配（backup loadOwningConversation 语义）。任一失效 → parent_orphaned，
+  // 调用方（续跑）据 R13 同款语义把会话置 ORPHANED。
+  if (deps.loadParentConversation) {
+    await validateOriginContext(deps, session)
+  }
   return conversationMeta
+}
+
+/**
+ * Task 3 Important：origin 上下文校验（backup authority-resolver.ts:283-321
+ * 的 loadOwningConversation 移植，master 用消息时间线替代投影 timelineIds）。
+ * 父会话加载失败视为孤儿（与元数据层一致）；originAssistantMessageId 必须
+ * 是父会话中的 assistant 消息，且其 toolCallRequests 含 originToolCallId 且
+ * 工具名是 delegate_subagent（归属校验）；originBranchId 设置时须与 origin
+ * 消息的 branchId 一致。
+ */
+async function validateOriginContext(
+  deps: SubagentAuthorityResolverDependencies,
+  session: Readonly<SubagentSession>,
+): Promise<void> {
+  const loadParentConversation = deps.loadParentConversation
+  if (!loadParentConversation) return
+  let conversation: SubagentParentConversationMessages | null
+  try {
+    conversation = await loadParentConversation(session.parentConversationId)
+  } catch {
+    conversation = null
+  }
+  if (
+    !conversation ||
+    conversation.conversationId !== session.parentConversationId
+  ) {
+    throw new SubagentAuthorityResolutionError(
+      'parent_orphaned',
+      false,
+      'The owning conversation is unavailable.',
+    )
+  }
+  const assistantMessage = conversation.messages.find(
+    (message): message is SerializedChatAssistantMessage =>
+      message.role === 'assistant' &&
+      message.id === session.originAssistantMessageId,
+  )
+  const ownsToolCall = assistantMessage?.toolCallRequests?.some(
+    (request) =>
+      request.id === session.originToolCallId &&
+      isDelegateSubagentToolName(request.name),
+  )
+  if (!ownsToolCall) {
+    throw new SubagentAuthorityResolutionError(
+      'parent_orphaned',
+      false,
+      'The owning delegate_subagent tool call is unavailable.',
+    )
+  }
+  if (
+    session.originBranchId !== undefined &&
+    assistantMessage?.metadata?.branchId !== session.originBranchId
+  ) {
+    throw new SubagentAuthorityResolutionError(
+      'parent_orphaned',
+      false,
+      'The owning conversation branch is unavailable.',
+    )
+  }
+}
+
+function isDelegateSubagentToolName(value: unknown): boolean {
+  return (
+    typeof value === 'string' &&
+    (value === DELEGATE_SUBAGENT_TOOL_SHORT_NAME ||
+      value ===
+        getToolName(
+          getLocalFileToolServerName(),
+          DELEGATE_SUBAGENT_TOOL_SHORT_NAME,
+        ))
+  )
 }

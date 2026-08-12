@@ -8,6 +8,7 @@ import type { AgentRuntimeRunInput } from '../types'
 
 import {
   type ResolvedCurrentSubagentParentAuthority,
+  SubagentAuthorityResolutionError,
   type SubagentAuthorityResolverDependencies,
   resolveCurrentSubagentParentAuthority,
 } from './authority-resolver'
@@ -55,13 +56,19 @@ const gateRuntimeRun = (): Promise<void> => {
   return runGate
 }
 
+/** Task 9：捕获续跑 run input（断言意图文本/drain 钩子接线）。 */
+let capturedRunInput: AgentRuntimeRunInput | null = null
+
 jest.mock('../native-runtime', () => {
   const actual = jest.requireActual('../native-runtime')
   return {
     ...actual,
     NativeAgentRuntime: jest.fn().mockImplementation(() => ({
       subscribe: jest.fn(() => () => {}),
-      run: jest.fn(() => gateRuntimeRun()),
+      run: jest.fn((input: AgentRuntimeRunInput) => {
+        capturedRunInput = input
+        return gateRuntimeRun()
+      }),
       getSnapshot: jest.fn().mockReturnValue({
         messages: [{ role: 'assistant', id: 'assistant-1', content: 'done' }],
         compaction: [],
@@ -986,6 +993,7 @@ describe('runSubagentSessionContinuation', () => {
     jest.clearAllMocks()
     runGate = null
     releaseRunGate = null
+    capturedRunInput = null
     mockResolveAuthority.mockResolvedValue(makeAuthority())
   })
 
@@ -1032,6 +1040,7 @@ describe('runSubagentSessionContinuation', () => {
       query,
       beginRun,
       settleRun,
+      claimNextBoundaryIntents: jest.fn().mockResolvedValue(null),
     } as unknown as Awaited<ReturnType<typeof getSubagentSessionService>>)
 
     const deps = makeDeps()
@@ -1064,6 +1073,8 @@ describe('runSubagentSessionContinuation', () => {
       runKey: 'sub_abc:2',
       runSequence: 2,
       sessionRevision: 3,
+      prompt: 'p1',
+      deliveredIntent: false,
     })
     const query = jest.fn().mockResolvedValue(
       makeSessionSnapshot({
@@ -1099,6 +1110,7 @@ describe('runSubagentSessionContinuation', () => {
       query,
       beginRun,
       settleRun,
+      claimNextBoundaryIntents: jest.fn().mockResolvedValue(null),
     } as unknown as Awaited<ReturnType<typeof getSubagentSessionService>>)
 
     const continuationPromise = runSubagentSessionContinuation(
@@ -1124,5 +1136,268 @@ describe('runSubagentSessionContinuation', () => {
       }),
     )
     expect(subagentTaskRegistry.get('sub_abc')?.runKey).toBe('sub_abc:2')
+  })
+
+  it('resolves authority before beginning the run and marks the session orphaned on parent_orphaned (Task 9)', async () => {
+    const query = jest.fn().mockResolvedValue(
+      makeSessionSnapshot({
+        session: {
+          sessionId: 'sub_abc',
+          parentConversationId: 'c',
+          originAssistantMessageId: 'm',
+          originToolCallId: 'tc',
+          title: 't',
+          mode: AGENT_SESSION_MODE.PERSISTENT,
+          status: 'idle',
+          revision: 2,
+          nextRunSequence: 2,
+          memoryAssistantId: 'mem_1',
+          createdAt: 1,
+          lastActiveAt: 2,
+        },
+        recentRuns: [
+          {
+            sessionId: 'sub_abc',
+            runSequence: 1,
+            runKey: 'sub_abc:1',
+            promptMessageId: 'sub_abc:1:prompt',
+            prompt: 'p1',
+            status: SUBAGENT_RUN_STATUS.COMPLETED,
+            basedOnSessionRevision: 1,
+          },
+        ],
+        transcriptPage: [],
+      }),
+    )
+    const beginRun = jest.fn()
+    const markOrphaned = jest.fn().mockResolvedValue({ accepted: true })
+    mockGetSubagentSessionService.mockReturnValue({
+      query,
+      beginRun,
+      settleRun: jest.fn(),
+      claimNextBoundaryIntents: jest.fn().mockResolvedValue(null),
+      markOrphaned,
+    } as unknown as Awaited<ReturnType<typeof getSubagentSessionService>>)
+    mockResolveAuthority.mockRejectedValue(
+      new SubagentAuthorityResolutionError(
+        'parent_orphaned',
+        false,
+        'The owning conversation is unavailable.',
+      ),
+    )
+
+    // 续跑解析父上下文失败（origin 上下文失效）→ 不 beginRun、会话置
+    // ORPHANED（Task 3 Important / R13 同款语义），续跑正常返回（会话已死）
+    await runSubagentSessionContinuation('sub_abc', makeDeps())
+    expect(beginRun).not.toHaveBeenCalled()
+    expect(markOrphaned).toHaveBeenCalledWith({
+      sessionId: 'sub_abc',
+      expectedSessionRevision: 2,
+    })
+  })
+
+  it('does not begin a run when authority resolution fails retryably (review #3)', async () => {
+    const query = jest.fn().mockResolvedValue(
+      makeSessionSnapshot({
+        session: {
+          sessionId: 'sub_abc',
+          parentConversationId: 'c',
+          originAssistantMessageId: 'm',
+          originToolCallId: 'tc',
+          title: 't',
+          mode: AGENT_SESSION_MODE.PERSISTENT,
+          status: 'idle',
+          revision: 2,
+          nextRunSequence: 2,
+          memoryAssistantId: 'mem_1',
+          createdAt: 1,
+          lastActiveAt: 2,
+        },
+        recentRuns: [
+          {
+            sessionId: 'sub_abc',
+            runSequence: 1,
+            runKey: 'sub_abc:1',
+            promptMessageId: 'sub_abc:1:prompt',
+            prompt: 'p1',
+            status: SUBAGENT_RUN_STATUS.COMPLETED,
+            basedOnSessionRevision: 1,
+          },
+        ],
+        transcriptPage: [],
+      }),
+    )
+    const beginRun = jest.fn()
+    mockGetSubagentSessionService.mockReturnValue({
+      query,
+      beginRun,
+      settleRun: jest.fn(),
+      claimNextBoundaryIntents: jest.fn().mockResolvedValue(null),
+    } as unknown as Awaited<ReturnType<typeof getSubagentSessionService>>)
+    mockResolveAuthority.mockRejectedValue(
+      new SubagentAuthorityResolutionError(
+        'policy_unavailable',
+        true,
+        'The selected subagent model is unavailable.',
+      ),
+    )
+
+    // policy_unavailable（retryable）→ 抛给调用方诊断；会话保持 IDLE（无
+    // RUNNING+QUEUED 悬挂态），意图保持 PENDING 等待下一次触发
+    await expect(
+      runSubagentSessionContinuation('sub_abc', makeDeps()),
+    ).rejects.toThrow(/model is unavailable/)
+    expect(beginRun).not.toHaveBeenCalled()
+  })
+
+  it('uses the claimed after_run intent text as the new user message (review #1)', async () => {
+    const settleRun = jest.fn(async () => undefined)
+    const beginRun = jest.fn().mockResolvedValue({
+      accepted: true,
+      runKey: 'sub_abc:2',
+      runSequence: 2,
+      sessionRevision: 3,
+      prompt: 'intent-1 text',
+      deliveredIntent: true,
+    })
+    const query = jest.fn().mockResolvedValue(
+      makeSessionSnapshot({
+        session: {
+          sessionId: 'sub_abc',
+          parentConversationId: 'c',
+          originAssistantMessageId: 'm',
+          originToolCallId: 'tc',
+          title: 't',
+          mode: AGENT_SESSION_MODE.PERSISTENT,
+          status: 'idle',
+          revision: 2,
+          nextRunSequence: 2,
+          memoryAssistantId: 'mem_1',
+          createdAt: 1,
+          lastActiveAt: 2,
+        },
+        recentRuns: [
+          {
+            sessionId: 'sub_abc',
+            runSequence: 1,
+            runKey: 'sub_abc:1',
+            promptMessageId: 'sub_abc:1:prompt',
+            prompt: 'old prompt',
+            status: SUBAGENT_RUN_STATUS.COMPLETED,
+            basedOnSessionRevision: 1,
+          },
+        ],
+        // transcriptPage 非空：旧 prompt 不得被重复追加为合成 user 消息
+        transcriptPage: [
+          { role: 'assistant', id: 'a1', content: 'previous result' },
+        ] as unknown as ChatMessage[],
+      }),
+    )
+    mockGetSubagentSessionService.mockReturnValue({
+      query,
+      beginRun,
+      settleRun,
+      claimNextBoundaryIntents: jest.fn().mockResolvedValue(null),
+    } as unknown as Awaited<ReturnType<typeof getSubagentSessionService>>)
+
+    const continuationPromise = runSubagentSessionContinuation(
+      'sub_abc',
+      makeDeps(),
+    )
+    await waitForRunGate()
+    releaseRunGate?.()
+    await continuationPromise
+
+    // 新 user 消息 = 意图文本（beginRun 返回的 prompt），非旧 run prompt
+    expect(capturedRunInput?.messages.at(-1)).toMatchObject({
+      role: 'user',
+      id: 'sub_abc:2:prompt',
+      promptContent: 'intent-1 text',
+    })
+    const prompts = capturedRunInput?.messages
+      .filter((message) => message.role === 'user')
+      .map((message) => message.promptContent)
+    expect(prompts).not.toContain('old prompt')
+  })
+
+  it('drains next_boundary intents once at the run boundary (Task 9, F1)', async () => {
+    const settleRun = jest.fn(async () => undefined)
+    const beginRun = jest.fn().mockResolvedValue({
+      accepted: true,
+      runKey: 'sub_abc:2',
+      runSequence: 2,
+      sessionRevision: 3,
+      prompt: 'intent-1 text',
+      deliveredIntent: true,
+    })
+    const claimNextBoundaryIntents = jest.fn().mockResolvedValue({
+      messages: [
+        {
+          role: 'user',
+          id: 'm-boundary',
+          content: null,
+          promptContent: 'mid-run steer',
+          mentionables: [],
+        },
+      ],
+      sourceUserMessageId: 'm-boundary',
+    })
+    const query = jest.fn().mockResolvedValue(
+      makeSessionSnapshot({
+        session: {
+          sessionId: 'sub_abc',
+          parentConversationId: 'c',
+          originAssistantMessageId: 'm',
+          originToolCallId: 'tc',
+          title: 't',
+          mode: AGENT_SESSION_MODE.PERSISTENT,
+          status: 'idle',
+          revision: 2,
+          nextRunSequence: 2,
+          memoryAssistantId: 'mem_1',
+          createdAt: 1,
+          lastActiveAt: 2,
+        },
+        recentRuns: [
+          {
+            sessionId: 'sub_abc',
+            runSequence: 1,
+            runKey: 'sub_abc:1',
+            promptMessageId: 'sub_abc:1:prompt',
+            prompt: 'p1',
+            status: SUBAGENT_RUN_STATUS.COMPLETED,
+            basedOnSessionRevision: 1,
+          },
+        ],
+        transcriptPage: [],
+      }),
+    )
+    mockGetSubagentSessionService.mockReturnValue({
+      query,
+      beginRun,
+      settleRun,
+      claimNextBoundaryIntents,
+    } as unknown as Awaited<ReturnType<typeof getSubagentSessionService>>)
+
+    const continuationPromise = runSubagentSessionContinuation(
+      'sub_abc',
+      makeDeps(),
+    )
+    await waitForRunGate()
+    releaseRunGate?.()
+    await continuationPromise
+
+    expect(claimNextBoundaryIntents).toHaveBeenCalledWith('sub_abc', {
+      runKey: 'sub_abc:2',
+      expectedSessionRevision: 3,
+    })
+    const drain = capturedRunInput?.drainPendingUserMessages?.()
+    expect(drain?.messages[0]).toMatchObject({
+      role: 'user',
+      promptContent: 'mid-run steer',
+    })
+    expect(drain?.sourceUserMessageId).toBe('m-boundary')
+    // 一次性：第二次调用返回 null
+    expect(capturedRunInput?.drainPendingUserMessages?.()).toBeNull()
   })
 })

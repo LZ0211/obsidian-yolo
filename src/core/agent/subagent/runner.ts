@@ -31,10 +31,15 @@ import { CitationRegistry } from '../citationRegistry'
 import { liveTaskStreamBus } from '../live-stream/taskStreamBus'
 import { NativeAgentRuntime } from '../native-runtime'
 import type { AgentConversationState } from '../service'
-import type { AgentRuntimeLoopConfig, AgentRuntimeRunInput } from '../types'
+import type {
+  AgentPendingUserMessageDrain,
+  AgentRuntimeLoopConfig,
+  AgentRuntimeRunInput,
+} from '../types'
 
 import {
   type ResolvedCurrentSubagentParentAuthority,
+  SubagentAuthorityResolutionError,
   type SubagentAuthorityResolverDependencies,
   resolveCurrentSubagentParentAuthority,
 } from './authority-resolver'
@@ -595,6 +600,12 @@ export type SubagentSessionRunInputOptions = {
   compaction?: ChatConversationCompactionLike | null
   authority: ResolvedCurrentSubagentParentAuthority
   abortController: AbortController
+  /**
+   * Task 9（Task 6 review F1 follow-up）：next_boundary 意图投递钩子。
+   * native-runtime 在每轮 llm_request 边界同步消费；store 读取是异步的，
+   * 由续跑入口在 run 开始前一次性 claim 后以闭包提供。
+   */
+  drainPendingUserMessages?: () => AgentPendingUserMessageDrain | null
 }
 
 /**
@@ -610,6 +621,7 @@ export function buildSubagentSessionRunInput({
   compaction,
   authority,
   abortController,
+  drainPendingUserMessages,
 }: SubagentSessionRunInputOptions): AgentRuntimeRunInput {
   const policySystemPrompt = authority.delegatedProfile
     ? undefined
@@ -643,6 +655,7 @@ export function buildSubagentSessionRunInput({
     workspaceAccessPolicy: authority.workspaceAccessPolicy,
     allowedSkillPaths: [...authority.allowedSkillPaths],
     enqueueMemoryExtraction: undefined,
+    drainPendingUserMessages,
     systemPromptOverride: policySystemPrompt,
     toolApprovalConversationId:
       session.parentConversationId ?? authority.conversation?.conversationId,
@@ -1177,17 +1190,30 @@ export function abortAllSubagentTasks(): void {
  *   误用 nextRunSequence 会拿到错误 runKey，settle 无处落；
  * - IDLE（after_run 意图投递）：先经 service.beginRun 创建新 run 记录并推进
  *   nextRunSequence——否则 runKey 与 run 1 重叠，settleRun 按 runKey findIndex
- *   会覆写 run 1 的结算（数据损坏）。
+ *   会覆写 run 1 的结算（数据损坏）。beginRun 原子 claim 首个 PENDING
+ *   after_run 意图（Task 9），意图文本即新 run 的 prompt。
  *
  * ⚠️ 首 run prompt 落盘：spawn 时 prompt 文本已随 run 记录持久化
  * （session-types.SubagentRun.prompt）；transcript 为空（首 run 未结算、
  * reload 后重建）时用它重建首条 user 消息——重建消息与 sourceUserMessageId
  * 使用同一 run 的 promptMessageId（Task 7 审查 #5 对齐）。
- * after_run 意图文本的合入属 Task 9 数据流（当前以最近 run 的 prompt 兜底）。
  *
- * deps（app/settings/loadConversationMeta/createProviderClient/createMcpManager）
- * 由 Task 9 的 main.ts 注入；缺失时直接抛错（fail-fast，Task 7 审查 #4——
- * 静默空转会表现为"会话永不续跑"）。
+ * Task 9 修正：
+ * - Minor #3：authority 解析先于 beginRun——resolver 抛错（parent_orphaned /
+ *   policy_unavailable）时会话保持原状，不留下 RUNNING+QUEUED run 的悬挂态
+ *   （此前 beginRun 在前，resolver 失败只能等恢复扫描自愈）。
+ * - Task 3 Important：authority 解析抛 parent_orphaned（origin 上下文失效）
+ *   时经 service.markOrphaned 把会话置 ORPHANED（R13 同款语义），诊断后
+ *   return（会话已死，无重试意义；其他错误继续抛出，由调用方记录）。
+ * - Minor #1：IDLE 续跑的新 user 消息是 beginRun 返回的意图文本（claimed
+ *   后即新内容）；无意图（手动续跑）且 transcriptPage 非空时不再追加合成
+ *   旧 prompt 消息，仅用 transcriptPage。
+ * - F1（Task 6 review）：next_boundary 意图在 run 开始前一次性 claim，经
+ *   drainPendingUserMessages 钩子在首个 llm_request 边界投递。
+ *
+ * deps（app/settings/loadConversationMeta/loadParentConversation/
+ * createProviderClient/createMcpManager）由 Task 9 的 main.ts 注入；缺失时
+ * 直接抛错（fail-fast，Task 7 审查 #4——静默空转会表现为"会话永不续跑"）。
  */
 export async function runSubagentSessionContinuation(
   sessionId: string,
@@ -1210,11 +1236,54 @@ export async function runSubagentSessionContinuation(
     return
   }
 
+  // Task 7 Minor #3：authority 解析先于任何会话写操作（beginRun/claim）——
+  // resolver 失败（父会话缺失/模型不可用）时会话保持原状，PENDING 意图可
+  // 由后续触发重投，不会留下 RUNNING+QUEUED run 的悬挂态。
+  let authority: ResolvedCurrentSubagentParentAuthority
+  try {
+    authority = await resolveCurrentSubagentParentAuthority(deps, session, {
+      // resolver 仅消费 parent 的 workspaceAccessPolicy?.workspaceRoot 与
+      // reasoningLevel（authority-resolver.ts:139-142）；续跑时父 agent 不在
+      // 内存中，目录以默认根兜底，reasoningLevel 走父会话默认。
+      conversationId: session.parentConversationId,
+    } as unknown as SubagentParentContext)
+  } catch (error) {
+    // Task 3 Important：origin 上下文失效（parent_orphaned）→ 会话置
+    // ORPHANED（R13 同款语义），不再可续跑/close/recover；诊断后返回。
+    if (
+      error instanceof SubagentAuthorityResolutionError &&
+      error.errorCode === 'parent_orphaned'
+    ) {
+      const fresh = await service.query(sessionId)
+      if (fresh && fresh.session.status !== SUBAGENT_SESSION_STATUS.ORPHANED) {
+        const orphaned = await service.markOrphaned({
+          sessionId,
+          expectedSessionRevision: fresh.session.revision,
+        })
+        if (!orphaned.accepted) {
+          console.error(
+            '[YOLO] Failed to mark orphaned subagent session',
+            orphaned,
+          )
+        }
+      }
+      console.error(
+        '[YOLO] Subagent session orphaned: owning context unavailable',
+        { sessionId, error },
+      )
+      return
+    }
+    // 其余解析失败（policy_unavailable 等，retryable）：抛给调用方记录；
+    // 意图保持 PENDING，等待下一次触发重投。
+    throw error
+  }
+
   let runSequence: number
   let runKey: string
   let promptMessageId: string
   let runPrompt: string
   let canonicalMessages: readonly ChatMessage[]
+  let expectedSessionRevision: number
   if (session.status === SUBAGENT_SESSION_STATUS.NEEDS_RESUME) {
     // 恢复路径：沿用被中断 run 的既有 runKey/runSequence（Task 7 审查 #2b）
     const interruptedRun = snapshot.recentRuns.find(
@@ -1225,6 +1294,7 @@ export async function runSubagentSessionContinuation(
     runKey = interruptedRun.runKey
     promptMessageId = interruptedRun.promptMessageId
     runPrompt = interruptedRun.prompt ?? ''
+    expectedSessionRevision = session.revision
     canonicalMessages =
       snapshot.transcriptPage && snapshot.transcriptPage.length > 0
         ? snapshot.transcriptPage
@@ -1240,8 +1310,9 @@ export async function runSubagentSessionContinuation(
             ]
           : []
   } else {
-    // IDLE 续跑（after_run 意图）：先经 service 创建新 run 记录并推进
-    // nextRunSequence（Task 7 审查 #2a——runKey 不重叠、settle 有落点）
+    // IDLE 续跑（after_run 意图）：beginRun 原子创建新 run 记录 + claim 首个
+    // PENDING after_run 意图（Task 7 审查 #2a——runKey 不重叠、settle 有落点；
+    // Task 9——意图文本即新 run prompt，Minor #1 不再以旧 prompt 兜底）
     const previousPrompt = snapshot.recentRuns.at(-1)?.prompt ?? ''
     const beginResult = await service.beginRun({
       sessionId,
@@ -1249,8 +1320,11 @@ export async function runSubagentSessionContinuation(
       prompt: previousPrompt,
     })
     if (!beginResult.accepted) {
+      // Task 7 Minor #2：拒绝（revision_conflict 等）必须诊断而非静默——
+      // 意图保持 PENDING，由下一次 settle/显式投递重试
       console.error(
         '[YOLO] Failed to begin subagent continuation run',
+        { sessionId, expectedSessionRevision: session.revision },
         beginResult,
       )
       return
@@ -1258,27 +1332,67 @@ export async function runSubagentSessionContinuation(
     runSequence = beginResult.runSequence
     runKey = beginResult.runKey
     promptMessageId = `${runKey}:prompt`
-    runPrompt = previousPrompt
-    // 新 run 的首条 user 消息：id 用新 run 的 promptMessageId
-    //（与 runInput.sourceUserMessageId 对齐，Task 7 审查 #5）
-    canonicalMessages = [
-      ...(snapshot.transcriptPage ?? []),
-      {
-        role: 'user',
-        id: promptMessageId,
-        content: null,
-        promptContent: runPrompt,
-        mentionables: [],
-      } satisfies ChatUserMessage,
-    ]
+    runPrompt = beginResult.prompt
+    expectedSessionRevision = beginResult.sessionRevision
+    if (beginResult.deliveredIntent) {
+      // 意图文本是新内容：追加为新 user 消息（id 用新 run 的 promptMessageId，
+      // 与 runInput.sourceUserMessageId 对齐，Task 7 审查 #5）
+      canonicalMessages = [
+        ...(snapshot.transcriptPage ?? []),
+        {
+          role: 'user',
+          id: promptMessageId,
+          content: null,
+          promptContent: runPrompt,
+          mentionables: [],
+        } satisfies ChatUserMessage,
+      ]
+    } else if (snapshot.transcriptPage && snapshot.transcriptPage.length > 0) {
+      // 手动续跑（无意图）且已有 transcript：仅用 transcriptPage——不再
+      // 追加合成旧 prompt 消息（Task 7 Minor #1）
+      canonicalMessages = snapshot.transcriptPage
+    } else {
+      // transcript 为空（首 run 未结算、reload 后重建）：用 run prompt 重建
+      canonicalMessages = runPrompt
+        ? [
+            {
+              role: 'user',
+              id: promptMessageId,
+              content: null,
+              promptContent: runPrompt,
+              mentionables: [],
+            } satisfies ChatUserMessage,
+          ]
+        : []
+    }
   }
 
-  const authority = await resolveCurrentSubagentParentAuthority(deps, session, {
-    // resolver 仅消费 parent 的 workspaceAccessPolicy?.workspaceRoot 与
-    // reasoningLevel（authority-resolver.ts:139-142）；续跑时父 agent 不在
-    // 内存中，目录以默认根兜底，reasoningLevel 走父会话默认。
-    conversationId: session.parentConversationId,
-  } as unknown as SubagentParentContext)
+  // Task 9（Task 6 review F1 follow-up）：next_boundary 意图 → drain 钩子。
+  // store 读取是异步的而 llm_request 边界钩子是同步的——run 开始前一次性
+  // claim 到内存，首个边界消费（一次投递后归 null）。claim 失败（冲突）为
+  // 尽力而为：意图保持 PENDING，由下一次触发重投。
+  let boundaryDrain: AgentPendingUserMessageDrain | null = null
+  try {
+    boundaryDrain = await service.claimNextBoundaryIntents(sessionId, {
+      runKey,
+      expectedSessionRevision,
+    })
+  } catch (error) {
+    console.error(
+      '[YOLO] Failed to claim next_boundary subagent intents',
+      { sessionId, runKey },
+      error,
+    )
+  }
+  const drainPendingUserMessages:
+    | (() => AgentPendingUserMessageDrain | null)
+    | undefined = boundaryDrain
+    ? () => {
+        const drained = boundaryDrain
+        boundaryDrain = null
+        return drained
+      }
+    : undefined
 
   const abortController = new AbortController()
   const runInput = buildSubagentSessionRunInput({
@@ -1288,6 +1402,7 @@ export async function runSubagentSessionContinuation(
     compaction: snapshot.compaction ?? null,
     authority,
     abortController,
+    drainPendingUserMessages,
   })
   const parent: SubagentParentContext = {
     providerClient: authority.providerClient,
