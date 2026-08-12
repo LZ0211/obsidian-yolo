@@ -2269,6 +2269,13 @@ export default class YoloPlugin extends Plugin {
     setSubagentResultMaxCharsSettingsGetter(
       () => this.settings.subagentResultMaxChars,
     )
+    // The parent-context fork turn count is read on every `last_turns` compose,
+    // so changing `forkContextTurns` in settings takes effect without a restart
+    // (pre `main.ts:3448`).
+    const { setForkContextTurnsSettingsGetter } = await import(
+      './core/agent/subagent/parent-context'
+    )
+    setForkContextTurnsSettingsGetter(() => this.settings.forkContextTurns)
     this.liteSkillRegistryDispose = initializeLiteSkillRegistryService({
       app: this.app,
       settings: this.settings,

@@ -2865,6 +2865,44 @@ describe('delegate_subagent model selection', () => {
     expect(runSubagent).not.toHaveBeenCalled()
   })
 
+  describe('forkContext argument', () => {
+    it('defaults to none when the argument is omitted', async () => {
+      const result = await callDelegateSubagent({})
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      expect(runSubagent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          parent: expect.objectContaining({ forkContext: 'none' }),
+        }),
+      )
+    })
+
+    it('forwards each valid forkContext value into the parent context', async () => {
+      for (const forkContext of ['none', 'last_turns', 'full']) {
+        const result = await callDelegateSubagent({ forkContext })
+
+        expect(result.status).toBe(ToolCallResponseStatus.Success)
+        expect(runSubagent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            parent: expect.objectContaining({ forkContext }),
+          }),
+        )
+      }
+    })
+
+    it('rejects values outside none/last_turns/full', async () => {
+      const result = await callDelegateSubagent({ forkContext: 'everything' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      if (result.status === ToolCallResponseStatus.Error) {
+        expect(result.error).toContain(
+          'forkContext must be "none", "last_turns", or "full".',
+        )
+      }
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+  })
+
   describe('delegated role resolution', () => {
     const mockDelegatedProfile = () =>
       ({

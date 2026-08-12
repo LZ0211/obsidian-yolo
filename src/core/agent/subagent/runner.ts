@@ -48,7 +48,10 @@ import {
   SUBAGENT_MAX_AUTO_ITERATIONS,
 } from './constants'
 import type { DelegatedAssistantProfile } from './delegated-assistant-profile'
-import type { SubagentParentContext } from './parent-context'
+import {
+  type SubagentParentContext,
+  composeParentContextPrompt,
+} from './parent-context'
 import { subagentRuntimeRegistry } from './runtime-registry'
 import {
   type SubagentSessionService,
@@ -521,7 +524,14 @@ export function buildSubagentInitialRunInput({
     role: 'user',
     id: promptMessageId ?? uuidv4(),
     content: null,
-    promptContent: record.prompt,
+    // Task 14 fork：parent.forkContext 为 none/undefined 时返回原 prompt（与
+    // runChildAgent 的内联构造同构，byte-identical）；last_turns/full 按
+    // composeParentContextPrompt 组合父 transcript 只读快照。
+    promptContent: composeParentContextPrompt({
+      prompt: record.prompt,
+      parentMessages: parent.parentMessages ?? [],
+      forkContext: parent.forkContext,
+    }),
     mentionables: [],
   }
   const policy = resolveSubagentRunPolicy({ parent, delegatedProfile })
@@ -682,7 +692,14 @@ async function runChildAgent(
     role: 'user',
     id: promptMessageId ?? uuidv4(),
     content: null,
-    promptContent: record.prompt,
+    // Task 14 fork（与 buildSubagentInitialRunInput 的构造同构）：parent 携带
+    // forkContext + parentMessages（buildSubagentParentContext 从父 run input
+    // 快照），none/undefined 时返回原 prompt——与迁移前逐字节一致。
+    promptContent: composeParentContextPrompt({
+      prompt: record.prompt,
+      parentMessages: parent.parentMessages ?? [],
+      forkContext: parent.forkContext,
+    }),
     mentionables: [],
   }
 

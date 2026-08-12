@@ -9,6 +9,15 @@ import type { AgentSessionMode } from '../../state/contracts'
 
 export type SubagentTaskStatus = 'running' | 'completed' | 'failed' | 'aborted'
 
+/**
+ * Optional read-only parent-context fork for a delegated sub-agent.
+ * - `none` (default): the child sees only the prompt — byte-identical to today.
+ * - `last_turns`: compose the parent's last N messages into the child prompt.
+ * - `full`: compose the whole parent history (size-capped) into the child prompt.
+ * The fork is a read-only snapshot taken at dispatch time.
+ */
+export type ForkContext = 'none' | 'last_turns' | 'full'
+
 export type SubagentAcceptedResult = {
   accepted: true
   taskId: string

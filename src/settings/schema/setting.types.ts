@@ -4,6 +4,7 @@ import {
   DEFAULT_CHAT_MODELS,
   DEFAULT_CHAT_TITLE_MODEL_ID,
 } from '../../constants'
+import { SUBAGENT_FORK_CONTEXT_TURNS_DEFAULT } from '../../core/agent/subagent/parent-context'
 import {
   SUBAGENT_RESULT_MAX_CHARS,
   SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH,
@@ -744,6 +745,15 @@ export const yoloSettingsSchema = z.object({
     .int()
     .min(SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH + 1)
     .catch(SUBAGENT_RESULT_MAX_CHARS),
+
+  // Parent messages composed into a `last_turns` subagent fork. Read through
+  // the parent-context settings getter so changes take effect without a
+  // restart. `.catch` keeps absent or malformed values at the default.
+  forkContextTurns: z
+    .number()
+    .int()
+    .min(1)
+    .catch(SUBAGENT_FORK_CONTEXT_TURNS_DEFAULT),
 
   // Chat options
   chatOptions: z

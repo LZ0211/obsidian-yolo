@@ -1184,6 +1184,13 @@ export function getLocalFileTools(options?: {
             description:
               'Optional model id preference for the generic sub-agent model pool (ignored when delegatedRoleId is set).',
           },
+          forkContext: {
+            type: 'string',
+            enum: ['none', 'last_turns', 'full'],
+            description:
+              "Optional read-only parent-context fork for the sub-agent. Defaults to none (the child sees only the prompt, exactly as today). last_turns appends a read-only snapshot of the parent conversation's most recent turns to the child prompt; full appends a size-capped read-only snapshot of the whole parent history. The fork is a snapshot at dispatch time: the child cannot write to parent state.",
+            default: 'none',
+          },
         },
         required: ['description', 'prompt'],
       },
@@ -2534,15 +2541,17 @@ export async function callLocalFileTool({
   allowedSkillPaths?: readonly string[]
   runContext?: AgentRunContext
   /**
-   * 仅消费/转发父 subagent 运行上下文的三个字段（工作区策略、request context
-   * builder、父 assistant id）；完整形态见 SubagentParentContext。以结构子集
-   * 就地声明，避免 localFileTools → subagent/* 的静态/type 导入边（madge 对
-   * type-only 导入计边，会与 tool-preferences 回流成环）。
+   * 仅消费/转发父 subagent 运行上下文的部分字段（工作区策略、request context
+   * builder、父 assistant id、forkContext）；完整形态见 SubagentParentContext。
+   * 以结构子集就地声明，避免 localFileTools → subagent/* 的静态/type 导入边
+   * （madge 对 type-only 导入计边，会与 tool-preferences 回流成环）。forkContext
+   * 由 delegate_subagent 工具参数解析后在派发处填入（Task 14）。
    */
   subagentParentContext?: {
     workspaceAccessPolicy?: WorkspaceAccessPolicy
     requestContextBuilder: unknown
     assistantId?: string
+    forkContext?: 'none' | 'last_turns' | 'full'
   }
   promptSourceWatcher?: PromptSourceWatcher
   /** Effective approval tier for the bash tool (see tool-gateway.ts). */
@@ -4271,6 +4280,25 @@ export async function callLocalFileTool({
         const modelPreferenceId =
           getOptionalTextArg(args, 'modelPreferenceId')?.trim() ?? ''
 
+        // forkContext 三档校验（pre localFileTools.ts:6381-6395 语义）：none（默认，
+        // 子代理只见 prompt，与今天逐字节一致）/ last_turns（最近
+        // getForkContextTurns() 轮父消息）/ full（全文按 24_000 字符截断）。类型
+        // 就地声明，不从 subagent/types 静态/type 导入（Task 8 修复轮 2 已清零
+        // localFileTools → subagent 的导入边）。
+        const requestedForkContext = getOptionalTextArg(
+          args,
+          'forkContext',
+        )?.trim()
+        if (
+          requestedForkContext &&
+          !['none', 'last_turns', 'full'].includes(requestedForkContext)
+        ) {
+          throw new Error('forkContext must be "none", "last_turns", or "full".')
+        }
+        const forkContext: 'none' | 'last_turns' | 'full' =
+          (requestedForkContext as 'none' | 'last_turns' | 'full' | undefined) ??
+          'none'
+
         // 全部 subagent 依赖走动态 import——madge 对静态与 type-only 导入都计边，
         // localFileTools → subagent/* 会经 tool-preferences 回流成环（deps:check
         // 棘轮基线 271，38 组新增环全部由此造成）。类型一律从动态 import 绑定
@@ -4418,8 +4446,13 @@ export async function callLocalFileTool({
             assistantMessageId,
           },
           // 签名结构子集按 runner 的 parent 参数真实类型收窄（调用方总是传入
-          // 完整 SubagentParentContext，运行时无差异）。
-          parent: subagentParentContext as LocalRunSubagentParams['parent'],
+          // 完整 SubagentParentContext，运行时无差异）。forkContext 由本工具参数
+          // 解析后并入 parent 上下文（Task 14：runner 在组合 child 初始 prompt 时
+          // 从 parent.forkContext 读取）。
+          parent: {
+            ...subagentParentContext,
+            forkContext,
+          } as LocalRunSubagentParams['parent'],
           childModel: {
             providerClient: selectedModelClient.providerClient,
             model: selectedModelClient.model,
