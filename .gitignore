@@ -15,7 +15,9 @@ vendor/
 main.js
 meta.json
 main.css
-web-ui/dist/
+# web-ui build outputs now land in the repo-root web-ui/ dir (no dist
+# subdirectory). Root-anchored so src/web-ui/ source stays tracked.
+/web-ui/
 
 # Exclude sourcemaps
 *.map

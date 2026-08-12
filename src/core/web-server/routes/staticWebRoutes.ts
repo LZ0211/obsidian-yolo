@@ -106,7 +106,6 @@ function resolveStaticFilePath(
   relativePath: string,
 ): string | null {
   const candidates = [
-    getPath().join(cwd, 'web-ui', 'dist', relativePath),
     getPath().join(cwd, 'web-ui', relativePath),
     relativePath === 'app.css' || relativePath === 'styles.css'
       ? getPath().join(cwd, relativePath)

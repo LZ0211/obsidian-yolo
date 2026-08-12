@@ -27,8 +27,8 @@ describe('staticWebRoutes', () => {
 
   it('serves the web runtime css from the web-ui directory', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-rag-web-static-'))
-    fs.mkdirSync(path.join(cwd, 'web-ui', 'dist'), { recursive: true })
-    fs.writeFileSync(path.join(cwd, 'web-ui', 'dist', 'app.css'), 'body{}')
+    fs.mkdirSync(path.join(cwd, 'web-ui'), { recursive: true })
+    fs.writeFileSync(path.join(cwd, 'web-ui', 'app.css'), 'body{}')
     const router = new WebRouter()
     registerStaticWebRoutes(router, { cwd })
 
@@ -48,7 +48,7 @@ describe('staticWebRoutes', () => {
 
   it('serves the precompressed Brotli JavaScript asset when accepted', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-rag-web-static-'))
-    const distDir = path.join(cwd, 'web-ui', 'dist')
+    const distDir = path.join(cwd, 'web-ui')
     const source = 'globalThis.__webBundle = "brotli";'
     fs.mkdirSync(distDir, { recursive: true })
     fs.writeFileSync(path.join(distDir, 'index.js'), source)
@@ -73,7 +73,7 @@ describe('staticWebRoutes', () => {
 
   it('serves the precompressed gzip JavaScript asset when Brotli is unavailable', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-rag-web-static-'))
-    const distDir = path.join(cwd, 'web-ui', 'dist')
+    const distDir = path.join(cwd, 'web-ui')
     const source = 'globalThis.__webBundle = "gzip";'
     fs.mkdirSync(distDir, { recursive: true })
     fs.writeFileSync(path.join(distDir, 'index.js'), source)
@@ -93,7 +93,7 @@ describe('staticWebRoutes', () => {
 
   it('serves the raw JavaScript asset when compression is not accepted', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-rag-web-static-'))
-    const distDir = path.join(cwd, 'web-ui', 'dist')
+    const distDir = path.join(cwd, 'web-ui')
     const source = 'globalThis.__webBundle = "raw";'
     fs.mkdirSync(distDir, { recursive: true })
     fs.writeFileSync(path.join(distDir, 'index.js'), source)

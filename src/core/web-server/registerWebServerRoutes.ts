@@ -92,7 +92,7 @@ const getPath = () =>
 
 /**
  * Resolve the on-disk plugin directory (absolute) so static asset serving
- * looks in `web-ui/dist` next to the plugin's own files, not the Obsidian
+ * looks in `web-ui` next to the plugin's own files, not the Obsidian
  * process cwd. Falls back to `process.cwd()` only if neither vault path nor
  * manifest dir is available, matching the test environment.
  */
@@ -216,7 +216,7 @@ export function registerWebServerRoutes(
     },
   })
 
-  // Static assets sit under the *plugin* dir (web-ui/dist), not the Obsidian
+  // Static assets sit under the *plugin* dir (web-ui), not the Obsidian
   // process cwd. Without this, GET / returns "Not found" because the default
   // cwd lookup misses every candidate path.
   registerStaticWebRoutes(options.server.router, {

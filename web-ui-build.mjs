@@ -10,7 +10,7 @@ const builtins = (await import('builtin-modules')).default
 const nodeBuiltins = [...builtins, ...builtins.map((mod) => `node:${mod}`)]
 
 const prod = process.argv[2] === 'production'
-const webUiDistDir = path.resolve('web-ui/dist')
+const webUiDir = path.resolve('web-ui')
 
 // Inline pdfjs-dist worker — the web-ui needs PDF preview support
 const inlinePdfjsWorkerPlugin = {
@@ -118,7 +118,7 @@ const obsidianStubPlugin = {
 const ctx = await esbuild.context({
   entryPoints: ['src/web-ui/index.tsx'],
   bundle: true,
-  outfile: 'web-ui/dist/index.js',
+  outfile: 'web-ui/index.js',
   format: 'iife',
   platform: 'browser',
   target: 'es2020',
@@ -142,17 +142,17 @@ const ctx = await esbuild.context({
 if (prod) {
   await ctx.rebuild()
   await ctx.dispose()
-  await fs.promises.mkdir(webUiDistDir, { recursive: true })
+  await fs.promises.mkdir(webUiDir, { recursive: true })
   await Promise.all([
     fs.promises.copyFile(
       'src/web-ui/index.html',
-      path.join(webUiDistDir, 'index.html'),
+      path.join(webUiDir, 'index.html'),
     ),
-    fs.promises.copyFile('app.css', path.join(webUiDistDir, 'app.css')),
-    fs.promises.copyFile('styles.css', path.join(webUiDistDir, 'styles.css')),
+    fs.promises.copyFile('app.css', path.join(webUiDir, 'app.css')),
+    fs.promises.copyFile('styles.css', path.join(webUiDir, 'styles.css')),
   ])
 
-  const indexJsPath = path.join(webUiDistDir, 'index.js')
+  const indexJsPath = path.join(webUiDir, 'index.js')
   const indexJs = await fs.promises.readFile(indexJsPath)
   await Promise.all([
     fs.promises.writeFile(
@@ -165,7 +165,7 @@ if (prod) {
     ),
     fs.promises.writeFile(`${indexJsPath}.gz`, gzipSync(indexJs, { level: 9 })),
   ])
-  console.log('[web-ui] Done → web-ui/dist')
+  console.log('[web-ui] Done → web-ui')
 } else {
   console.log('[web-ui] Watching src/web-ui/index.tsx for changes...')
   await ctx.watch()
