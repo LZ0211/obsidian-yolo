@@ -778,17 +778,21 @@ export class ChatSessionController {
     retryBranchTarget?: ChatSessionRunConversationBranchTarget
     persistedMessageModelMap?: Map<string, string>
   }): Promise<void> {
-    invalidateChatRuntimeNavigation(this.deps.runtimeNavigationGenerationRef)
-    this.deps.abortConversationRun(this.snapshot.currentConversationId)
-    this.deps.setQueryProgress({ type: 'idle' })
-
-    // Captured once, matching the pre-C2 closure semantics: this submission
-    // targets the compaction state as of the moment the user hit submit, not
-    // whatever it happens to be once the (awaited) prompt compilation below
-    // resolves.
+    // Captured once, matching the pre-C2 closure semantics: everything after
+    // the awaited prompt compilation below must keep targeting the
+    // conversation (and its maps) as of the moment the user hit submit — the
+    // user may load another conversation while the await is in flight.
+    const conversationId = this.snapshot.currentConversationId
+    const messageModelMapAtSubmit = this.snapshot.messageModelMap
+    const activeBranchAtSubmit = this.snapshot.activeBranchByUserMessageId
+    const boundaryIdsAtSubmit = this.snapshot.assistantGroupBoundaryMessageIds
     const compactionForSubmit = this.effectiveCompactionState(
       this.snapshot.chatMessages,
     )
+
+    invalidateChatRuntimeNavigation(this.deps.runtimeNavigationGenerationRef)
+    this.deps.abortConversationRun(conversationId)
+    this.deps.setQueryProgress({ type: 'idle' })
 
     this.setChatMessages(inputChatMessages)
     this.deps.forceScrollToBottom({ deferToNextFrame: true })
@@ -841,17 +845,26 @@ export class ChatSessionController {
       return { ...message, promptContent: null }
     })
 
-    this.setChatMessages(persistedMessages)
+    // Working-copy writes only apply while this controller still shows the
+    // originating conversation; persistence and the run always target the
+    // captured id.
+    const stillOnSubmittedConversation =
+      this.snapshot.currentConversationId === conversationId
+    if (stillOnSubmittedConversation) {
+      this.setChatMessages(persistedMessages)
+    }
     this.deps
       .getAgentService()
       .replaceConversationMessages(
-        this.snapshot.currentConversationId,
+        conversationId,
         persistedMessages,
         compactionForSubmit,
       )
-    this.setCompactionState(compactionForSubmit)
+    if (stillOnSubmittedConversation) {
+      this.setCompactionState(compactionForSubmit)
+    }
     void this.deps.createOrUpdateConversation(
-      this.snapshot.currentConversationId,
+      conversationId,
       compiledInputMessages,
       {
         ...(prefs.conversationOverrides ?? {}),
@@ -861,23 +874,23 @@ export class ChatSessionController {
       prefs.conversationModelId,
       this.serializeMessageModelMap(
         compiledInputMessages,
-        persistedMessageModelMap ?? this.snapshot.messageModelMap,
+        persistedMessageModelMap ?? messageModelMapAtSubmit,
       ),
       this.serializeActiveBranchByUserMessageId(
         compiledInputMessages,
-        this.snapshot.activeBranchByUserMessageId,
+        activeBranchAtSubmit,
       ),
       this.preferencesController.conversationReasoningLevelRef.current.get(
-        this.snapshot.currentConversationId,
+        conversationId,
       ) ?? prefs.reasoningLevel,
       compactionForSubmit,
       this.normalizeAssistantGroupBoundaryMessageIds(
         compiledInputMessages,
-        this.snapshot.assistantGroupBoundaryMessageIds,
+        boundaryIdsAtSubmit,
       ),
     )
     void this.deps.generateConversationTitle(
-      this.snapshot.currentConversationId,
+      conversationId,
       compiledInputMessages,
     )
     const requestReasoningLevel = this.resolveReasoningLevelForMessages(
@@ -890,7 +903,7 @@ export class ChatSessionController {
     this.deps.runConversation({
       chatMessages: compiledInputMessages,
       requestMessages: compiledRequestMessages,
-      conversationId: this.snapshot.currentConversationId,
+      conversationId,
       reasoningLevel: requestReasoningLevel,
       modelIds: requestModelIds,
       branchTarget: retryBranchTarget,
@@ -1553,29 +1566,43 @@ export class ChatSessionController {
       return { kind: 'empty' }
     }
 
+    // Captured once, matching the pre-C2 closure semantics: the awaited
+    // compaction below must keep targeting the conversation (and its maps
+    // and preferences) it started in — the user may load another
+    // conversation while the await is in flight.
+    const conversationId = this.snapshot.currentConversationId
+    const compactionHistoryAtStart = this.effectiveCompactionState(messages)
+    const prefs = this.preferencesController.getSnapshot()
+    const messageModelMapAtStart = this.snapshot.messageModelMap
+    const activeBranchAtStart = this.snapshot.activeBranchByUserMessageId
+    const boundaryIdsAtStart = this.snapshot.assistantGroupBoundaryMessageIds
+
     try {
       this.setPendingCompactionAnchorMessageId(messages.at(-1)?.id ?? null)
       const nextCompactionState = await this.deps.compactConversation(messages)
-      this.setPendingCompactionAnchorMessageId(null)
+      // The pending anchor belongs to the originating conversation's working
+      // copy — leave the snapshot alone if the user switched away meanwhile.
+      if (this.snapshot.currentConversationId === conversationId) {
+        this.setPendingCompactionAnchorMessageId(null)
+      }
 
       if (!nextCompactionState) {
         return { kind: 'empty' }
       }
 
       const nextCompactionHistory = [
-        ...this.effectiveCompactionState(messages),
+        ...compactionHistoryAtStart,
         nextCompactionState,
       ]
 
       this.deps
         .getAgentService()
         .replaceConversationMessages(
-          this.snapshot.currentConversationId,
+          conversationId,
           messages,
           nextCompactionHistory,
         )
 
-      const prefs = this.preferencesController.getSnapshot()
       // 与迁移前行为完全一致（fork 无 persistedChatMode，chatMode 即持久化
       // 值，persist() 与这里的写法本就相同）。
       const effectiveOverrides = {
@@ -1584,27 +1611,29 @@ export class ChatSessionController {
         agentYoloEnabled: prefs.yoloEnabled,
       }
       await this.deps.createOrUpdateConversationImmediately(
-        this.snapshot.currentConversationId,
+        conversationId,
         messages,
         effectiveOverrides,
         prefs.conversationModelId,
-        this.serializeMessageModelMap(messages, this.snapshot.messageModelMap),
+        this.serializeMessageModelMap(messages, messageModelMapAtStart),
         this.serializeActiveBranchByUserMessageId(
           messages,
-          this.snapshot.activeBranchByUserMessageId,
+          activeBranchAtStart,
         ),
         this.preferencesController.conversationReasoningLevelRef.current.get(
-          this.snapshot.currentConversationId,
+          conversationId,
         ) ?? prefs.reasoningLevel,
         nextCompactionHistory,
         this.normalizeAssistantGroupBoundaryMessageIds(
           messages,
-          this.snapshot.assistantGroupBoundaryMessageIds,
+          boundaryIdsAtStart,
         ),
       )
       return { kind: 'compacted' }
     } catch (error) {
-      this.setPendingCompactionAnchorMessageId(null)
+      if (this.snapshot.currentConversationId === conversationId) {
+        this.setPendingCompactionAnchorMessageId(null)
+      }
       console.error('Failed to compact conversation context', error)
       return { kind: 'failed', error }
     }
