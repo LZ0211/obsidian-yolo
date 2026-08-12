@@ -18,6 +18,31 @@ type WalkOp = (value: string) => string
 const SENSITIVE_STRING_FIELDS = new Set(['apiKey', 'password'])
 const SENSITIVE_RECORD_FIELDS = new Set(['headers', 'env'])
 
+/**
+ * Path-scoped secret field names. The name-based sets above cover the common
+ * `apiKey`/`password` conventions; these declare the additional secret names
+ * under audited paths so a non-standard field (e.g. `accessToken`,
+ * `clientSecret`) inside a redaction-supported setting is still redacted.
+ * Array traversal keeps the parent path (no index segment).
+ */
+const SECRET_FIELD_NAMES_BY_PATH: ReadonlyArray<{
+  path: readonly string[]
+  fields: readonly string[]
+}> = [
+  {
+    path: ['providers'],
+    fields: ['apiKey', 'accessToken', 'clientSecret', 'secret', 'bearerToken'],
+  },
+  {
+    path: ['webSearch'],
+    fields: ['apiKey', 'password', 'accessToken', 'token', 'apiToken'],
+  },
+  {
+    path: ['mcp', 'localServer'],
+    fields: ['token'],
+  },
+]
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return (
     typeof value === 'object' &&
@@ -93,10 +118,18 @@ function isSensitiveStringField(
   parentPath: readonly string[],
 ): boolean {
   if (SENSITIVE_STRING_FIELDS.has(key)) return true
-  // `token` is intentionally path-sensitive: a generic name-based rule would
-  // redact unrelated module or business fields. In the Host settings schema,
-  // this exact path is the local MCP authentication secret.
-  return key === 'token' && parentPath.join('.') === 'mcp.localServer'
+  // Path-scoped names are intentionally audited: a generic name-based rule
+  // would redact unrelated module or business fields. Only the declared
+  // secret names under the declared ancestor paths are redacted (e.g.
+  // `mcp.localServer.token` is the local MCP authentication secret).
+  return SECRET_FIELD_NAMES_BY_PATH.some(
+    (entry) =>
+      parentPath.length >= entry.path.length &&
+      entry.path.every(
+        (segment, index) => parentPath[index] === segment,
+      ) &&
+      entry.fields.includes(key),
+  )
 }
 
 /**
@@ -162,9 +195,13 @@ function hasNonEmptyCredentialsAtPath(
 
 function randomString(length: number): string {
   const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+  // 密码学随机源：浏览器与 Node 都提供 globalThis.crypto.getRandomValues，
+  // 不引入任何平台特定导入（移动端/桌面端均可运行）。
+  const bytes = new Uint8Array(length)
+  globalThis.crypto.getRandomValues(bytes)
   let result = ''
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length))
+  for (const byte of bytes) {
+    result += chars.charAt(byte % chars.length)
   }
   return result
 }

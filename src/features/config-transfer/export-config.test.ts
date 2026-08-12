@@ -136,6 +136,66 @@ describe('redactSensitive', () => {
     expect(headers[1].value).not.toBe('trace-1')
   })
 
+  it('redacts path-scoped secret names under providers/webSearch', () => {
+    const data = {
+      providers: [
+        {
+          id: 'oauth-provider',
+          accessToken: 'user-access-token',
+          clientSecret: 'user-client-secret',
+          secret: 'user-secret',
+          bearerToken: 'user-bearer-token',
+        },
+      ],
+      webSearch: {
+        providers: [
+          { id: 'custom', apiToken: 'search-api-token' },
+          { id: 'tokenized', token: 'search-token' },
+        ],
+      },
+    }
+    const result = redactSensitive(data) as Record<string, unknown>
+    const providers = result.providers as Array<Record<string, unknown>>
+    expect(providers[0].accessToken).not.toBe('user-access-token')
+    expect(providers[0].clientSecret).not.toBe('user-client-secret')
+    expect(providers[0].secret).not.toBe('user-secret')
+    expect(providers[0].bearerToken).not.toBe('user-bearer-token')
+    // 与原始值等长（脱敏只换内容不换形状）
+    expect((providers[0].accessToken as string).length).toBe(
+      'user-access-token'.length,
+    )
+    const wsProviders = (result.webSearch as Record<string, unknown>)
+      .providers as Array<Record<string, unknown>>
+    expect(wsProviders[0].apiToken).not.toBe('search-api-token')
+    expect(wsProviders[1].token).not.toBe('search-token')
+  })
+
+  it('keeps unrelated paths with the same field names untouched', () => {
+    const data = {
+      someOtherSetting: {
+        accessToken: 'business-token',
+        clientSecret: 'business-secret',
+        apiToken: 'business-api-token',
+      },
+    }
+    const result = redactSensitive(data) as Record<string, unknown>
+    expect(result.someOtherSetting).toEqual({
+      accessToken: 'business-token',
+      clientSecret: 'business-secret',
+      apiToken: 'business-api-token',
+    })
+  })
+
+  it('produces non-deterministic crypto-random replacements', () => {
+    const data = { apiKey: 'sk-1234567890abcdef' }
+    const first = redactSensitive(data) as Record<string, unknown>
+    const second = redactSensitive(data) as Record<string, unknown>
+    expect(first.apiKey).not.toBe(data.apiKey)
+    expect(second.apiKey).not.toBe(data.apiKey)
+    expect(first.apiKey).not.toBe(second.apiKey)
+    expect(first.apiKey).toMatch(/^[a-zA-Z0-9]+$/)
+  })
+
   it('does not modify non-sensitive fields', () => {
     const data = {
       name: 'test',
@@ -431,6 +491,39 @@ describe('buildExportData', () => {
     expect(result.redacted).toBe(false)
     const providers = result.data.providers as Array<Record<string, unknown>>
     expect(providers[0].apiKey).toBe('sk-secret')
+  })
+
+  it('redacted export contains no plaintext of path-scoped credentials', async () => {
+    const settings = {
+      providers: [
+        {
+          id: 'oauth',
+          accessToken: 'plain-access-token',
+          clientSecret: 'plain-client-secret',
+          apiKey: 'plain-api-key',
+          baseUrl: 'https://api.example.com',
+        },
+      ],
+      webSearch: {
+        providers: [{ id: 'custom', apiToken: 'plain-api-token' }],
+      },
+    }
+    const result = await buildExportData({
+      keys: ['providers', 'webSearch'],
+      settingsData: settings,
+      pluginVersion: '1.5.7.5',
+      redacted: true,
+    })
+
+    const serialized = JSON.stringify(result.data)
+    expect(serialized).not.toContain('plain-access-token')
+    expect(serialized).not.toContain('plain-client-secret')
+    expect(serialized).not.toContain('plain-api-key')
+    expect(serialized).not.toContain('plain-api-token')
+    // 非敏感字段与结构保留
+    expect(JSON.stringify(result.data)).toContain('https://api.example.com')
+    const providers = result.data.providers as Array<Record<string, unknown>>
+    expect(providers[0].id).toBe('oauth')
   })
 
   it('should include a valid checksum', async () => {
