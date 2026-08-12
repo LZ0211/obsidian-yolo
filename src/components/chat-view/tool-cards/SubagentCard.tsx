@@ -10,10 +10,6 @@ import {
 } from '../../../types/tool-call.types'
 
 import {
-  SubagentApprovalBlock,
-  type SubagentPendingApproval,
-} from './SubagentApprovalBlock'
-import {
   type SubagentCardArgs,
   buildSubagentCompletionSummary,
   collectSubagentActivityText,
@@ -58,7 +54,7 @@ function toDisplayStatus(
 export function SubagentCard({
   toolCallId,
   response,
-  conversationId,
+  conversationId: _conversationId,
   args,
   subagentResult,
   initialStdout,
@@ -106,70 +102,28 @@ export function SubagentCard({
     () => normalizeActivityLines(activityText),
     [activityText],
   )
-  const liveAssistantSummary = useMemo(() => {
-    const liveTranscript = liveTask?.liveTranscript
-    if (!liveTranscript) return undefined
-    for (let index = liveTranscript.length - 1; index >= 0; index -= 1) {
-      const message = liveTranscript[index]
-      if (message.role === 'assistant' && message.content.trim().length > 0) {
-        return message.content.trim().split('\n').at(-1)
-      }
-    }
-    return undefined
-  }, [liveTask?.liveTranscript])
 
+  // The task registry stores only summaries (no live transcript) — the live
+  // mirroring moved to the durable session transcript. The Task 10 card
+  // rework wires the pending-approval block to the session snapshot instead.
   const activitySubtitle = subagentResult
     ? buildSubagentCompletionSummary({ subagentResult, t })
-    : liveAssistantSummary ||
-      getLatestActivityLine(activityLines) ||
+    : getLatestActivityLine(activityLines) ||
       (isRunning
         ? t('chat.subagent.planningNextMoves', 'Planning next moves')
         : t('chat.subagent.noActivity', 'No activity yet.'))
 
   const prompt = subagentResult?.prompt ?? liveTask?.prompt
 
-  // Surface pending tool approvals inside the card. The subagent runtime
-  // pauses at PendingApproval (loop-worker emits done; runChildAgent waits
-  // on a gate), and `liveTask.liveTranscript` mirrors the runtime messages
-  // — so the card can render approval buttons next to the running thinking
-  // output. See `docs/plans/2026-06-18-subagent-tool-approval-routing.md`.
-  const pendingApprovals = useMemo<SubagentPendingApproval[]>(() => {
-    const transcript = liveTask?.liveTranscript ?? []
-    const result: SubagentPendingApproval[] = []
-    for (const message of transcript) {
-      if (message.role !== 'tool') continue
-      for (const toolCall of message.toolCalls) {
-        if (
-          toolCall.response.status === ToolCallResponseStatus.PendingApproval
-        ) {
-          result.push({
-            toolCallId: toolCall.request.id,
-            request: toolCall.request,
-          })
-        }
-      }
-    }
-    return result
-  }, [liveTask?.liveTranscript])
-  const isAwaitingApproval = pendingApprovals.length > 0
-  const subtitle = isAwaitingApproval
-    ? pendingApprovals.length > 1
-      ? t(
-          'chat.subagent.approval.headingMulti',
-          'Awaiting approval · {count}',
-        ).replace('{count}', String(pendingApprovals.length))
-      : t('chat.subagent.approval.heading', 'Awaiting approval')
-    : activitySubtitle
-
   return (
     <SubagentCardView
       title={title}
       modelName={modelName}
-      subtitle={subtitle}
+      subtitle={activitySubtitle}
       status={toDisplayStatus(effectiveStatus)}
       prompt={prompt}
       taskId={taskId}
-      transcript={subagentResult?.transcript ?? liveTask?.liveTranscript}
+      transcript={subagentResult?.transcript}
       activityLines={activityLines}
       detailStats={
         subagentResult
@@ -181,14 +135,6 @@ export function SubagentCard({
           : undefined
       }
       onAbort={isRunning ? onAbort : undefined}
-      footer={
-        isAwaitingApproval ? (
-          <SubagentApprovalBlock
-            conversationId={conversationId}
-            pendingApprovals={pendingApprovals}
-          />
-        ) : undefined
-      }
     />
   )
 }

@@ -1017,12 +1017,11 @@ describe('AgentService dropConversation', () => {
       expect(internals.conversationEntries.has(record.conversationId)).toBe(
         false,
       )
-      expect(
-        subagentTaskRegistry.get(record.taskId)?.liveTranscript,
-      ).toBeUndefined()
-      expect(
-        subagentTaskRegistry.get(record.taskId)?.result?.transcript,
-      ).toBeUndefined()
+      const indexed = subagentTaskRegistry.get(
+        record.taskId,
+      )
+      expect(indexed).not.toHaveProperty('liveTranscript')
+      expect(indexed?.result?.transcript).toBeUndefined()
     } finally {
       service.stopBackgroundTaskResultListener()
     }
@@ -1401,12 +1400,11 @@ describe('AgentService background subagent results', () => {
         taskId: record.taskId,
         transcript: record.liveTranscript,
       })
-      expect(
-        subagentTaskRegistry.get(record.taskId)?.liveTranscript,
-      ).toBeUndefined()
-      expect(
-        subagentTaskRegistry.get(record.taskId)?.result?.transcript,
-      ).toBeUndefined()
+      const indexed = subagentTaskRegistry.get(
+        record.taskId,
+      )
+      expect(indexed).not.toHaveProperty('liveTranscript')
+      expect(indexed?.result?.transcript).toBeUndefined()
     } finally {
       service.stopBackgroundTaskResultListener()
     }

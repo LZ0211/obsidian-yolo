@@ -1,12 +1,12 @@
 import type { BashTaskRecord } from '../bash/types'
-import type { SubagentTaskRecord } from '../subagent/types'
+import type { SubagentTaskCompletionRecord } from '../subagent/types'
 
 export type BackgroundTaskCompletedEvent =
   | {
       kind: 'subagent'
       taskId: string
       conversationId: string
-      record: SubagentTaskRecord
+      record: SubagentTaskCompletionRecord
     }
   | {
       kind: 'terminal_command'

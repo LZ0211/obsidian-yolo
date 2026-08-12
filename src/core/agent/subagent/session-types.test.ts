@@ -111,16 +111,9 @@ describe('reusable subagent session contracts', () => {
 
   it('uses session id as the legacy task id and keeps run keys run-specific', () => {
     const sessionId = 'sub_abc'
-    // Master's SubagentAcceptedResult does not yet carry session identity
-    // fields; the durable session flow adds them (types.ts aligns with backup
-    // during the runner refactor task). Pin the contract locally so the
-    // assertions still check sessionId == taskId and run-key distinctness.
-    const result: SubagentAcceptedResult & {
-      sessionId: string
-      runKey: string
-      sessionRevision: number
-      mode: 'persistent'
-    } = {
+    // SubagentAcceptedResult carries the durable session identity fields
+    // (aligned with backup types.ts during the runner refactor task).
+    const result: SubagentAcceptedResult = {
       accepted: true,
       taskId: sessionId,
       sessionId,

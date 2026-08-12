@@ -63,6 +63,8 @@ export type AgentRuntimeRunInput = {
   requestMessages?: ChatMessage[]
   conversationId: string
   assistantId?: string
+  /** Stable run identity for durable subagent session runs. */
+  runKey?: string
   branchId?: string
   sourceUserMessageId?: string
   branchLabel?: string

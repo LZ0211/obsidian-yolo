@@ -1,7 +1,11 @@
 import { v4 as uuidv4 } from 'uuid'
 
-import type { TaskSource } from '../../../types/chat'
-import type { ChatMessage, ChatUserMessage } from '../../../types/chat'
+import type {
+  ChatConversationCompactionLike,
+  ChatMessage,
+  ChatUserMessage,
+  TaskSource,
+} from '../../../types/chat'
 import type { ChatModel } from '../../../types/chat-model.types'
 import type {
   LLMProvider,
@@ -20,12 +24,15 @@ import { NativeAgentRuntime } from '../native-runtime'
 import type { AgentConversationState } from '../service'
 import type { AgentRuntimeLoopConfig, AgentRuntimeRunInput } from '../types'
 
+import type { ResolvedCurrentSubagentParentAuthority } from './authority-resolver'
 import {
   SUBAGENT_DEFAULT_SYSTEM_PROMPT,
   SUBAGENT_MAX_AUTO_ITERATIONS,
 } from './constants'
+import type { DelegatedAssistantProfile } from './delegated-assistant-profile'
 import type { SubagentParentContext } from './parent-context'
 import { subagentRuntimeRegistry } from './runtime-registry'
+import type { SubagentRun, SubagentSession } from './session-types'
 import { subagentTaskRegistry } from './task-registry'
 import { filterAllowedToolsForSubagent } from './tool-filter'
 import type {
@@ -142,6 +149,89 @@ export function autoRejectPendingApprovals(runtime: NativeAgentRuntime): void {
 /** Auto-reject window for paused subagent tool calls. */
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000
 
+export type SubagentRuntimeLoopController = {
+  run: () => Promise<ReturnType<NativeAgentRuntime['getSnapshot']>>
+  resumeRun: () => Promise<void>
+  dispose: () => void
+}
+
+/**
+ * Runs a child runtime and waits for approval-gated tool batches to settle.
+ * Both ephemeral and durable sessions use this controller so a resumed run
+ * cannot accidentally grow a second approval/continuation loop.
+ */
+export function createSubagentRuntimeLoopController({
+  runtime,
+  runInput,
+  abortController,
+}: {
+  runtime: NativeAgentRuntime
+  runInput: AgentRuntimeRunInput
+  abortController: AbortController
+}): SubagentRuntimeLoopController {
+  let approvalResolver: (() => void) | null = null
+  let disposed = false
+
+  const wakeApprovalGate = (): void => {
+    if (!approvalResolver) return
+    approvalResolver()
+    approvalResolver = null
+  }
+
+  const resumeRun = async (): Promise<void> => {
+    if (!hasUnsettledApprovalBatch(runtime.getSnapshot().messages)) {
+      wakeApprovalGate()
+    }
+  }
+
+  const abortListener = (): void => {
+    wakeApprovalGate()
+  }
+  abortController.signal.addEventListener('abort', abortListener, {
+    once: true,
+  })
+
+  const run = async (): Promise<
+    ReturnType<NativeAgentRuntime['getSnapshot']>
+  > => {
+    let nextRunInput: AgentRuntimeRunInput = runInput
+    while (!disposed) {
+      await runWithBackgroundExecution(() => runtime.run(nextRunInput))
+      const snapshotAfterRun = runtime.getSnapshot()
+      if (
+        abortController.signal.aborted ||
+        !hasUnresolvedApproval(snapshotAfterRun.messages)
+      ) {
+        return snapshotAfterRun
+      }
+
+      const timeoutHandle = setTimeout(() => {
+        autoRejectPendingApprovals(runtime)
+        void resumeRun()
+      }, APPROVAL_TIMEOUT_MS)
+      try {
+        await new Promise<void>((resolve) => {
+          approvalResolver = resolve
+        })
+      } finally {
+        clearTimeout(timeoutHandle)
+      }
+      if (abortController.signal.aborted) return runtime.getSnapshot()
+      nextRunInput = buildSubagentContinuationInput(runInput)
+    }
+    return runtime.getSnapshot()
+  }
+
+  const dispose = (): void => {
+    if (disposed) return
+    disposed = true
+    abortController.signal.removeEventListener('abort', abortListener)
+    wakeApprovalGate()
+  }
+
+  return { run, resumeRun, dispose }
+}
+
 function extractLastAssistantText(messages: ChatMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]
@@ -223,6 +313,219 @@ function projectSubagentEvent({
   }
 
   return undefined
+}
+
+/**
+ * Resolves the child run policy from a delegated role profile when present,
+ * otherwise from the generic parent capabilities (behind the subagent
+ * deny-list). Ported from backup runner.ts:254-306; fields absent from the
+ * master runtime input (`rejectToolApproval` / `temporaryApprovedToolNames`)
+ * and the R1-excluded `isSubagentChildRun` flag are intentionally dropped.
+ */
+export function resolveSubagentRunPolicy({
+  parent,
+  delegatedProfile,
+}: {
+  parent: SubagentParentContext
+  delegatedProfile?: DelegatedAssistantProfile
+}) {
+  if (delegatedProfile) {
+    return {
+      loopConfig: delegatedProfile.loopConfig,
+      allowedToolNames: filterAllowedToolsForSubagent(
+        delegatedProfile.allowedToolNames,
+      ),
+      toolPreferences: delegatedProfile.toolPreferences,
+      toolServerPreferences: delegatedProfile.toolServerPreferences,
+      workspaceAccessPolicy: parent.workspaceAccessPolicy,
+      allowedSkillPaths: delegatedProfile.allowedSkillPaths,
+      enableToolDisclosure: parent.enableToolDisclosure,
+      reasoningLevel: parent.reasoningLevel,
+      requestParams: parent.requestParams,
+      requestContextBuilder: delegatedProfile.requestContextBuilder,
+      bypassToolApproval: parent.bypassToolApproval,
+      systemPromptOverride: undefined,
+    }
+  }
+
+  return {
+    loopConfig: {
+      enableTools: parent.loopConfig.enableTools,
+      includeBuiltinTools: parent.loopConfig.includeBuiltinTools,
+      maxAutoIterations: SUBAGENT_MAX_AUTO_ITERATIONS,
+    },
+    allowedToolNames: filterAllowedToolsForSubagent(parent.allowedToolNames),
+    toolPreferences: parent.toolPreferences,
+    toolServerPreferences: parent.toolServerPreferences,
+    workspaceAccessPolicy: parent.workspaceAccessPolicy,
+    allowedSkillPaths: parent.allowedSkillPaths,
+    enableToolDisclosure: parent.enableToolDisclosure,
+    reasoningLevel: parent.reasoningLevel,
+    requestParams: parent.requestParams,
+    requestContextBuilder: parent.requestContextBuilder,
+    bypassToolApproval: parent.bypassToolApproval,
+    systemPromptOverride: SUBAGENT_DEFAULT_SYSTEM_PROMPT,
+  }
+}
+
+/** Builds the initial isolated request consumed by the child runtime. */
+export function buildSubagentInitialRunInput({
+  record,
+  parent,
+  childModel,
+  delegatedProfile,
+  promptMessageId,
+}: {
+  record: SubagentTaskRecord
+  parent: SubagentParentContext
+  childModel: RunSubagentParams['childModel']
+  delegatedProfile?: DelegatedAssistantProfile
+  promptMessageId?: string
+}): {
+  childUserMessage: ChatUserMessage
+  runInput: AgentRuntimeRunInput
+  loopConfig: AgentRuntimeLoopConfig
+} {
+  const childUserMessage: ChatUserMessage = {
+    role: 'user',
+    id: promptMessageId ?? uuidv4(),
+    content: null,
+    promptContent: record.prompt,
+    mentionables: [],
+  }
+  const policy = resolveSubagentRunPolicy({ parent, delegatedProfile })
+
+  return {
+    childUserMessage,
+    loopConfig: policy.loopConfig,
+    runInput: {
+      providerClient: childModel.providerClient,
+      model: childModel.model,
+      apiType: childModel.apiType,
+      messages: [childUserMessage],
+      requestMessages: [childUserMessage],
+      conversationId: record.taskId,
+      sourceUserMessageId: childUserMessage.id,
+      assistantId: parent.assistantId,
+      requestContextBuilder: policy.requestContextBuilder,
+      mcpManager: parent.mcpManager,
+      allowedToolNames: policy.allowedToolNames,
+      toolPreferences: policy.toolPreferences,
+      toolServerPreferences: policy.toolServerPreferences,
+      workspaceAccessPolicy: policy.workspaceAccessPolicy,
+      allowedSkillPaths: policy.allowedSkillPaths,
+      enableToolDisclosure: policy.enableToolDisclosure,
+      reasoningLevel: policy.reasoningLevel,
+      requestParams: policy.requestParams,
+      abortSignal: record.abortController.signal,
+      systemPromptOverride: policy.systemPromptOverride,
+      toolApprovalConversationId: parent.conversationId,
+      bypassToolApproval: policy.bypassToolApproval,
+      runContext: { citationRegistry: new CitationRegistry() },
+    },
+  }
+}
+
+type StructuredCloneFunction = <T>(value: T) => T
+
+const cloneSubagentMessages = (
+  messages: readonly ChatMessage[],
+): ChatMessage[] => {
+  const cloneValue = (value: unknown): unknown => {
+    if (value === null || typeof value !== 'object') return value
+    if (Array.isArray(value)) return value.map(cloneValue)
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, child]) => [
+        key,
+        cloneValue(child),
+      ]),
+    )
+  }
+  const clone = (
+    globalThis as typeof globalThis & {
+      structuredClone?: StructuredCloneFunction
+    }
+  ).structuredClone
+  if (clone) {
+    try {
+      return clone(messages) as ChatMessage[]
+    } catch {
+      return cloneValue(messages) as ChatMessage[]
+    }
+  }
+  return cloneValue(messages) as ChatMessage[]
+}
+
+export type SubagentSessionRunInputOptions = {
+  session: Pick<SubagentSession, 'sessionId'> &
+    Partial<
+      Pick<
+        SubagentSession,
+        'parentConversationId' | 'originBranchId' | 'memoryAssistantId'
+      >
+    >
+  run: Pick<SubagentRun, 'runKey' | 'runSequence' | 'promptMessageId'>
+  canonicalMessages: readonly ChatMessage[]
+  compaction?: ChatConversationCompactionLike | null
+  authority: ResolvedCurrentSubagentParentAuthority
+  abortController: AbortController
+}
+
+/**
+ * Build an isolated child request from the durable session transcript.
+ * Ported from backup runner.ts:678-735 (R1: `preparePendingUserMessages` /
+ * `onSteerEvent` hooks and `isSubagentChildRun` flag not ported; next_boundary
+ * intent delivery uses the master `drainPendingUserMessages` hook instead).
+ */
+export function buildSubagentSessionRunInput({
+  session,
+  run,
+  canonicalMessages,
+  compaction,
+  authority,
+  abortController,
+}: SubagentSessionRunInputOptions): AgentRuntimeRunInput {
+  const policySystemPrompt = authority.delegatedProfile
+    ? undefined
+    : SUBAGENT_DEFAULT_SYSTEM_PROMPT
+  const isolatedMessages = cloneSubagentMessages(canonicalMessages)
+  return {
+    providerClient: authority.providerClient,
+    model: authority.model,
+    apiType: authority.apiType,
+    messages: isolatedMessages,
+    requestMessages: isolatedMessages.slice(),
+    conversationId: session.sessionId,
+    assistantId: authority.conversation?.assistantId ?? undefined,
+    runKey: run.runKey,
+    branchId: session.originBranchId,
+    sourceUserMessageId: run.promptMessageId,
+    requestContextBuilder: authority.requestContextBuilder,
+    mcpManager: authority.mcpManager,
+    compaction,
+    abortSignal: abortController.signal,
+    enableToolDisclosure: authority.enableToolDisclosure,
+    reasoningLevel: authority.reasoningLevel,
+    requestParams: authority.requestParams,
+    allowedToolNames: [...authority.allowedToolNames],
+    toolPreferences: authority.toolPreferences
+      ? { ...authority.toolPreferences }
+      : undefined,
+    toolServerPreferences: authority.toolServerPreferences
+      ? { ...authority.toolServerPreferences }
+      : undefined,
+    workspaceAccessPolicy: authority.workspaceAccessPolicy,
+    allowedSkillPaths: [...authority.allowedSkillPaths],
+    enqueueMemoryExtraction: undefined,
+    systemPromptOverride: policySystemPrompt,
+    toolApprovalConversationId:
+      session.parentConversationId ?? authority.conversation?.conversationId,
+    bypassToolApproval: authority.bypassToolApproval,
+    blockedCommandPrefixes: authority.blockedCommandPrefixes
+      ? [...authority.blockedCommandPrefixes]
+      : undefined,
+    runContext: { citationRegistry: new CitationRegistry() },
+  }
 }
 
 async function runChildAgent(

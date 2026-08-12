@@ -1,7 +1,10 @@
 import { backgroundTaskCompletionBus } from './completion-bus'
 import type { BackgroundTaskCompletedEvent } from './completion-bus'
 
-const makeEvent = (): BackgroundTaskCompletedEvent => ({
+const makeEvent = (): Extract<
+  BackgroundTaskCompletedEvent,
+  { kind: 'terminal_command' }
+> => ({
   kind: 'terminal_command',
   taskId: 'bash_test001',
   conversationId: 'conv-1',

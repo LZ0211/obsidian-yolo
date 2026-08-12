@@ -57,7 +57,7 @@ import {
   subagentRuntimeRegistry,
 } from './subagent/runtime-registry'
 import { subagentTaskRegistry } from './subagent/task-registry'
-import type { SubagentTaskRecord } from './subagent/types'
+import type { SubagentTaskCompletionRecord } from './subagent/types'
 import { SystemPromptSnapshotStore } from './systemPromptSnapshotStore'
 import {
   AgentRunContext,
@@ -215,7 +215,7 @@ export type AgentReplaceConversationMessagesReason =
 export const RUNNING_PERSIST_MIN_INTERVAL_MS = 15_000
 
 function buildSubagentResultMessage(
-  record: SubagentTaskRecord,
+  record: SubagentTaskCompletionRecord,
 ): ChatSubagentResultMessage {
   const completedAt = record.completedAt ?? Date.now()
   const result = record.result

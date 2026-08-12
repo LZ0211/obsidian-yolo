@@ -5,6 +5,7 @@ import {
   type SubagentRuntimeEntry,
   subagentRuntimeRegistry,
 } from './runtime-registry'
+import { makeSubagentRunKey } from './session-types'
 
 const makeRuntime = (toolCallIds: string[] = []): NativeAgentRuntime =>
   ({
@@ -79,5 +80,127 @@ describe('subagentRuntimeRegistry', () => {
 
     subagentRuntimeRegistry.unregister('sub_a')
     expect(subagentRuntimeRegistry.list()).toEqual([entryB])
+  })
+
+  it('resolves the active session entry for durable session identity', () => {
+    const entry = makeEntry({
+      taskId: 'sub_session',
+      sessionId: 'sub_session',
+      runSequence: 2,
+      runKey: 'sub_session:2',
+    })
+    subagentRuntimeRegistry.register(entry)
+
+    expect(subagentRuntimeRegistry.getActiveForSession('sub_session')).toBe(
+      entry,
+    )
+    expect(subagentRuntimeRegistry.getByTaskId('sub_session')).toBe(entry)
+  })
+
+  it('treats the task id as the session id for legacy entries', () => {
+    const entry = makeEntry({ taskId: 'sub_legacy' })
+    subagentRuntimeRegistry.register(entry)
+
+    expect(subagentRuntimeRegistry.getActiveForSession('sub_legacy')).toBe(
+      entry,
+    )
+  })
+
+  it('reserves one run per session before runtime registration', () => {
+    const reserve = subagentRuntimeRegistry.reserve.bind(
+      subagentRuntimeRegistry,
+    )
+    const releaseReservation =
+      subagentRuntimeRegistry.releaseReservation.bind(
+        subagentRuntimeRegistry,
+      )
+    reserve({
+      sessionId: 'session_reserved',
+      runSequence: 1,
+      runKey: makeSubagentRunKey('session_reserved', 1),
+    })
+
+    // A second run for the same session must be rejected while reserved.
+    expect(() =>
+      reserve({
+        sessionId: 'session_reserved',
+        runSequence: 2,
+        runKey: makeSubagentRunKey('session_reserved', 2),
+      }),
+    ).toThrow('already has an active run')
+
+    releaseReservation('session_reserved:1')
+
+    // After release the session accepts a fresh run.
+    expect(() =>
+      reserve({
+        sessionId: 'session_reserved',
+        runSequence: 2,
+        runKey: makeSubagentRunKey('session_reserved', 2),
+      }),
+    ).not.toThrow()
+    releaseReservation('session_reserved:2')
+  })
+
+  it('rejects a reservation while the session already has an active run', () => {
+    const entry = makeEntry({
+      taskId: 'session_busy',
+      sessionId: 'session_busy',
+      runSequence: 1,
+      runKey: 'session_busy:1',
+    })
+    subagentRuntimeRegistry.register(entry)
+
+    expect(() =>
+      subagentRuntimeRegistry.reserve({
+        sessionId: 'session_busy',
+        runSequence: 2,
+        runKey: makeSubagentRunKey('session_busy', 2),
+      }),
+    ).toThrow('already has an active run')
+  })
+
+  it('rejects a duplicate reservation for the same run key', () => {
+    const runKey = makeSubagentRunKey('session_dup', 1)
+    subagentRuntimeRegistry.reserve({
+      sessionId: 'session_dup',
+      runSequence: 1,
+      runKey,
+    })
+
+    expect(() =>
+      subagentRuntimeRegistry.reserve({
+        sessionId: 'session_dup',
+        runSequence: 1,
+        runKey,
+      }),
+    ).toThrow('already reserved')
+
+    subagentRuntimeRegistry.releaseReservation(runKey)
+  })
+
+  it('releaseReservation accepts either the run key or the session id', () => {
+    subagentRuntimeRegistry.reserve({
+      sessionId: 'session_sid',
+      runSequence: 3,
+      runKey: makeSubagentRunKey('session_sid', 3),
+    })
+
+    subagentRuntimeRegistry.releaseReservation('session_sid')
+
+    expect(() =>
+      subagentRuntimeRegistry.reserve({
+        sessionId: 'session_sid',
+        runSequence: 4,
+        runKey: makeSubagentRunKey('session_sid', 4),
+      }),
+    ).not.toThrow()
+    subagentRuntimeRegistry.releaseReservation('session_sid:4')
+  })
+
+  it('is a no-op when releasing an unknown reservation', () => {
+    expect(() =>
+      subagentRuntimeRegistry.releaseReservation('unknown-run'),
+    ).not.toThrow()
   })
 })
