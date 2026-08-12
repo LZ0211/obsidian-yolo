@@ -1188,7 +1188,7 @@ export function getLocalFileTools(options?: {
             type: 'string',
             enum: ['none', 'last_turns', 'full'],
             description:
-              "Optional read-only parent-context fork for the sub-agent. Defaults to none (the child sees only the prompt, exactly as today). last_turns appends a read-only snapshot of the parent conversation's most recent turns to the child prompt; full appends a size-capped read-only snapshot of the whole parent history. The fork is a snapshot at dispatch time: the child cannot write to parent state.",
+              "Optional read-only parent-context fork for the sub-agent. Defaults to none (the child sees only the prompt, exactly as today). last_turns appends a read-only snapshot of the parent conversation's most recent turns to the child prompt; full appends a size-capped read-only snapshot of the whole parent history. The snapshot reflects the parent conversation as of the current parent run's start: the child cannot write to parent state.",
             default: 'none',
           },
         },
@@ -4284,13 +4284,16 @@ export async function callLocalFileTool({
         // 子代理只见 prompt，与今天逐字节一致）/ last_turns（最近
         // getForkContextTurns() 轮父消息）/ full（全文按 24_000 字符截断）。类型
         // 就地声明，不从 subagent/types 静态/type 导入（Task 8 修复轮 2 已清零
-        // localFileTools → subagent 的导入边）。
+        // localFileTools → subagent 的导入边）。守卫用 `!== undefined`（而非
+        // truthiness）：空串/纯空白经 trim 后为 `''`，同样非法——与 backup 一致
+        // 抛错让模型纠正，而不是静默落入 full 分支注入父全文（Task 14 审查
+        // 发现 1 修复）。
         const requestedForkContext = getOptionalTextArg(
           args,
           'forkContext',
         )?.trim()
         if (
-          requestedForkContext &&
+          requestedForkContext !== undefined &&
           !['none', 'last_turns', 'full'].includes(requestedForkContext)
         ) {
           throw new Error('forkContext must be "none", "last_turns", or "full".')

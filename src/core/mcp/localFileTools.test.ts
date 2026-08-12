@@ -2901,6 +2901,18 @@ describe('delegate_subagent model selection', () => {
       }
       expect(runSubagent).not.toHaveBeenCalled()
     })
+
+    it('rejects an empty string like the backup (no silent full fallback)', async () => {
+      const result = await callDelegateSubagent({ forkContext: '' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      if (result.status === ToolCallResponseStatus.Error) {
+        expect(result.error).toContain(
+          'forkContext must be "none", "last_turns", or "full".',
+        )
+      }
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
   })
 
   describe('delegated role resolution', () => {

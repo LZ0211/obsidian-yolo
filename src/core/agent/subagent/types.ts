@@ -14,7 +14,9 @@ export type SubagentTaskStatus = 'running' | 'completed' | 'failed' | 'aborted'
  * - `none` (default): the child sees only the prompt — byte-identical to today.
  * - `last_turns`: compose the parent's last N messages into the child prompt.
  * - `full`: compose the whole parent history (size-capped) into the child prompt.
- * The fork is a read-only snapshot taken at dispatch time.
+ * The fork is a read-only snapshot of the parent transcript as of the parent
+ * run's start (buildSubagentParentContext captures `input.messages` at run
+ * start, not at dispatch time).
  */
 export type ForkContext = 'none' | 'last_turns' | 'full'
 
