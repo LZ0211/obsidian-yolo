@@ -2244,7 +2244,7 @@ export const zh: TranslationKeys = {
       clear: '清除工作目录',
       locked: '工作目录已锁定',
     },
-    dropFilesHint: '松开以添加文件',
+    dropFilesHint: '松开以添加到对话',
     imageUnsupportedByModel:
       '当前模型未声明支持图片输入；请在模型设置里开启「图片」模态后再上传。',
     unsupportedFileType: '不支持的文件类型：{names}',

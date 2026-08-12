@@ -2127,7 +2127,7 @@ export const it: DeepPartial<TranslationKeys> = {
       clear: 'Cancella directory di lavoro',
       locked: 'La directory di lavoro è bloccata',
     },
-    dropFilesHint: 'Rilascia per aggiungere file',
+    dropFilesHint: 'Rilascia per aggiungere alla conversazione',
     imageUnsupportedByModel:
       'Questo modello non dichiara il supporto alle immagini. Abilita la modalità di input "Vision" nelle impostazioni del modello per allegare immagini.',
     unsupportedFileType: 'Tipo di file non supportato: {names}',
