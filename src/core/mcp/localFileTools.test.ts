@@ -11,6 +11,13 @@ jest.mock('../agent/subagent/runner', () => ({
   }),
 }))
 
+// R11：delegate_subagent 的 profile 解析走受控 mock（buildSettings() 不含
+// delegatable assistant，真实解析会抛错）；"unknown role" 由 undefined 返回
+// 或单独 mock 抛错两条路径覆盖。
+jest.mock('../agent/subagent/delegated-assistant-profile', () => ({
+  resolveDelegatedAssistantProfile: jest.fn(),
+}))
+
 jest.mock('../browser/activeWebviewProbe', () => ({
   BROWSER_PAGE_ID_PATTERN: /^page_[a-z0-9]{8}_[a-z0-9]{8}$/,
   findWebviewHandleByPageId: jest.fn(),
@@ -40,6 +47,10 @@ import {
   getPendingDangerousBashApproval,
   resolveDangerousBashApproval,
 } from '../agent/bash/dangerousOperationGate'
+import {
+  type DelegatedAssistantProfile,
+  resolveDelegatedAssistantProfile,
+} from '../agent/subagent/delegated-assistant-profile'
 import { runSubagent } from '../agent/subagent/runner'
 import { findWebviewHandleByPageId } from '../browser/activeWebviewProbe'
 import { readActiveWebviewHtml } from '../browser/activeWebviewReader'
@@ -2807,6 +2818,94 @@ describe('delegate_subagent model selection', () => {
     }
     expect(result.error).toContain('not allowed for delegate_subagent')
     expect(runSubagent).not.toHaveBeenCalled()
+  })
+
+  it('uses modelPreferenceId as the generic-path model selection', async () => {
+    const result = await callDelegateSubagent({
+      modelPreferenceId: 'openai/gpt-5',
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    expect(runSubagent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        childModel: expect.objectContaining({
+          model: expect.objectContaining({ id: 'openai/gpt-5' }),
+        }),
+      }),
+    )
+  })
+
+  it('rejects modelPreferenceId values outside the subagent model pool', async () => {
+    const result = await callDelegateSubagent({
+      modelPreferenceId: 'openai/forbidden',
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+    if (result.status === ToolCallResponseStatus.Error) {
+      expect(result.error).toContain('not allowed for delegate_subagent')
+    }
+    expect(runSubagent).not.toHaveBeenCalled()
+  })
+
+  describe('delegated role resolution', () => {
+    beforeEach(() => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockReset()
+    })
+
+    it('resolves a delegated role profile and uses its model', async () => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockResolvedValue({
+        delegatedRole: { id: 'role_1', name: 'Role One' },
+        modelId: 'openai/gpt-5',
+        allowedToolNames: [],
+        allowedSkillPaths: [],
+        loopConfig: { enableTools: false },
+      } as unknown as DelegatedAssistantProfile)
+
+      const result = await callDelegateSubagent({ delegatedRoleId: 'role_1' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      expect(resolveDelegatedAssistantProfile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          assistantId: 'role_1',
+          settings: expect.anything(),
+        }),
+      )
+      expect(runSubagent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          delegatedProfile: expect.objectContaining({
+            delegatedRole: expect.objectContaining({ id: 'role_1' }),
+          }),
+          childModel: expect.objectContaining({
+            model: expect.objectContaining({ id: 'openai/gpt-5' }),
+          }),
+        }),
+      )
+    })
+
+    it('rejects an unknown delegated role when profile resolution yields no profile', async () => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockResolvedValue(
+        undefined,
+      )
+
+      const result = await callDelegateSubagent({ delegatedRoleId: 'role_404' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      if (result.status === ToolCallResponseStatus.Error) {
+        expect(result.error).toContain('Unknown delegated role "role_404"')
+      }
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+
+    it('rejects an unknown delegated role when profile resolution throws', async () => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockRejectedValue(
+        new Error('Assistant role "role_404" does not exist.'),
+      )
+
+      const result = await callDelegateSubagent({ delegatedRoleId: 'role_404' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
   })
 })
 

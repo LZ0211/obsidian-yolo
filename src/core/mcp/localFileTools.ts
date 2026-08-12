@@ -77,8 +77,10 @@ import {
 import { createVaultBashFileSystem } from '../agent/bash/vaultBashFileSystem'
 import { createVaultBashSearch } from '../agent/bash/vaultBashSearch'
 import type { PromptSourceWatcher } from '../agent/promptSourceWatcher'
+import type { DelegatedAssistantProfile } from '../agent/subagent/delegated-assistant-profile'
 import { resolveSubagentModelConfig } from '../agent/subagent/model-config'
 import type { SubagentParentContext } from '../agent/subagent/parent-context'
+import type { SubagentSessionGatewayLike } from '../agent/subagent/runner'
 import type { TodoItem } from '../agent/todos-from-messages'
 import type { AgentRunContext } from '../agent/types'
 import {
@@ -1156,7 +1158,7 @@ export function getLocalFileTools(options?: {
         'Returns immediately with a taskId while the child runs in the background. ' +
         'When complete, a follow-up background message starting with ' +
         '[subagent_result taskId=...] will arrive for you to summarize or continue. ' +
-        'The child inherits your current model and allowed tools (except recursive delegation and user-interaction tools). ' +
+        'The child uses the selected assistant role when delegatedRoleId is provided; otherwise it uses the generic sub-agent policy. ' +
         'The tool result is returned to you, but it does not automatically become a user-facing answer; to show the user the result, send a concise text summary of the relevant output.',
       inputSchema: {
         type: 'object',
@@ -1170,6 +1172,16 @@ export function getLocalFileTools(options?: {
             type: 'string',
             description:
               'Complete task instructions for the temporary sub-agent.',
+          },
+          delegatedRoleId: {
+            type: 'string',
+            description:
+              'Optional delegated role id from the available roles listed in the request context. When set, the sub-agent runs with that role\'s model, tools, and loop configuration.',
+          },
+          modelPreferenceId: {
+            type: 'string',
+            description:
+              'Optional model id preference for the generic sub-agent model pool (ignored when delegatedRoleId is set).',
           },
         },
         required: ['description', 'prompt'],
@@ -4218,28 +4230,61 @@ export async function callLocalFileTool({
         if (!settings) {
           throw new Error('settings are required for delegate_subagent.')
         }
-        const requestedModelId =
-          getOptionalTextArg(args, 'modelId')?.trim() ?? ''
-        const subagentModelConfig = resolveSubagentModelConfig(settings)
-        if (subagentModelConfig.allowedModelIds.length === 0) {
-          throw new Error(
-            'No registered chat models are configured for delegate_subagent.',
+        const delegatedRoleId =
+          getOptionalTextArg(args, 'delegatedRoleId')?.trim() ?? ''
+        const modelPreferenceId =
+          getOptionalTextArg(args, 'modelPreferenceId')?.trim() ?? ''
+
+        // 委托角色路径：delegatedRoleId → Task 2 的 profile 覆盖模型/工具/loop/
+        // request context；解析失败（不存在/不可委托/模型不可用）由 resolver 抛错，
+        // undefined 返回按未知角色拒绝。
+        let delegatedProfile: DelegatedAssistantProfile | undefined
+        let selectedModelId: string
+        if (delegatedRoleId) {
+          const { resolveDelegatedAssistantProfile } = await import(
+            '../agent/subagent/delegated-assistant-profile'
           )
-        }
-        if (
-          requestedModelId &&
-          !subagentModelConfig.allowedModelIds.includes(requestedModelId)
-        ) {
-          throw new Error(
-            `Model "${requestedModelId}" is not allowed for delegate_subagent.`,
-          )
-        }
-        const selectedModelId =
-          requestedModelId || subagentModelConfig.preferredModelId
-        if (!selectedModelId) {
-          throw new Error(
-            'No preferred chat model is configured for delegate_subagent.',
-          )
+          const profile = await resolveDelegatedAssistantProfile({
+            app,
+            settings,
+            assistantId: delegatedRoleId,
+            parentWorkspacePolicy: subagentParentContext.workspaceAccessPolicy,
+            parentRequestContextBuilder:
+              subagentParentContext.requestContextBuilder,
+          })
+          if (!profile) {
+            throw new Error(`Unknown delegated role "${delegatedRoleId}".`)
+          }
+          delegatedProfile = profile
+          selectedModelId = profile.modelId
+        } else {
+          // 通用路径：modelPreferenceId 是本次派发的模型偏好（等价会话层的
+          // session.modelPreferenceId 语义，authority-resolver.ts:161），优先于
+          // 既有的 modelId 参数，仍须在子代理模型池内。
+          const requestedModelId =
+            modelPreferenceId ||
+            (getOptionalTextArg(args, 'modelId')?.trim() ?? '')
+          const subagentModelConfig = resolveSubagentModelConfig(settings)
+          if (subagentModelConfig.allowedModelIds.length === 0) {
+            throw new Error(
+              'No registered chat models are configured for delegate_subagent.',
+            )
+          }
+          if (
+            requestedModelId &&
+            !subagentModelConfig.allowedModelIds.includes(requestedModelId)
+          ) {
+            throw new Error(
+              `Model "${requestedModelId}" is not allowed for delegate_subagent.`,
+            )
+          }
+          selectedModelId =
+            requestedModelId || subagentModelConfig.preferredModelId
+          if (!selectedModelId) {
+            throw new Error(
+              'No preferred chat model is configured for delegate_subagent.',
+            )
+          }
         }
         const { getChatModelClient } = await import('../llm/manager')
         const selectedModelClient = getChatModelClient({
@@ -4261,6 +4306,22 @@ export async function callLocalFileTool({
           }
         }
 
+        // 会话服务网关（Task 5 单例）：工具路径为 ephemeral 派发（无预建会话），
+        // settleRun 对未知 session 静默 no-op（session-service.ts:543），内存态与
+        // pushCompleted 投递与无 gateway 路径一致；有外部 spawn 的会话由 Task 9
+        // 的 runSubagentSessionContinuation 承担续跑。
+        const { getSubagentSessionService } = await import(
+          '../agent/subagent/session-service'
+        )
+        const sessionService = getSubagentSessionService()
+        const sessionGateway = sessionService
+          ? ({
+              settleRun: sessionService.settleRun.bind(sessionService),
+              query: sessionService.query.bind(sessionService),
+              deliverQueuedIntents:
+                sessionService.deliverQueuedIntents.bind(sessionService),
+            } satisfies SubagentSessionGatewayLike)
+          : undefined
         const { runSubagent } = await import('../agent/subagent/runner')
         const accepted = await runSubagent({
           description,
@@ -4278,6 +4339,15 @@ export async function callLocalFileTool({
             apiType: selectedProvider?.apiType ?? null,
           },
           signal,
+          ...(delegatedProfile ? { delegatedProfile } : {}),
+          ...(sessionGateway
+            ? {
+                sessionGateway,
+                settleRun: sessionGateway.settleRun,
+                onSettleFailure: (err) =>
+                  console.error('[YOLO] subagent settle failure', err),
+              }
+            : {}),
         })
 
         return {
