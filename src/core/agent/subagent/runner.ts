@@ -21,7 +21,10 @@ import {
   AGENT_SESSION_MODE,
   type AgentSessionMode,
 } from '../../state/contracts'
-import { SUBAGENT_SESSION_STATUS } from '../../state/statuses'
+import {
+  SUBAGENT_RUN_STATUS,
+  SUBAGENT_SESSION_STATUS,
+} from '../../state/statuses'
 import { type YoloAgentEvent, conversationStateToEvents } from '../agent-api'
 import { backgroundTaskCompletionBus } from '../background-task/completion-bus'
 import { CitationRegistry } from '../citationRegistry'
@@ -1066,61 +1069,35 @@ export async function runSubagent(
 
     subagentTaskRegistry.register(record)
 
-    if (sessionGateway) {
-      return admitSessionRun({
-        sessionGateway,
-        record,
-        title,
-        prompt: taskPrompt,
-        conversationId,
-        source,
-        promptMessageId: `${runKey}:prompt`,
-        parent,
-        childModel,
-        delegatedProfile,
-        settleRun,
-        onSettleFailure,
-      })
-        .then(() => ({
-          accepted: true as const,
-          taskId,
-          sessionId,
-          runKey,
-          mode,
+    // 有 sessionGateway → admitSessionRun（仅启动 runChildAgent + settle 接线，
+    // 持久化已由调用方在 service 侧完成）；无 → ephemeral 原路径。两条路径同为
+    // fire-and-forget（Task 7 审查 #3：gateway 分支不得 await 子 run 阻塞父
+    // turn——runSubagent 立即返回 accepted，交付靠 pushCompleted 事件）。
+    const childRunPromise = sessionGateway
+      ? admitSessionRun({
+          sessionGateway,
+          record,
           title,
-          status: 'running' as const,
-          note: 'Subagent started asynchronously. The result will arrive as a follow-up background event when the child run completes.',
-          modelName: childModel.model.name ?? childModel.model.model,
-          ...(delegatedRole ? { delegatedRole } : {}),
-        }))
-        .catch((error: unknown) => {
-          abortController.abort()
-          subagentRuntimeRegistry.unregister(record.taskId)
-          subagentRuntimeRegistry.releaseReservation(runKey)
-          const errorMessage = formatErrorMessageWithCauses(error)
-          subagentTaskRegistry.update(record.taskId, {
-            status: 'failed',
-            completedAt: Date.now(),
-            error: errorMessage,
-          })
-          if (signal && abortListener) {
-            signal.removeEventListener('abort', abortListener)
-            abortListener = undefined
-          }
-          throw error instanceof Error ? error : new Error(errorMessage)
+          prompt: taskPrompt,
+          conversationId,
+          source,
+          promptMessageId: `${runKey}:prompt`,
+          parent,
+          childModel,
+          delegatedProfile,
+          settleRun,
+          onSettleFailure,
         })
-    }
+      : runChildAgent(
+          record,
+          parent,
+          childModel,
+          delegatedProfile,
+          settleRun,
+          onSettleFailure,
+        )
 
-    // 无 sessionGateway：现有 ephemeral 路径（runChildAgent 不带 settle，
-    // 行为与迁移前完全一致；reservation 由 runChildAgent finally 释放）
-    void runChildAgent(
-      record,
-      parent,
-      childModel,
-      delegatedProfile,
-      settleRun,
-      onSettleFailure,
-    )
+    void childRunPromise
       .catch(async (error: unknown) => {
         const completedAt = Date.now()
         const status = abortController.signal.aborted ? 'aborted' : 'failed'
@@ -1195,19 +1172,32 @@ export function abortAllSubagentTasks(): void {
  * 以 session 身份启动 runChildAgent（reserve + 记录 + settleRun 接线，语义与
  * runSubagent 的 durable 分支一致）。
  *
+ * 续跑 run 身份（Task 7 审查 #2）：
+ * - NEEDS_RESUME（恢复路径）：沿用被中断 run 的既有 runKey/runSequence——
+ *   误用 nextRunSequence 会拿到错误 runKey，settle 无处落；
+ * - IDLE（after_run 意图投递）：先经 service.beginRun 创建新 run 记录并推进
+ *   nextRunSequence——否则 runKey 与 run 1 重叠，settleRun 按 runKey findIndex
+ *   会覆写 run 1 的结算（数据损坏）。
+ *
  * ⚠️ 首 run prompt 落盘：spawn 时 prompt 文本已随 run 记录持久化
  * （session-types.SubagentRun.prompt）；transcript 为空（首 run 未结算、
- * reload 后重建）时用它重建首条 user 消息（id 对齐 run.promptMessageId）。
- * after_run 意图文本的合入与 nextRunSequence 推进属 Task 9 数据流
- * （当前 service 无 run 启动方法，nextRunSequence 恒为 1，续跑前需 Task 9 推进）。
+ * reload 后重建）时用它重建首条 user 消息——重建消息与 sourceUserMessageId
+ * 使用同一 run 的 promptMessageId（Task 7 审查 #5 对齐）。
+ * after_run 意图文本的合入属 Task 9 数据流（当前以最近 run 的 prompt 兜底）。
  *
  * deps（app/settings/loadConversationMeta/createProviderClient/createMcpManager）
- * 由 Task 9 的 main.ts 注入；未注册时静默返回（回调入口允许幂等空转）。
+ * 由 Task 9 的 main.ts 注入；缺失时直接抛错（fail-fast，Task 7 审查 #4——
+ * 静默空转会表现为"会话永不续跑"）。
  */
 export async function runSubagentSessionContinuation(
   sessionId: string,
   deps?: SubagentAuthorityResolverDependencies,
 ): Promise<void> {
+  if (!deps) {
+    throw new Error(
+      'runSubagentSessionContinuation requires authority resolver dependencies (app/getSettings/loadConversationMeta/createProviderClient/createMcpManager). Task 9 main.ts must pass them at the onIntentRunRequested wiring.',
+    )
+  }
   const service = getSubagentSessionService()
   if (!service) return
   const snapshot = await service.query(sessionId)
@@ -1219,24 +1209,70 @@ export async function runSubagentSessionContinuation(
   ) {
     return
   }
-  const currentRun = snapshot.currentRun
-  if (!currentRun) return
-  if (!deps) return
 
-  const canonicalMessages =
-    snapshot.transcriptPage && snapshot.transcriptPage.length > 0
-      ? snapshot.transcriptPage
-      : currentRun.prompt
-        ? [
-            {
-              role: 'user',
-              id: currentRun.promptMessageId,
-              content: null,
-              promptContent: currentRun.prompt,
-              mentionables: [],
-            } satisfies ChatUserMessage,
-          ]
-        : []
+  let runSequence: number
+  let runKey: string
+  let promptMessageId: string
+  let runPrompt: string
+  let canonicalMessages: readonly ChatMessage[]
+  if (session.status === SUBAGENT_SESSION_STATUS.NEEDS_RESUME) {
+    // 恢复路径：沿用被中断 run 的既有 runKey/runSequence（Task 7 审查 #2b）
+    const interruptedRun = snapshot.recentRuns.find(
+      (run) => run.status === SUBAGENT_RUN_STATUS.INTERRUPTED,
+    )
+    if (!interruptedRun) return
+    runSequence = interruptedRun.runSequence
+    runKey = interruptedRun.runKey
+    promptMessageId = interruptedRun.promptMessageId
+    runPrompt = interruptedRun.prompt ?? ''
+    canonicalMessages =
+      snapshot.transcriptPage && snapshot.transcriptPage.length > 0
+        ? snapshot.transcriptPage
+        : runPrompt
+          ? [
+              {
+                role: 'user',
+                id: promptMessageId,
+                content: null,
+                promptContent: runPrompt,
+                mentionables: [],
+              } satisfies ChatUserMessage,
+            ]
+          : []
+  } else {
+    // IDLE 续跑（after_run 意图）：先经 service 创建新 run 记录并推进
+    // nextRunSequence（Task 7 审查 #2a——runKey 不重叠、settle 有落点）
+    const previousPrompt = snapshot.recentRuns.at(-1)?.prompt ?? ''
+    const beginResult = await service.beginRun({
+      sessionId,
+      expectedSessionRevision: session.revision,
+      prompt: previousPrompt,
+    })
+    if (!beginResult.accepted) {
+      console.error(
+        '[YOLO] Failed to begin subagent continuation run',
+        beginResult,
+      )
+      return
+    }
+    runSequence = beginResult.runSequence
+    runKey = beginResult.runKey
+    promptMessageId = `${runKey}:prompt`
+    runPrompt = previousPrompt
+    // 新 run 的首条 user 消息：id 用新 run 的 promptMessageId
+    //（与 runInput.sourceUserMessageId 对齐，Task 7 审查 #5）
+    canonicalMessages = [
+      ...(snapshot.transcriptPage ?? []),
+      {
+        role: 'user',
+        id: promptMessageId,
+        content: null,
+        promptContent: runPrompt,
+        mentionables: [],
+      } satisfies ChatUserMessage,
+    ]
+  }
+
   const authority = await resolveCurrentSubagentParentAuthority(deps, session, {
     // resolver 仅消费 parent 的 workspaceAccessPolicy?.workspaceRoot 与
     // reasoningLevel（authority-resolver.ts:139-142）；续跑时父 agent 不在
@@ -1244,9 +1280,6 @@ export async function runSubagentSessionContinuation(
     conversationId: session.parentConversationId,
   } as unknown as SubagentParentContext)
 
-  const runSequence = session.nextRunSequence
-  const runKey = makeSubagentRunKey(sessionId, runSequence)
-  const promptMessageId = `${runKey}:prompt`
   const abortController = new AbortController()
   const runInput = buildSubagentSessionRunInput({
     session,
@@ -1290,7 +1323,7 @@ export async function runSubagentSessionContinuation(
     title: session.title,
     status: 'running',
     createdAt: Date.now(),
-    prompt: currentRun.prompt ?? '',
+    prompt: runPrompt,
     abortController,
     ...(authority.delegatedProfile
       ? {
@@ -1301,8 +1334,13 @@ export async function runSubagentSessionContinuation(
         }
       : {}),
   }
-  subagentTaskRegistry.register(record)
+
+  // Task 7 审查 #1：reserve 前置（先 reserve 后 register）——reserve 冲突抛错时
+  // register 尚未执行，不会留下 phantom running 记录；catch 只 releaseReservation
+  // （幂等），绝不 unregister（taskId === sessionId，会注销活跃 run 的 runtime
+  // 注册项，破坏审批路由）。
   subagentRuntimeRegistry.reserve({ sessionId, runSequence, runKey })
+  subagentTaskRegistry.register(record)
 
   try {
     await runChildAgent(
@@ -1325,10 +1363,9 @@ export async function runSubagentSessionContinuation(
       runInput,
     )
   } catch (error) {
-    // runChildAgent 同步建立失败（如 reserve/register 冲突）：释放预留，
+    // runChildAgent 同步建立失败（reserve/register 冲突）：仅释放预留，
     // fail-fast 暴露给 Task 9 的调用方（onIntentRunRequested）。
     subagentRuntimeRegistry.releaseReservation(runKey)
-    subagentRuntimeRegistry.unregister(record.taskId)
     throw error
   }
 }

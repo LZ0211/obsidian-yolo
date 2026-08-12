@@ -245,3 +245,19 @@ export type SubagentQueueRecoveryResult =
       sessionRevision: number
     }
   | SubagentControlRejected
+
+/** beginRun 输入（Task 7 审查 #2：IDLE 续跑前创建新 run 记录并推进 nextRunSequence）。 */
+export type SubagentBeginRunInput = {
+  sessionId: string
+  expectedSessionRevision: number
+  prompt: string
+}
+
+export type SubagentBeginRunResult =
+  | {
+      accepted: true
+      runKey: string
+      runSequence: number
+      sessionRevision: number
+    }
+  | SubagentControlRejected

@@ -300,4 +300,120 @@ describe('SubagentSessionService', () => {
     expect(snapshot?.session.status).toBe(SUBAGENT_SESSION_STATUS.IDLE)
     expect(snapshot?.recentRuns[0]?.status).toBe(SUBAGENT_RUN_STATUS.ABORTED)
   })
+
+  it('begins a new run with the next sequence and advances nextRunSequence', async () => {
+    const service = await makeService(mockApp())
+    const spawned = await service.spawn({
+      title: 't',
+      prompt: 'p',
+      mode: AGENT_SESSION_MODE.PERSISTENT,
+      requestId: 'r1',
+      parentConversationId: 'c',
+      originAssistantMessageId: 'm',
+      originToolCallId: 't',
+      memoryAssistantId: 'x',
+    })
+    if (!spawned.accepted) throw new Error('spawn failed')
+
+    // spawn 已创建 run 1 且 nextRunSequence=2：IDLE 续跑的 beginRun 拿到的
+    // runKey 与 run 1 不重叠（审查 #2a——否则 settleRun 按 runKey findIndex
+    // 会命中 run 1 记录，续跑结算覆写 run 1 历史）
+    const first = await service.beginRun({
+      sessionId: spawned.sessionId,
+      expectedSessionRevision: 1,
+      prompt: 'p2',
+    })
+    expect(first).toEqual({
+      accepted: true,
+      runKey: `${spawned.sessionId}:2`,
+      runSequence: 2,
+      sessionRevision: 2,
+    })
+    const afterFirst = await service.query(spawned.sessionId)
+    expect(afterFirst?.session.status).toBe(SUBAGENT_SESSION_STATUS.RUNNING)
+    expect(afterFirst?.session.currentRunSequence).toBe(2)
+    expect(afterFirst?.session.nextRunSequence).toBe(3)
+    expect(afterFirst?.recentRuns.map((run) => run.runKey)).toEqual([
+      `${spawned.sessionId}:1`,
+      `${spawned.sessionId}:2`,
+    ])
+    expect(afterFirst?.recentRuns[1]?.prompt).toBe('p2')
+
+    // 子 run 结算前不允许再 begin（RUNNING → session_not_sendable）
+    const blocked = await service.beginRun({
+      sessionId: spawned.sessionId,
+      expectedSessionRevision: 2,
+      prompt: 'p3',
+    })
+    expect(blocked.accepted).toBe(false)
+    if (blocked.accepted) throw new Error('expected rejection')
+    expect(blocked.errorCode).toBe('session_not_sendable')
+
+    // run 2 结算回 IDLE 后，第二次 beginRun 用推进后的 nextRunSequence
+    await service.settleRun({
+      sessionId: spawned.sessionId,
+      runKey: `${spawned.sessionId}:2`,
+      status: 'completed',
+      result: {
+        status: 'completed',
+        content: 'ok',
+        durationMs: 1,
+        toolUseCount: 0,
+      },
+      completedAt: 2000,
+    })
+    const second = await service.beginRun({
+      sessionId: spawned.sessionId,
+      expectedSessionRevision: 3,
+      prompt: 'p3',
+    })
+    expect(second).toEqual({
+      accepted: true,
+      runKey: `${spawned.sessionId}:3`,
+      runSequence: 3,
+      sessionRevision: 4,
+    })
+    const afterSecond = await service.query(spawned.sessionId)
+    expect(afterSecond?.session.nextRunSequence).toBe(4)
+    expect(afterSecond?.recentRuns).toHaveLength(3)
+    expect(afterSecond?.recentRuns.map((run) => run.runKey)).toEqual([
+      `${spawned.sessionId}:1`,
+      `${spawned.sessionId}:2`,
+      `${spawned.sessionId}:3`,
+    ])
+  })
+
+  it('rejects beginRun for a stale revision or an unknown session', async () => {
+    const service = await makeService(mockApp())
+    const spawned = await service.spawn({
+      title: 't',
+      prompt: 'p',
+      mode: AGENT_SESSION_MODE.PERSISTENT,
+      requestId: 'r1',
+      parentConversationId: 'c',
+      originAssistantMessageId: 'm',
+      originToolCallId: 't',
+      memoryAssistantId: 'x',
+    })
+    if (!spawned.accepted) throw new Error('spawn failed')
+
+    const stale = await service.beginRun({
+      sessionId: spawned.sessionId,
+      expectedSessionRevision: 99,
+      prompt: 'p2',
+    })
+    expect(stale.accepted).toBe(false)
+    if (stale.accepted) throw new Error('expected rejection')
+    expect(stale.errorCode).toBe('revision_conflict')
+    expect(stale.retryable).toBe(true)
+
+    const missing = await service.beginRun({
+      sessionId: 'sub_missing',
+      expectedSessionRevision: 1,
+      prompt: 'p',
+    })
+    expect(missing.accepted).toBe(false)
+    if (missing.accepted) throw new Error('expected rejection')
+    expect(missing.errorCode).toBe('session_not_found')
+  })
 })

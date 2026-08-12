@@ -1,11 +1,16 @@
 import type { ChatMessage } from '../../../types/chat'
 import { ToolCallResponseStatus } from '../../../types/tool-call.types'
 import { AGENT_SESSION_MODE } from '../../state/contracts'
+import { SUBAGENT_RUN_STATUS } from '../../state/statuses'
 import { backgroundTaskCompletionBus } from '../background-task/completion-bus'
 import type { NativeAgentRuntime } from '../native-runtime'
 import type { AgentRuntimeRunInput } from '../types'
 
-import type { ResolvedCurrentSubagentParentAuthority } from './authority-resolver'
+import {
+  type ResolvedCurrentSubagentParentAuthority,
+  type SubagentAuthorityResolverDependencies,
+  resolveCurrentSubagentParentAuthority,
+} from './authority-resolver'
 import {
   SUBAGENT_BLOCKED_TOOL_NAMES,
   SUBAGENT_DEFAULT_SYSTEM_PROMPT,
@@ -23,7 +28,11 @@ import {
   hasUnsettledApprovalBatch,
   resolveSubagentRunPolicy,
   runSubagent,
+  runSubagentSessionContinuation,
 } from './runner'
+import { getSubagentSessionService } from './session-service'
+import type { SubagentSessionSnapshot } from './session-types'
+import { subagentTaskRegistry } from './task-registry'
 import type { SubagentTaskRecord } from './types'
 
 /**
@@ -31,14 +40,28 @@ import type { SubagentTaskRecord } from './types'
  * （runner.ts runChildAgent），不 mock 会真实打模型。模块级 mock 仅影响
  * 本文件的运行时代理；现有纯函数测试（plain-object runtime 注入）不受影响。
  * （jest.mock 声明被 babel-jest 提升到 import 之上，位置无碍语义。）
+ *
+ * runtime.run() 用可释放的 gate 挂起：gateway 不阻塞测试（Task 7 审查 #3）
+ * 依赖"runSubagent 返回 accepted 时子 run 仍在跑"这一确定性时序。
  */
+let runGate: Promise<void> | null = null
+let releaseRunGate: (() => void) | null = null
+const gateRuntimeRun = (): Promise<void> => {
+  if (!runGate) {
+    runGate = new Promise<void>((resolve) => {
+      releaseRunGate = resolve
+    })
+  }
+  return runGate
+}
+
 jest.mock('../native-runtime', () => {
   const actual = jest.requireActual('../native-runtime')
   return {
     ...actual,
     NativeAgentRuntime: jest.fn().mockImplementation(() => ({
       subscribe: jest.fn(() => () => {}),
-      run: jest.fn(async () => undefined),
+      run: jest.fn(() => gateRuntimeRun()),
       getSnapshot: jest.fn().mockReturnValue({
         messages: [{ role: 'assistant', id: 'assistant-1', content: 'done' }],
         compaction: [],
@@ -57,9 +80,31 @@ jest.mock('../live-stream/taskStreamBus', () => ({
 jest.mock('../citationRegistry', () => ({
   CitationRegistry: jest.fn().mockImplementation(() => ({})),
 }))
+// 续跑测试（Task 7 审查 #1/#2）：service 与 authority-resolver 走 mock，
+// 聚焦 runner 侧的分支/时序；resolver 本体已由 authority-resolver.test.ts 覆盖。
+jest.mock('./session-service', () => ({
+  ...jest.requireActual('./session-service'),
+  getSubagentSessionService: jest.fn(),
+}))
+jest.mock('./authority-resolver', () => ({
+  ...jest.requireActual('./authority-resolver'),
+  resolveCurrentSubagentParentAuthority: jest.fn(),
+}))
 
 const flushMicrotasks = (): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, 0))
+
+/**
+ * 等子 run 真正到达 runtime gate（runChildAgent → runWithBackgroundExecution →
+ * runtime.run() 是多次 await 的链；在 gate 创建前 release 会永久漏掉释放，
+ * 且 registrar 是跨测试单例——泄漏会污染后续测试）。
+ */
+const waitForRunGate = async (): Promise<void> => {
+  for (let attempt = 0; attempt < 100 && !runGate; attempt += 1) {
+    await flushMicrotasks()
+  }
+  expect(releaseRunGate).not.toBeNull()
+}
 
 const makeRuntime = (
   toolMessage: {
@@ -776,9 +821,11 @@ describe('runSubagent durable spawn', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
+    runGate = null
+    releaseRunGate = null
   })
 
-  it('spawns with session identity and settles durably', async () => {
+  it('spawns with session identity and settles durably without blocking the caller', async () => {
     const settleRun = jest.fn(async () => undefined)
     const onSettleFailure = jest.fn()
     const gateway = makeGateway(settleRun)
@@ -792,7 +839,15 @@ describe('runSubagent durable spawn', () => {
     expect(result.sessionId).toBe('sub_abc')
     expect(result.runKey).toBe('sub_abc:2')
     expect(result.mode).toBe(AGENT_SESSION_MODE.PERSISTENT)
-    // runChildAgent 完成后结算：service.settleRun 收到终态 settlement
+    // Task 7 审查 #3：gateway 分支不阻塞父 turn——runSubagent 已返回 accepted，
+    // 子 run 挂在 runtime gate 上尚未结算。
+    expect(settleRun).not.toHaveBeenCalled()
+    await waitForRunGate()
+    expect(settleRun).not.toHaveBeenCalled()
+
+    // 释放子 run：runChildAgent 完成后结算——service.settleRun 收到终态 settlement
+    releaseRunGate?.()
+    await flushMicrotasks()
     expect(settleRun).toHaveBeenCalledTimes(1)
     expect(settleRun).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -826,6 +881,39 @@ describe('runSubagent durable spawn', () => {
     )
   })
 
+  it('keeps the in-memory state consistent when settleRun fails', async () => {
+    const settleError = new Error('store write failed')
+    const settleRun = jest.fn(async () => {
+      throw settleError
+    })
+    const onSettleFailure = jest.fn()
+    const gateway = makeGateway(settleRun)
+    const result = await runSubagent({
+      ...makeParams(gateway, settleRun),
+      onSettleFailure,
+    })
+    expect(result.accepted).toBe(true)
+
+    await waitForRunGate()
+    releaseRunGate?.()
+    await flushMicrotasks()
+
+    // settle 失败 → onSettleFailure 收到 { settlement, error }，内存态照常更新
+    expect(onSettleFailure).toHaveBeenCalledTimes(1)
+    expect(onSettleFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        settlement: expect.objectContaining({
+          sessionId: 'sub_abc',
+          runKey: 'sub_abc:2',
+        }),
+        error: settleError,
+      }),
+    )
+    const record = subagentTaskRegistry.get('sub_abc')
+    expect(record?.status).toBe('completed')
+    expect(record?.result?.status).toBe('completed')
+  })
+
   it('rejects a second concurrent run on the same session', async () => {
     const settleRun = jest.fn(async () => undefined)
     const gateway = makeGateway(settleRun)
@@ -837,7 +925,204 @@ describe('runSubagent durable spawn', () => {
     const second = runSubagent(params)
     await expect(second).rejects.toThrow(/already has an active run/)
 
+    // 首轮结算后 reservation 释放，第二轮才能正常推进
+    await waitForRunGate()
+    releaseRunGate?.()
     await first
+    await flushMicrotasks()
     expect(settleRun).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('runSubagentSessionContinuation', () => {
+  const mockGetSubagentSessionService = jest.mocked(getSubagentSessionService)
+  const mockResolveAuthority = jest.mocked(
+    resolveCurrentSubagentParentAuthority,
+  )
+
+  const makeDeps = (): SubagentAuthorityResolverDependencies =>
+    ({
+      app: {},
+      getSettings: jest.fn(),
+      loadConversationMeta: jest.fn(),
+      createProviderClient: jest.fn(),
+      createMcpManager: jest.fn(),
+    }) as unknown as SubagentAuthorityResolverDependencies
+
+  const makeAuthority = (): ResolvedCurrentSubagentParentAuthority =>
+    ({
+      conversation: { conversationId: 'c', assistantId: 'assistant-parent' },
+      providerClient: {},
+      model: { model: 'child-model', name: 'child-name' },
+      apiType: null,
+      mcpManager: {},
+      requestContextBuilder: {},
+      allowedToolNames: [],
+      toolPreferences: {},
+      toolServerPreferences: {},
+      allowedSkillPaths: [],
+      enableToolDisclosure: false,
+      reasoningLevel: 'full',
+      requestParams: {},
+      loopConfig: {
+        enableTools: true,
+        includeBuiltinTools: true,
+        maxAutoIterations: 5,
+      },
+      bypassToolApproval: false,
+    }) as unknown as ResolvedCurrentSubagentParentAuthority
+
+  const makeSessionSnapshot = (
+    overrides: Partial<SubagentSessionSnapshot> & {
+      session: SubagentSessionSnapshot['session']
+    },
+  ): SubagentSessionSnapshot =>
+    ({
+      recentRuns: [],
+      ...overrides,
+    }) as SubagentSessionSnapshot
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+    runGate = null
+    releaseRunGate = null
+    mockResolveAuthority.mockResolvedValue(makeAuthority())
+  })
+
+  it('throws when authority deps are missing (fail-fast, review #4)', async () => {
+    await expect(runSubagentSessionContinuation('sub_abc')).rejects.toThrow(
+      /authority resolver dependencies/,
+    )
+  })
+
+  it('continues a NEEDS_RESUME session with the interrupted run key (review #2b)', async () => {
+    const settleRun = jest.fn(async () => undefined)
+    const beginRun = jest.fn()
+    const query = jest.fn().mockResolvedValue(
+      makeSessionSnapshot({
+        session: {
+          sessionId: 'sub_abc',
+          parentConversationId: 'c',
+          originAssistantMessageId: 'm',
+          originToolCallId: 'tc',
+          title: 't',
+          mode: AGENT_SESSION_MODE.PERSISTENT,
+          status: 'needs_resume',
+          revision: 3,
+          nextRunSequence: 2,
+          memoryAssistantId: 'mem_1',
+          createdAt: 1,
+          lastActiveAt: 2,
+        },
+        recentRuns: [
+          {
+            sessionId: 'sub_abc',
+            runSequence: 1,
+            runKey: 'sub_abc:1',
+            promptMessageId: 'sub_abc:1:prompt',
+            prompt: 'p',
+            status: SUBAGENT_RUN_STATUS.INTERRUPTED,
+            basedOnSessionRevision: 1,
+          },
+        ],
+        transcriptPage: [],
+      }),
+    )
+    mockGetSubagentSessionService.mockReturnValue({
+      query,
+      beginRun,
+      settleRun,
+    } as unknown as Awaited<ReturnType<typeof getSubagentSessionService>>)
+
+    const deps = makeDeps()
+    const continuationPromise = runSubagentSessionContinuation('sub_abc', deps)
+    await waitForRunGate() // 让子 run 到达 runtime gate
+    releaseRunGate?.()
+    await continuationPromise
+
+    // 恢复路径沿用被中断 run 的既有 runKey，不误用 nextRunSequence(2)
+    expect(beginRun).not.toHaveBeenCalled()
+    expect(settleRun).toHaveBeenCalledTimes(1)
+    expect(settleRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'sub_abc',
+        runKey: 'sub_abc:1',
+      }),
+    )
+    expect(subagentTaskRegistry.get('sub_abc')?.runKey).toBe('sub_abc:1')
+    expect(mockResolveAuthority).toHaveBeenCalledWith(
+      deps,
+      expect.objectContaining({ sessionId: 'sub_abc' }),
+      expect.anything(),
+    )
+  })
+
+  it('begins a new run record for an IDLE continuation and settles with the new run key (review #2a)', async () => {
+    const settleRun = jest.fn(async () => undefined)
+    const beginRun = jest.fn().mockResolvedValue({
+      accepted: true,
+      runKey: 'sub_abc:2',
+      runSequence: 2,
+      sessionRevision: 3,
+    })
+    const query = jest.fn().mockResolvedValue(
+      makeSessionSnapshot({
+        session: {
+          sessionId: 'sub_abc',
+          parentConversationId: 'c',
+          originAssistantMessageId: 'm',
+          originToolCallId: 'tc',
+          title: 't',
+          mode: AGENT_SESSION_MODE.PERSISTENT,
+          status: 'idle',
+          revision: 2,
+          nextRunSequence: 2,
+          memoryAssistantId: 'mem_1',
+          createdAt: 1,
+          lastActiveAt: 2,
+        },
+        recentRuns: [
+          {
+            sessionId: 'sub_abc',
+            runSequence: 1,
+            runKey: 'sub_abc:1',
+            promptMessageId: 'sub_abc:1:prompt',
+            prompt: 'p1',
+            status: SUBAGENT_RUN_STATUS.COMPLETED,
+            basedOnSessionRevision: 1,
+          },
+        ],
+        transcriptPage: [],
+      }),
+    )
+    mockGetSubagentSessionService.mockReturnValue({
+      query,
+      beginRun,
+      settleRun,
+    } as unknown as Awaited<ReturnType<typeof getSubagentSessionService>>)
+
+    const continuationPromise = runSubagentSessionContinuation(
+      'sub_abc',
+      makeDeps(),
+    )
+    await waitForRunGate()
+    releaseRunGate?.()
+    await continuationPromise
+
+    // IDLE 续跑先经 service 创建新 run 记录（beginRun 推进 nextRunSequence），
+    // 结算落点是新 runKey——run 1 的结算记录不被覆写
+    expect(beginRun).toHaveBeenCalledWith({
+      sessionId: 'sub_abc',
+      expectedSessionRevision: 2,
+      prompt: 'p1',
+    })
+    expect(settleRun).toHaveBeenCalledTimes(1)
+    expect(settleRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'sub_abc',
+        runKey: 'sub_abc:2',
+      }),
+    )
+    expect(subagentTaskRegistry.get('sub_abc')?.runKey).toBe('sub_abc:2')
   })
 })

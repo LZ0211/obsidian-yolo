@@ -24,6 +24,8 @@ import type {
 
 import {
   SUBAGENT_SESSION_SCHEMA_VERSION,
+  type SubagentBeginRunInput,
+  type SubagentBeginRunResult,
   type SubagentCloseInput,
   type SubagentCloseResult,
   type SubagentMessageIntent,
@@ -90,7 +92,10 @@ export class SubagentSessionService {
       mode: input.mode,
       status: SUBAGENT_SESSION_STATUS.IDLE,
       revision: 1,
-      nextRunSequence: 1,
+      // run 1 已随 spawn 创建，下一个 run 从 2 开始（Task 7 审查 #2a：否则
+      // IDLE 续跑的 beginRun 会用 runSequence 1 与 run 1 的 runKey 重叠，
+      // settleRun 按 runKey findIndex 会覆写 run 1 的结算）。
+      nextRunSequence: 2,
       delegatedRoleId: input.delegatedRoleId,
       modelPreferenceId: input.modelPreferenceId,
       memoryAssistantId: input.memoryAssistantId,
@@ -435,6 +440,85 @@ export class SubagentSessionService {
       }
     }
     return deleted
+  }
+
+  /**
+   * beginRun：IDLE 会话续跑（after_run 意图投递，Task 7 审查 #2）前创建新 run
+   * 记录并推进 nextRunSequence。runSequence = session.nextRunSequence（不与
+   * 既有 run 重叠——否则 settleRun 按 runKey findIndex 会覆写旧 run 的结算）；
+   * 成功后 session 置 RUNNING + currentRunSequence（子 run 中断时恢复扫描可
+   * 正确标记 INTERRUPTED），nextRunSequence+1 持久化。
+   * 与其余写路径一致：读 → revision 校验 → CAS（RevisionConflictError 按冲突
+   * 结果返回，由调用方决定收敛重试）→ 结果。
+   */
+  async beginRun(
+    input: SubagentBeginRunInput,
+  ): Promise<SubagentBeginRunResult> {
+    const stored = await this.store.readById(input.sessionId)
+    if (!stored) {
+      return {
+        accepted: false,
+        errorCode: 'session_not_found',
+        retryable: false,
+      }
+    }
+    if (stored.session.revision !== input.expectedSessionRevision) {
+      return {
+        accepted: false,
+        errorCode: 'revision_conflict',
+        retryable: true,
+        current: this.toSnapshot(stored),
+      }
+    }
+    if (stored.session.status !== SUBAGENT_SESSION_STATUS.IDLE) {
+      return {
+        accepted: false,
+        errorCode: 'session_not_sendable',
+        retryable: false,
+      }
+    }
+    const runSequence = stored.session.nextRunSequence
+    const runKey = makeSubagentRunKey(stored.session.sessionId, runSequence)
+    const run: SubagentRun = {
+      sessionId: stored.session.sessionId,
+      runSequence,
+      runKey,
+      promptMessageId: `${runKey}:prompt`,
+      prompt: input.prompt,
+      status: SUBAGENT_RUN_STATUS.QUEUED,
+      basedOnSessionRevision: stored.session.revision,
+    }
+    const next: StoredSubagentSession = {
+      ...stored,
+      runs: [...stored.runs, run],
+      session: {
+        ...stored.session,
+        status: SUBAGENT_SESSION_STATUS.RUNNING,
+        currentRunSequence: runSequence,
+        nextRunSequence: runSequence + 1,
+        revision: stored.session.revision + 1,
+        lastActiveAt: Date.now(),
+      },
+    }
+    try {
+      await this.store.compareAndUpdate(stored, next)
+    } catch (error) {
+      if (error instanceof RevisionConflictError) {
+        return {
+          accepted: false,
+          errorCode: 'revision_conflict',
+          retryable: true,
+          current: this.toSnapshot(stored),
+        }
+      }
+      throw error
+    }
+    return {
+      accepted: true,
+      runKey,
+      runSequence,
+      sessionRevision: next.session.revision,
+    }
   }
 
   /**
