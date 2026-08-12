@@ -73,22 +73,34 @@ export function registerSettingsRoutes(
     // scoped below — otherwise the web client's runtime.getAgents() (which
     // re-derives the unified list from these raw arrays) shows every
     // template regardless of the session's token scope.
-    settings.assistants = (settings.assistants ?? []).filter(
-      (a) => !allowedTemplateIds || allowedTemplateIds.has(a.id),
-    )
+    settings.assistants = (settings.assistants ?? [])
+      .filter((a) => !allowedTemplateIds || allowedTemplateIds.has(a.id))
+      // 受保护路径/工作区根绝不能下发到浏览器——任何 token 作用域都不可见
+      // （vault 内容边界由服务端 isReadablePathSafe 执行，客户端无需策略）。
+      .map((a) => {
+        const { workspaceAccessPolicy: _wa, ...rest } = a
+        return rest
+      })
 
     // Scope-filter workspace agents: only send agents the session is permitted
     // to use, then redact share-token secrets so the web client never sees them.
-    settings.workspaceAgents = (settings.workspaceAgents ?? [])
-      .filter((wa) => !allowedIds || allowedIds.has(wa.id))
-      .map((wa) => ({
-        ...wa,
-        shareTokens: (wa.shareTokens ?? []).map((token) => ({
-          ...token,
-          tokenHash: '',
-          plaintext: token.plaintext ? '' : undefined,
-        })),
-      }))
+    // workspacePolicy（workspaceRoot + 保护路径清单）是服务端执行边界，
+    // 任何 token 作用域都不下发（响应脱敏，类型断言因 schema 必填字段）。
+    settings.workspaceAgents = (
+      (settings.workspaceAgents ?? [])
+        .filter((wa) => !allowedIds || allowedIds.has(wa.id))
+        .map((wa) => {
+          const { workspacePolicy: _wp, ...rest } = wa
+          return {
+            ...rest,
+            shareTokens: (rest.shareTokens ?? []).map((token) => ({
+              ...token,
+              tokenHash: '',
+              plaintext: token.plaintext ? '' : undefined,
+            })),
+          }
+        }) as unknown as YoloSettings['workspaceAgents']
+    )
 
     // Redact provider API keys
     if (settings.providers) {

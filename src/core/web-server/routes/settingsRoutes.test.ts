@@ -282,3 +282,79 @@ function createResponse() {
   })
   return response
 }
+
+describe('settingsRoutes protected path privacy', () => {
+  const POLICY = {
+    workspaceRoot: 'vault/private-root',
+    readAllowlist: [],
+    readDenylist: [],
+    writeDenylist: [],
+  }
+
+  function registerWithAgents() {
+    const router = new WebRouter()
+    registerSettingsRoutes(router, {
+      getSettings: () => ({
+        ...parseYoloSettings({
+          assistants: [
+            {
+              id: 'template-1',
+              name: 'Template',
+              workspaceAccessPolicy: {
+                enabled: true,
+                workspaceRoot: 'vault/secret-root',
+                readExtraIncludes: ['vault/hidden-a'],
+                readExcludes: [],
+                writeExcludes: [],
+                protectedPaths: [
+                  { kind: 'prefix', path: 'vault/secret' },
+                  { kind: 'exact', path: 'vault/do-not-open.md' },
+                ],
+              },
+            },
+          ],
+        }),
+        workspaceAgents: [
+          {
+            id: 'agent-1',
+            name: 'Agent',
+            templateId: 'template-1',
+            workspacePolicy: POLICY,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      }),
+      resolveSettingsAccess: () => ({ ok: true }),
+    })
+    return router
+  }
+
+  async function fetchSettings(router: WebRouter) {
+    const req = createRequest('/api/settings')
+    const res = createResponse()
+    await router.resolve('GET', '/api/settings')?.handler(
+      req as never,
+      res as never,
+      {},
+    )
+    return res.jsonBody as Record<string, unknown>
+  }
+
+  it('strips workspacePolicy (workspaceRoot + protected paths) from workspace agents', async () => {
+    const body = await fetchSettings(registerWithAgents())
+    const agents = body.workspaceAgents as Array<Record<string, unknown>>
+    expect(agents[0]).not.toHaveProperty('workspacePolicy')
+    expect(JSON.stringify(body)).not.toContain('private-root')
+  })
+
+  it('strips workspaceAccessPolicy (protected paths) from assistant templates', async () => {
+    const body = await fetchSettings(registerWithAgents())
+    const assistants = body.assistants as Array<Record<string, unknown>>
+    expect(assistants[0]).not.toHaveProperty('workspaceAccessPolicy')
+    const serialized = JSON.stringify(body)
+    expect(serialized).not.toContain('secret-root')
+    expect(serialized).not.toContain('vault/hidden-a')
+    expect(serialized).not.toContain('do-not-open')
+  })
+})
