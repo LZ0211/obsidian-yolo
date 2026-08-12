@@ -34,7 +34,10 @@ import { groupAssistantAndToolMessages } from '../../utils/chat/message-groups'
 import type { RequestContextBuilder } from '../../utils/chat/requestContextBuilder'
 import { stampUserMessageTimeContext } from '../../utils/prompt/timeContext'
 
-import { type ChatMode } from './chat-input/ChatModeSelect'
+import {
+  isModuleChatMode,
+  type ChatMode,
+} from './chat-input/ChatModeSelect'
 import {
   buildAssistantErrorContinuation,
   buildRetrySubmissionMessages,
@@ -806,13 +809,14 @@ export class ChatSessionController {
     }
 
     const prefs = this.preferencesController.getSnapshot()
-    // fork 适配：无模块聊天模式（U4 范围），fork 的 compileUserMessagePrompt
-    // 不接受 scope 参数。
     const { promptContent } = await this.deps
       .getRequestContextBuilder()
       .compileUserMessagePrompt({
         message: lastMessage,
         onQueryProgressChange: this.deps.setQueryProgress,
+        scope: isModuleChatMode(prefs.chatMode)
+          ? { moduleChatModeId: prefs.chatMode }
+          : undefined,
       })
     const compiledRequestMessages = effectiveRequestChatMessages.map(
       (message) =>
