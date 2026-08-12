@@ -2253,6 +2253,13 @@ export default class YoloPlugin extends Plugin {
     addIcon(YOLO_ICON_ID, YOLO_ICON_SVG)
 
     await this.loadSettings()
+    // The parent subagent timeout + breaker read the CURRENT settings on every
+    // deadline registration / breaker trip, so changing `subagentTimeout` in
+    // settings takes effect without a restart (pre `main.ts:3440`).
+    const { setParentSubagentTimeoutSettingsGetter } = await import(
+      './core/agent/subagent/pending-timeout-registry'
+    )
+    setParentSubagentTimeoutSettingsGetter(() => this.settings.subagentTimeout)
     this.liteSkillRegistryDispose = initializeLiteSkillRegistryService({
       app: this.app,
       settings: this.settings,

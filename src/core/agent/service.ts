@@ -27,6 +27,7 @@ import {
   TERMINAL_COMMAND_TOOL_NAME,
   getLocalFileToolServerName,
 } from '../mcp/localFileTools'
+import type { McpManager } from '../mcp/mcpManager'
 import { parseToolName } from '../mcp/tool-name-utils'
 
 import {
@@ -48,16 +49,31 @@ import type { AgentFileChangeTracker } from './agentFileChangeTracker'
 import { CitationRegistry } from './citationRegistry'
 import { NativeAgentRuntime } from './native-runtime'
 import { PromptSourceWatcher } from './promptSourceWatcher'
+import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './subagent/constants'
 import {
   type SubagentParentContext,
   buildSubagentParentContext,
 } from './subagent/parent-context'
 import {
+  PARENT_SUBAGENT_TIMEOUT_ERROR,
+  clearParentSubagentDeadline,
+  clearParentSubagentTimeoutSettled,
+  hasParentSubagentDeadline,
+  isParentSubagentToolCallTimedOut,
+  markParentSubagentTimeoutSettled,
+  recordParentSubagentSuccess,
+  recordParentSubagentTimeout,
+  registerParentSubagentDeadline,
+} from './subagent/pending-timeout-registry'
+import {
   type SubagentRuntimeEntry,
   subagentRuntimeRegistry,
 } from './subagent/runtime-registry'
 import { subagentTaskRegistry } from './subagent/task-registry'
-import type { SubagentTaskCompletionRecord } from './subagent/types'
+import type {
+  SubagentTaskCompletionRecord,
+  SubagentTaskSummary,
+} from './subagent/types'
 import { SystemPromptSnapshotStore } from './systemPromptSnapshotStore'
 import {
   AgentRunContext,
@@ -213,6 +229,31 @@ export type AgentReplaceConversationMessagesReason =
 // conversation faster than one upload cycle makes the backend race its own
 // in-flight upload of the same file.
 export const RUNNING_PERSIST_MIN_INTERVAL_MS = 15_000
+
+const isDelegateSubagentToolName = (toolName: string): boolean =>
+  (toolName.includes('__')
+    ? toolName.slice(toolName.indexOf('__') + 2)
+    : (toolName.split(/[/:]/).pop() ?? toolName)) ===
+  DELEGATE_SUBAGENT_TOOL_SHORT_NAME
+
+/** Locate the child task record (if any) whose parent tool call is `toolCallId`. */
+const findSubagentTaskByParentToolCall = (
+  toolCallId: string,
+): SubagentTaskSummary | undefined =>
+  subagentTaskRegistry
+    .list()
+    .find(
+      (record) =>
+        record.source.type === 'llm_tool_call' &&
+        record.source.toolCallId === toolCallId,
+    )
+
+/**
+ * Synthetic completion text injected when a parent `delegate_subagent` call
+ * expires without a heartbeat (pre `native-runtime.ts:183-185`).
+ */
+const SUBAGENT_TIMEOUT_CONTENT =
+  'The delegated subagent did not respond before its deadline, so this delegation timed out and the child run was aborted. The parent agent may retry with a different approach or take over the task directly.'
 
 function buildSubagentResultMessage(
   record: SubagentTaskCompletionRecord,
@@ -1135,6 +1176,32 @@ export class AgentService {
 
   private handleBackgroundTaskCompleted(event: BackgroundTaskEvent): void {
     const { conversationId } = event
+    // Subagent settlement bookkeeping (pre `service.ts:2065-2095` semantics):
+    // - The result landed: clear the parent-side deadline so the pending
+    //   `delegate_subagent` call no longer awaits a timeout.
+    // - A timed-out delegation aborts the child, whose own run then emits an
+    //   (aborted) completion through the same bus. Discard that child result:
+    //   only the synthetic timeout result should be projected, and the marker
+    //   is no longer needed once the racing completion is consumed.
+    // - A genuine successful completion proves the delegation pipeline has
+    //   recovered: reset the per-conversation consecutive-timeout breaker so
+    //   new delegation is allowed again. The synthetic timeout settlement is
+    //   aborted, so it never counts as a success.
+    if (event.kind === 'subagent' && event.record.source.type === 'llm_tool_call') {
+      const toolCallId = event.record.source.toolCallId
+      clearParentSubagentDeadline(toolCallId)
+      if (
+        event.record.error !== PARENT_SUBAGENT_TIMEOUT_ERROR &&
+        isParentSubagentToolCallTimedOut(toolCallId)
+      ) {
+        clearParentSubagentTimeoutSettled(toolCallId)
+        this.compactCompletedBackgroundTaskRecord(event)
+        return
+      }
+      if (event.record.result?.status === 'completed') {
+        recordParentSubagentSuccess(conversationId)
+      }
+    }
     if (this.droppedConversationIds.has(conversationId)) {
       this.compactCompletedBackgroundTaskRecord(event)
       return
@@ -1514,6 +1581,20 @@ export class AgentService {
       return false
     }
 
+    // A previously approval-paused `delegate_subagent` call enters `Running`
+    // only here (the tool-phase registration in `NativeAgentRuntime` skipped
+    // it because it was not auto-approved). Register a deadline so a
+    // post-approval hang still settles as a timeout, aborts the child, and
+    // increments the breaker (pre `native-runtime.ts:307-313` semantics).
+    if (isDelegateSubagentToolName(toolCall.request.name)) {
+      this.registerApprovedSubagentDeadline({
+        toolCallId,
+        runKey: lastRunInput.runKey ?? conversationId,
+        conversationId,
+        mcpManager: lastRunInput.mcpManager,
+      })
+    }
+
     const toolArgs = getToolCallArgumentsObject(toolCall.request.arguments)
     const debugTraceId = this.findDebugTraceIdForToolCall(
       messagesBeforeApproval,
@@ -1579,6 +1660,175 @@ export class AgentService {
     }
 
     return true
+  }
+
+  /**
+   * Register a wall-clock deadline for an approval-paused `delegate_subagent`
+   * call that the user just approved. The auto-approved path registers in the
+   * runtime's `tool_phase`; this covers calls that were `PendingApproval` at
+   * tool-message creation and only enter `Running` after `approveToolCall`
+   * executes them. `onExpire` settles the call as `error`, aborts the child,
+   * injects a synthetic timeout result, and increments the breaker.
+   */
+  private registerApprovedSubagentDeadline({
+    toolCallId,
+    runKey,
+    conversationId,
+    mcpManager,
+  }: {
+    toolCallId: string
+    runKey: string
+    conversationId: string
+    mcpManager: McpManager
+  }): void {
+    if (hasParentSubagentDeadline(toolCallId)) return
+    registerParentSubagentDeadline({
+      toolCallId,
+      runKey,
+      conversationId,
+      onExpire: ({
+        toolCallId: expiredToolCallId,
+        conversationId: expiredConversationId,
+      }) => {
+        this.handleParentSubagentDeadlineExpiry({
+          toolCallId: expiredToolCallId,
+          conversationId: expiredConversationId,
+          mcpManager,
+        })
+      },
+    })
+  }
+
+  private handleParentSubagentDeadlineExpiry({
+    toolCallId,
+    conversationId,
+    mcpManager,
+  }: {
+    toolCallId: string
+    conversationId: string
+    mcpManager: McpManager
+  }): void {
+    // 1. Abort the child run through the existing per-task abort path.
+    const childTask = findSubagentTaskByParentToolCall(toolCallId)
+    if (childTask) {
+      subagentTaskRegistry.abort(childTask.taskId)
+    }
+    // 2. Settle a still-in-flight `mcpManager.callTool` executor (the approval
+    //    path bypasses the tool gateway) so the approve call can return.
+    mcpManager.abortToolCall(toolCallId)
+    // 3. Record the timeout settlement in the survival set (independent of the
+    //    deadline entry, which this handler's own synthetic result clears via
+    //    `handleBackgroundTaskCompleted`) so the double-injection guard keeps
+    //    working against the child's racing (abort) completion.
+    markParentSubagentTimeoutSettled(toolCallId)
+    // 4. Mark the tool call `error` in the authoritative conversation state.
+    //    Master's `ToolCallResponseStatus` has no `timeout` variant, so the
+    //    `PARENT_SUBAGENT_TIMEOUT_ERROR` marker on the error carries the
+    //    settlement classification.
+    this.updateToolCallResponse({
+      conversationId,
+      toolCallId,
+      response: {
+        status: ToolCallResponseStatus.Error,
+        error: PARENT_SUBAGENT_TIMEOUT_ERROR,
+      },
+    })
+    // 5. Inject a synthetic timeout result through the same completion bus the
+    //    subagent runner uses, mirroring the service's completion-injection
+    //    path (`buildBackgroundTaskResultMessage`).
+    const syntheticRecord = this.buildSubagentTimeoutCompletionRecord({
+      toolCallId,
+      childTask,
+      conversationId,
+    })
+    backgroundTaskCompletionBus.pushCompleted({
+      kind: 'subagent',
+      taskId: syntheticRecord.taskId,
+      conversationId: syntheticRecord.conversationId,
+      record: syntheticRecord,
+    })
+    // 6. Increment the per-conversation breaker.
+    recordParentSubagentTimeout(conversationId)
+  }
+
+  private buildSubagentTimeoutCompletionRecord({
+    toolCallId,
+    childTask,
+    conversationId,
+  }: {
+    toolCallId: string
+    childTask?: SubagentTaskSummary
+    conversationId: string
+  }): SubagentTaskCompletionRecord {
+    const now = Date.now()
+    const located = this.findToolCall(conversationId, toolCallId)
+    const requestArgs = located
+      ? getToolCallArgumentsObject(located.toolCall.request.arguments)
+      : undefined
+    const title =
+      typeof requestArgs?.description === 'string'
+        ? requestArgs.description
+        : 'Subagent task'
+    const prompt =
+      typeof requestArgs?.prompt === 'string' ? requestArgs.prompt : ''
+    const taskId = childTask?.taskId ?? `sub_timeout_${toolCallId}`
+    const createdAt = childTask?.createdAt ?? now
+    return {
+      taskId,
+      conversationId,
+      source: {
+        type: 'llm_tool_call',
+        toolCallId,
+        assistantMessageId: this.findSourceAssistantMessageId(
+          conversationId,
+          toolCallId,
+        ),
+      },
+      title,
+      status: 'aborted',
+      createdAt,
+      completedAt: now,
+      prompt,
+      activityLog: '[state] subagent timed out',
+      error: PARENT_SUBAGENT_TIMEOUT_ERROR,
+      result: {
+        taskId,
+        status: 'aborted',
+        content: SUBAGENT_TIMEOUT_CONTENT,
+        activityLog: '[state] subagent timed out',
+        durationMs: now - createdAt,
+        toolUseCount: 0,
+        prompt,
+        ...(childTask?.result?.modelName
+          ? { modelName: childTask.result.modelName }
+          : {}),
+      },
+    }
+  }
+
+  private findSourceAssistantMessageId(
+    conversationId: string,
+    toolCallId: string,
+  ): string {
+    const located = this.findToolCall(conversationId, toolCallId)
+    if (!located) return ''
+    const messages =
+      located.runEntry?.state.messages ??
+      this.getOrCreateConversationEntry(conversationId).state.messages
+    const toolMessageIndex = messages.findIndex(
+      (message) =>
+        message.role === 'tool' &&
+        message.toolCalls.some(
+          (toolCall) => toolCall.request.id === toolCallId,
+        ),
+    )
+    if (toolMessageIndex === -1) return ''
+    for (let index = toolMessageIndex - 1; index >= 0; index -= 1) {
+      if (messages[index].role === 'assistant') {
+        return messages[index].id
+      }
+    }
+    return ''
   }
 
   /**

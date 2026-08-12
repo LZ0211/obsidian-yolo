@@ -57,6 +57,16 @@ import {
   type DelegatedAssistantProfile,
   resolveDelegatedAssistantProfile,
 } from '../agent/subagent/delegated-assistant-profile'
+import {
+  hasParentSubagentDeadline,
+  recordParentSubagentSuccess,
+  recordParentSubagentTimeout,
+  registerParentSubagentDeadline,
+  resetParentSubagentBreakers,
+  resetParentSubagentDeadlines,
+  resetParentSubagentTimeoutConfig,
+  resetParentSubagentTimeoutSettingsGetter,
+} from '../agent/subagent/pending-timeout-registry'
 import { runSubagent } from '../agent/subagent/runner'
 import { getSubagentSessionService } from '../agent/subagent/session-service'
 import { findWebviewHandleByPageId } from '../browser/activeWebviewProbe'
@@ -3023,6 +3033,72 @@ describe('delegate_subagent model selection', () => {
 
       expect(result.status).toBe(ToolCallResponseStatus.Error)
       expect(runSubagent).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('breaker gate', () => {
+    beforeEach(() => {
+      resetParentSubagentBreakers()
+      resetParentSubagentTimeoutConfig()
+      resetParentSubagentTimeoutSettingsGetter()
+    })
+
+    afterEach(() => {
+      resetParentSubagentBreakers()
+      resetParentSubagentDeadlines()
+      resetParentSubagentTimeoutConfig()
+      resetParentSubagentTimeoutSettingsGetter()
+    })
+
+    const tripBreaker = (conversationId: string): void => {
+      // Default maxConsecutiveTimeouts = 2: two consecutive timeouts trip it.
+      recordParentSubagentTimeout(conversationId)
+      recordParentSubagentTimeout(conversationId)
+    }
+
+    it('rejects delegation with a distinguishable blocked result while the breaker is open', async () => {
+      tripBreaker('conv')
+
+      const result = await callDelegateSubagent({})
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      if (result.status === ToolCallResponseStatus.Success) {
+        expect(JSON.parse(result.text)).toEqual({
+          accepted: false,
+          status: 'blocked',
+          blocked: true,
+          reason: 'delegation blocked (too many timeouts)',
+        })
+      }
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+
+    it('clears the pending deadline of the blocked tool call', async () => {
+      registerParentSubagentDeadline({
+        toolCallId: 'tool-call',
+        runKey: 'run-1',
+        conversationId: 'conv',
+        onExpire: () => undefined,
+      })
+      tripBreaker('conv')
+
+      await callDelegateSubagent({})
+
+      // No child was ever spawned: the parent runtime's pending deadline is
+      // cleared so its timer cannot later inject a bogus timeout.
+      expect(hasParentSubagentDeadline('tool-call')).toBe(false)
+    })
+
+    it('allows delegation again after the breaker resets on a success', async () => {
+      tripBreaker('conv')
+      await callDelegateSubagent({})
+      expect(runSubagent).not.toHaveBeenCalled()
+
+      recordParentSubagentSuccess('conv')
+
+      const result = await callDelegateSubagent({})
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      expect(runSubagent).toHaveBeenCalled()
     })
   })
 })

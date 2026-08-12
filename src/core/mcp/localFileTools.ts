@@ -4236,6 +4236,31 @@ export async function callLocalFileTool({
           throw new Error('conversationId is required for delegate_subagent.')
         }
 
+        // 连续超时熔断 gate（pre localFileTools.ts:6264/6272 语义）：本会话的
+        // breaker 打开期间，拒绝派发一个可辨识的结果（accepted: false +
+        // blocked: true），而不是 spawn 子代理。父 runtime 为本 pending 调用
+        // 注册的 deadline 一并清理——子代理从未 spawn，计时器不能事后触发
+        // 注入虚假超时。registry 经动态 import，与 Task 8 的接线形态一致
+        // （madge 对动态 import 计边，本计划已决策接受新增环，Task 12-15
+        // 完成后统一断环）。
+        const {
+          SUBAGENT_DELEGATION_BLOCKED_REASON,
+          clearParentSubagentDeadline,
+          isParentSubagentDelegationBlocked,
+        } = await import('../agent/subagent/pending-timeout-registry')
+        if (isParentSubagentDelegationBlocked(conversationId)) {
+          if (toolCallId) clearParentSubagentDeadline(toolCallId)
+          return {
+            status: ToolCallResponseStatus.Success,
+            text: JSON.stringify({
+              accepted: false,
+              status: 'blocked',
+              blocked: true,
+              reason: SUBAGENT_DELEGATION_BLOCKED_REASON,
+            }),
+          }
+        }
+
         const description = getTextArg(args, 'description').trim()
         const taskPrompt = getTextArg(args, 'prompt').trim()
         if (!settings) {

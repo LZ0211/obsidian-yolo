@@ -3,9 +3,24 @@ import { ToolCallResponseStatus } from '../../types/tool-call.types'
 
 import { backgroundTaskCompletionBus } from './background-task/completion-bus'
 import { AgentService, RUNNING_PERSIST_MIN_INTERVAL_MS } from './service'
+import {
+  getParentSubagentBreakerState,
+  hasParentSubagentDeadline,
+  isParentSubagentToolCallTimedOut,
+  markParentSubagentTimeoutSettled,
+  recordParentSubagentTimeout,
+  registerParentSubagentDeadline,
+  resetParentSubagentBreakers,
+  resetParentSubagentDeadlines,
+  resetParentSubagentTimeoutConfig,
+  resetParentSubagentTimeoutSettingsGetter,
+} from './subagent/pending-timeout-registry'
 import { subagentRuntimeRegistry } from './subagent/runtime-registry'
 import { subagentTaskRegistry } from './subagent/task-registry'
-import type { SubagentTaskRecord } from './subagent/types'
+import type {
+  SubagentTaskCompletionRecord,
+  SubagentTaskRecord,
+} from './subagent/types'
 import { AgentRuntimeRunInput } from './types'
 
 type MockRuntimeInstance = {
@@ -1408,6 +1423,162 @@ describe('AgentService background subagent results', () => {
     } finally {
       service.stopBackgroundTaskResultListener()
     }
+  })
+})
+
+describe('AgentService parent subagent deadline settlement', () => {
+  afterEach(() => {
+    resetParentSubagentDeadlines()
+    resetParentSubagentBreakers()
+    resetParentSubagentTimeoutConfig()
+    resetParentSubagentTimeoutSettingsGetter()
+  })
+
+  const makeCompletedSubagentCompletionRecord = (
+    overrides: Partial<SubagentTaskCompletionRecord> = {},
+  ): SubagentTaskCompletionRecord => ({
+    taskId: 'sub_completed_1',
+    conversationId: 'conv-subagent-completed',
+    source: {
+      type: 'llm_tool_call',
+      toolCallId: 'subagent-call-completed',
+      assistantMessageId: 'assistant-1',
+    },
+    title: 'Scan',
+    status: 'completed',
+    createdAt: 1,
+    completedAt: 2,
+    prompt: 'Scan notes',
+    result: {
+      taskId: 'sub_completed_1',
+      status: 'completed',
+      content: 'done',
+      activityLog: '[state] completed',
+      durationMs: 1,
+      toolUseCount: 1,
+    },
+    ...overrides,
+  })
+
+  it('clears the deadline and resets the breaker when a subagent result lands', () => {
+    const service = new AgentService()
+    service.startBackgroundTaskResultListener()
+    registerParentSubagentDeadline({
+      toolCallId: 'subagent-call-completed',
+      runKey: 'run-1',
+      conversationId: 'conv-subagent-completed',
+      onExpire: () => undefined,
+    })
+    recordParentSubagentTimeout('conv-subagent-completed')
+
+    try {
+      backgroundTaskCompletionBus.pushCompleted({
+        kind: 'subagent',
+        taskId: 'sub_completed_1',
+        conversationId: 'conv-subagent-completed',
+        record: makeCompletedSubagentCompletionRecord(),
+      })
+
+      expect(hasParentSubagentDeadline('subagent-call-completed')).toBe(false)
+      expect(
+        getParentSubagentBreakerState('conv-subagent-completed'),
+      ).toMatchObject({ consecutiveTimeouts: 0, blocked: false })
+    } finally {
+      service.stopBackgroundTaskResultListener()
+    }
+  })
+
+  it('discards the child racing abort completion after a timeout settlement', () => {
+    const service = new AgentService()
+    service.startBackgroundTaskResultListener()
+    // The expiry handler marked the call as settled-timeout; the child's own
+    // (abort) completion then races in through the same bus.
+    markParentSubagentTimeoutSettled('subagent-call-race')
+
+    try {
+      backgroundTaskCompletionBus.pushCompleted({
+        kind: 'subagent',
+        taskId: 'sub_aborted_race',
+        conversationId: 'conv-subagent-race',
+        record: makeCompletedSubagentCompletionRecord({
+          taskId: 'sub_aborted_race',
+          conversationId: 'conv-subagent-race',
+          source: {
+            type: 'llm_tool_call',
+            toolCallId: 'subagent-call-race',
+            assistantMessageId: 'assistant-1',
+          },
+          status: 'aborted',
+          result: {
+            taskId: 'sub_aborted_race',
+            status: 'aborted',
+            content: 'aborted by parent',
+            activityLog: '[state] aborted',
+            durationMs: 1,
+            toolUseCount: 0,
+          },
+        }),
+      })
+
+      // No double result injection: the conversation has no subagent_result
+      // message for the racing completion, and the marker is consumed.
+      const resultMessages = service
+        .getState('conv-subagent-race')
+        .messages.filter((message) => message.role === 'subagent_result')
+      expect(resultMessages).toHaveLength(0)
+      expect(isParentSubagentToolCallTimedOut('subagent-call-race')).toBe(false)
+    } finally {
+      service.stopBackgroundTaskResultListener()
+    }
+  })
+
+  it('approveToolCall registers a deadline for an approval-paused delegate_subagent call', async () => {
+    const service = new AgentService()
+    const userMessage = makeUserMessage('u1', 'dispatch once')
+    const callTool = jest.fn().mockResolvedValue({
+      status: ToolCallResponseStatus.Success,
+      data: {
+        type: 'text',
+        text: 'accepted',
+      },
+    })
+
+    const runPromise = service.run({
+      conversationId: 'conv-approve-deadline',
+      loopConfig: {
+        enableTools: true,
+        maxAutoIterations: 100,
+        includeBuiltinTools: true,
+      },
+      input: {
+        conversationId: 'conv-approve-deadline',
+        messages: [userMessage],
+        model: { id: 'model-1' },
+        mcpManager: { callTool },
+      } as unknown as AgentRuntimeRunInput,
+    })
+    const firstRuntime = runtimeInstances[0]
+    firstRuntime.emitSnapshot(
+      makeAssistantToolMessages({
+        userMessage,
+        responseStatus: ToolCallResponseStatus.PendingApproval,
+        toolName: 'yolo_local__delegate_subagent',
+      }),
+    )
+
+    const approvePromise = service.approveToolCall({
+      conversationId: 'conv-approve-deadline',
+      toolCallId: 'call-1',
+    })
+
+    await waitForRuntimeCount(2)
+    // The approval-path registration kicked in before the tool executed.
+    expect(hasParentSubagentDeadline('call-1')).toBe(true)
+
+    runtimeInstances[1].resolveRun()
+    expect(await approvePromise).toBe(true)
+    firstRuntime.resolveRun()
+    await runPromise
   })
 })
 

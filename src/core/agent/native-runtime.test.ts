@@ -7,9 +7,27 @@ jest.mock('../ai/single-turn', () => ({
 }))
 
 import {
+  type BackgroundTaskCompletedEvent,
+  backgroundTaskCompletionBus,
+} from './background-task/completion-bus'
+import {
   ASSISTANT_CONTINUATION_PROMPT,
   NativeAgentRuntime,
 } from './native-runtime'
+import {
+  getParentSubagentBreakerState,
+  hasParentSubagentDeadline,
+  isParentSubagentToolCallTimedOut,
+  markParentSubagentTimeoutSettled,
+  registerParentSubagentDeadline,
+  resetParentSubagentBreakers,
+  resetParentSubagentDeadlines,
+  resetParentSubagentTimeoutConfig,
+  setParentSubagentTimeoutConfig,
+} from './subagent/pending-timeout-registry'
+import { subagentTaskRegistry } from './subagent/task-registry'
+import type { SubagentTaskRecord } from './subagent/types'
+import type { AgentToolGateway } from './tool-gateway'
 import { shouldProceedToToolPhase } from './tool-phase'
 import type { AgentRuntimeLoopConfig, AgentRuntimeRunInput } from './types'
 
@@ -241,5 +259,269 @@ describe('NativeAgentRuntime assistant continuation', () => {
         metadata: expect.objectContaining({ generationState: 'completed' }),
       }),
     ])
+  })
+})
+
+describe('NativeAgentRuntime parent subagent deadline wiring', () => {
+  const DELEGATE_TOOL_CALL_ID = 'subagent-tool-1'
+  const CONVERSATION_ID = 'conversation-1'
+
+  const makeRunningDelegateToolMessage = (): ChatMessage => ({
+    role: 'tool',
+    id: 'tool-msg-delegate',
+    metadata: {},
+    toolCalls: [
+      {
+        request: {
+          id: DELEGATE_TOOL_CALL_ID,
+          name: 'yolo_local__delegate_subagent',
+          arguments: {
+            kind: 'complete',
+            value: {
+              description: 'QA task',
+              prompt: 'Return the QA result.',
+            },
+          },
+        },
+        response: { status: ToolCallResponseStatus.Running },
+      },
+    ],
+  })
+
+  // White-box seam matching the file's existing seeded-message tests: the loop
+  // worker is a real `Worker` (cannot run under jest), so the deadline
+  // registration + expiry handlers are exercised directly.
+  const withDeadlineInternals = (runtime: NativeAgentRuntime) =>
+    runtime as unknown as {
+      registerSubagentDeadlines: (input: {
+        toolMessage: ChatMessage
+        runKey: string
+        conversationId: string
+        toolGateway: AgentToolGateway
+      }) => Promise<void>
+      reassertExpiredSubagentDeadlines: (toolMessage: ChatMessage) => void
+      cleanupSettledSubagentDeadlines: (toolMessage: ChatMessage) => void
+    }
+
+  beforeEach(() => {
+    setParentSubagentTimeoutConfig({ timeoutMs: 1000 })
+  })
+
+  afterEach(() => {
+    resetParentSubagentDeadlines()
+    resetParentSubagentBreakers()
+    resetParentSubagentTimeoutConfig()
+    jest.useRealTimers()
+  })
+
+  it('registers a deadline for a Running delegate_subagent call and fires the full expiry chain', async () => {
+    jest.useFakeTimers()
+    const runtime = new NativeAgentRuntime({
+      enableTools: true,
+      includeBuiltinTools: false,
+      maxAutoIterations: 2,
+    })
+    ;(runtime as unknown as { messages: ChatMessage[] }).messages = [
+      {
+        role: 'assistant',
+        id: 'assistant-1',
+        content: '',
+        metadata: { generationState: 'completed' },
+        toolCallRequests: [],
+      },
+      makeRunningDelegateToolMessage(),
+    ]
+    const abortToolCall = jest.fn()
+    const toolGateway = { abortToolCall } as unknown as AgentToolGateway
+
+    // A child task is admitted for the parent tool call, so the expiry must
+    // abort it through the task registry.
+    const childController = new AbortController()
+    const childRecord: SubagentTaskRecord = {
+      taskId: 'sub-child-1',
+      conversationId: CONVERSATION_ID,
+      source: {
+        type: 'llm_tool_call',
+        toolCallId: DELEGATE_TOOL_CALL_ID,
+        assistantMessageId: 'assistant-1',
+      },
+      title: 'QA task',
+      status: 'running',
+      createdAt: 1,
+      prompt: 'Return the QA result.',
+      abortController: childController,
+    }
+    subagentTaskRegistry.register(childRecord)
+
+    const completedEvents: BackgroundTaskCompletedEvent[] = []
+    const unsubscribe = backgroundTaskCompletionBus.subscribeCompleted(
+      (event) => {
+        completedEvents.push(event)
+      },
+    )
+
+    try {
+      await withDeadlineInternals(runtime).registerSubagentDeadlines({
+        toolMessage: makeRunningDelegateToolMessage(),
+        runKey: 'run-1',
+        conversationId: CONVERSATION_ID,
+        toolGateway,
+      })
+
+      expect(hasParentSubagentDeadline(DELEGATE_TOOL_CALL_ID)).toBe(true)
+
+      // No heartbeat: past the 1000ms deadline the expiry chain fires.
+      await jest.advanceTimersByTimeAsync(1001)
+
+      // The child was aborted and the in-flight executor settled.
+      expect(childController.signal.aborted).toBe(true)
+      expect(abortToolCall).toHaveBeenCalledWith(DELEGATE_TOOL_CALL_ID)
+
+      // The settlement marker survives (the service clears the deadline entry
+      // when the synthetic result is consumed).
+      expect(hasParentSubagentDeadline(DELEGATE_TOOL_CALL_ID)).toBe(true)
+      expect(isParentSubagentToolCallTimedOut(DELEGATE_TOOL_CALL_ID)).toBe(true)
+
+      // The tool call was settled `error` with the timeout marker (master has
+      // no `timeout` response status).
+      const toolMessage = runtime
+        .getMessages()
+        .find((message) => message.role === 'tool')
+      expect(toolMessage?.toolCalls?.[0]?.response).toEqual({
+        status: ToolCallResponseStatus.Error,
+        error: 'subagent_timeout',
+      })
+
+      // The synthetic timeout record was pushed on the completion bus.
+      expect(completedEvents).toEqual([
+        expect.objectContaining({
+          kind: 'subagent',
+          conversationId: CONVERSATION_ID,
+          record: expect.objectContaining({
+            status: 'aborted',
+            error: 'subagent_timeout',
+            source: {
+              type: 'llm_tool_call',
+              toolCallId: DELEGATE_TOOL_CALL_ID,
+              assistantMessageId: 'assistant-1',
+            },
+            result: expect.objectContaining({
+              status: 'aborted',
+              content: expect.stringContaining(
+                'did not respond before its deadline',
+              ),
+            }),
+          }),
+        }),
+      ])
+
+      // The per-conversation breaker was incremented.
+      expect(getParentSubagentBreakerState(CONVERSATION_ID)).toMatchObject({
+        consecutiveTimeouts: 1,
+        blocked: false,
+      })
+    } finally {
+      unsubscribe()
+    }
+  })
+
+  it('reasserts the error settlement on expired calls and drops the marker when no child task exists', () => {
+    const runtime = new NativeAgentRuntime({
+      enableTools: true,
+      includeBuiltinTools: false,
+      maxAutoIterations: 2,
+    })
+    const settledToolMessage: ChatMessage = {
+      role: 'tool',
+      id: 'tool-msg-settled',
+      metadata: {},
+      toolCalls: [
+        {
+          request: {
+            id: 'settled-call',
+            name: 'yolo_local__delegate_subagent',
+            arguments: undefined,
+          },
+          response: {
+            status: ToolCallResponseStatus.Success,
+            data: { type: 'text', text: 'accepted' },
+          },
+        },
+      ],
+    }
+    ;(runtime as unknown as { messages: ChatMessage[] }).messages = [
+      settledToolMessage,
+    ]
+
+    // A deadline expired mid-execution; the gateway overwrote the response
+    // with a late Success. The settled marker drives the re-assert.
+    markParentSubagentTimeoutSettled('settled-call')
+
+    withDeadlineInternals(runtime).reassertExpiredSubagentDeadlines(
+      settledToolMessage,
+    )
+
+    const located = runtime.findToolCall('settled-call')
+    expect(located?.toolCall.response).toEqual({
+      status: ToolCallResponseStatus.Error,
+      error: 'subagent_timeout',
+    })
+    // No child task was admitted: the marker is dropped immediately.
+    expect(isParentSubagentToolCallTimedOut('settled-call')).toBe(false)
+  })
+
+  it('clears deadlines for dispatched-failed calls but keeps Success-settled ones', () => {
+    const runtime = new NativeAgentRuntime({
+      enableTools: true,
+      includeBuiltinTools: false,
+      maxAutoIterations: 2,
+    })
+    const failedToolMessage: ChatMessage = {
+      role: 'tool',
+      id: 'tool-msg-failed',
+      metadata: {},
+      toolCalls: [
+        {
+          request: {
+            id: 'failed-call',
+            name: 'yolo_local__delegate_subagent',
+            arguments: undefined,
+          },
+          response: { status: ToolCallResponseStatus.Error, error: 'boom' },
+        },
+        {
+          request: {
+            id: 'kept-call',
+            name: 'yolo_local__delegate_subagent',
+            arguments: undefined,
+          },
+          response: {
+            status: ToolCallResponseStatus.Success,
+            data: { type: 'text', text: 'accepted' },
+          },
+        },
+      ],
+    }
+    registerParentSubagentDeadline({
+      toolCallId: 'failed-call',
+      runKey: 'run-1',
+      conversationId: CONVERSATION_ID,
+      onExpire: () => undefined,
+    })
+    registerParentSubagentDeadline({
+      toolCallId: 'kept-call',
+      runKey: 'run-1',
+      conversationId: CONVERSATION_ID,
+      onExpire: () => undefined,
+    })
+
+    withDeadlineInternals(runtime).cleanupSettledSubagentDeadlines(
+      failedToolMessage,
+    )
+
+    // The failed dispatch's deadline is gone (no child will ever heartbeat);
+    // the accepted call's deadline survives for the background child.
+    expect(hasParentSubagentDeadline('failed-call')).toBe(false)
+    expect(hasParentSubagentDeadline('kept-call')).toBe(true)
   })
 })
