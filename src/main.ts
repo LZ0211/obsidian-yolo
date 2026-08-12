@@ -2291,8 +2291,9 @@ export default class YoloPlugin extends Plugin {
       previousWebRuntimeEnabled = nextWebRuntimeEnabled
       previousWebRuntimeBinding = nextWebRuntimeBinding
     })
-    // Scheduled Tasks: enabled 翻转 → 单飞 reconcile 启停（desktop + enabled 门控在
-    // reconcileScheduledTasks 内；executor 只读 settings getter，脚本/审批类设置变更无需重启）。
+    // Scheduled Tasks: enabled 翻转 → 单飞 reconcile 启停（desktop 门控在
+    // reconcileScheduledTasks 内；构建不依赖 enabled——disabled 时 UI 仍可管理任务，
+    // 仅调度循环随 enabled 启停；executor 只读 settings getter，脚本/审批类设置变更无需重启）。
     let previousScheduledTasksEnabled =
       this.settings.scheduledTasks.enabled === true
     this.addSettingsChangeListener((settings) => {
@@ -2302,7 +2303,7 @@ export default class YoloPlugin extends Plugin {
       }
       previousScheduledTasksEnabled = nextScheduledTasksEnabled
     })
-    // 启动 reconcile：初始 enabled 状态在方法内按当前 settings 评估（未开启时为无操作）。
+    // 启动 reconcile：无条件构建服务（desktop + vault 路径门控），enabled 决定是否启动调度循环。
     this.reconcileScheduledTasks()
     await loadLocale(this.resolveObsidianLanguage())
     this._tCache = undefined
@@ -4976,12 +4977,21 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
   }
 
   /**
-   * Scheduled Tasks 懒初始化 getter（desktop + enabled 门控）。未开启或移动端返回
-   * null——store/executor 的 node 依赖只在 desktop 分支动态 import，移动端不加载。
-   * 只构建一次；开关翻转复用同一实例（initialize/cleanup 幂等），onunload 才销毁。
+   * Scheduled Tasks 公开访问点（backup 契约形态：同步返回字段）。UI 与（后续）agent 工具经
+   * 此访问服务；实例由 reconcile 在启动时无条件构建（desktop + vault 路径门控），
+   * disabled 状态下同样可读/管理任务数据——调度循环是否运行由 enabled 单独控制。
    */
-  private async getScheduledTasksService(): Promise<ScheduledTasksService | null> {
-    if (!Platform.isDesktop || !this.settings.scheduledTasks.enabled) {
+  getScheduledTasksService(): ScheduledTasksService | null {
+    return this.scheduledTasksService
+  }
+
+  /**
+   * Scheduled Tasks 懒构建（desktop 门控，不依赖 enabled）。store/executor 的 node 依赖
+   * 只在 desktop 分支动态 import，移动端不加载。只构建一次；开关翻转复用同一实例
+   * （initialize/cleanup 幂等），onunload 才销毁。
+   */
+  private async buildScheduledTasksService(): Promise<ScheduledTasksService | null> {
+    if (!Platform.isDesktop) {
       return null
     }
     if (this.scheduledTasksService) {
@@ -5056,21 +5066,17 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
       if (this.isUnloaded) {
         return
       }
-      if (!this.settings.scheduledTasks.enabled) {
-        // 停：cleanup 等待在飞任务落定后停止轮询（shutdown 仅用于 onunload）。
-        // 保留实例与 store，开关再翻转时 initialize 复用（SQLite 数据不重开）。
-        this.scheduledTasksService?.cleanup()
-        return
-      }
-      const service = await this.getScheduledTasksService()
+      // 构建与启停解耦：disabled 也构建服务（数据访问可用），仅调度循环由 enabled 控制。
+      const service = await this.buildScheduledTasksService()
       if (!service || this.isUnloaded) {
         return
       }
-      // 构建期间开关被翻转：不启动，等再入 reconcile 按最新 settings 收敛。
-      if (!this.settings.scheduledTasks.enabled) {
-        return
+      if (this.settings.scheduledTasks.enabled) {
+        await service.initialize()
+      } else {
+        // 停：cleanup 等待在飞任务落定后停止轮询（shutdown 仅用于 onunload）。
+        service.cleanup()
       }
-      await service.initialize()
     } catch (error) {
       console.error('[YOLO] Failed to reconcile Scheduled Tasks.', error)
     }
