@@ -1,16 +1,29 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 
 import { useLanguage } from '../../../contexts/language-context'
+import { getSubagentSessionService } from '../../../core/agent/subagent/session-service'
 import { useLiveTaskStream } from '../../../hooks/useLiveTaskStream'
-import { useSubagentTask } from '../../../hooks/useSubagentTask'
-import type { ChatSubagentResultMessage } from '../../../types/chat'
+import { useSubagentSessionSnapshot } from '../../../hooks/useSubagentSessionSnapshot'
+import {
+  useSubagentLiveTranscript,
+  useSubagentTask,
+} from '../../../hooks/useSubagentTask'
+import type {
+  ChatMessage,
+  ChatSubagentResultMessage,
+} from '../../../types/chat'
 import {
   type ToolCallResponse,
   ToolCallResponseStatus,
 } from '../../../types/tool-call.types'
 
 import {
+  SubagentApprovalBlock,
+  type SubagentPendingApproval,
+} from './SubagentApprovalBlock'
+import {
   type SubagentCardArgs,
+  buildSubagentCardSessionProps,
   buildSubagentCompletionSummary,
   collectSubagentActivityText,
   getLatestActivityLine,
@@ -26,6 +39,10 @@ import {
 type SubagentCardProps = {
   toolCallId: string
   response: ToolCallResponse
+  /**
+   * 父对话 id。转发给卡片内联审批块，让审批点击能经
+   * `AgentService.approveToolCall` 以正确的 scope 路由。
+   */
   conversationId: string
   args?: SubagentCardArgs
   subagentResult?: ChatSubagentResultMessage
@@ -51,10 +68,29 @@ function toDisplayStatus(
   }
 }
 
+export function collectPendingSubagentApprovals(
+  transcript: readonly ChatMessage[] | undefined,
+): SubagentPendingApproval[] {
+  const result: SubagentPendingApproval[] = []
+  for (const message of transcript ?? []) {
+    if (message.role !== 'tool') continue
+    for (const toolCall of message.toolCalls) {
+      if (toolCall.response.status !== ToolCallResponseStatus.PendingApproval) {
+        continue
+      }
+      result.push({
+        toolCallId: toolCall.request.id,
+        request: toolCall.request,
+      })
+    }
+  }
+  return result
+}
+
 export function SubagentCard({
   toolCallId,
   response,
-  conversationId: _conversationId,
+  conversationId,
   args,
   subagentResult,
   initialStdout,
@@ -80,6 +116,20 @@ export function SubagentCard({
   const modelName = subagentResult?.modelName || accepted.modelName
   const taskId = subagentResult?.taskId || accepted.taskId
   const liveTask = useSubagentTask(taskId)
+  // Task 6 把注册表改为 summary 形态后，liveTranscript 存于 registry 侧 map
+  // 旁路（C1 恢复）：运行中的实时消息仍按每次运行时快照推送。
+  const liveTranscript = useSubagentLiveTranscript(taskId)
+
+  const sessionId = liveTask?.sessionId
+  const sessionSnapshot = useSubagentSessionSnapshot(
+    sessionId,
+    // status/runSequence 变化时重查 snapshot（会话服务无订阅机制）。
+    `${liveTask?.status ?? ''}:${liveTask?.runSequence ?? ''}`,
+  )
+  const sessionProps = useMemo(
+    () => buildSubagentCardSessionProps(sessionSnapshot, liveTask, t),
+    [sessionSnapshot, liveTask, t],
+  )
 
   const fallbackError =
     response.status === ToolCallResponseStatus.Error
@@ -103,27 +153,98 @@ export function SubagentCard({
     [activityText],
   )
 
-  // The task registry stores only summaries (no live transcript) — the live
-  // mirroring moved to the durable session transcript. The Task 10 card
-  // rework wires the pending-approval block to the session snapshot instead.
+  const liveAssistantSummary = useMemo(() => {
+    if (!liveTranscript) return undefined
+    for (let index = liveTranscript.length - 1; index >= 0; index -= 1) {
+      const message = liveTranscript[index]
+      if (message.role === 'assistant' && message.content.trim().length > 0) {
+        return message.content.trim().split('\n').at(-1)
+      }
+    }
+    return undefined
+  }, [liveTranscript])
+
   const activitySubtitle = subagentResult
     ? buildSubagentCompletionSummary({ subagentResult, t })
-    : getLatestActivityLine(activityLines) ||
+    : liveAssistantSummary ||
+      getLatestActivityLine(activityLines) ||
       (isRunning
         ? t('chat.subagent.planningNextMoves', 'Planning next moves')
         : t('chat.subagent.noActivity', 'No activity yet.'))
 
   const prompt = subagentResult?.prompt ?? liveTask?.prompt
 
+  // Surface pending tool approvals inside the card. The subagent runtime
+  // pauses at PendingApproval (loop-worker emits done; runChildAgent waits
+  // on a gate), and `liveTranscript` mirrors the runtime messages — so the
+  // card can render approval buttons next to the running thinking output.
+  const pendingApprovals = useMemo(
+    () => collectPendingSubagentApprovals(liveTranscript),
+    [liveTranscript],
+  )
+  const isAwaitingApproval = pendingApprovals.length > 0
+  const subtitle = isAwaitingApproval
+    ? pendingApprovals.length > 1
+      ? t(
+          'chat.subagent.approval.headingMulti',
+          'Awaiting approval · {count}',
+        ).replace('{count}', String(pendingApprovals.length))
+      : t('chat.subagent.approval.heading', 'Awaiting approval')
+    : activitySubtitle
+
+  const handleRecover = useCallback(() => {
+    if (!sessionId || !sessionSnapshot) return
+    const service = getSubagentSessionService()
+    if (!service) return
+    void service.recover({
+      sessionId,
+      expectedSessionRevision: sessionSnapshot.session.revision,
+      action: 'mark_interrupted_run_aborted',
+      requestId: `ui:recover:${crypto.randomUUID()}`,
+    })
+  }, [sessionId, sessionSnapshot])
+
+  const handleQueueResend = useCallback(
+    (messageId: string) => {
+      if (!sessionId || !sessionSnapshot) return
+      const service = getSubagentSessionService()
+      if (!service) return
+      void service.queueRecovery({
+        sessionId,
+        messageId,
+        expectedSessionRevision: sessionSnapshot.session.revision,
+        action: 'resend',
+        requestId: `ui:resend:${crypto.randomUUID()}`,
+      })
+    },
+    [sessionId, sessionSnapshot],
+  )
+
+  const handleQueueDrop = useCallback(
+    (messageId: string) => {
+      if (!sessionId || !sessionSnapshot) return
+      const service = getSubagentSessionService()
+      if (!service) return
+      void service.queueRecovery({
+        sessionId,
+        messageId,
+        expectedSessionRevision: sessionSnapshot.session.revision,
+        action: 'drop',
+        requestId: `ui:drop:${crypto.randomUUID()}`,
+      })
+    },
+    [sessionId, sessionSnapshot],
+  )
+
   return (
     <SubagentCardView
       title={title}
       modelName={modelName}
-      subtitle={activitySubtitle}
+      subtitle={subtitle}
       status={toDisplayStatus(effectiveStatus)}
       prompt={prompt}
       taskId={taskId}
-      transcript={subagentResult?.transcript}
+      transcript={subagentResult?.transcript ?? liveTranscript}
       activityLines={activityLines}
       detailStats={
         subagentResult
@@ -134,7 +255,22 @@ export function SubagentCard({
             }
           : undefined
       }
+      sessionStatus={sessionProps.sessionStatus}
+      queuedCount={sessionProps.queuedCount}
+      queuedMessages={sessionProps.queuedMessages}
+      needsResume={sessionProps.needsResume}
+      onRecover={handleRecover}
+      onQueueResend={handleQueueResend}
+      onQueueDrop={handleQueueDrop}
       onAbort={isRunning ? onAbort : undefined}
+      footer={
+        isAwaitingApproval ? (
+          <SubagentApprovalBlock
+            conversationId={conversationId}
+            pendingApprovals={pendingApprovals}
+          />
+        ) : undefined
+      }
     />
   )
 }

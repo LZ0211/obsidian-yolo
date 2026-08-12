@@ -95,6 +95,11 @@ export type SubagentSessionSnapshot = {
   session: Readonly<SubagentSession>
   currentRun?: Readonly<SubagentRun>
   recentRuns: readonly Readonly<SubagentRun>[]
+  /**
+   * 队列意图（Task 10 UI）：pending/recovery_required 供卡片 queued 计数与
+   * 详情弹窗 resend/drop 决断；读路径透出，写路径不变。
+   */
+  intents?: readonly SubagentMessageIntent[]
   transcriptPage?: readonly ChatMessage[]
   compaction?: ChatConversationCompactionState
   nextCursor?: string

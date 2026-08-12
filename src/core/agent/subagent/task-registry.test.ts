@@ -112,7 +112,12 @@ describe('SubagentTaskRegistry', () => {
 
     expect(registry.get(record.taskId)).not.toHaveProperty('liveTranscript')
     expect(registry.get(record.taskId)).not.toHaveProperty('abortController')
-    expect(subscriber).toHaveBeenCalledTimes(1)
+    // Task 10 C1：liveTranscript 走侧 map 旁路并通知订阅者（审批块实时重渲染）。
+    expect(registry.getLiveTranscript(record.taskId)).toHaveLength(1)
+    expect(registry.getLiveTranscript(record.taskId)?.[0]?.id).toBe(
+      'live-update',
+    )
+    expect(subscriber).toHaveBeenCalledTimes(2)
   })
 
   it('aborts the run owner through the side map without an indexed controller', () => {
@@ -267,7 +272,7 @@ describe('SubagentTaskRegistry', () => {
     expect(list).not.toHaveBeenCalled()
   })
 
-  it('skips emissions when an update carries no summary change', () => {
+  it('emits only for actual summary or live-transcript changes', () => {
     const registry = new SubagentTaskRegistry()
     const record = makeRecord('noop_update', { status: 'running' })
     const subscriber = jest.fn()
@@ -275,11 +280,23 @@ describe('SubagentTaskRegistry', () => {
     registry.register(record)
     subscriber.mockClear()
 
+    // 等值 summary patch 不触发 emit。
+    registry.update(record.taskId, { activityLog: record.activityLog })
+    expect(subscriber).not.toHaveBeenCalled()
+
+    // liveTranscript patch 是真实变更（Task 10 侧 map 旁路）→ emit。
     registry.update(record.taskId, {
       liveTranscript: [{ role: 'assistant', id: 'x', content: 'streaming' }],
     })
+    expect(subscriber).toHaveBeenCalledTimes(1)
 
-    expect(subscriber).not.toHaveBeenCalled()
+    // 同一数组引用重复推送不重复 emit。
+    const transcript = [
+      { role: 'assistant' as const, id: 'x', content: 'streaming' },
+    ] as ChatMessage[]
+    registry.update(record.taskId, { liveTranscript: transcript })
+    registry.update(record.taskId, { liveTranscript: transcript })
+    expect(subscriber).toHaveBeenCalledTimes(2)
   })
 
   it('isolates subscriber failures from later subscribers and compaction', async () => {

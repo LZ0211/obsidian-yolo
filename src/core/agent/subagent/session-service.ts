@@ -893,6 +893,7 @@ export class SubagentSessionService {
       session: { ...stored.session },
       currentRun: currentRun ? { ...currentRun } : undefined,
       recentRuns: stored.runs.map((run) => ({ ...run })),
+      intents: stored.intents.map((intent) => ({ ...intent })),
       ...(stored.latestTranscript !== undefined
         ? { transcriptPage: stored.latestTranscript }
         : {}),

@@ -2431,6 +2431,20 @@ export type TranslationKeys = {
         rejectAll?: string
         viewDetails?: string
       }
+      sessionStatus?: {
+        idle?: string
+        running?: string
+        closing?: string
+        needsResume?: string
+        orphaned?: string
+        archived?: string
+      }
+      queuedCount?: string
+      queuedMessagesTitle?: string
+      recoverSession?: string
+      recoverSessionHint?: string
+      queueResend?: string
+      queueDrop?: string
     }
     // conversation settings popover
     conversationSettings?: {

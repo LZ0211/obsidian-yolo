@@ -8,7 +8,12 @@ import { groupAssistantAndToolMessages } from '../../../utils/chat/message-group
 import { formatTokenCount } from '../../../utils/llm/formatTokenCount'
 import AssistantToolMessageGroupItem from '../AssistantToolMessageGroupItem'
 
-import { formatDuration, formatSubagentActivityLine } from './subagentCardUtils'
+import {
+  type SubagentQueuedMessage,
+  formatDuration,
+  formatQueuedIntentLine,
+  formatSubagentActivityLine,
+} from './subagentCardUtils'
 import type {
   SubagentDetailStats,
   SubagentDisplayStatus,
@@ -25,6 +30,13 @@ type SubagentDetailModalProps = {
   activityLines: string[]
   detailStats?: SubagentDetailStats
   isTranscriptLoading?: boolean
+  /** 排队意图明细（pending / recovery_required）。 */
+  queuedMessages?: SubagentQueuedMessage[]
+  /** 会话需要手动恢复（needs_resume）时显示"恢复"按钮。 */
+  needsResume?: boolean
+  onRecover?: () => void
+  onQueueResend?: (messageId: string) => void
+  onQueueDrop?: (messageId: string) => void
   onClose: () => void
 }
 
@@ -59,6 +71,11 @@ export function SubagentDetailModal({
   activityLines,
   detailStats,
   isTranscriptLoading = false,
+  queuedMessages,
+  needsResume = false,
+  onRecover,
+  onQueueResend,
+  onQueueDrop,
   onClose,
 }: SubagentDetailModalProps) {
   const { t } = useLanguage()
@@ -154,6 +171,63 @@ export function SubagentDetailModal({
         <div className="yolo-subagent-detail-body">
           {prompt && (
             <div className="yolo-subagent-detail-prompt">{prompt}</div>
+          )}
+
+          {needsResume && onRecover && (
+            <div className="yolo-subagent-detail-recover">
+              <span className="yolo-subagent-detail-recover-text">
+                {t(
+                  'chat.subagent.recoverSessionHint',
+                  'The session was interrupted and needs recovery before it can continue.',
+                )}
+              </span>
+              <button
+                type="button"
+                className="yolo-subagent-detail-recover-btn"
+                onClick={onRecover}
+              >
+                {t('chat.subagent.recoverSession', 'Recover session')}
+              </button>
+            </div>
+          )}
+
+          {queuedMessages && queuedMessages.length > 0 && (
+            <div className="yolo-subagent-detail-queued">
+              <div className="yolo-subagent-detail-queued-title">
+                {t('chat.subagent.queuedMessagesTitle', 'Queued messages')}
+              </div>
+              {queuedMessages.map((message) => (
+                <div
+                  key={message.messageId}
+                  className="yolo-subagent-detail-queued-item"
+                >
+                  <span
+                    className="yolo-subagent-detail-queued-text"
+                    title={message.text}
+                  >
+                    {formatQueuedIntentLine(message)}
+                  </span>
+                  {message.state === 'recovery_required' && (
+                    <span className="yolo-subagent-detail-queued-actions">
+                      <button
+                        type="button"
+                        className="yolo-subagent-detail-queued-btn yolo-subagent-detail-queued-btn--resend"
+                        onClick={() => onQueueResend?.(message.messageId)}
+                      >
+                        {t('chat.subagent.queueResend', 'Resend')}
+                      </button>
+                      <button
+                        type="button"
+                        className="yolo-subagent-detail-queued-btn yolo-subagent-detail-queued-btn--drop"
+                        onClick={() => onQueueDrop?.(message.messageId)}
+                      >
+                        {t('chat.subagent.queueDrop', 'Drop')}
+                      </button>
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
           )}
 
           {isTranscriptLoading ? (

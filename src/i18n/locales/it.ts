@@ -2613,6 +2613,21 @@ export const it: DeepPartial<TranslationKeys> = {
         rejectAll: 'Rifiuta tutto',
         viewDetails: 'Vedi parametri',
       },
+      sessionStatus: {
+        idle: 'Inattivo',
+        running: 'In esecuzione',
+        closing: 'In chiusura',
+        needsResume: 'Ripresa necessaria',
+        orphaned: 'Orfana',
+        archived: 'Archiviata',
+      },
+      queuedCount: '{count} in coda',
+      queuedMessagesTitle: 'Messaggi in coda',
+      recoverSession: 'Riprendi sessione',
+      recoverSessionHint:
+        'La sessione è stata interrotta e deve essere ripresa prima di continuare.',
+      queueResend: 'Reinvia',
+      queueDrop: 'Elimina',
     },
     conversationSettings: {
       openAria: 'Impostazioni conversazione',

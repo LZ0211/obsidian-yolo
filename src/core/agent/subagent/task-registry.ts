@@ -1,10 +1,8 @@
+import type { ChatMessage } from '../../../types/chat'
 import { AGENT_SESSION_MODE } from '../../state/contracts'
 
 import { makeSubagentRunKey } from './session-types'
-import type {
-  SubagentTaskRecord,
-  SubagentTaskSummary,
-} from './types'
+import type { SubagentTaskRecord, SubagentTaskSummary } from './types'
 
 const DEFAULT_MAX_COMPLETED_RECORDS = 50
 
@@ -32,6 +30,14 @@ export class SubagentTaskRegistry {
    * `abort` can reach the runtime owner of a durable or legacy run.
    */
   private readonly abortControllers = new Map<string, AbortController>()
+  /**
+   * Live transcript 侧 map（Task 10 C1 恢复）：索引摘要刻意不携带
+   * liveTranscript（Task 6 的 summary 形态，避免大数组随每次摘要拷贝），
+   * 但运行中的实时消息仍经 `update(taskId, { liveTranscript })` 推送——存到
+   * 侧 map 供 SubagentCard 的审批块/实时摘要/详情弹窗读取，与 abortControllers
+   * 同一旁路模式。按 sessionId 键控（与索引记录一致）。
+   */
+  private readonly liveTranscripts = new Map<string, readonly ChatMessage[]>()
   private readonly compactedTaskIds = new Set<string>()
   private readonly scheduledCompactionTaskIds = new Set<string>()
   private readonly subscribers = new Set<SubagentTaskRegistrySubscriber>()
@@ -50,11 +56,7 @@ export class SubagentTaskRegistry {
     const runKey = record.runKey ?? makeSubagentRunKey(sessionId, runSequence)
     const mode = record.mode ?? AGENT_SESSION_MODE.EPHEMERAL
 
-    const {
-      liveTranscript: _liveTranscript,
-      abortController,
-      ...recordSummary
-    } = record
+    const { liveTranscript, abortController, ...recordSummary } = record
     const indexedRecord: SubagentTaskIndexRecord = {
       ...recordSummary,
       taskId: sessionId,
@@ -66,6 +68,9 @@ export class SubagentTaskRegistry {
 
     this.tasks.set(sessionId, indexedRecord)
     this.abortControllers.set(sessionId, abortController)
+    if (liveTranscript) {
+      this.liveTranscripts.set(sessionId, liveTranscript)
+    }
     this.compactedTaskIds.delete(sessionId)
     this.emit([sessionId])
     if (record.status !== 'running') {
@@ -79,29 +84,34 @@ export class SubagentTaskRegistry {
   ): void {
     const existing = this.tasks.get(taskId)
     if (!existing) return
-    const {
-      liveTranscript: _liveTranscript,
-      abortController,
-      ...summaryPatch
-    } = patch
+    const { liveTranscript, abortController, ...summaryPatch } = patch
     if (abortController) {
       this.abortControllers.set(taskId, abortController)
     }
     const summaryEntries = Object.entries(summaryPatch)
-    if (
-      summaryEntries.length === 0 ||
-      summaryEntries.every(([key, value]) =>
-        Object.is(existing[key as keyof SubagentTaskIndexRecord], value),
+    const summaryChanged =
+      summaryEntries.length > 0 &&
+      summaryEntries.some(
+        ([key, value]) =>
+          !Object.is(existing[key as keyof SubagentTaskIndexRecord], value),
       )
-    ) {
+    const liveChanged =
+      liveTranscript !== undefined &&
+      !Object.is(this.liveTranscripts.get(taskId), liveTranscript)
+    if (!summaryChanged && !liveChanged) {
       return
     }
-    const next: SubagentTaskIndexRecord = { ...existing, ...summaryPatch }
-    this.tasks.set(taskId, next)
-    this.emit([taskId])
-    if (next.status !== 'running') {
-      this.scheduleCompaction(taskId)
+    if (summaryChanged) {
+      const next: SubagentTaskIndexRecord = { ...existing, ...summaryPatch }
+      this.tasks.set(taskId, next)
+      if (next.status !== 'running') {
+        this.scheduleCompaction(taskId)
+      }
     }
+    if (liveChanged) {
+      this.liveTranscripts.set(taskId, liveTranscript)
+    }
+    this.emit([taskId])
   }
 
   compactCompleted(taskId: string): void {
@@ -119,6 +129,7 @@ export class SubagentTaskRegistry {
       ...existing,
       result: compactResult,
     })
+    this.liveTranscripts.delete(taskId)
     this.compactedTaskIds.add(taskId)
     const removedTaskIds = this.pruneCompletedRecords()
     this.emit([taskId, ...removedTaskIds])
@@ -126,6 +137,10 @@ export class SubagentTaskRegistry {
 
   get(taskId: string): SubagentTaskSummary | undefined {
     return this.tasks.get(taskId)
+  }
+
+  getLiveTranscript(taskId: string): readonly ChatMessage[] | undefined {
+    return this.liveTranscripts.get(taskId)
   }
 
   list(): SubagentTaskSummary[] {
@@ -212,8 +227,7 @@ export class SubagentTaskRegistry {
       .map((taskId) => this.tasks.get(taskId))
       .filter(
         (record): record is SubagentTaskIndexRecord =>
-          record !== undefined &&
-          record.status !== 'running',
+          record !== undefined && record.status !== 'running',
       )
       .sort(
         (a, b) =>
@@ -227,6 +241,7 @@ export class SubagentTaskRegistry {
       this.tasks.delete(taskId)
       this.compactedTaskIds.delete(taskId)
       this.abortControllers.delete(taskId)
+      this.liveTranscripts.delete(taskId)
       removedTaskIds.push(taskId)
     }
     return removedTaskIds
