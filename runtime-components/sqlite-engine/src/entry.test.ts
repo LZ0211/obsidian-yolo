@@ -33,7 +33,7 @@ class MemoryAdapter implements SqliteJsVaultAdapter {
     if (!bytes) {
       return Promise.reject(new Error(`file not found: ${path}`))
     }
-    return Promise.resolve(bytes.buffer.slice(0))
+    return Promise.resolve(bytes.buffer.slice(0) as ArrayBuffer)
   }
 
   writeBinary(path: string, data: ArrayBuffer): Promise<void> {

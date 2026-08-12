@@ -75,7 +75,13 @@ let sqlJsModulePromise: ReturnType<typeof initSqlJs> | null = null
 const getSqlJsModule = async (): Promise<ReturnType<typeof initSqlJs>> => {
   if (!sqlJsModulePromise) {
     sqlJsModulePromise = initSqlJs({
-      wasmBinary: base64ToBytes(SQLJS_WASM_BASE64),
+      wasmBinary: (() => {
+        const bytes = base64ToBytes(SQLJS_WASM_BASE64)
+        return bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength,
+        ) as ArrayBuffer
+      })(),
     })
   }
   return sqlJsModulePromise
@@ -152,7 +158,13 @@ export async function openSqliteJsRuntime(
     dirty = false
     try {
       const bytes = database.export()
-      await adapter.writeBinary(relativePath, bytes)
+      await adapter.writeBinary(
+        relativePath,
+        bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength,
+        ) as ArrayBuffer,
+      )
     } catch (error) {
       // Keep dirty so the next flush retries; data remains intact in memory.
       dirty = true
@@ -270,7 +282,15 @@ export async function openSqliteJsRuntime(
         const bytes = database.export()
         dirty = false
         flushChain = flushChain
-          .then(() => adapter.writeBinary(relativePath, bytes))
+          .then(() =>
+            adapter.writeBinary(
+              relativePath,
+              bytes.buffer.slice(
+                bytes.byteOffset,
+                bytes.byteOffset + bytes.byteLength,
+              ) as ArrayBuffer,
+            ),
+          )
           .catch((error) => {
             console.warn('[YOLO][sqlite-engine] Close flush failed', error)
           })
