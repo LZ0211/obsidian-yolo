@@ -2151,6 +2151,11 @@ export class AgentService {
     const citationRegistry = new CitationRegistry()
     const runContext: AgentRunContext = { citationRegistry }
     runEntry.lastRunContext = runContext
+    // The visible-history prefix belongs to the run's original input. Keep
+    // this anchor stable even when a queued user message becomes the source
+    // for subsequent assistant/tool messages within the same runtime.
+    const historyMergeAnchorMessageId =
+      input.sourceUserMessageId ?? input.messages.at(-1)?.id
 
     // Workspace-scoped file change tracking: changes made during this run are
     // collected (and git-diff enriched when a backend is available), bounded
@@ -2218,7 +2223,7 @@ export class AgentService {
       messages: [...input.messages],
       compaction: this.normalizeCompaction(input.compaction, input.messages),
       pendingCompactionAnchorMessageId: null,
-      anchorMessageId: input.sourceUserMessageId ?? input.messages.at(-1)?.id,
+      anchorMessageId: historyMergeAnchorMessageId,
       activity,
     }
     this.recomputeConversationState(conversationId)
@@ -2232,7 +2237,7 @@ export class AgentService {
       const mergedMessages = mergeVisibleMessages(
         previousRunState.messages,
         input.messages,
-        previousRunState.anchorMessageId,
+        historyMergeAnchorMessageId,
         snapshot.messages,
       )
       const nextRunState = {
