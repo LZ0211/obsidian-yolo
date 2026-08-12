@@ -141,6 +141,13 @@ export type TranslationKeys = {
       exportShort?: string
       moreActions?: string
       openHistory?: string
+      legend?: {
+        navigate?: string
+        open?: string
+        delete?: string
+        pin?: string
+        rename?: string
+      }
     }
     chat?: {
       exportSuccess?: string

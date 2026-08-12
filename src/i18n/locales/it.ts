@@ -153,6 +153,13 @@ export const it: DeepPartial<TranslationKeys> = {
       exportShort: 'Esporta',
       moreActions: 'Altre azioni',
       openHistory: 'Cronologia chat',
+      legend: {
+        navigate: 'Naviga',
+        open: 'Apri',
+        delete: 'Elimina',
+        pin: 'Fissa',
+        rename: 'Rinomina',
+      },
     },
     composer: {
       title: 'Sparkle',

@@ -136,6 +136,13 @@ export const en: TranslationKeys = {
       exportShort: 'Export',
       moreActions: 'More actions',
       openHistory: 'Chat history',
+      legend: {
+        navigate: 'Navigate',
+        open: 'Open',
+        delete: 'Delete',
+        pin: 'Pin',
+        rename: 'Rename',
+      },
     },
     composer: {
       title: 'Sparkle',
