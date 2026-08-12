@@ -31,6 +31,7 @@ import type {
   CliRuntimeSkill,
   CliSessionHydration,
   CliSessionRef,
+  CliSlashCommand,
   CliSubagentRef,
   CliSubagentTranscriptListener,
   CliTurnInput,
@@ -75,6 +76,20 @@ import {
   type TurnStartResponse,
   isCodexMcpServerStatusUnsupportedError,
 } from './protocol'
+
+const CODEX_SLASH_COMMANDS: readonly CliSlashCommand[] = [
+  { id: 'skills', label: '/skills', description: 'Manage and list skills', source: 'sdk' },
+  { id: 'compact', label: '/compact', description: 'Compact the current session', source: 'sdk' },
+  { id: 'model', label: '/model', description: 'Switch the active model', source: 'sdk' },
+  { id: 'clear', label: '/clear', description: 'Clear the current session', source: 'sdk' },
+  { id: 'help', label: '/help', description: 'Show in-session help', source: 'sdk' },
+  { id: 'undo', label: '/undo', description: 'Undo the last change', source: 'sdk' },
+  { id: 'redo', label: '/redo', description: 'Redo an undone change', source: 'sdk' },
+  { id: 'login', label: '/login', description: 'Manage login', source: 'sdk' },
+  { id: 'logout', label: '/logout', description: 'Remove stored credentials', source: 'sdk' },
+  { id: 'review', label: '/review', description: 'Review the working tree', source: 'sdk' },
+  { id: 'reset', label: '/reset', description: 'Reset the current session', source: 'sdk' },
+]
 
 type PendingServerRequest = {
   request: CodexServerRequest
@@ -272,6 +287,7 @@ export class CodexCliRuntime implements CliRuntime {
   private models: CliRuntimeConfiguration['models'] | null = null
   private modelId: string | null = null
   private reasoningEffort: string | null = null
+  private assistantKey = ''
   private cliChatMode: CliChatMode
   private yoloEnabled: boolean
   private disposed = false
@@ -382,12 +398,14 @@ export class CodexCliRuntime implements CliRuntime {
   async ensureReady(input: CliRuntimeReadyInput): Promise<void> {
     const previousHost = this.host
     const host = await this.getHost()
+    const assistantKey = JSON.stringify(input.assistant ?? null)
     if (
       this.activeSessionRef &&
       input.sessionRef?.nativeSessionId ===
         this.activeSessionRef.nativeSessionId &&
       !this.needsSessionRebind &&
-      previousHost === host
+      previousHost === host &&
+      assistantKey === this.assistantKey
     ) {
       return
     }
@@ -396,6 +414,9 @@ export class CodexCliRuntime implements CliRuntime {
       cwd: this.options.cwd,
       ...this.threadPermissionParams(),
       experimentalRawEvents: true,
+      ...(input.assistant?.systemPrompt
+        ? { developerInstructions: input.assistant.systemPrompt }
+        : {}),
     }
     const response = input.sessionRef
       ? await host.request<ThreadResumeResponse>('thread/resume', {
@@ -409,6 +430,7 @@ export class CodexCliRuntime implements CliRuntime {
     )
     this.modelId = response.model ?? null
     this.reasoningEffort = response.reasoningEffort ?? null
+    this.assistantKey = assistantKey
     this.needsSessionRebind = false
     this.emit({ type: 'session_bound', ref: this.activeSessionRef })
   }
@@ -441,6 +463,12 @@ export class CodexCliRuntime implements CliRuntime {
         .filter((skill) => skill.enabled)
         .map(({ name, description, path }) => ({ name, description, path })),
     )
+  }
+
+  async listSlashCommands(): Promise<readonly CliSlashCommand[]> {
+    // 基于 codex CLI 0.146 官方会话命令集（对齐 Claudian：命令目录按官方
+    // SDK/CLI 维护，后续可改为运行时 help 探测）。
+    return CODEX_SLASH_COMMANDS
   }
 
   /**
@@ -773,6 +801,7 @@ export class CodexCliRuntime implements CliRuntime {
     this.activeTurnId = null
     this.activeTurnStartedAt = null
     this.needsSessionRebind = true
+    this.assistantKey = ''
     this.models = null
     this.modelId = null
     this.reasoningEffort = null

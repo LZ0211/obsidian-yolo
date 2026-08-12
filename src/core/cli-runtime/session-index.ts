@@ -47,6 +47,8 @@ const cliTurnOverlaySchema = z.object({
 export const cliSessionIndexEntrySchema = z.object({
   runtimeId: cliRuntimeIdSchema,
   nativeSessionId: z.string().min(1),
+  /** User-facing label set from the session picker; falls back to the id. */
+  title: z.string().min(1).optional(),
   sessionPathHint: z.string().min(1).optional(),
   turnOverlays: z.array(cliTurnOverlaySchema).optional(),
   turnEditSummaryByUserMessageId: z
@@ -55,6 +57,9 @@ export const cliSessionIndexEntrySchema = z.object({
   modelId: z.string().nullable().optional(),
   reasoningEffort: z.string().nullable().optional(),
   lastCacheHitRate: z.number().min(0).max(1).optional(),
+  assistantId: z.string().optional(),
+  isPinned: z.boolean().optional(),
+  pinnedAt: z.number().optional(),
 })
 
 export type CliSessionIndexEntry = z.infer<typeof cliSessionIndexEntrySchema>

@@ -56,6 +56,34 @@ export type CliRuntimeSkill = {
 }
 
 /**
+ * 运行时斜杠命令条目（对齐 Claudian：命令目录按官方 SDK/CLI 探测，而非硬编码）。
+ * claude-code 经 vendored SDK `supportedCommands()`；codex 依官方 CLI 命令集。
+ */
+export type CliSlashCommand = Readonly<{
+  id: string
+  label?: string
+  description?: string
+  argumentHint?: string
+  source?: 'sdk' | 'user' | 'vault'
+}>
+
+export type CliSessionMetadata = {
+  ref: CliSessionRef
+  title: string
+  preview?: string
+  createdAt?: number
+  updatedAt: number
+  cwd?: string
+  model?: string
+}
+
+export type CliAssistantBinding = {
+  assistantId?: string
+  systemPrompt: string
+  enabledSkillNames: string[]
+}
+
+/**
  * Connection status for one MCP server, normalized across Claude Code
  * (live SDK query, read-write) and Codex (app-server snapshot, read-only).
  * `'unknown'` covers states neither adapter can confidently classify, e.g.
@@ -79,6 +107,8 @@ export type CliRuntimeMcpServerStatus = {
 
 export type CliRuntimeReadyInput = {
   sessionRef?: CliSessionRef
+  /** 会话级 persona/skills 绑定（Web/桌面组装层经 resolveCliAssistantBinding 解析）。 */
+  assistant?: CliAssistantBinding
 }
 
 export type CliReasoningEffortOption = {
@@ -123,6 +153,22 @@ export type CliSessionOverlay = Readonly<{
     Record<string, CliTurnConfiguration>
   >
   lastCacheHitRate?: number
+}>
+
+/**
+ * 结构化失效原因，镜像 chat-runtime 契约的 ChatRuntimeRunFailure（cli-runtime
+ * 层不依赖 chat-runtime 契约，保持镜像 + 结构兼容，adapter 直接透传）。
+ */
+export type CliRunFailureReason =
+  | 'process-exited'
+  | 'transport-closed'
+  | 'provider-session-missing'
+  | 'configuration-changed'
+  | 'cancelled'
+
+export type CliRunFailure = Readonly<{
+  reason: CliRunFailureReason
+  recoverable: boolean
 }>
 
 export type CliTurnInput = {
@@ -248,6 +294,11 @@ export type CliRuntime = {
 
   listModels?(): Promise<CliRuntimeModel[]>
   listSkills?(): Promise<CliRuntimeSkill[]>
+  /**
+   * 当前可用的斜杠命令目录（含 skills）。claude-code 就绪后经 SDK
+   * `supportedCommands()` 探测；codex 依官方 CLI 命令集。
+   */
+  listSlashCommands?(): Promise<readonly CliSlashCommand[]>
   /** Compact the active provider-native session without creating a user turn. */
   compact?(): Promise<void>
   /**

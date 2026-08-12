@@ -18,16 +18,32 @@ import {
   type CliSessionIndexEntry,
   type CliSessionIndexStore,
   createCliSessionIndexEntry,
+  toCliSessionRef,
 } from './session-index'
 import { attachCliTurnEditSummary } from './turn-edit-summary'
 import { stripCliEnvironmentContext } from './turn-input'
 import type {
   CliContextUsage,
+  CliRuntimeId,
   CliSessionHydration,
+  CliSessionMetadata,
   CliSessionOverlay,
   CliSessionRef,
   CliTurnConfiguration,
 } from './types'
+
+export type CliSessionListItem = CliSessionMetadata & {
+  hasOverlay: boolean
+  assistantId?: string
+  lastOpenedAt?: number
+  isPinned: boolean
+  pinnedAt?: number
+}
+
+export type CliSessionDiscoveryResult = {
+  sessions: CliSessionListItem[]
+  errors: Partial<Record<CliRuntimeId, string>>
+}
 
 type CliTurnOverlay = NonNullable<CliSessionIndexEntry['turnOverlays']>[number]
 
@@ -85,6 +101,75 @@ export class CliSessionService {
 
   private readonly indexStore: CliSessionIndexStore
   private readonly app: App
+
+  /**
+   * Lists CLI sessions the host has interacted with, as recorded in the thin
+   * session index. Deterministic ordering keeps the discovery list stable:
+   * grouped by runtime, then by native session id.
+   */
+  async listSessions(): Promise<CliSessionIndexEntry[]> {
+    const entries = await this.indexStore.list()
+    return [...entries].sort((left, right) => {
+      if (left.runtimeId !== right.runtimeId) {
+        return left.runtimeId.localeCompare(right.runtimeId)
+      }
+      return left.nativeSessionId.localeCompare(right.nativeSessionId)
+    })
+  }
+
+  /**
+   * Discovery-shaped session list consumed by the CLI session surface. Local
+   * entries are all host-known overlays, so each maps to a list item with
+   * overlay metadata; native-only session discovery is a follow-up.
+   */
+  async discoverSessions(): Promise<CliSessionDiscoveryResult> {
+    const entries = await this.listSessions()
+    return {
+      sessions: entries.map((entry) => {
+        const session: CliSessionListItem = {
+          ref: toCliSessionRef(entry),
+          title: entry.title ?? entry.nativeSessionId,
+          updatedAt: 0,
+          hasOverlay: true,
+          isPinned: entry.isPinned === true,
+        }
+        if (entry.assistantId !== undefined) {
+          session.assistantId = entry.assistantId
+        }
+        if (entry.pinnedAt !== undefined) {
+          session.pinnedAt = entry.pinnedAt
+        }
+        return session
+      }),
+      errors: {},
+    }
+  }
+
+  async setPinned(ref: CliSessionRef, pinned: boolean): Promise<void> {
+    await this.indexStore.update(ref, (existing) =>
+      createCliSessionIndexEntry({
+        ...(existing ?? {
+          runtimeId: ref.runtimeId,
+          nativeSessionId: ref.nativeSessionId,
+        }),
+        ...(pinned
+          ? { isPinned: true, pinnedAt: Date.now() }
+          : { isPinned: false }),
+      }),
+    )
+  }
+
+  async renameSession(ref: CliSessionRef, title: string): Promise<void> {
+    const trimmed = title.trim()
+    if (trimmed.length === 0) return
+    await this.indexStore.update(ref, (existing) =>
+      createCliSessionIndexEntry({
+        ...ref,
+        ...existing,
+        title: trimmed,
+      }),
+    )
+  }
 
   async recordOpenedSession(hydration: CliSessionHydration): Promise<void> {
     const ref = hydration.ref

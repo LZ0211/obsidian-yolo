@@ -395,4 +395,52 @@ describe('CliSessionService', () => {
       turnOverlays: [{ userMessage: { id: 'user-keep' } }],
     })
   })
+
+  it('discovers host-known sessions with title fallback and pin/rename round-trips', async () => {
+    const index = new MemoryIndex()
+    const service = new CliSessionService({ app, indexStore: index })
+    const claudeRef = {
+      runtimeId: 'claude-code' as const,
+      nativeSessionId: 'session-1',
+    }
+    const codexRef = { runtimeId: 'codex' as const, nativeSessionId: 'thread-1' }
+
+    await service.recordOpenedSession({
+      ref: claudeRef,
+      messages: [],
+      compactionBoundaries: [],
+    })
+    await service.recordOpenedSession({
+      ref: codexRef,
+      messages: [],
+      compactionBoundaries: [],
+    })
+
+    // 未命名会话 title 回退到 nativeSessionId；列表按 runtimeId 分组排序。
+    const discovery = await service.discoverSessions()
+    expect(discovery.errors).toEqual({})
+    expect(discovery.sessions.map((session) => session.ref)).toEqual([
+      claudeRef,
+      codexRef,
+    ])
+    expect(discovery.sessions[0].title).toBe('session-1')
+    expect(discovery.sessions[1].title).toBe('thread-1')
+    expect(discovery.sessions.every((session) => session.hasOverlay)).toBe(true)
+
+    // rename → 显示名持久化；空白标题 no-op。
+    await service.renameSession(claudeRef, '  Fix login flow  ')
+    await service.renameSession(claudeRef, '   ')
+    expect((await service.discoverSessions()).sessions[0].title).toBe(
+      'Fix login flow',
+    )
+
+    // pin → isPinned + pinnedAt；unpin 清除 isPinned（pinnedAt 残留为 backup 语义）。
+    await service.setPinned(codexRef, true)
+    const pinned = await service.discoverSessions()
+    expect(pinned.sessions[1].isPinned).toBe(true)
+    expect(pinned.sessions[1].pinnedAt).toEqual(expect.any(Number))
+    await service.setPinned(codexRef, false)
+    const unpinned = await service.discoverSessions()
+    expect(unpinned.sessions[1].isPinned).toBe(false)
+  })
 })

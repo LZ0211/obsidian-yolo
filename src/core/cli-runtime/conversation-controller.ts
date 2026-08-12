@@ -6,6 +6,7 @@ import type { ToolEditSummary } from '../../types/tool-call.types'
 
 import { attachCliTurnEditSummary } from './turn-edit-summary'
 import type {
+  CliAssistantBinding,
   CliCompactionBoundary,
   CliContextUsage,
   CliPermissionProfileUpdate,
@@ -324,6 +325,9 @@ export class CliConversationController {
 
   getConversationId = (): string | null => this.conversationId
 
+  /** 当前会话 run 的单调递增 epoch（新 run 开始时 +1），供契约 adapter 派生 runId。 */
+  getConversationEpoch = (): number => this.conversationEpoch
+
   /** Binds this surface to the host conversation that presents it. */
   bindConversation(conversationId: string): void {
     if (this.disposed || this.conversationId === conversationId) return
@@ -398,6 +402,7 @@ export class CliConversationController {
 
   ensureReady(
     initialConfiguration?: CliRuntimeConfigurationUpdate,
+    assistant?: CliAssistantBinding,
   ): Promise<void> {
     this.assertActive()
     const operation = this.captureOperation()
@@ -414,7 +419,7 @@ export class CliConversationController {
       .catch(() => undefined)
       .then(async () => {
         if (!this.isCurrent(operation)) return
-        await this.ensureReadyNow(operation, configurationToApply)
+        await this.ensureReadyNow(operation, configurationToApply, assistant)
       })
     this.readyTail = task.catch(() => undefined)
     return task
@@ -777,6 +782,7 @@ export class CliConversationController {
   private async ensureReadyNow(
     operation: ReturnType<CliConversationController['captureOperation']>,
     initialConfiguration?: CliRuntimeConfigurationUpdate,
+    assistant?: CliAssistantBinding,
   ): Promise<void> {
     const target = this.snapshot.sessionRef
     this.acceptingEvents = false
@@ -787,6 +793,7 @@ export class CliConversationController {
     try {
       await operation.runtime.ensureReady({
         ...(target ? { sessionRef: target } : {}),
+        ...(assistant ? { assistant } : {}),
       })
       if (!this.isCurrent(operation)) return
       if (!target && !this.snapshot.sessionRef) {

@@ -47,6 +47,7 @@ import type {
   CliRuntimeSkill,
   CliSessionHydration,
   CliSessionRef,
+  CliSlashCommand,
   CliSubagentRef,
   CliTurnInput,
 } from '../types'
@@ -353,6 +354,9 @@ export class ClaudeCliRuntime implements CliRuntime {
       sdk,
       processSupport,
       sessionRef,
+      ...(input.assistant?.systemPrompt
+        ? { assistantSystemPrompt: input.assistant.systemPrompt }
+        : {}),
       ...(input.sessionRef
         ? { resumeSessionId: input.sessionRef.nativeSessionId }
         : {}),
@@ -367,6 +371,7 @@ export class ClaudeCliRuntime implements CliRuntime {
     sdk,
     processSupport,
     sessionRef,
+    assistantSystemPrompt,
     resumeSessionId,
     resumeSessionAt,
     forkSession = false,
@@ -375,6 +380,7 @@ export class ClaudeCliRuntime implements CliRuntime {
     sdk: ClaudeSdkModule
     processSupport: Awaited<ReturnType<ClaudeProcessSupportResolver>>
     sessionRef: CliSessionRef
+    assistantSystemPrompt?: string
     resumeSessionId?: string
     resumeSessionAt?: string
     forkSession?: boolean
@@ -424,6 +430,9 @@ export class ClaudeCliRuntime implements CliRuntime {
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
+            ...(assistantSystemPrompt
+              ? { append: assistantSystemPrompt }
+              : {}),
           },
           ...(resumeSessionId
             ? {
@@ -518,6 +527,24 @@ export class ClaudeCliRuntime implements CliRuntime {
       name: command.name,
       description: command.description,
       path: `claude-code://skills/${encodeURIComponent(command.name)}`,
+    }))
+  }
+
+  async listSlashCommands(): Promise<readonly CliSlashCommand[]> {
+    this.assertUsable()
+    const query = this.query
+    if (!query) throw new Error('Claude CLI runtime is not ready.')
+    // 对齐 Claudian probeRuntimeCommands：直接读官方 SDK 的命令/技能目录，
+    // 不硬编码、不重跑会话。
+    const commands = query.supportedCommands
+      ? await query.supportedCommands()
+      : (await query.initializationResult()).commands
+    return commands.map((command) => ({
+      id: command.name,
+      label: `/${command.name}`,
+      description: command.description,
+      ...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
+      source: 'sdk' as const,
     }))
   }
 
