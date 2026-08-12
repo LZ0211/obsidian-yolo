@@ -1,5 +1,7 @@
 import type { ChatMessage } from '../../../types/chat'
 import { ToolCallResponseStatus } from '../../../types/tool-call.types'
+import { AGENT_SESSION_MODE } from '../../state/contracts'
+import { backgroundTaskCompletionBus } from '../background-task/completion-bus'
 import type { NativeAgentRuntime } from '../native-runtime'
 import type { AgentRuntimeRunInput } from '../types'
 
@@ -11,6 +13,8 @@ import {
 import type { DelegatedAssistantProfile } from './delegated-assistant-profile'
 import type { SubagentParentContext } from './parent-context'
 import {
+  type RunSubagentParams,
+  type SubagentSessionGatewayLike,
   autoRejectPendingApprovals,
   buildSubagentContinuationInput,
   buildSubagentInitialRunInput,
@@ -18,8 +22,41 @@ import {
   createSubagentRuntimeLoopController,
   hasUnsettledApprovalBatch,
   resolveSubagentRunPolicy,
+  runSubagent,
 } from './runner'
 import type { SubagentTaskRecord } from './types'
+
+/**
+ * R10：durable 测试会真实执行 `new NativeAgentRuntime()` + `runtime.run()`
+ * （runner.ts runChildAgent），不 mock 会真实打模型。模块级 mock 仅影响
+ * 本文件的运行时代理；现有纯函数测试（plain-object runtime 注入）不受影响。
+ * （jest.mock 声明被 babel-jest 提升到 import 之上，位置无碍语义。）
+ */
+jest.mock('../native-runtime', () => {
+  const actual = jest.requireActual('../native-runtime')
+  return {
+    ...actual,
+    NativeAgentRuntime: jest.fn().mockImplementation(() => ({
+      subscribe: jest.fn(() => () => {}),
+      run: jest.fn(async () => undefined),
+      getSnapshot: jest.fn().mockReturnValue({
+        messages: [{ role: 'assistant', id: 'assistant-1', content: 'done' }],
+        compaction: [],
+        pendingCompactionAnchorMessageId: null,
+      }),
+      setToolCallResponse: jest.fn(),
+    })),
+  }
+})
+jest.mock('../background-task/completion-bus', () => ({
+  backgroundTaskCompletionBus: { pushCompleted: jest.fn() },
+}))
+jest.mock('../live-stream/taskStreamBus', () => ({
+  liveTaskStreamBus: { push: jest.fn() },
+}))
+jest.mock('../citationRegistry', () => ({
+  CitationRegistry: jest.fn().mockImplementation(() => ({})),
+}))
 
 const flushMicrotasks = (): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, 0))
@@ -176,9 +213,7 @@ describe('buildSubagentContinuationInput', () => {
 })
 
 describe('createSubagentRuntimeLoopController', () => {
-  const makeToolMessage = (
-    statuses: ToolCallResponseStatus[],
-  ): ChatMessage =>
+  const makeToolMessage = (statuses: ToolCallResponseStatus[]): ChatMessage =>
     ({
       role: 'tool',
       id: 'tool-message',
@@ -278,7 +313,8 @@ describe('createSubagentRuntimeLoopController', () => {
   })
 
   it('resumes after an approval pause and settles', async () => {
-    const { runtime, run, releaseRun, patchLastToolStatuses } = makeLoopRuntime()
+    const { runtime, run, releaseRun, patchLastToolStatuses } =
+      makeLoopRuntime()
     const abortController = new AbortController()
     const controller = createSubagentRuntimeLoopController({
       runtime,
@@ -288,9 +324,7 @@ describe('createSubagentRuntimeLoopController', () => {
 
     const runPromise = controller.run()
     // First run pauses on a PendingApproval tool call.
-    releaseRun(
-      makeToolMessage([ToolCallResponseStatus.PendingApproval]),
-    )
+    releaseRun(makeToolMessage([ToolCallResponseStatus.PendingApproval]))
     await flushMicrotasks()
     expect(run).toHaveBeenCalledTimes(1)
 
@@ -308,7 +342,8 @@ describe('createSubagentRuntimeLoopController', () => {
   })
 
   it('keeps the gate closed while the batch is still unsettled', async () => {
-    const { runtime, run, releaseRun, patchLastToolStatuses } = makeLoopRuntime()
+    const { runtime, run, releaseRun, patchLastToolStatuses } =
+      makeLoopRuntime()
     const abortController = new AbortController()
     const controller = createSubagentRuntimeLoopController({
       runtime,
@@ -513,7 +548,9 @@ describe('buildSubagentInitialRunInput', () => {
     ({
       providerClient: {},
       model: { model: 'child-model' },
-    }) as unknown as Parameters<typeof buildSubagentInitialRunInput>[0]['childModel']
+    }) as unknown as Parameters<
+      typeof buildSubagentInitialRunInput
+    >[0]['childModel']
 
   it('builds an isolated child request with the default system prompt', () => {
     const { childUserMessage, runInput, loopConfig } =
@@ -673,5 +710,134 @@ describe('buildSubagentSessionRunInput', () => {
     })
 
     expect(runInput.systemPromptOverride).toBeUndefined()
+  })
+})
+
+describe('runSubagent durable spawn', () => {
+  const makeParent = (): SubagentParentContext =>
+    ({
+      conversationId: 'parent-test',
+      allowedToolNames: ['parent__read'],
+      toolPreferences: {},
+      toolServerPreferences: {},
+      allowedSkillPaths: [],
+      workspaceAccessPolicy: {
+        workspaceRoot: '/vault',
+        access: 'full_access',
+      },
+      loopConfig: {
+        enableTools: true,
+        includeBuiltinTools: true,
+        maxAutoIterations: 5,
+      },
+      requestContextBuilder: {},
+      mcpManager: {},
+      assistantId: 'assistant-parent',
+      bypassToolApproval: false,
+      enableToolDisclosure: false,
+      reasoningLevel: 'full',
+      requestParams: {},
+    }) as unknown as SubagentParentContext
+
+  const makeChildModel = (): RunSubagentParams['childModel'] =>
+    ({
+      providerClient: {},
+      model: { model: 'child-model', name: 'child-name' },
+      apiType: null,
+    }) as unknown as RunSubagentParams['childModel']
+
+  const makeGateway = (settleRun: jest.Mock): SubagentSessionGatewayLike =>
+    ({
+      settleRun,
+      query: jest.fn(),
+      deliverQueuedIntents: jest.fn(),
+    }) as unknown as SubagentSessionGatewayLike
+
+  const makeParams = (
+    gateway: SubagentSessionGatewayLike,
+    settleRun: jest.Mock,
+  ): RunSubagentParams => ({
+    description: 't',
+    prompt: 'p',
+    conversationId: 'c',
+    source: {
+      type: 'llm_tool_call',
+      toolCallId: 'tc',
+      assistantMessageId: 'm',
+    },
+    parent: makeParent(),
+    childModel: makeChildModel(),
+    sessionId: 'sub_abc',
+    runSequence: 2,
+    mode: AGENT_SESSION_MODE.PERSISTENT,
+    sessionGateway: gateway,
+    settleRun,
+  })
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+
+  it('spawns with session identity and settles durably', async () => {
+    const settleRun = jest.fn(async () => undefined)
+    const onSettleFailure = jest.fn()
+    const gateway = makeGateway(settleRun)
+    const result = await runSubagent({
+      ...makeParams(gateway, settleRun),
+      onSettleFailure,
+    })
+
+    expect(result.accepted).toBe(true)
+    if (!result.accepted) return
+    expect(result.sessionId).toBe('sub_abc')
+    expect(result.runKey).toBe('sub_abc:2')
+    expect(result.mode).toBe(AGENT_SESSION_MODE.PERSISTENT)
+    // runChildAgent 完成后结算：service.settleRun 收到终态 settlement
+    expect(settleRun).toHaveBeenCalledTimes(1)
+    expect(settleRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'sub_abc',
+        runKey: 'sub_abc:2',
+        status: 'completed',
+        result: expect.objectContaining({
+          status: 'completed',
+          content: 'done',
+        }),
+      }),
+    )
+    expect(onSettleFailure).not.toHaveBeenCalled()
+    // R5：每次结算都推送完成事件（含 runSequence > 1 的续跑）
+    const pushCompleted = (
+      backgroundTaskCompletionBus as unknown as {
+        pushCompleted: jest.Mock
+      }
+    ).pushCompleted
+    expect(pushCompleted).toHaveBeenCalledTimes(1)
+    expect(pushCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'subagent',
+        taskId: 'sub_abc',
+        conversationId: 'c',
+        record: expect.objectContaining({
+          runKey: 'sub_abc:2',
+          runSequence: 2,
+        }),
+      }),
+    )
+  })
+
+  it('rejects a second concurrent run on the same session', async () => {
+    const settleRun = jest.fn(async () => undefined)
+    const gateway = makeGateway(settleRun)
+    const params = makeParams(gateway, settleRun)
+
+    // 第一次 dispatch 后立即第二次（同 sessionId）：首个 runChildAgent 已
+    // register/reserve，第二次必须被拒绝（registry 活跃 run 检查或 reserve）。
+    const first = runSubagent(params)
+    const second = runSubagent(params)
+    await expect(second).rejects.toThrow(/already has an active run/)
+
+    await first
+    expect(settleRun).toHaveBeenCalledTimes(1)
   })
 })

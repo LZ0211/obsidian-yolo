@@ -81,6 +81,8 @@ describe('SubagentSessionService', () => {
     expect(snapshot?.session.status).toBe(SUBAGENT_SESSION_STATUS.IDLE)
     expect(snapshot?.recentRuns[0]?.status).toBe(SUBAGENT_RUN_STATUS.QUEUED)
     expect(snapshot?.recentRuns[0]?.runKey).toBe(`${result.sessionId}:1`)
+    // ⚠️ 首 run prompt 落盘（Task 7）：reload 后续跑可重建首 run
+    expect(snapshot?.recentRuns[0]?.prompt).toBe('p')
   })
 
   it('rejects a send with a stale revision', async () => {

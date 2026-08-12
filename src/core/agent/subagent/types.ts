@@ -21,6 +21,8 @@ export type SubagentAcceptedResult = {
   status: 'running'
   note: string
   modelName?: string
+  /** Delegated role identity (C3: backup types.ts 有，Task 6 只补了 4 字段). */
+  delegatedRole?: DelegatedRoleMetadata
 }
 
 export type SubagentResult = {

@@ -102,6 +102,9 @@ export class SubagentSessionService {
       runSequence: 1,
       runKey: makeSubagentRunKey(sessionId, 1),
       promptMessageId: `${makeSubagentRunKey(sessionId, 1)}:prompt`,
+      // ⚠️ 首 run prompt 落盘（Task 5 审查前送，Task 7 落实）：prompt 文本随
+      // run 记录持久化，reload 后 runSubagentSessionContinuation 可重建首 run。
+      prompt: input.prompt,
       status: SUBAGENT_RUN_STATUS.QUEUED,
       basedOnSessionRevision: 1,
     }

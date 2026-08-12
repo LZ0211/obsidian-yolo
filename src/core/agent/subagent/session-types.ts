@@ -75,6 +75,13 @@ export type SubagentRun = {
   runSequence: number
   runKey: string
   promptMessageId: string
+  /**
+   * 首 run prompt 文本（Task 7 ⚠️ 落盘要求）：backup 的 SubagentRun 无此字段
+   * （backup 由 session actor 经 submit_session_message 持久化 prompt），master
+   * 无 actor，spawn 时随 run 记录落盘；reload 后 transcript 为空时
+   * `runSubagentSessionContinuation` 用它重建首条 user 消息。
+   */
+  prompt?: string
   status: SubagentRunStatus
   basedOnSessionRevision: number
   resolvedPolicySnapshot?: ResolvedSubagentRunPolicySnapshot
