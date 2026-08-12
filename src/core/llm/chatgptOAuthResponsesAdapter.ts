@@ -515,7 +515,10 @@ export class ChatGPTOAuthResponsesAdapter {
     return body
   }
 
-  parseResponse(response: Response): LLMResponseNonStreaming {
+  parseResponse(
+    response: Response,
+    endTurn?: boolean,
+  ): LLMResponseNonStreaming {
     const messages = response.output.filter(
       (item): item is Extract<ResponseOutputItem, { type: 'message' }> =>
         item.type === 'message',
@@ -579,7 +582,7 @@ export class ChatGPTOAuthResponsesAdapter {
           finish_reason: getFinishReason(
             response,
             toolCalls.length > 0,
-            undefined,
+            endTurn,
           ),
           message: {
             role: 'assistant',

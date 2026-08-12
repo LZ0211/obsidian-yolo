@@ -142,6 +142,7 @@ export class ChatGPTOAuthProvider extends BaseLLMProvider<LLMProvider> {
       }),
       { profile: 'codex' },
     ) as ResponseCreateParamsStreaming
+    const endTurn = formattedRequest.continuation?.endTurn
 
     return runWithRequestTransport({
       mode: this.requestTransportMode,
@@ -151,18 +152,21 @@ export class ChatGPTOAuthProvider extends BaseLLMProvider<LLMProvider> {
           this.browserClient,
           body,
           options,
+          endTurn,
         ),
       runObsidian: async () =>
         this.generateResponseFromResponsesStream(
           this.obsidianClient,
           body,
           options,
+          endTurn,
         ),
       runNode: async () =>
         this.generateResponseFromResponsesStream(
           this.nodeClient,
           body,
           options,
+          endTurn,
         ),
     })
   }
@@ -190,26 +194,33 @@ export class ChatGPTOAuthProvider extends BaseLLMProvider<LLMProvider> {
       this.applyCustomModelParameters(model, formattedRequest),
       { profile: 'codex' },
     ) as ResponseCreateParamsStreaming
+    const endTurn = formattedRequest.continuation?.endTurn
 
     return runWithRequestTransportForStream({
       mode: this.requestTransportMode,
       memoryKey: this.requestTransportMemoryKey,
       signal: options?.signal,
       createBrowserStream: async (signal) =>
-        this.createResponsesStream(this.browserClient, body, {
-          ...options,
-          signal: signal ?? options?.signal,
-        }),
+        this.createResponsesStream(
+          this.browserClient,
+          body,
+          { ...options, signal: signal ?? options?.signal },
+          endTurn,
+        ),
       createObsidianStream: async (signal) =>
-        this.createResponsesStream(this.obsidianClient, body, {
-          ...options,
-          signal: signal ?? options?.signal,
-        }),
+        this.createResponsesStream(
+          this.obsidianClient,
+          body,
+          { ...options, signal: signal ?? options?.signal },
+          endTurn,
+        ),
       createNodeStream: async (signal) =>
-        this.createResponsesStream(this.nodeClient, body, {
-          ...options,
-          signal: signal ?? options?.signal,
-        }),
+        this.createResponsesStream(
+          this.nodeClient,
+          body,
+          { ...options, signal: signal ?? options?.signal },
+          endTurn,
+        ),
     })
   }
 
@@ -278,11 +289,13 @@ export class ChatGPTOAuthProvider extends BaseLLMProvider<LLMProvider> {
     client: OpenAI,
     body: ResponseCreateParamsStreaming,
     options?: LLMOptions,
+    endTurn?: boolean,
   ): Promise<LLMResponseNonStreaming> {
     return this.collectResponseFromStream(
       (await client.responses.create(body, {
         signal: options?.signal,
       })) as AsyncIterable<ResponseStreamEvent>,
+      endTurn,
     )
   }
 
@@ -290,23 +303,26 @@ export class ChatGPTOAuthProvider extends BaseLLMProvider<LLMProvider> {
     client: OpenAI,
     body: ResponseCreateParamsStreaming,
     options?: LLMOptions,
+    endTurn?: boolean,
   ): Promise<AsyncIterable<LLMResponseStreaming>> {
     return this.toStream(
       (await client.responses.create(body, {
         signal: options?.signal,
       })) as AsyncIterable<ResponseStreamEvent>,
+      endTurn,
     )
   }
 
   private async toStream(
     stream: AsyncIterable<ResponseStreamEvent>,
+    endTurn?: boolean,
   ): Promise<AsyncIterable<LLMResponseStreaming>> {
     if (!(Symbol.asyncIterator in Object(stream))) {
       throw new Error('Expected a streaming ChatGPT OAuth response')
     }
 
     const adapter = this.adapter
-    const state = adapter.createStreamState()
+    const state = adapter.createStreamState(endTurn)
 
     return {
       async *[Symbol.asyncIterator]() {
@@ -319,14 +335,15 @@ export class ChatGPTOAuthProvider extends BaseLLMProvider<LLMProvider> {
 
   private async collectResponseFromStream(
     stream: AsyncIterable<ResponseStreamEvent>,
+    endTurn?: boolean,
   ): Promise<LLMResponseNonStreaming> {
     for await (const event of stream) {
       if (event.type === 'response.completed') {
-        return this.adapter.parseResponse(event.response)
+        return this.adapter.parseResponse(event.response, endTurn)
       }
 
       if (event.type === 'response.incomplete') {
-        return this.adapter.parseResponse(event.response)
+        return this.adapter.parseResponse(event.response, endTurn)
       }
 
       if (event.type === 'response.failed') {

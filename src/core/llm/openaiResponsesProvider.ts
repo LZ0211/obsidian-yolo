@@ -180,14 +180,13 @@ export class OpenAIResponsesProvider extends BaseLLMProvider<LLMProvider> {
     }
 
     try {
+      const requestWithParams = this.applyCustomModelParameters(model, {
+        ...this.applyReasoningEffort(model, request),
+        stream: false,
+      })
       const body = this.mergeBuiltinProviderTools(
         model,
-        this.adapter.buildRequest(
-          this.applyCustomModelParameters(model, {
-            ...this.applyReasoningEffort(model, request),
-            stream: false,
-          }),
-        ) as ResponseCreateParamsStreaming,
+        this.adapter.buildRequest(requestWithParams) as ResponseCreateParamsStreaming,
       )
 
       const response = await runWithRequestTransport({
@@ -207,7 +206,12 @@ export class OpenAIResponsesProvider extends BaseLLMProvider<LLMProvider> {
             signal: options?.signal,
           }) as Promise<Response>,
       })
-      return this.adapter.parseResponse(response)
+      // 非流式路径透传 end_turn：Responses API 不回显该字段，finish-reason
+      // 映射（end_turn_continue）需要从请求侧获取。
+      return this.adapter.parseResponse(
+        response,
+        requestWithParams.continuation?.endTurn,
+      )
     } catch (error) {
       if (error instanceof OpenAI.AuthenticationError) {
         throw new LLMAPIKeyInvalidException(
