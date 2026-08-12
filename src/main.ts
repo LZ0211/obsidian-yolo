@@ -159,6 +159,8 @@ import {
   RuntimeComponentStore,
   setRuntimeComponentService,
 } from './core/runtime-components'
+import type { ScheduledTasksService } from './core/scheduled-tasks-service'
+import type { ScheduledTasksStore } from './core/scheduler/scheduledTasksStore'
 import {
   configureModuleChatModeSkillSource,
   initializeLiteSkillRegistryService,
@@ -367,6 +369,9 @@ export default class YoloPlugin extends Plugin {
   private webSseHub: WebSseHub | null = null
   private webAgentEventStore: AgentEventStore | null = null
   private chatManager: ChatManager | null = null
+  private scheduledTasksService: ScheduledTasksService | null = null
+  private scheduledTasksStore: ScheduledTasksStore | null = null
+  private scheduledTasksReconcileInFlight: Promise<void> | null = null
   private ragLogRibbonIconEl: HTMLElement | null = null
   private injectionBridgeUninstall: (() => void) | null = null
   private liteSkillRegistryDispose: (() => void) | null = null
@@ -2286,6 +2291,19 @@ export default class YoloPlugin extends Plugin {
       previousWebRuntimeEnabled = nextWebRuntimeEnabled
       previousWebRuntimeBinding = nextWebRuntimeBinding
     })
+    // Scheduled Tasks: enabled 翻转 → 单飞 reconcile 启停（desktop + enabled 门控在
+    // reconcileScheduledTasks 内；executor 只读 settings getter，脚本/审批类设置变更无需重启）。
+    let previousScheduledTasksEnabled =
+      this.settings.scheduledTasks.enabled === true
+    this.addSettingsChangeListener((settings) => {
+      const nextScheduledTasksEnabled = settings.scheduledTasks.enabled === true
+      if (nextScheduledTasksEnabled !== previousScheduledTasksEnabled) {
+        this.reconcileScheduledTasks()
+      }
+      previousScheduledTasksEnabled = nextScheduledTasksEnabled
+    })
+    // 启动 reconcile：初始 enabled 状态在方法内按当前 settings 评估（未开启时为无操作）。
+    this.reconcileScheduledTasks()
     await loadLocale(this.resolveObsidianLanguage())
     this._tCache = undefined
     await this.migrateLegacyVaultMirrorIfNeeded()
@@ -2906,6 +2924,11 @@ export default class YoloPlugin extends Plugin {
     this.webAgentEventStore = null
     this.webSseHub?.clear()
     this.webSseHub = null
+    // Scheduled Tasks cleanup（shutdown 立即中止轮询并放弃在飞任务；store 同步关闭）
+    this.scheduledTasksService?.shutdown()
+    this.scheduledTasksService = null
+    this.scheduledTasksStore?.close()
+    this.scheduledTasksStore = null
     this.chatManager = null
     this.ragAutoUpdateService?.cleanup()
     this.ragAutoUpdateService = null
@@ -4871,11 +4894,17 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
     return this.webAgentEventStore
   }
 
+  /** Absolute filesystem path to the vault root, used to resolve vault-relative paths (e.g. scheduled task scripts) and the YOLO base dir. Desktop-only; undefined on mobile. */
+  private resolveVaultBasePath(): string | undefined {
+    const adapter = this.app.vault.adapter
+    return adapter instanceof FileSystemAdapter
+      ? adapter.getBasePath()
+      : undefined
+  }
+
   /** Absolute filesystem path to the YOLO base dir, used by the desktop-only web runtime stores. Desktop-only; null on mobile. */
   private resolveWebRuntimeBaseDir(): string | null {
-    const adapter = this.app.vault.adapter
-    const vaultBasePath =
-      adapter instanceof FileSystemAdapter ? adapter.getBasePath() : undefined
+    const vaultBasePath = this.resolveVaultBasePath()
     if (!vaultBasePath) {
       return null
     }
@@ -4944,6 +4973,107 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
         console.error('[YOLO] Failed to reconcile Web Runtime server.', error)
       }
     })()
+  }
+
+  /**
+   * Scheduled Tasks 懒初始化 getter（desktop + enabled 门控）。未开启或移动端返回
+   * null——store/executor 的 node 依赖只在 desktop 分支动态 import，移动端不加载。
+   * 只构建一次；开关翻转复用同一实例（initialize/cleanup 幂等），onunload 才销毁。
+   */
+  private async getScheduledTasksService(): Promise<ScheduledTasksService | null> {
+    if (!Platform.isDesktop || !this.settings.scheduledTasks.enabled) {
+      return null
+    }
+    if (this.scheduledTasksService) {
+      return this.scheduledTasksService
+    }
+    const vaultBasePath = this.resolveVaultBasePath()
+    if (!vaultBasePath) {
+      return null
+    }
+    const [
+      { createScheduledTasksStore },
+      { TaskEventBus },
+      { TaskExecutor },
+      { ScheduledTasksService },
+    ] = await Promise.all([
+      import('./core/scheduler/scheduledTasksStore'),
+      import('./core/scheduler/task-event-bus'),
+      import('./core/scheduler/task-executor'),
+      import('./core/scheduled-tasks-service'),
+    ])
+    const store = createScheduledTasksStore(
+      normalizePath(`${vaultBasePath}/${getYoloBaseDir(this.settings)}`),
+    )
+    const eventBus = new TaskEventBus()
+    const executor = new TaskExecutor({
+      getAgentApi: () => this.getAgentApi(),
+      getVaultBasePath: () => this.resolveVaultBasePath(),
+      getScriptExecutionSettings: () => this.settings.scheduledTasks,
+    })
+    const service = new ScheduledTasksService({
+      store,
+      eventBus,
+      executor,
+      getMaxAgentRunsPerTick: () =>
+        this.settings.webRuntime.maxConcurrentAgentRuns,
+      getScriptExecutionSettings: () => this.settings.scheduledTasks,
+    })
+    this.scheduledTasksStore = store
+    this.scheduledTasksService = service
+    return service
+  }
+
+  /**
+   * Scheduled Tasks 单飞 reconcile（与 WebServerLifecycle.reconcile 同模式：再入调用共享
+   * 在飞 promise，完成后按最新 settings 重新评估——enabled 快速翻转不丢最终状态）。
+   */
+  private reconcileScheduledTasks(): void {
+    if (!Platform.isDesktop) {
+      return
+    }
+    void (async () => {
+      const inFlight = this.scheduledTasksReconcileInFlight
+      if (inFlight != null) {
+        await inFlight
+        this.reconcileScheduledTasks()
+        return
+      }
+      const run = this.runScheduledTasksReconcile()
+      this.scheduledTasksReconcileInFlight = run
+      try {
+        await run
+      } finally {
+        if (this.scheduledTasksReconcileInFlight === run) {
+          this.scheduledTasksReconcileInFlight = null
+        }
+      }
+    })()
+  }
+
+  private async runScheduledTasksReconcile(): Promise<void> {
+    try {
+      if (this.isUnloaded) {
+        return
+      }
+      if (!this.settings.scheduledTasks.enabled) {
+        // 停：cleanup 等待在飞任务落定后停止轮询（shutdown 仅用于 onunload）。
+        // 保留实例与 store，开关再翻转时 initialize 复用（SQLite 数据不重开）。
+        this.scheduledTasksService?.cleanup()
+        return
+      }
+      const service = await this.getScheduledTasksService()
+      if (!service || this.isUnloaded) {
+        return
+      }
+      // 构建期间开关被翻转：不启动，等再入 reconcile 按最新 settings 收敛。
+      if (!this.settings.scheduledTasks.enabled) {
+        return
+      }
+      await service.initialize()
+    } catch (error) {
+      console.error('[YOLO] Failed to reconcile Scheduled Tasks.', error)
+    }
   }
 
   private registerTimeout(callback: () => void, timeout: number): void {
