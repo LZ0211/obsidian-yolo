@@ -129,6 +129,7 @@ export const zh: TranslationKeys = {
       archived: '已归档',
       hideArchived: '收起归档',
       exportConversation: '导出对话到库',
+      exportShort: '导出',
       moreActions: '更多操作',
       openHistory: '聊天历史',
     },
