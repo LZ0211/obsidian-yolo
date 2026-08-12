@@ -282,15 +282,24 @@ export class SubagentSessionService {
       }
     }
     const targetRun = this.locateRun(stored)
+    // 状态前置守卫：mark_interrupted_run_aborted 只对 INTERRUPTED run 有效；
+    // 对已终态 run（如 IDLE+COMPLETED 的误用调用方）无条件置 ABORTED 会把
+    // 终态结果抹掉，与恢复扫描侧的终态保护（locateInterruptibleRun）保持一致。
+    // 联合内无 'session_not_recoverable'，复用最贴近的“当前状态不允许该操作”。
+    if (!targetRun || targetRun.status !== SUBAGENT_RUN_STATUS.INTERRUPTED) {
+      return {
+        accepted: false,
+        errorCode: 'session_not_sendable',
+        retryable: false,
+      }
+    }
     const next: StoredSubagentSession = {
       ...stored,
-      runs: targetRun
-        ? stored.runs.map((run) =>
-            run.runKey === targetRun.runKey
-              ? { ...run, status: SUBAGENT_RUN_STATUS.ABORTED }
-              : run,
-          )
-        : stored.runs,
+      runs: stored.runs.map((run) =>
+        run.runKey === targetRun.runKey
+          ? { ...run, status: SUBAGENT_RUN_STATUS.ABORTED }
+          : run,
+      ),
       session: {
         ...stored.session,
         status: SUBAGENT_SESSION_STATUS.IDLE,

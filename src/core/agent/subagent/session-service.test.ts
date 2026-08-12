@@ -215,4 +215,87 @@ describe('SubagentSessionService', () => {
     expect(snapshot?.session.status).toBe(SUBAGENT_SESSION_STATUS.ORPHANED)
     expect(recovered).toBe(1)
   })
+
+  it('rejects recover on a settled session and keeps the run terminal', async () => {
+    const service = await makeService(mockApp())
+    const spawned = await service.spawn({
+      title: 't',
+      prompt: 'p',
+      mode: AGENT_SESSION_MODE.PERSISTENT,
+      requestId: 'r1',
+      parentConversationId: 'c',
+      originAssistantMessageId: 'm',
+      originToolCallId: 't',
+      memoryAssistantId: 'x',
+    })
+    if (!spawned.accepted) throw new Error('spawn failed')
+    await service.settleRun({
+      sessionId: spawned.sessionId,
+      runKey: spawned.runKey,
+      status: 'completed',
+      result: {
+        status: 'completed',
+        content: 'ok',
+        durationMs: 1,
+        toolUseCount: 0,
+      },
+      completedAt: 2000,
+    })
+    // IDLE + COMPLETED 会话：recover 应被状态前置守卫拒绝，终态 run 不被改写
+    // （settleRun 后 revision 为 2，需匹配以越过 revision 校验、命中守卫）
+    const rejected = await service.recover({
+      sessionId: spawned.sessionId,
+      expectedSessionRevision: 2,
+      action: 'mark_interrupted_run_aborted',
+      requestId: 'r3',
+    })
+    expect(rejected.accepted).toBe(false)
+    if (rejected.accepted) throw new Error('expected rejection')
+    expect(rejected.errorCode).toBe('session_not_sendable')
+    expect(rejected.retryable).toBe(false)
+    const after = await service.query(spawned.sessionId)
+    expect(after?.session.status).toBe(SUBAGENT_SESSION_STATUS.IDLE)
+    expect(after?.recentRuns[0]?.status).toBe(SUBAGENT_RUN_STATUS.COMPLETED)
+    expect(after?.recentRuns[0]?.result?.content).toBe('ok')
+  })
+
+  it('recovers an interrupted run to aborted and returns the session to idle', async () => {
+    const app = mockApp()
+    const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)
+    const service = new SubagentSessionService(store, {
+      isSessionActive: () => false,
+    })
+    const spawned = await service.spawn({
+      title: 't',
+      prompt: 'p',
+      mode: AGENT_SESSION_MODE.PERSISTENT,
+      requestId: 'r1',
+      parentConversationId: 'c',
+      originAssistantMessageId: 'm',
+      originToolCallId: 't',
+      memoryAssistantId: 'x',
+    })
+    if (!spawned.accepted) throw new Error('spawn failed')
+    // 模拟崩溃遗留：session 置 RUNNING → 恢复扫描把 run 置 INTERRUPTED、
+    // session 置 NEEDS_RESUME（revision+1 → 2），随后显式 recover 应成功
+    const stored = await store.readById(spawned.sessionId)
+    if (!stored) throw new Error('missing row')
+    await store.compareAndUpdate(stored, {
+      ...stored,
+      session: { ...stored.session, status: SUBAGENT_SESSION_STATUS.RUNNING },
+    })
+    await service.recoverInterruptedSessions()
+    const recovered = await service.recover({
+      sessionId: spawned.sessionId,
+      expectedSessionRevision: 2,
+      action: 'mark_interrupted_run_aborted',
+      requestId: 'r2',
+    })
+    expect(recovered.accepted).toBe(true)
+    if (!recovered.accepted) throw new Error('expected acceptance')
+    expect(recovered.status).toBe(SUBAGENT_SESSION_STATUS.IDLE)
+    const snapshot = await service.query(spawned.sessionId)
+    expect(snapshot?.session.status).toBe(SUBAGENT_SESSION_STATUS.IDLE)
+    expect(snapshot?.recentRuns[0]?.status).toBe(SUBAGENT_RUN_STATUS.ABORTED)
+  })
 })
