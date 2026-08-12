@@ -83,6 +83,13 @@ export const normalizeChatMode = (
 }
 
 /**
+ * The chat mode as it should be written to conversation storage. Fork 无模块
+ * 聊天模式（U4 范围），当前为恒等函数——保留为具名接缝（不内联），使每个
+ * 写回调用点可 grep 且自明意图，与上游 `ChatModeSelect.tsx` 的同一接缝对齐。
+ */
+export const chatModeForSave = (chatMode: ChatMode): ChatMode => chatMode
+
+/**
  * Recover the orthogonal YOLO flag, including from the legacy `agent-full`
  * value that conflated mode and auto-approval.
  */

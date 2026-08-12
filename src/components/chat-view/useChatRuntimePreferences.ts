@@ -755,6 +755,11 @@ export function useChatRuntimePreferences({
     // 缓存，供 useYoloChatSession 替换原「setX + 手动 ref.set」散落写法。
     switchConversation: preferencesController.switchConversation,
 
+    // controller 实例本身：供 useChatInputController 直接注入（跨渲染稳定，
+    // 不需要 late ref）——见架构治理第三步分期 C1，消灭事件处理器中的偏好
+    // 残留 late 绑定。
+    preferencesController,
+
     // persist* 全族
     persistReasoningLevelForModel,
     persistChatRuntimePreference,
