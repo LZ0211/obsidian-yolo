@@ -22,6 +22,29 @@ export class ChatManager extends AbstractJsonRepository<
   ChatConversationMetadata
 > {
   private static readonly INDEX_FILE_NAME = 'chat_index.json'
+
+  // web 运行时会从多个 ChatManager 实例并发读-改-写同一会话文件（runAgent
+  // 的 webBinding 补丁、AgentService 的 persistConversationMessages 每次
+  // 新建实例、web 路由的读-改-写）。每个实例的写队列是独立的，跨实例的
+  // 读-改-写会互相覆盖（过期读晚落盘）。用进程级 per-conversation 锁把
+  // 读-改-写序列串行化。
+  private static readonly conversationLocks = new Map<
+    string,
+    Promise<unknown>
+  >()
+
+  static withConversationLock<T>(conversationId: string, fn: () => Promise<T>): Promise<T> {
+    const previous = ChatManager.conversationLocks.get(conversationId) ?? Promise.resolve()
+    const next = previous.then(fn, fn)
+    ChatManager.conversationLocks.set(
+      conversationId,
+      next.then(
+        () => undefined,
+        () => undefined,
+      ),
+    )
+    return next
+  }
   private readonly settings?: {
     yolo?: {
       baseDir?: string

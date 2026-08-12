@@ -1,7 +1,7 @@
 import { type App, FileSystemAdapter, TFolder, getLanguage } from 'obsidian'
 import { v4 as uuidv4 } from 'uuid'
 
-import type { ChatManager } from '../../database/json/chat/ChatManager'
+import { ChatManager } from '../../database/json/chat/ChatManager'
 import {
   deserializeChatMessage,
   serializeChatMessage,
@@ -243,21 +243,43 @@ export function registerWebServerRoutes(
     patch: Record<string, unknown>,
     touchUpdatedAt?: boolean,
   ): Promise<WebChatConversation | null> => {
-    const current = await getChat(conversationId)
-    if (!current) return null
     // master 无 backup 的 gateway revision 冲突检测；桌面单进程下读-改-写
     // 由 ChatManager 整文件落盘保证。webBinding 经类型扩展 cast 落库。
-    await options.chatManager.updateChat(
-      conversationId,
-      patch as unknown as ChatManagerUpdatePatch,
-      { touchUpdatedAt: touchUpdatedAt === true },
-    )
-    return getChat(conversationId)
+    // 与 persistConversationMessages 共享会话级锁，避免跨 ChatManager 实例
+    // 的读-改-写竞态把 webBinding 补丁覆盖掉（过期读晚落盘）。
+    return ChatManager.withConversationLock(conversationId, async () => {
+      const current = await getChat(conversationId)
+      if (!current) return null
+      await options.chatManager.updateChat(
+        conversationId,
+        patch as unknown as ChatManagerUpdatePatch,
+        { touchUpdatedAt: touchUpdatedAt === true },
+      )
+      return getChat(conversationId)
+    })
   }
 
   const registerChatRoutesContext: Parameters<typeof registerChatRoutes>[1] = {
-    listChats: () =>
-      options.chatManager.listChats() as Promise<WebChatConversationMetadata[]>,
+    // ChatManager.listChats() 的 metadata 不带 webBinding（toMetadata 剥离），
+    // 而 /api/chat/list 的 canAccessConversation 又必须按 webBinding 过滤——
+    // 直接透传会让 web 历史列表永远为空。逐条补回 webBinding/实例字段。
+    listChats: async () => {
+      const metadata = await options.chatManager.listChats()
+      const enriched = await Promise.all(
+        metadata.map(async (meta): Promise<WebChatConversationMetadata> => {
+          const chat = (await options.chatManager.findById(
+            meta.id,
+          )) as WebChatConversation | null
+          return {
+            ...meta,
+            workspaceId: chat?.workspaceId ?? null,
+            agentInstanceId: chat?.agentInstanceId ?? null,
+            webBinding: chat?.webBinding ?? null,
+          }
+        }),
+      )
+      return enriched
+    },
     getChat,
     findById: getChat,
     createChat: async (
@@ -317,21 +339,27 @@ export function registerWebServerRoutes(
       return true
     },
     saveChat: async (request) => {
+      const patch: Record<string, unknown> = {
+        messages: request.messages,
+        overrides: request.overrides,
+        conversationModelId: request.conversationModelId,
+        messageModelMap: request.messageModelMap,
+        activeBranchByUserMessageId: request.activeBranchByUserMessageId,
+        assistantGroupBoundaryMessageIds:
+          request.assistantGroupBoundaryMessageIds,
+        reasoningLevel: request.reasoningLevel,
+        compaction: request.compaction,
+        workingDirectory: request.workingDirectory,
+      }
+      // ChatManager.updateChat 是 spread 合并：客户端对象里 webBinding 通常
+      // 是 undefined（web 会话绑定由服务端维护），直接写入会把 run 时打上的
+      // webBinding 抹掉，导致后续审批/访问控制 404。undefined 时保留现状。
+      if (request.webBinding !== undefined) {
+        patch.webBinding = request.webBinding
+      }
       await options.chatManager.updateChat(
         request.id,
-        {
-          messages: request.messages,
-          overrides: request.overrides,
-          conversationModelId: request.conversationModelId,
-          messageModelMap: request.messageModelMap,
-          activeBranchByUserMessageId: request.activeBranchByUserMessageId,
-          assistantGroupBoundaryMessageIds:
-            request.assistantGroupBoundaryMessageIds,
-          reasoningLevel: request.reasoningLevel,
-          compaction: request.compaction,
-          workingDirectory: request.workingDirectory,
-          webBinding: request.webBinding,
-        } as unknown as ChatManagerUpdatePatch,
+        patch as unknown as ChatManagerUpdatePatch,
         { touchUpdatedAt: request.touchUpdatedAt === true },
       )
       return getChat(request.id)
@@ -527,7 +555,14 @@ export function registerWebServerRoutes(
       runScheduler.setMaxConcurrent(
         options.getSettings().webRuntime.maxConcurrentAgentRuns,
       )
-      const prepared = await adapter.prepareRun(input, binding.activeAgent)
+      // rootHash 一并传入：新会话创建时即带 webBinding，避免补丁写入与
+      // persist 的读-改-写竞态把 binding 覆盖掉（见 WebChatRuntimeAdapter
+      // ensureConversation 注释）。
+      const prepared = await adapter.prepareRun(
+        input,
+        binding.activeAgent,
+        binding.rootHash,
+      )
       const latest = await getChat(prepared.conversationId)
       if (latest) {
         const patch = {

@@ -387,11 +387,37 @@ export function createWebYoloRuntime({
         // /api/agent/run 受保护：会话所属 agent/workspace 一律由服务端从
         // session binding 派生，客户端不得携带 selector 字段（否则 400）。
         // assistantId 在 web 会话里始终等于 activeAgentId，这里直接剥离。
-        const { assistantId: _assistantId, ...sanitizedInput } = input
+        // 注意：Chat 主面（useChatStreamManager）传进来的是桌面形态的
+        // AgentRuntimeRunInput（携带 providerClient/model/requestContextBuilder
+        // 等不可序列化对象）——只能投影 WebRunInput 协议字段，其余一律丢弃，
+        // 否则 JSON.stringify 在 providerClient（OpenAI SDK 客户端）上循环引用。
+        const {
+          conversationId,
+          conversationMessages,
+          messages,
+          requestMessages,
+          compaction,
+          modelId,
+          modelIds,
+          reasoningLevel,
+          branchTarget,
+          overrides,
+        } = input
         const response = await api.postJson<{
           conversationId: string
           runId: string
-        }>('/api/agent/run', sanitizedInput)
+        }>('/api/agent/run', {
+          conversationId,
+          conversationMessages,
+          messages,
+          requestMessages,
+          compaction,
+          modelId,
+          modelIds,
+          reasoningLevel,
+          branchTarget,
+          overrides,
+        })
         activeRunIdsByConversation.set(response.conversationId, response.runId)
         void consumeRunStream({
           api,

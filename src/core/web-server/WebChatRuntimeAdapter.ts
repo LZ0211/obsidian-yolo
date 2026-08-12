@@ -196,8 +196,13 @@ export class WebChatRuntimeAdapter {
   async prepareRun(
     input: WebRunInput,
     activeAgent: EffectiveWorkspaceAgent,
+    rootHash?: string,
   ): Promise<PreparedWebAgentRun> {
-    const conversation = await this.ensureConversation(input)
+    const conversation = await this.ensureConversation(
+      input,
+      rootHash,
+      activeAgent.id,
+    )
     const conversationId = conversation.id
     const baseMessages = input.conversationMessages ?? input.messages
     const resolved = await this.resolveRunContext({
@@ -449,7 +454,11 @@ export class WebChatRuntimeAdapter {
     })
   }
 
-  private async ensureConversation(input: WebRunInput) {
+  private async ensureConversation(
+    input: WebRunInput,
+    rootHash?: string,
+    agentId?: string,
+  ) {
     const existing = await this.options.loadConversation(input.conversationId)
     if (existing) {
       return existing
@@ -458,6 +467,12 @@ export class WebChatRuntimeAdapter {
     try {
       // backup 走 gateway dispatch（producer 'web'）；master 的 ChatManager
       // createChat 是幂等语义的唯一创建入口（origin 标记外部创建）。
+      // 会话一创建就带上 webBinding（rootHash 来自会话 binding）——否则
+      // runAgent 的补丁写入与 AgentService 的 persistConversationMessages
+      // （每次调用新建 ChatManager、独立写队列）之间是读-改-写竞态：persist
+      // 可能读到补丁前的旧状态并在补丁写入后落盘，把 webBinding 覆盖掉，
+      // 导致后续工具审批/访问控制 404。创建即带 binding 后竞态无害（任何
+      // 读都读到 binding）。
       return await this.options.chatManager.createChat({
         id: input.conversationId,
         title: 'New chat',
@@ -465,7 +480,17 @@ export class WebChatRuntimeAdapter {
         createdAt,
         updatedAt: createdAt,
         origin: 'external-agent',
-      })
+        ...(rootHash && agentId
+          ? {
+              agentInstanceId: agentId,
+              webBinding: {
+                initialAgentId: agentId,
+                activeAgentId: agentId,
+                rootHash,
+              },
+            }
+          : {}),
+      } as never)
     } catch (error) {
       // 并发 web 请求竞争创建：文件已存在时回退到读取（对齐 backup
       // dispatch 的 'already_applied' 容忍语义），否则原样抛出。

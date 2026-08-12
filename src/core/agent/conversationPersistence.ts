@@ -96,37 +96,43 @@ export const createAgentConversationPersistence = (
     }): Promise<void> => {
       const settings = getSettings()
       const chatManager = new ChatManager(app, settings)
-      const serializedMessages = messages.map(serializeChatMessage)
-      const existingConversation = await chatManager.findById(conversationId)
-      const compactedMessages = await compactConversationMessagesForStorage({
-        app,
-        conversationId,
-        messages: serializedMessages,
-        previousMessages: existingConversation?.messages,
-        settings,
-      })
-
-      if (existingConversation) {
-        await chatManager.updateChat(
+      // 与 runAgent 的 webBinding 补丁 / web 路由的读-改-写共享会话级锁：
+      // 本 persist 的 findById+updateChat 是跨实例读-改-写，不串行化会
+      // 读到补丁前的旧状态并在补丁写入后落盘，把 webBinding 覆盖掉
+      // （审批/访问控制 404）。
+      await ChatManager.withConversationLock(conversationId, async () => {
+        const serializedMessages = messages.map(serializeChatMessage)
+        const existingConversation = await chatManager.findById(conversationId)
+        const compactedMessages = await compactConversationMessagesForStorage({
+          app,
           conversationId,
-          {
-            messages: compactedMessages,
-            compaction:
-              compaction ??
-              normalizeChatConversationCompactionState(
-                existingConversation.compaction,
-              ),
-          },
-          touchUpdatedAt === undefined ? undefined : { touchUpdatedAt },
-        )
-      } else {
-        await chatManager.createChat({
-          id: conversationId,
-          title: DEFAULT_UNTITLED_CONVERSATION_TITLE,
-          messages: compactedMessages,
-          compaction: compaction ?? [],
+          messages: serializedMessages,
+          previousMessages: existingConversation?.messages,
+          settings,
         })
-      }
+
+        if (existingConversation) {
+          await chatManager.updateChat(
+            conversationId,
+            {
+              messages: compactedMessages,
+              compaction:
+                compaction ??
+                normalizeChatConversationCompactionState(
+                  existingConversation.compaction,
+                ),
+            },
+            touchUpdatedAt === undefined ? undefined : { touchUpdatedAt },
+          )
+        } else {
+          await chatManager.createChat({
+            id: conversationId,
+            title: DEFAULT_UNTITLED_CONVERSATION_TITLE,
+            messages: compactedMessages,
+            compaction: compaction ?? [],
+          })
+        }
+      })
 
       window.dispatchEvent(new CustomEvent(CHAT_HISTORY_UPDATED_EVENT))
     },
