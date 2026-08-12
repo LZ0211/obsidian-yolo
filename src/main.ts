@@ -4874,6 +4874,9 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
               port: runtime.port,
               getAgentService: () => this.getAgentService(),
               getMcpManager: () => this.getMcpManager(),
+              // Web 端 CLI 面：桌面协调器 scope（createCliRuntimeScope 已按
+              // Platform.isDesktop 门控，移动端返回 null → CLI 端点 404）。
+              getCliRuntimeScope: () => this.createCliRuntimeScope(),
             })
             this.webAgentLifecycleService = registered.lifecycleService
           } else {

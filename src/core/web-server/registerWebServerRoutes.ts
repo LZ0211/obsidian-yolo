@@ -14,6 +14,8 @@ import { generateConversationTitleText } from '../../utils/chat/generateConversa
 import { loadDesktopNodeModuleSync } from '../../utils/platform/desktopNodeModule'
 import type { AgentEventStore } from '../agent/agentEventStore'
 import type { AgentConversationState, AgentService } from '../agent/service'
+import { createCliChatRuntime } from '../chat-runtime/cli/createCliChatRuntime'
+import type { CliRuntimeScope } from '../cli-runtime/coordinator'
 import type { McpManager } from '../mcp/mcpManager'
 import { getYoloBaseDir } from '../paths/yoloPaths'
 
@@ -69,6 +71,12 @@ export type RegisterWebServerRoutesOptions = {
   getServerUrl?: () => string
   getAgentService: () => AgentService
   getMcpManager: () => Promise<McpManager>
+  /**
+   * 桌面 CLI 运行时 scope 的惰性获取器（main.ts 经 createCliRuntimeScope 提供）。
+   * 未提供或返回 null 时，CLI 面（claude-code/codex）的 chat-runtime 端点回
+   * 404 runtime_unavailable；yolo 分支恒 null（native 走 /api/agent/*）。
+   */
+  getCliRuntimeScope?: () => Promise<CliRuntimeScope | null> | CliRuntimeScope | null
   now?: () => number
 }
 
@@ -409,11 +417,22 @@ export function registerWebServerRoutes(
   registerChatRoutes(options.server.router, registerChatRoutesContext)
 
   registerChatRuntimeRoutes(options.server.router, {
-    getChatRuntime: async () => {
-      // master 尚无 createNativeChatRuntime/createCliChatRuntime（Task 10/11
-      // 的 runtime 层）；路由在 runtime 为 null 时回 404 runtime_unavailable，
-      // 桌面聊天主面不受影响。
-      return null
+    getChatRuntime: async (runtimeId, _conversationId) => {
+      // 决策：native 分支不移植——Web 主面（yolo）已走 /api/agent/* 直驱
+      // AgentService，此处恒返回 null（路由回 404 runtime_unavailable）。
+      if (runtimeId === 'yolo') {
+        return null
+      }
+      // CLI 面（claude-code/codex）：桌面协调器 scope 可用时按实例创建
+      // CLI 契约 runtime；scope 不可用（移动端/未接线）回 404。
+      const scope = await (options.getCliRuntimeScope?.() ?? null)
+      return scope
+        ? await createCliChatRuntime(scope, runtimeId, {
+            app: options.app,
+            settings: options.getSettings(),
+            getMcpManager: options.getMcpManager,
+          })
+        : null
     },
   })
 
