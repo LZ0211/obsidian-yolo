@@ -1,6 +1,7 @@
 /* eslint-disable import/no-nodejs-modules -- 测试文件运行在 Node 环境，允许直接引入 node 内置模块进行 mock */
 import { createHash } from 'node:crypto'
 
+import { SUBAGENT_RESULT_MAX_CHARS } from '../../core/agent/subagent/result-limit'
 import { SETTINGS_SCHEMA_VERSION } from '../../settings/schema/migrations'
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import type { Assistant } from '../../types/assistant.types'
@@ -181,6 +182,7 @@ const makeSettings = (overrides: Partial<YoloSettings> = {}): YoloSettings => {
       platforms: [],
       sessionMappings: [],
     },
+    subagentResultMaxChars: SUBAGENT_RESULT_MAX_CHARS,
     learningOptions: {
       modelId: '',
       betaNoticeAcknowledged: false,

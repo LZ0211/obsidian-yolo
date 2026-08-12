@@ -66,6 +66,11 @@ import {
   registerParentSubagentDeadline,
 } from './subagent/pending-timeout-registry'
 import {
+  SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH,
+  getSubagentResultMaxChars,
+  truncateSubagentResult,
+} from './subagent/result-limit'
+import {
   type SubagentRuntimeEntry,
   subagentRuntimeRegistry,
 } from './subagent/runtime-registry'
@@ -260,6 +265,20 @@ function buildSubagentResultMessage(
 ): ChatSubagentResultMessage {
   const completedAt = record.completedAt ?? Date.now()
   const result = record.result
+  // Bound the child's result text to the configured cap before it is injected
+  // into the parent conversation (pre `withBoundedSubagentResultContent`). The
+  // content budget reserves room for the truncation marker so the injected
+  // total stays at or under `subagentResultMaxChars`. The full result remains
+  // in the child's durable session transcript — this only caps the copy
+  // re-sent to the parent.
+  const contentBudget = Math.max(
+    1,
+    getSubagentResultMaxChars() - SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH,
+  )
+  const content = truncateSubagentResult(
+    result?.content ?? record.error ?? '',
+    contentBudget,
+  ).text
   return {
     role: 'subagent_result',
     id: uuidv4(),
@@ -269,7 +288,7 @@ function buildSubagentResultMessage(
     status:
       result?.status ??
       (record.status === 'running' ? 'completed' : record.status),
-    content: result?.content ?? record.error ?? '',
+    content,
     activityLog: result?.activityLog ?? record.activityLog,
     durationMs: result?.durationMs ?? completedAt - record.createdAt,
     toolUseCount: result?.toolUseCount ?? 0,

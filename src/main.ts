@@ -2260,6 +2260,15 @@ export default class YoloPlugin extends Plugin {
       './core/agent/subagent/pending-timeout-registry'
     )
     setParentSubagentTimeoutSettingsGetter(() => this.settings.subagentTimeout)
+    // The subagent result cap is read on every completion injection, so changing
+    // `subagentResultMaxChars` in settings takes effect without a restart (pre
+    // `main.ts:3443`).
+    const { setSubagentResultMaxCharsSettingsGetter } = await import(
+      './core/agent/subagent/result-limit'
+    )
+    setSubagentResultMaxCharsSettingsGetter(
+      () => this.settings.subagentResultMaxChars,
+    )
     this.liteSkillRegistryDispose = initializeLiteSkillRegistryService({
       app: this.app,
       settings: this.settings,

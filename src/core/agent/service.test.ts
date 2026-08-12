@@ -15,6 +15,12 @@ import {
   resetParentSubagentTimeoutConfig,
   resetParentSubagentTimeoutSettingsGetter,
 } from './subagent/pending-timeout-registry'
+import {
+  SUBAGENT_RESULT_MAX_CHARS,
+  SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH,
+  resetSubagentResultMaxCharsSettingsGetter,
+  setSubagentResultMaxCharsSettingsGetter,
+} from './subagent/result-limit'
 import { subagentRuntimeRegistry } from './subagent/runtime-registry'
 import { subagentTaskRegistry } from './subagent/task-registry'
 import type {
@@ -1423,6 +1429,98 @@ describe('AgentService background subagent results', () => {
     } finally {
       service.stopBackgroundTaskResultListener()
     }
+  })
+})
+
+describe('AgentService subagent result truncation', () => {
+  afterEach(() => {
+    resetSubagentResultMaxCharsSettingsGetter()
+  })
+
+  const makeLongCompletionRecord = (
+    overrides: Partial<SubagentTaskCompletionRecord> = {},
+  ): SubagentTaskCompletionRecord => ({
+    taskId: 'sub_truncated_1',
+    conversationId: 'conv-subagent-truncation',
+    source: {
+      type: 'llm_tool_call',
+      toolCallId: 'subagent-call-truncated',
+      assistantMessageId: 'assistant-1',
+    },
+    title: 'Scan',
+    status: 'completed',
+    createdAt: 1,
+    completedAt: 2,
+    prompt: 'Scan notes',
+    result: {
+      taskId: 'sub_truncated_1',
+      status: 'completed',
+      content: 'x'.repeat(10_000),
+      activityLog: '[state] completed',
+      durationMs: 1,
+      toolUseCount: 1,
+    },
+    ...overrides,
+  })
+
+  const pushAndGetContent = (
+    record: SubagentTaskCompletionRecord,
+  ): string => {
+    const service = new AgentService()
+    service.startBackgroundTaskResultListener()
+    try {
+      backgroundTaskCompletionBus.pushCompleted({
+        kind: 'subagent',
+        taskId: record.taskId,
+        conversationId: record.conversationId,
+        record,
+      })
+      const subagentResult = service
+        .getState(record.conversationId)
+        .messages.find((message) => message.role === 'subagent_result')
+      expect(subagentResult).toBeDefined()
+      return (subagentResult as { content: string }).content
+    } finally {
+      service.stopBackgroundTaskResultListener()
+    }
+  }
+
+  it('caps an oversized child result to the default cap (marker included)', () => {
+    const content = pushAndGetContent(makeLongCompletionRecord())
+    // budget = 8000 - marker length; the marker is additive on top, so the
+    // injected total is exactly the configured cap.
+    const headChars = Math.floor(
+      (SUBAGENT_RESULT_MAX_CHARS -
+        SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH) /
+        2,
+    )
+    expect(content.length).toBe(SUBAGENT_RESULT_MAX_CHARS)
+    expect(content).toContain('…[truncated]…')
+    expect(content.startsWith('x'.repeat(headChars))).toBe(true)
+    expect(content.endsWith('x'.repeat(headChars))).toBe(true)
+  })
+
+  it('reads the configured cap through the settings getter', () => {
+    setSubagentResultMaxCharsSettingsGetter(() => 120)
+    const content = pushAndGetContent(makeLongCompletionRecord())
+    expect(content.length).toBe(120)
+    expect(content).toContain('…[truncated]…')
+  })
+
+  it('leaves short results untouched', () => {
+    const content = pushAndGetContent(
+      makeLongCompletionRecord({
+        result: {
+          taskId: 'sub_truncated_1',
+          status: 'completed',
+          content: 'done',
+          activityLog: '[state] completed',
+          durationMs: 1,
+          toolUseCount: 1,
+        },
+      }),
+    )
+    expect(content).toBe('done')
   })
 })
 

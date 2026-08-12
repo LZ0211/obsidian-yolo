@@ -4,6 +4,10 @@ import {
   DEFAULT_CHAT_MODELS,
   DEFAULT_CHAT_TITLE_MODEL_ID,
 } from '../../constants'
+import {
+  SUBAGENT_RESULT_MAX_CHARS,
+  SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH,
+} from '../../core/agent/subagent/result-limit'
 import { DEFAULT_PARENT_SUBAGENT_TIMEOUT_CONFIG } from '../../core/agent/subagent/subagent-timeout-config'
 import { DEFAULT_LOCAL_MCP_SERVER_PORT } from '../../core/mcp/localMcpServerConfig'
 import { webSearchSettingsSchema } from '../../core/web-search/types'
@@ -726,6 +730,20 @@ export const yoloSettingsSchema = z.object({
   imageModelId: z.string().catch(''),
 
   subagentTimeout: subagentTimeoutSettingsSchema.optional(),
+
+  // Cap for a child subagent result copied back into the parent conversation.
+  // Read through the result-limit settings getter so changes take effect
+  // without a restart. `.catch` keeps absent or malformed values at the default.
+  //
+  // The floor is the truncation-marker length + 1 so the configured cap can
+  // always hold the injected text: the content budget reserves room for the
+  // marker, and a cap of `marker + 1` yields exactly `marker + 1` chars. Any
+  // smaller cap would let the injected total exceed the configured cap.
+  subagentResultMaxChars: z
+    .number()
+    .int()
+    .min(SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH + 1)
+    .catch(SUBAGENT_RESULT_MAX_CHARS),
 
   // Chat options
   chatOptions: z
