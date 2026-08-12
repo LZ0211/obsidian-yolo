@@ -33,6 +33,7 @@ import {
   type CliRuntimeScope,
   type CliSessionRef,
   RUNTIME_CAPABILITIES,
+  buildCliEnvironmentContext,
   createYoloChatRuntimeActions,
   isCliRuntime,
   isCliRuntimeAvailable,
@@ -100,7 +101,10 @@ import {
   getDisplayedAssistantToolMessages,
   getSourceUserMessageIdForGroup,
 } from './chatRetry'
-import type { ChatSessionControllerDeps } from './ChatSessionController'
+import type {
+  ChatSessionCliContext,
+  ChatSessionControllerDeps,
+} from './ChatSessionController'
 import { ChatSessionController } from './ChatSessionController'
 import CliChatSurface from './CliChatSurface'
 import Composer from './Composer'
@@ -465,6 +469,10 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       ),
     })
   }, [app, effectiveSettings, agentService])
+  // RequestContextBuilder changes identity when `settings` changes — the
+  // controller reads it through this ref (never a captured reference) so a
+  // settings change doesn't leave the controller calling a stale instance.
+  const requestContextBuilderRef = useLatestRef(requestContextBuilder)
 
   const { file: activeFile, viewState: activeViewState } = useActiveViewState()
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -504,6 +512,36 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
   )
   const deleteConversationRef = useLatestRef(deleteConversation)
   const updateConversationTitleRef = useLatestRef(updateConversationTitle)
+  const generateConversationTitleRef = useLatestRef(generateConversationTitle)
+  // C2 additions (提交/中止/压缩/重试收归 controller): two of the new deps
+  // can only be assembled once hooks called *after* this point are ready
+  // (useChatStreamManager's mutation/abort/compact, and the CLI orchestration
+  // bag) — same "assign later, read through a getter" technique as
+  // `cliRuntimeSwitchLateStateRef` in useChatRuntimePreferences.ts. Declared
+  // here (before the controller is constructed) so `sessionControllerDeps`'s
+  // one-time `??=` object can close over stable ref identities.
+  const sessionRunLateDepsRef = useRef<{
+    submitChatMutation: ReturnType<
+      typeof useChatStreamManager
+    >['submitChatMutation']
+    abortConversationRun: ReturnType<
+      typeof useChatStreamManager
+    >['abortConversationRun']
+    compactConversation: ReturnType<
+      typeof useChatStreamManager
+    >['compactConversation']
+    forceScrollToBottom: () => void
+  } | null>(null)
+  const getSessionRunLateDeps = useCallback(() => {
+    const late = sessionRunLateDepsRef.current
+    if (!late) {
+      throw new Error(
+        '[YOLO] Chat: sessionController run deps accessed before useChatStreamManager hydrated sessionRunLateDepsRef',
+      )
+    }
+    return late
+  }, [])
+  const cliSubmitContextRef = useRef<ChatSessionCliContext | null>(null)
   const sessionControllerDepsRef = useRef<ChatSessionControllerDeps>()
   const sessionControllerDeps = (sessionControllerDepsRef.current ??= {
     getAgentService: () => plugin.getAgentService(),
@@ -515,6 +553,27 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     updateConversationTitle: (id, title) =>
       updateConversationTitleRef.current(id, title),
     chatModeForSave,
+    getRequestContextBuilder: () => requestContextBuilderRef.current,
+    runConversation: (params, options) =>
+      getSessionRunLateDeps().submitChatMutation.mutate(params, options),
+    abortConversationRun: (conversationId) =>
+      getSessionRunLateDeps().abortConversationRun(conversationId),
+    compactConversation: (messages) =>
+      getSessionRunLateDeps().compactConversation(messages),
+    generateConversationTitle: (...args) =>
+      generateConversationTitleRef.current(...args),
+    forceScrollToBottom: (options) => {
+      if (options?.deferToNextFrame) {
+        requestAnimationFrame(() =>
+          getSessionRunLateDeps().forceScrollToBottom(),
+        )
+        return
+      }
+      getSessionRunLateDeps().forceScrollToBottom()
+    },
+    setQueryProgress: (action) => setQueryProgress(action),
+    runtimeNavigationGenerationRef,
+    getCliSubmitContext: () => cliSubmitContextRef.current,
   })
   const sessionController = (sessionControllerRef.current ??=
     new ChatSessionController(
@@ -575,6 +634,14 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     chatMessagesStateRef,
     setChatMessages,
     preferencesController,
+    sessionController,
+    currentConversationId,
+    assistantGroupBoundaryMessageIds,
+    deleteConversation,
+    queuedMessageEditState,
+    setQueuedMessageEditState,
+    getReasoningLevelForModelId,
+    persistReasoningLevelForModel,
   })
   const {
     inputMessage,
@@ -920,6 +987,43 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     selectedAssistantFilePolicy: selectedAssistant?.workspaceAccessPolicy,
   }
 
+  // 当前活跃 CLI 运行时侧的一袋依赖，经 `sessionController.deps` 的
+  // `getCliSubmitContext()` 读取——CLI 编排状态在 C3 前仍归
+  // useCliRuntimeOrchestration 的 React state 所有（见计划分期 C 的边界
+  // 规则）；`null` 表示活跃运行时是 'yolo' 或该 hook 尚未产出就绪的
+  // controller/coordinator/scope，镜像迁移前 handleMainInputSubmit 里的
+  // `if (!controller || !coordinator || !scope) return` 守卫。
+  cliSubmitContextRef.current =
+    activeRuntimeId !== 'yolo' &&
+    cliConversationController &&
+    cliOperationCoordinator &&
+    cliRuntimeScope
+      ? {
+          runtimeId: activeRuntimeId,
+          controller: cliConversationController,
+          coordinator: cliOperationCoordinator,
+          scope: cliRuntimeScope,
+          settings,
+          chatMode: cliChatMode,
+          yoloEnabled: cliYoloEnabled,
+          cliConversationId,
+          getDraftRevision: () => inputDraftRevisionRef.current,
+          buildEnvironmentContext: () =>
+            buildCliEnvironmentContext({
+              app,
+              settings,
+              currentFile: activeFile,
+              currentFileViewState: activeViewState,
+            }),
+          createOrTouchCliConversation,
+          generateConversationTitle,
+          syncCliConversationTitle,
+          setCliConversationId,
+          consumeAcceptedCliDraft,
+          isMounted: () => chatMountedRef.current,
+        }
+      : null
+
   // applyAssistantDefaultModel 触达输入层（写回草稿 reasoningLevel）的一次
   // 性事件——由 controller 在 assistant 切换/chatMode 级联触发默认模型应用
   // 时发出，这里连接到 setInputMessage。取代原
@@ -1092,16 +1196,22 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     compaction: effectiveCompactionState,
   })
   const isCurrentConversationRunActive = currentConversationRunSummary.isActive
+  // Hydrate the C2 run-deps late ref every render — see its declaration for
+  // why this can't be captured once at construction time.
+  sessionRunLateDepsRef.current = {
+    submitChatMutation,
+    abortConversationRun,
+    compactConversation,
+    forceScrollToBottom: triggerForceScrollToBottom,
+  }
 
   const {
     runSummariesByConversationId,
     queuedUserMessages,
     serializeMessageModelMap,
     normalizeAssistantGroupBoundaryMessageIds,
-    buildAssistantGroupBoundaryMessageIdsAfterUserRemoval,
     persistConversation,
     persistConversationImmediately,
-    isUserMessageEffectivelyEmpty,
     updateHistoricalUserMessage,
     finalizeHistoricalUserMessageEdit,
     dismissHistoricalUserMessage,
@@ -1183,7 +1293,6 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
   })
 
   const {
-    handleManualContextCompaction,
     handleRecoverPendingToolCall,
     handleRecoverAnswerUserQuestion,
     handleUserMessageSubmit,
@@ -1410,58 +1519,23 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     buildContextBreakdownInputs,
   )
 
-  // 输入控制器的「延迟依赖」——CLI 编排、会话持久化、useChatStreamManager
-  // 均在 useChatInputController 调用之后才产生；本对象在每次渲染的这个
-  // 位置写入最新快照，供 handleMainInputSubmit 等已经在 hook 内部创建好
-  // 的处理器通过 lateStateRef 读取。取代原先的 mainInputSubmitStateRef /
-  // releaseHighlightIdsRef 等各个独立 useLatestRef。
+  // 输入控制器的「延迟依赖」——现只剩真正晚于 useChatInputController 产生的
+  // 值：CLI 编排（useCliRuntimeOrchestration）、选区高亮会话
+  // （useChatHighlightSession）、运行态摘要（useChatStreamManager）。提交/
+  // 中止/压缩/编辑历史消息/mentionable 持久化等已收归
+  // `sessionController`（架构治理第三步分期 C2），不再经此对象读写——见
+  // `ChatInputLateState` 的类型文档。
   inputController.lateStateRef.current = {
-    updateHistoricalUserMessage,
     releaseHighlightIds,
-    isUserMessageEffectivelyEmpty,
-    buildAssistantGroupBoundaryMessageIdsAfterUserRemoval,
-    assistantGroupBoundaryMessageIds,
-    setAssistantGroupBoundaryMessageIds,
-    persistConversation,
-    deleteConversation,
-    currentConversationId,
-    setMessageModelMap,
-    setMessageReasoningMap,
-    activeBranchByUserMessageIdRef,
-    setActiveBranchByUserMessageId,
-    activeFile,
-    activeViewState,
-    agentService,
-    app,
-    chatMessages,
-    cliChatMode,
-    cliConversationId,
     commitSentSelectionHighlights,
+    cliChatMode,
     cliConversationController,
     cliOperationCoordinator,
     cliRuntimeScope,
-    currentConversationRunSummary,
-    createOrTouchCliConversation,
-    displayedChatMessages,
-    handleUserMessageSubmit,
-    generateConversationTitle,
-    syncCliConversationTitle,
-    messageModelMap,
-    queuedMessageEditState,
-    setQueuedMessageEditState,
-    selectedAssistant,
-    settings,
-    t,
     cliYoloEnabled,
-    setCliConversationId,
-    consumeAcceptedCliDraft,
-    chatMountedRef,
-    handleManualContextCompaction,
     cliPreferenceSettingsRef,
     refreshCliSkills,
-    abortConversationRun,
-    getReasoningLevelForModelId,
-    persistReasoningLevelForModel,
+    currentConversationRunSummary,
   }
 
   const buildMainInputContextBreakdownInputs = useCallback(() => {
