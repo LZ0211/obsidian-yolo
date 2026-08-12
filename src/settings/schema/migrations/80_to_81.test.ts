@@ -171,4 +171,48 @@ describe('migrateFrom80To81', () => {
       expect.objectContaining({ webRuntime: 'oops' }),
     )
   })
+
+  it('coerces scheduledTasks fields to typed values with safe defaults', () => {
+    expect(
+      migrateFrom80To81({
+        version: 80,
+        scheduledTasks: {
+          enabled: 1,
+          enableScriptExecution: true,
+          allowedScriptDirectories: ['/scripts', 42],
+        },
+      }),
+    ).toMatchObject({
+      version: 81,
+      scheduledTasks: {
+        enabled: false,
+        enableScriptExecution: true,
+        allowedScriptDirectories: ['/scripts', 42],
+      },
+    })
+  })
+
+  it('fills missing scheduledTasks fields with safe defaults', () => {
+    expect(
+      migrateFrom80To81({
+        version: 80,
+        scheduledTasks: { enabled: true },
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        version: 81,
+        scheduledTasks: {
+          enabled: true,
+          enableScriptExecution: false,
+          allowedScriptDirectories: [],
+        },
+      }),
+    )
+  })
+
+  it('leaves a malformed scheduledTasks block untouched for the schema to catch', () => {
+    expect(migrateFrom80To81({ version: 80, scheduledTasks: 'oops' })).toEqual(
+      expect.objectContaining({ scheduledTasks: 'oops' }),
+    )
+  })
 })

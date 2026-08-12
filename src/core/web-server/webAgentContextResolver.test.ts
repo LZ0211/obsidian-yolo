@@ -185,6 +185,11 @@ const makeSettings = (overrides: Partial<YoloSettings> = {}): YoloSettings => {
       modelId: '',
       betaNoticeAcknowledged: false,
     },
+    scheduledTasks: {
+      enabled: false,
+      enableScriptExecution: false,
+      allowedScriptDirectories: [],
+    },
     ...overrides,
   } satisfies YoloSettings
 

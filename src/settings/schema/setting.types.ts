@@ -578,6 +578,19 @@ export const webRuntimeSettingsSchema = z
     maxConcurrentAgentRuns: 12,
   })
 
+// Scheduled Tasks — cron/interval/one-time triggered agent (and, later,
+// script) task automation. `enableScriptExecution`/`allowedScriptDirectories`
+// are added now even though `type=script` tasks are V2-only work, so the
+// settings schema/migration doesn't need a second bump when V2 lands.
+export const scheduledTasksSettingsSchema = z.object({
+  enabled: z.boolean().catch(false),
+  enableScriptExecution: z.boolean().catch(false),
+  allowedScriptDirectories: resilientArraySchema(z.string()).catch([]),
+})
+export type ScheduledTasksSettings = z.infer<
+  typeof scheduledTasksSettingsSchema
+>
+
 export const yoloSettingsSchema = z.object({
   // Version
   version: z.literal(SETTINGS_SCHEMA_VERSION).catch(SETTINGS_SCHEMA_VERSION),
@@ -638,6 +651,11 @@ export const yoloSettingsSchema = z.object({
   }),
   ragBackendSettings: ragBackendSettingsSchema,
   webRuntime: webRuntimeSettingsSchema,
+  scheduledTasks: scheduledTasksSettingsSchema.catch({
+    enabled: false,
+    enableScriptExecution: false,
+    allowedScriptDirectories: [],
+  }),
 
   // MCP configuration
   mcp: z
