@@ -300,7 +300,12 @@ describe('ScheduledTaskScheduler', () => {
       const updatedTask = store.getTask('task-1')
       expect(updatedTask?.lastRunStatus).toBe(TaskRunStatus.FAILED)
       expect(updatedTask?.lastError).toBe('model unavailable')
-      expect(events.map((e) => e.type)).toEqual(['task_started', 'task_failed'])
+      // The agent error is retryable (maxRetries 3), so a retry is scheduled.
+      expect(events.map((e) => e.type)).toEqual([
+        'task_started',
+        'task_failed',
+        'retry_scheduled',
+      ])
 
       store.close()
     } finally {
@@ -344,9 +349,11 @@ describe('ScheduledTaskScheduler', () => {
 
       const updatedTask = store.getTask('task-1')
       expect(updatedTask?.lastRunStatus).toBe(TaskRunStatus.TIMED_OUT)
+      // A timeout is retryable (maxRetries 3), so a retry is scheduled.
       expect(events.map((e) => e.type)).toEqual([
         'task_started',
         'task_timed_out',
+        'retry_scheduled',
       ])
 
       store.close()
@@ -1738,6 +1745,195 @@ describe('ScheduledTaskScheduler', () => {
 
         store.close()
       } finally {
+        cleanup(dir)
+      }
+    })
+  })
+
+  describe('retry with exponential backoff', () => {
+    it('retries with exponential backoff, emits retry_scheduled, and completes once the agent recovers', async () => {
+      jest.useFakeTimers()
+      const dir = makeTempDir()
+      try {
+        const store = createScheduledTasksStore(dir)
+        const eventBus = new TaskEventBus()
+        let calls = 0
+        const agentApi = makeAgentApi(async () => {
+          calls += 1
+          if (calls <= 2) {
+            return {
+              conversationId: 'conv-fail',
+              text: '',
+              status: 'error',
+              errorMessage: 'boom',
+            }
+          }
+          return {
+            conversationId: 'conv-ok',
+            text: 'done',
+            status: 'completed',
+          }
+        })
+        const scheduler = new ScheduledTaskScheduler({
+          store,
+          executor: new TaskExecutor({ getAgentApi: () => agentApi }),
+          eventBus,
+        })
+        store.createTask('task-1', makeTaskConfig({ maxRetries: 3 }), 1000)
+
+        const events: TaskEvent[] = []
+        eventBus.subscribeAll((e) => events.push(e))
+
+        const t0 = Date.now()
+        scheduler.start()
+        await jest.advanceTimersByTimeAsync(0) // leader poll loop's first check
+        const result = scheduler.executeTaskNow('task-1')
+        if (result.outcome !== 'started') throw new Error('unreachable')
+
+        await jest.advanceTimersByTimeAsync(0) // attempt 1 fails
+
+        // A retry is scheduled with exponential backoff: next attempt at t0 + 2^1 s.
+        expect(events).toContainEqual({
+          type: 'retry_scheduled',
+          taskId: 'task-1',
+          runId: result.runId,
+          attempt: 2,
+          nextAttemptAtMs: t0 + 2_000,
+        })
+        // The retry sits in the queue until its backoff elapses — not started yet.
+        expect(scheduler.getExecutingTasks()).toHaveLength(0)
+
+        // The next poll tick fires the retry (attempt 2); it fails again, so a
+        // second retry is scheduled at t0+30s + 2^2 s.
+        await jest.advanceTimersByTimeAsync(30_000)
+        const runsAfterAttempt2 = store.listRunsByTask('task-1').runs
+        expect(runsAfterAttempt2).toHaveLength(2)
+        const runIdOfAttempt2 = runsAfterAttempt2.find(
+          (r) => r.attempt === 2,
+        )?.id
+        expect(runsAfterAttempt2.find((r) => r.attempt === 2)?.status).toBe(
+          TaskRunStatus.FAILED,
+        )
+        expect(events).toContainEqual({
+          type: 'retry_scheduled',
+          taskId: 'task-1',
+          runId: runIdOfAttempt2,
+          attempt: 3,
+          nextAttemptAtMs: t0 + 34_000,
+        })
+
+        // Attempt 3 fires at the next tick and succeeds — no more retries.
+        await jest.advanceTimersByTimeAsync(30_000)
+        await jest.advanceTimersByTimeAsync(0)
+
+        const runs = store.listRunsByTask('task-1').runs
+        expect(runs).toHaveLength(3)
+        // listRunsByTask is newest-first; order by attempt for the assertion.
+        const runsByAttempt = [...runs].sort((a, b) => a.attempt - b.attempt)
+        expect(runsByAttempt.map((r) => r.attempt)).toEqual([1, 2, 3])
+        expect(runsByAttempt.map((r) => r.status)).toEqual([
+          TaskRunStatus.FAILED,
+          TaskRunStatus.FAILED,
+          TaskRunStatus.COMPLETED,
+        ])
+        expect(runsByAttempt.map((r) => r.triggeredBy)).toEqual([
+          'manual',
+          'retry',
+          'retry',
+        ])
+
+        const task = store.getTask('task-1')
+        expect(task?.lastRunStatus).toBe(TaskRunStatus.COMPLETED)
+        expect(task?.lastError).toBeNull()
+        expect(events.filter((e) => e.type === 'retry_scheduled')).toHaveLength(
+          2,
+        )
+        expect(events.filter((e) => e.type === 'task_completed')).toHaveLength(
+          1,
+        )
+
+        scheduler.stop()
+        store.close()
+      } finally {
+        jest.useRealTimers()
+        cleanup(dir)
+      }
+    })
+
+    it('gives up after maxRetries, persisting each failed attempt and stopping retries', async () => {
+      jest.useFakeTimers()
+      const dir = makeTempDir()
+      try {
+        const store = createScheduledTasksStore(dir)
+        const eventBus = new TaskEventBus()
+        const agentApi = makeAgentApi(async () => ({
+          conversationId: 'conv-fail',
+          text: '',
+          status: 'error',
+          errorMessage: 'always down',
+        }))
+        const scheduler = new ScheduledTaskScheduler({
+          store,
+          executor: new TaskExecutor({ getAgentApi: () => agentApi }),
+          eventBus,
+        })
+        // maxRetries 2: attempt 1 may be retried once (attempt 2), then the
+        // task is given up — exactly one retry_scheduled is expected.
+        store.createTask('task-1', makeTaskConfig({ maxRetries: 2 }), 1000)
+
+        const events: TaskEvent[] = []
+        eventBus.subscribeAll((e) => events.push(e))
+
+        const t0 = Date.now()
+        scheduler.start()
+        await jest.advanceTimersByTimeAsync(0)
+        const result = scheduler.executeTaskNow('task-1')
+        if (result.outcome !== 'started') throw new Error('unreachable')
+
+        await jest.advanceTimersByTimeAsync(0) // attempt 1 fails -> one retry scheduled
+
+        expect(events).toContainEqual({
+          type: 'retry_scheduled',
+          taskId: 'task-1',
+          runId: result.runId,
+          attempt: 2,
+          nextAttemptAtMs: t0 + 2_000,
+        })
+
+        // The retry fires at the next tick, fails, and maxRetries (2) is exhausted.
+        await jest.advanceTimersByTimeAsync(30_000)
+        await jest.advanceTimersByTimeAsync(0)
+        await jest.advanceTimersByTimeAsync(30_000) // a further tick must not start anything new
+        await jest.advanceTimersByTimeAsync(0)
+
+        const runs = store.listRunsByTask('task-1').runs
+        expect(runs).toHaveLength(2)
+        // listRunsByTask is newest-first; order by attempt for the assertion.
+        const runsByAttempt = [...runs].sort((a, b) => a.attempt - b.attempt)
+        expect(runsByAttempt.map((r) => r.attempt)).toEqual([1, 2])
+        expect(runsByAttempt.map((r) => r.status)).toEqual([
+          TaskRunStatus.FAILED,
+          TaskRunStatus.FAILED,
+        ])
+        expect(runsByAttempt.map((r) => r.triggeredBy)).toEqual([
+          'manual',
+          'retry',
+        ])
+
+        const task = store.getTask('task-1')
+        expect(task?.lastRunStatus).toBe(TaskRunStatus.FAILED)
+        expect(task?.lastError).toBe('always down')
+        expect(events.filter((e) => e.type === 'retry_scheduled')).toHaveLength(
+          1,
+        )
+        expect(events.filter((e) => e.type === 'task_completed')).toHaveLength(
+          0,
+        )
+
+        scheduler.stop()
+        store.close()
+      } finally {
+        jest.useRealTimers()
         cleanup(dir)
       }
     })

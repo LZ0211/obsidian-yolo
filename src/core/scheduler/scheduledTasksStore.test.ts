@@ -406,6 +406,117 @@ describe('ScheduledTasksStore', () => {
     }
   })
 
+  it('prunes runs by age and keeps only the last N per task', () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      store.createTask('task-1', makeTaskConfig(), 1000)
+      store.createTask('task-2', makeTaskConfig({ name: 'Task 2' }), 1000)
+
+      const now = Date.now()
+      const dayMs = 24 * 60 * 60 * 1000
+      const olderThanMs = 30 * dayMs
+
+      // task-1: 2 runs older than 30 days, 1 recent run, and 1 legacy-shaped
+      // run with no started_at (only scheduled_for) that is also over-age.
+      store.insertRun(
+        makeRunInsert({
+          id: 't1-old-1',
+          taskId: 'task-1',
+          startedAt: now - 35 * dayMs,
+        }),
+      )
+      store.insertRun(
+        makeRunInsert({
+          id: 't1-old-2',
+          taskId: 'task-1',
+          startedAt: now - 32 * dayMs,
+        }),
+      )
+      store.insertRun(
+        makeRunInsert({
+          id: 't1-recent',
+          taskId: 'task-1',
+          startedAt: now - 1 * dayMs,
+        }),
+      )
+      store.insertRun(
+        makeRunInsert({
+          id: 't1-legacy-old',
+          taskId: 'task-1',
+          startedAt: null,
+          scheduledFor: now - 40 * dayMs,
+        }),
+      )
+
+      // task-2: 1 old run + 3 recent runs — keep-last-N must trim the oldest recent one.
+      store.insertRun(
+        makeRunInsert({
+          id: 't2-old',
+          taskId: 'task-2',
+          startedAt: now - 31 * dayMs,
+        }),
+      )
+      // A RUNNING run is live state, never pruned — however old it is
+      // (crash-recovery must still find it; same rule as cherry's JobManager GC).
+      store.insertRun(
+        makeRunInsert({
+          id: 't1-running-ancient',
+          taskId: 'task-1',
+          status: TaskRunStatus.RUNNING,
+          startedAt: now - 40 * dayMs,
+        }),
+      )
+      store.insertRun(
+        makeRunInsert({
+          id: 't2-recent-1',
+          taskId: 'task-2',
+          startedAt: now - 2 * dayMs,
+        }),
+      )
+      store.insertRun(
+        makeRunInsert({
+          id: 't2-recent-2',
+          taskId: 'task-2',
+          startedAt: now - 3 * dayMs,
+        }),
+      )
+      store.insertRun(
+        makeRunInsert({
+          id: 't2-recent-3',
+          taskId: 'task-2',
+          startedAt: now - 4 * dayMs,
+        }),
+      )
+
+      const deleted = store.pruneRuns({ olderThanMs, keepLastNPerTask: 2 })
+
+      // Age cutoff deletes t1-old-1 / t1-old-2 / t1-legacy-old / t2-old (4);
+      // keep-last-N(2) then trims the oldest remaining task-2 run (t2-recent-3).
+      // The ancient RUNNING run survives — only terminal runs are pruned.
+      expect(deleted).toBe(5)
+      expect(store.getRun('t1-running-ancient')).toMatchObject({
+        status: TaskRunStatus.RUNNING,
+      })
+      // task-1 keeps its recent terminal run AND the untouched RUNNING one.
+      expect(store.listRunsByTask('task-1').runs.map((r) => r.id)).toEqual([
+        't1-recent',
+        't1-running-ancient',
+      ])
+      expect(store.listRunsByTask('task-2').runs.map((r) => r.id)).toEqual([
+        't2-recent-1',
+        't2-recent-2',
+      ])
+      expect(store.getRun('t1-old-1')).toBeNull()
+      expect(store.getRun('t1-legacy-old')).toBeNull()
+      expect(store.getRun('t2-old')).toBeNull()
+
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
   it('persists across reopen against the same rootDir', () => {
     const dir = makeTempDir()
     try {

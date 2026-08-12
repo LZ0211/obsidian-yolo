@@ -50,6 +50,12 @@ export type EnqueueResult =
 
 const PRUNE_SAFETY_MARGIN_MS = 5 * 60 * 1000
 const CHECK_INTERVAL_MS = 30_000
+/** How often the leader checks run-history size and prunes (age cutoff + per-task cap). */
+const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000
+/** Runs started (or scheduled) more than this long ago are deleted by the periodic prune. */
+const RUNS_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+/** After the age cutoff, each task keeps at most this many most-recent runs. */
+const RUNS_KEEP_LAST_N_PER_TASK = 50
 
 /**
  * Startup quiet window: the catch-up pass is deferred this long after
@@ -108,6 +114,8 @@ export class ScheduledTaskScheduler {
   private isChecking = false // mutex: prevents the 30s timer and a manual trigger from re-entering and double-enqueueing
   private stopped = true
   private shuttingDown = false
+  /** Timestamp of the most recent prune; 0 delays the first prune until PRUNE_INTERVAL_MS after the poll loop starts. */
+  private lastPruneAt = 0
   /** Timestamp of the most recent start(): the catch-up pass is held back until
    * CATCH_UP_QUIET_WINDOW_MS after it, so a fresh startup never storms the queue. */
   private startedAt = 0
@@ -222,9 +230,14 @@ export class ScheduledTaskScheduler {
     // down, and don't install an interval that stop() already missed clearing.
     if (this.stopped) return Promise.resolve()
     this.checkAndEnqueueScheduledTasks()
+    // Run-history retention is deliberately NOT applied here (only on the
+    // periodic tick): recovery (onLeaderAcquired) must finish first and its
+    // recovered runs stay visible to the operator until the next tick.
     this.checkInterval = setInterval(() => {
       this.checkAndEnqueueScheduledTasks()
       this.queue.pruneStaleBatches(PRUNE_SAFETY_MARGIN_MS)
+      this.queue.drain() // fires retries whose exponential backoff elapsed since the last tick
+      this.maybePruneRuns()
     }, CHECK_INTERVAL_MS)
     return new Promise((resolve) => {
       this.releaseLeaderLock = resolve
@@ -841,7 +854,23 @@ export class ScheduledTaskScheduler {
       )
       this.notify(task, 'failure')
 
-      this.queue.markFailed(item.taskId, item.batchId, isRetryableError(error))
+      // pi-style retry progress: when the queue schedules a retry (exponential
+      // backoff), announce which attempt will run and when. The queue itself is
+      // event-bus-agnostic; it reports the outcome and the scheduler emits.
+      const retry = this.queue.markFailed(
+        item.taskId,
+        item.batchId,
+        isRetryableError(error),
+      )
+      if (retry.retried) {
+        this.deps.eventBus.emit({
+          type: 'retry_scheduled',
+          taskId: item.taskId,
+          runId,
+          attempt: retry.attempt,
+          nextAttemptAtMs: retry.nextAttemptAtMs,
+        })
+      }
     } finally {
       this.runAbortControllers.delete(runId)
     }
@@ -866,6 +895,31 @@ export class ScheduledTaskScheduler {
         lastFlushAt = now
         this.deps.store.updateRun(runId, toTaskRunInsert(run))
       }
+    }
+  }
+
+  /**
+   * Periodic run-history retention (scheduler owns the policy, store owns the
+   * delete): terminal runs older than RUNS_MAX_AGE_MS are dropped and each
+   * task is kept to its RUNS_KEEP_LAST_N_PER_TASK most recent terminal runs —
+   * prevents task_runs from growing without bound on a long-lived vault (only
+   * terminal runs, so crash-recovery can always find a RUNNING orphan).
+   * Prunes at most once per PRUNE_INTERVAL_MS, on the poll tick only — never
+   * during leader acquisition, where recovery is still completing. Failures
+   * are logged and polling continues (same containment as the leader-hook
+   * path) — housekeeping must not take down the schedule loop.
+   */
+  private maybePruneRuns(): void {
+    const now = Date.now()
+    if (now - this.lastPruneAt < PRUNE_INTERVAL_MS) return
+    this.lastPruneAt = now
+    try {
+      this.deps.store.pruneRuns({
+        olderThanMs: RUNS_MAX_AGE_MS,
+        keepLastNPerTask: RUNS_KEEP_LAST_N_PER_TASK,
+      })
+    } catch (error) {
+      console.error('[YOLO][ScheduledTasks] run-history prune failed', error)
     }
   }
 

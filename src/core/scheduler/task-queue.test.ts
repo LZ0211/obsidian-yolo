@@ -269,4 +269,44 @@ describe('TaskQueue', () => {
     expect(pending[0]?.source).toBe('retry')
     expect(pending[0]?.attempt).toBe(2)
   })
+
+  it('reports exact exponential-backoff timings and terminal outcomes from markFailed', () => {
+    jest.useFakeTimers().setSystemTime(2_000_000)
+    const queue = new TaskQueue({ maxConcurrent: 1, defaultMode: 'concurrent' })
+
+    // First retry after attempt 1: 2^1 seconds.
+    queue.enqueue(makeItem({ taskId: 'a', attempt: 1, maxRetries: 3 }))
+    expect(queue.markFailed('a', 'batch-1', true)).toEqual({
+      retried: true,
+      attempt: 2,
+      nextAttemptAtMs: 2_002_000,
+    })
+
+    // maxRetries already consumed -> terminal, no retry.
+    queue.enqueue(makeItem({ taskId: 'b', attempt: 1, maxRetries: 1 }))
+    expect(queue.markFailed('b', 'batch-1', true)).toEqual({ retried: false })
+
+    // Deterministic failure (non-retryable) -> terminal, no retry.
+    queue.enqueue(makeItem({ taskId: 'c', attempt: 1, maxRetries: 3 }))
+    expect(queue.markFailed('c', 'batch-1', false)).toEqual({ retried: false })
+
+    jest.useRealTimers()
+  })
+
+  it('caps the exponential retry backoff at 5 minutes', () => {
+    jest.useFakeTimers().setSystemTime(1_000_000)
+    const queue = new TaskQueue({ maxConcurrent: 1, defaultMode: 'concurrent' })
+
+    // 2^9 s = 512 s would exceed the 300 s cap — the retry must be scheduled
+    // at most 5 minutes after the failed attempt.
+    queue.enqueue(makeItem({ taskId: 'a', attempt: 9, maxRetries: 20 }))
+    expect(queue.markFailed('a', 'batch-1', true)).toEqual({
+      retried: true,
+      attempt: 10,
+      nextAttemptAtMs: 1_300_000,
+    })
+    expect(queue.getPendingTasks()[0]?.scheduleTime).toBe(1_300_000)
+
+    jest.useRealTimers()
+  })
 })

@@ -55,6 +55,14 @@ export type TaskQueueEvent =
 
 const DEFAULT_QUEUE_GROUP = '__default__'
 
+/** Upper bound on the exponential retry backoff: a retry waits at most this long after the failed attempt (2^n s, capped at 5 minutes). */
+const MAX_RETRY_BACKOFF_MS = 300_000
+
+/** Outcome of markFailed, so the scheduler can surface a scheduled retry (e.g. a retry_scheduled event) without coupling the queue to the event bus. */
+export type MarkFailedResult =
+  | { retried: true; attempt: number; nextAttemptAtMs: number }
+  | { retried: false }
+
 export class TaskQueue {
   private items: TaskQueueItem[] = []
   private executing: Map<
@@ -167,33 +175,58 @@ export class TaskQueue {
     this.tryProcessNext()
   }
 
-  /** Retries with exponential backoff on failure; only counted as a terminal failure for the batch once maxRetries is exceeded. */
-  markFailed(taskId: string, batchId: string, isRetryable: boolean): void {
+  /**
+   * Retries with exponential backoff on failure (next attempt scheduled
+   * `2^attempt` seconds later, capped at MAX_RETRY_BACKOFF_MS); only counted as
+   * a terminal failure for the batch once maxRetries is exceeded. Returns what
+   * happened so callers can surface the scheduled retry (see MarkFailedResult).
+   */
+  markFailed(
+    taskId: string,
+    batchId: string,
+    isRetryable: boolean,
+  ): MarkFailedResult {
     const entry = this.executing.get(taskId)
     this.executing.delete(taskId)
     if (!entry) {
       // Defensive branch: under normal flow, executing always has this taskId (see the
       // "mark executing on dequeue" design in tryProcessNext below). Should be unreachable.
       this.tryProcessNext()
-      return
+      return { retried: false }
     }
 
     const { item } = entry
     if (isRetryable && item.attempt < item.maxRetries) {
+      const nextAttemptAtMs =
+        Date.now() +
+        Math.min(1000 * Math.pow(2, item.attempt), MAX_RETRY_BACKOFF_MS) // 2s/4s/8s..., capped at 5min
       this.items.push({
         ...item,
         attempt: item.attempt + 1,
         source: 'retry',
-        scheduleTime: Date.now() + 1000 * Math.pow(2, item.attempt), // 2s/4s/8s...
+        scheduleTime: nextAttemptAtMs,
       })
       this.items.sort((a, b) =>
         a.priority !== b.priority
           ? b.priority - a.priority
           : a.enqueuedAt - b.enqueuedAt,
       )
-    } else {
-      this.getBatchState(batchId).failed.add(taskId)
+      this.tryProcessNext()
+      return { retried: true, attempt: item.attempt + 1, nextAttemptAtMs }
     }
+    this.getBatchState(batchId).failed.add(taskId)
+    this.tryProcessNext()
+    return { retried: false }
+  }
+
+  /**
+   * Starts any queued items whose scheduleTime has arrived. The scheduler calls
+   * this on every poll tick so a retried run fires at (or soon after) its
+   * backoff time even when no other task is due — otherwise a retry would only
+   * run when some other enqueue/markCompleted prodded the queue (up to one
+   * schedule period late, or never for a one-off manual task).
+   */
+  drain(): void {
     this.tryProcessNext()
   }
 

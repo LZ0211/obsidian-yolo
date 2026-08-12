@@ -775,6 +775,60 @@ export class ScheduledTasksStore {
     this.db.exec('delete from task_runs where task_id = ?', [taskId])
   }
 
+  /**
+   * Bounded run-history retention — pure deletion, no migration needed. A hard
+   * age cutoff first drops runs older than `olderThanMs` (recency falls back to
+   * scheduled_for for legacy rows without started_at), then each task is capped
+   * at its `keepLastNPerTask` most recent runs (same recency order as
+   * listRunsByTask), so a long-lived vault can't grow task_runs without bound.
+   * Only TERMINAL runs are ever pruned (same rule as cherry-studio's
+   * JobManager GC): a RUNNING row is live state that crash-recovery
+   * (recoverOrphanedRuns) must still find, whatever its age. Returns the total
+   * number of deleted rows.
+   */
+  pruneRuns(options: {
+    olderThanMs: number
+    keepLastNPerTask: number
+  }): number {
+    const now = Date.now()
+    const ageCutoff = now - options.olderThanMs
+    const terminalStatuses = [
+      TaskRunStatus.COMPLETED,
+      TaskRunStatus.FAILED,
+      TaskRunStatus.CANCELLED,
+      TaskRunStatus.TIMED_OUT,
+    ]
+      .map((status) => `'${status}'`)
+      .join(', ')
+    this.db.exec(
+      `delete from task_runs where status in (${terminalStatuses}) and coalesce(started_at, scheduled_for) < ?`,
+      [ageCutoff],
+    )
+    const ageDeleted =
+      this.db.queryOne<{ n: number }>('select changes() as n')?.n ?? 0
+    this.db.exec(
+      `
+        delete from task_runs where id in (
+          select id from (
+            select
+              id,
+              row_number() over (
+                partition by task_id
+                order by coalesce(started_at, scheduled_for) desc, scheduled_for desc, id desc
+              ) as rn
+            from task_runs
+            where status in (${terminalStatuses})
+          )
+          where rn > ?
+        )
+      `,
+      [options.keepLastNPerTask],
+    )
+    const keepDeleted =
+      this.db.queryOne<{ n: number }>('select changes() as n')?.n ?? 0
+    return ageDeleted + keepDeleted
+  }
+
   private get db(): SqliteNativeRuntimeFacade {
     if (this.runtime == null) {
       throw new Error('scheduled tasks store is not open')
