@@ -665,9 +665,13 @@ function createScopedContext(
         return entry instanceof TFile ? entry : null
       },
       read: jest.fn(async (file: TFile) => `content:${file.path}`),
-      readBinary: jest.fn(async (file: TFile) =>
-        Buffer.from(`binary:${file.path}`, 'utf8'),
-      ),
+      readBinary: jest.fn(async (file: TFile) => {
+        const buf = Buffer.from(`binary:${file.path}`, 'utf8')
+        return buf.buffer.slice(
+          buf.byteOffset,
+          buf.byteOffset + buf.byteLength,
+        ) as ArrayBuffer
+      }),
       adapter: {
         write: jest.fn(),
         writeBinary: jest.fn(),

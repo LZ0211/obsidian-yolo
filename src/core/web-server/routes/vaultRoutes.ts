@@ -1090,12 +1090,16 @@ async function readBinaryBody(
     chunks.push(buffer)
   }
   const buffer = Buffer.concat(chunks)
+  const view = new Uint8Array(
+    buffer.buffer,
+    buffer.byteOffset,
+    buffer.byteLength,
+  )
   return {
     ok: true,
-    value: buffer.buffer.slice(
-      buffer.byteOffset,
-      buffer.byteOffset + buffer.byteLength,
-    ),
+    // Buffer.concat 的底层 buffer 是普通 ArrayBuffer（非共享内存），
+    // TS 5.9 的 ArrayBufferLike 细化需要显式断言。
+    value: view.buffer as ArrayBuffer,
   }
 }
 

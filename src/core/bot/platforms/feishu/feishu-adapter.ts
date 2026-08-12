@@ -1028,7 +1028,7 @@ export class FeishuAdapter implements PlatformAdapter {
         data: buffer.buffer.slice(
           buffer.byteOffset,
           buffer.byteOffset + buffer.byteLength,
-        ),
+        ) as ArrayBuffer,
         fileName,
       }
     }
@@ -1046,7 +1046,7 @@ export class FeishuAdapter implements PlatformAdapter {
         data: buffer.buffer.slice(
           buffer.byteOffset,
           buffer.byteOffset + buffer.byteLength,
-        ),
+        ) as ArrayBuffer,
         fileName,
       }
     }

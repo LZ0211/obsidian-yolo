@@ -831,7 +831,7 @@ export class DingTalkAdapter implements PlatformAdapter {
         data: buffer.buffer.slice(
           buffer.byteOffset,
           buffer.byteOffset + buffer.byteLength,
-        ),
+        ) as ArrayBuffer,
         fileName,
       }
     }
@@ -849,7 +849,7 @@ export class DingTalkAdapter implements PlatformAdapter {
         data: buffer.buffer.slice(
           buffer.byteOffset,
           buffer.byteOffset + buffer.byteLength,
-        ),
+        ) as ArrayBuffer,
         fileName,
       }
     }

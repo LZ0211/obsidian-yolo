@@ -74,7 +74,7 @@ function bytesAsArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength,
-  )
+  ) as ArrayBuffer
 }
 
 function encryptAesEcb(plaintext: Uint8Array, key: Buffer): Buffer {

@@ -442,7 +442,13 @@ export class BotService {
         const folder = `${getYoloBaseDir(this.deps.getSettings())}/${BOT_ATTACHMENT_SUBDIR}/${this.safePathSegment(platformConfig.name || platformConfig.id)}`
         await this.ensureVaultFolder(folder)
         const vaultPath = `${folder}/${fileName}`
-        await this.deps.app.vault.createBinary(vaultPath, bytes)
+        await this.deps.app.vault.createBinary(
+          vaultPath,
+          bytes.buffer.slice(
+            bytes.byteOffset,
+            bytes.byteOffset + bytes.byteLength,
+          ) as ArrayBuffer,
+        )
         totalBytes += bytes.byteLength
         results.push({ component, vaultPath, size: bytes.byteLength })
       } catch (error) {
