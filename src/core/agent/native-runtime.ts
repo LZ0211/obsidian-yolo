@@ -14,6 +14,7 @@ import {
   ToolCallRequest,
   ToolCallResponse,
   ToolCallResponseStatus,
+  getToolCallArgumentsObject,
 } from '../../types/tool-call.types'
 import { runWithLLMDebugTrace } from '../llm/debugCapture'
 
@@ -54,6 +55,53 @@ import {
 
 export const ASSISTANT_CONTINUATION_PROMPT =
   'The previous assistant response was interrupted before completion. Resume the same task exactly where it stopped. Do not repeat, revise, summarize, or acknowledge content already produced. Continue using tools if needed.'
+
+/**
+ * Strip the MCP server prefix (and any `/`/`:` namespace) from a fully
+ * qualified tool name, mirroring the loop worker's `normalizeToolSignature`
+ * short-name rule so the runtime and the worker derive identical signatures.
+ */
+const toShortToolName = (toolName: string): string =>
+  toolName.includes('__')
+    ? toolName.slice(toolName.indexOf('__') + 2)
+    : (toolName.split(/[/:]/).pop() ?? toolName)
+
+/**
+ * Derive the exact-duplicate-call guard signature payload from the executed
+ * tool message: the executed tool name plus key-sorted arguments. Multiple
+ * executed calls in one round serialize as a composite array signature so the
+ * whole round must repeat identically to trip the guard. Empty when no tool
+ * actually executed (e.g. approval placeholders only).
+ *
+ * Exported for the unit test suite. Not part of the public runtime API.
+ */
+export const buildExecutedToolSignature = (
+  toolMessage: ChatToolMessage,
+): { toolName?: string; toolArgs?: unknown } => {
+  const executedToolCalls = toolMessage.toolCalls.filter(
+    (toolCall) =>
+      toolCall.response.status === ToolCallResponseStatus.Success ||
+      toolCall.response.status === ToolCallResponseStatus.Error,
+  )
+  if (executedToolCalls.length === 0) {
+    return {}
+  }
+  if (executedToolCalls.length === 1) {
+    return {
+      toolName: toShortToolName(executedToolCalls[0].request.name),
+      toolArgs:
+        getToolCallArgumentsObject(executedToolCalls[0].request.arguments) ??
+        {},
+    }
+  }
+  return {
+    toolName: toShortToolName(executedToolCalls[0].request.name),
+    toolArgs: executedToolCalls.map((toolCall) => ({
+      name: toShortToolName(toolCall.request.name),
+      args: getToolCallArgumentsObject(toolCall.request.arguments) ?? {},
+    })),
+  }
+}
 
 export class NativeAgentRuntime implements AgentRuntime {
   private subscribers: AgentRuntimeSubscribe[] = []
@@ -590,6 +638,7 @@ export class NativeAgentRuntime implements AgentRuntime {
                     runId,
                     hasPendingTools: false,
                     forceStopReason,
+                    ...buildExecutedToolSignature(guardedToolMessage),
                   })
                   return
                 }
@@ -600,6 +649,7 @@ export class NativeAgentRuntime implements AgentRuntime {
                   hasPendingTools:
                     toolGateway.hasPendingToolCalls(guardedToolMessage),
                   forceStopReason,
+                  ...buildExecutedToolSignature(guardedToolMessage),
                 })
                 return
               }
@@ -645,6 +695,10 @@ export class NativeAgentRuntime implements AgentRuntime {
         type: 'start',
         runId,
         maxIterations: this.loopConfig.maxAutoIterations,
+        // Grace stays OFF by default (spec §6) until telemetry justifies it.
+        ...(this.loopConfig.graceEnabled
+          ? { graceEnabled: this.loopConfig.graceEnabled }
+          : {}),
       })
     })
 

@@ -187,6 +187,14 @@ export type AgentRuntimeLoopConfig = {
   maxAutoIterations: number
   includeBuiltinTools: boolean
   /**
+   * When true, the loop worker issues exactly one tools-disabled LLM request
+   * after the iteration budget is exhausted so the turn can summarize/close
+   * without tools. Defaults to OFF: per spec §6 the graceful close call stays
+   * disabled until telemetry demonstrates abrupt max-iteration endings are a
+   * real user problem.
+   */
+  graceEnabled?: boolean
+  /**
    * Optional main-thread loop policy. Runs before the runtime acts on a
    * continuing decision (`llm_request`/`tool_phase`); can only turn a
    * continuing decision into a terminal stop, never bypass approval or raise
@@ -200,6 +208,16 @@ export type AgentWorkerInbound =
       type: 'start'
       runId: string
       maxIterations: number
+      /**
+       * Consecutive identical tool-call threshold for the exact duplicate-call
+       * guard. Defaults to 3 when omitted.
+       */
+      maxRepeatedToolCalls?: number
+      /**
+       * When true, the worker issues exactly one tools-disabled request after
+       * the iteration budget is exhausted. Defaults to OFF when omitted.
+       */
+      graceEnabled?: boolean
     }
   | {
       type: 'llm_result'
@@ -212,6 +230,14 @@ export type AgentWorkerInbound =
       runId: string
       hasPendingTools: boolean
       forceStopReason?: 'repeated_tool_failure' | 'repeated_read_call'
+      /**
+       * Fully-qualified name of the executed tool, used to derive the duplicate
+       * guard signature. Omitted when no tool actually executed this round
+       * (e.g. the message only carries approval placeholders).
+       */
+      toolName?: string
+      /** Arguments of the executed tool, canonicalized for the signature. */
+      toolArgs?: unknown
     }
   | {
       type: 'abort'
@@ -228,6 +254,11 @@ export type AgentWorkerOutbound =
       type: 'llm_request'
       runId: string
       iteration: number
+      /**
+       * Set exactly once for the single tools-disabled grace request issued
+       * past the iteration budget (see `graceEnabled` on start).
+       */
+      toolsDisabled?: boolean
     }
   | {
       type: 'tool_phase'
@@ -241,6 +272,7 @@ export type AgentWorkerOutbound =
         | 'max_iterations'
         | 'repeated_tool_failure'
         | 'repeated_read_call'
+        | 'repeated_tool_call'
         | 'aborted'
     }
   | {
