@@ -1,12 +1,7 @@
 import { EditorView } from '@codemirror/view'
 import { useMutation } from '@tanstack/react-query'
 import { Notice, TFile, TFolder, normalizePath } from 'obsidian'
-import {
-  Dispatch,
-  MutableRefObject,
-  SetStateAction,
-  useCallback,
-} from 'react'
+import { Dispatch, MutableRefObject, SetStateAction, useCallback } from 'react'
 
 import { useApp } from '../../contexts/app-context'
 import { useLanguage } from '../../contexts/language-context'

@@ -944,10 +944,11 @@ export function useChatInputController({
       const message = buildInputMessageForSubmit(content)
       // fork 适配：workspace agent 也计入统一列表（backup 语义），与
       // Chat.tsx 的 selectedAssistant 解析一致。
-      const assistant = findUnifiedAgentById(
-        settings,
-        preferencesController.getSnapshot().conversationAssistantId,
-      ) ?? null
+      const assistant =
+        findUnifiedAgentById(
+          settings,
+          preferencesController.getSnapshot().conversationAssistantId,
+        ) ?? null
 
       const finishSubmitUi = (submittedMessage: ChatUserMessage) => {
         late.commitSentSelectionHighlights(submittedMessage.mentionables)
