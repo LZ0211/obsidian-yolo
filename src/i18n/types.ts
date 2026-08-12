@@ -222,6 +222,7 @@ export type TranslationKeys = {
       modules: string
       others: string
       bots?: string
+      scheduledTasks?: string
     }
     bots?: {
       header?: string
@@ -1831,6 +1832,129 @@ export type TranslationKeys = {
       webRuntimeNetworkWarning?: string
       webRuntimeConcurrency?: string
       webRuntimeConcurrencyDesc?: string
+    }
+    scheduledTasks?: {
+      title?: string
+      desc?: string
+      enableGlobal?: string
+      enableGlobalDesc?: string
+      addTask?: string
+      noTasks?: string
+      serviceUnavailable?: string
+      errorServiceUnavailable?: string
+      lastRun?: string
+      neverRun?: string
+      runNow?: string
+      history?: string
+      disable?: string
+      enable?: string
+      deleteTaskTitle?: string
+      deleteTaskMessage?: string
+      runNowTaskNotFound?: string
+      runNowTaskDisabled?: string
+      runNowAlreadyQueued?: string
+      addTaskTitle?: string
+      editTaskTitle?: string
+      followCurrentAssistant?: string
+      scheduleInterval?: string
+      scheduleCron?: string
+      scheduleOnce?: string
+      errorNameRequired?: string
+      errorPromptRequired?: string
+      errorCronRequired?: string
+      errorCronInvalid?: string
+      errorIntervalRequired?: string
+      errorOnceRequired?: string
+      errorTimeoutRequired?: string
+      fieldName?: string
+      namePlaceholder?: string
+      fieldEnabled?: string
+      fieldAssistant?: string
+      fieldAssistantDesc?: string
+      fieldPrompt?: string
+      fieldPromptDesc?: string
+      promptPlaceholder?: string
+      fieldSchedule?: string
+      fieldIntervalSeconds?: string
+      fieldCronExpression?: string
+      fieldTimezone?: string
+      fieldTimezoneDesc?: string
+      fieldRunAt?: string
+      fieldPriority?: string
+      fieldPriorityDesc?: string
+      fieldTimeout?: string
+      fieldMaxRetries?: string
+      historyTitle?: string
+      filterAll?: string
+      filterPending?: string
+      filterRunning?: string
+      filterCompleted?: string
+      filterFailed?: string
+      filterCancelled?: string
+      filterTimedOut?: string
+      statsTotal?: string
+      statsSuccess?: string
+      statsFailure?: string
+      statsSuccessRate?: string
+      statsAvgDuration?: string
+      filterLabel?: string
+      noRuns?: string
+      runDetailsTitle?: string
+      runTriggeredBy?: string
+      runScheduledFor?: string
+      runStartedAt?: string
+      runCompletedAt?: string
+      runAttempt?: string
+      runResult?: string
+      runError?: string
+      runLogs?: string
+      runRetry?: string
+      describeOnce?: string
+      describeOnceUnset?: string
+      describeInterval?: string
+      describeIntervalUnset?: string
+      describeCron?: string
+      describeCronUnset?: string
+      openQueueMonitor?: string
+      queueMonitorTitle?: string
+      queueStatusPending?: string
+      queueStatusExecuting?: string
+      queueStatusCompleted?: string
+      queueStatusFailed?: string
+      queueMaxConcurrent?: string
+      queuePaused?: string
+      pauseQueue?: string
+      resumeQueue?: string
+      clearQueue?: string
+      clearQueueTitle?: string
+      clearQueueMessage?: string
+      queueExecutingSection?: string
+      queueExecutingEmpty?: string
+      queueElapsed?: string
+      queuePendingSection?: string
+      queuePendingEmpty?: string
+      queueBumpPriority?: string
+      fieldType?: string
+      fieldTypeDesc?: string
+      typeAgent?: string
+      typeScript?: string
+      fieldScriptPath?: string
+      fieldScriptPathDesc?: string
+      scriptPathPlaceholder?: string
+      errorScriptPathRequired?: string
+      enableScriptExecution?: string
+      enableScriptExecutionDesc?: string
+      allowedScriptDirectories?: string
+      allowedScriptDirectoriesDesc?: string
+      allowedScriptDirectoriesPlaceholder?: string
+      fieldQueueGroup?: string
+      fieldQueueGroupDesc?: string
+      queueGroupPlaceholder?: string
+      fieldDependsOn?: string
+      fieldDependsOnDesc?: string
+      noOtherTasks?: string
+      fieldContinueOnDependencyFailure?: string
+      fieldContinueOnDependencyFailureDesc?: string
     }
     smartSpace?: {
       quickActionsTitle: string

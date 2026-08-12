@@ -11,6 +11,7 @@ import React, {
 import { useLanguage } from '../../contexts/language-context'
 import YoloPlugin from '../../main'
 import { SETTINGS_ACTIVE_TAB_STORAGE_KEY } from '../../utils/openPluginSettingsTab'
+import { ScheduledTasksPanel } from '../scheduled-tasks/ScheduledTasksPanel'
 
 import { AgentTab } from './tabs/AgentTab'
 import { BotsTab } from './tabs/BotsTab'
@@ -33,6 +34,7 @@ export type SettingsTabId =
   | 'agent'
   | 'others'
   | 'bots'
+  | 'scheduledTasks'
 
 type SettingsTab = {
   id: SettingsTabId
@@ -74,6 +76,11 @@ const SETTINGS_TABS: SettingsTab[] = [
     id: 'bots',
     labelKey: 'settings.tabs.bots',
     component: BotsTab,
+  },
+  {
+    id: 'scheduledTasks',
+    labelKey: 'settings.tabs.scheduledTasks',
+    component: ScheduledTasksPanel,
   },
 ]
 
