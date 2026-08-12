@@ -171,18 +171,30 @@ export class CliChatRuntimeAdapter implements ChatRuntime {
     const tracker = new ChatSubmissionTracker(requestId, messageId)
     this.pending = { token: this.nextToken++, requestId, messageId, tracker }
     const token = this.pending.token
-    await this.backend.sendTurn({
-      sessionRef: this.sessionRef,
-      userMessageId: messageId,
-      content: typeof input.content === 'string' ? input.content : '',
-      ...(input.mentionables ? { mentionables: input.mentionables } : {}),
-      ...(input.assistantId ? { assistantId: input.assistantId } : {}),
-      selectedSkills: input.selectedSkills?.map((skill) => ({
-        name: skill.name,
-        description: skill.description,
-        path: skill.path,
-      })),
-    })
+    try {
+      await this.backend.sendTurn({
+        sessionRef: this.sessionRef,
+        userMessageId: messageId,
+        content: typeof input.content === 'string' ? input.content : '',
+        ...(input.mentionables ? { mentionables: input.mentionables } : {}),
+        ...(input.assistantId ? { assistantId: input.assistantId } : {}),
+        selectedSkills: input.selectedSkills?.map((skill) => ({
+          name: skill.name,
+          description: skill.description,
+          path: skill.path,
+        })),
+      })
+    } catch (error) {
+      // 发送失败必须解除 busy 锁并通知拒绝，否则该会话的 CLI 面永久 busy
+      // （pending 仅靠 submission.accepted 清空，emitSnapshotDiff 不发 rejected）。
+      const message = error instanceof Error ? error.message : String(error)
+      if (this.pending?.token === token) {
+        this.pending = null
+        tracker.markRejected(message, false)
+        this.emitSubmissionRejected(tracker, message, false)
+      }
+      throw error
+    }
     return {
       requestId,
       messageId,
