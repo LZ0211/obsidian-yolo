@@ -9,6 +9,7 @@ import {
   buildSubagentCardSessionProps,
   formatQueuedIntentLine,
   formatSessionStatus,
+  runSubagentSessionAction,
 } from './subagentCardUtils'
 import { SubagentCardView } from './SubagentCardView'
 
@@ -201,6 +202,62 @@ describe('buildSubagentCardSessionProps', () => {
     )
     expect(props.needsResume).toBe(true)
     expect(props.sessionStatus).toBe('Needs resume')
+  })
+})
+
+describe('runSubagentSessionAction', () => {
+  let warnSpy: jest.SpyInstance
+
+  beforeEach(() => {
+    warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+  })
+
+  afterEach(() => {
+    warnSpy.mockRestore()
+  })
+
+  it('refreshes after an accepted action without warning', async () => {
+    const onSettled = jest.fn()
+    await runSubagentSessionAction(
+      'recover',
+      Promise.resolve({ accepted: true, status: 'idle', sessionRevision: 2 }),
+      onSettled,
+    )
+    expect(onSettled).toHaveBeenCalledTimes(1)
+    expect(warnSpy).not.toHaveBeenCalled()
+  })
+
+  it('warns with the errorCode on rejection and still refreshes', async () => {
+    const onSettled = jest.fn()
+    await runSubagentSessionAction(
+      'drop',
+      Promise.resolve({
+        accepted: false,
+        errorCode: 'revision_conflict',
+        retryable: true,
+        current: snapshot(),
+      }),
+      onSettled,
+    )
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[YOLO] Subagent session action rejected',
+      { action: 'drop', errorCode: 'revision_conflict', retryable: true },
+    )
+    expect(onSettled).toHaveBeenCalledTimes(1)
+  })
+
+  it('warns when the action call itself fails and still refreshes', async () => {
+    const onSettled = jest.fn()
+    await runSubagentSessionAction(
+      'resend',
+      Promise.reject(new Error('store read failed')),
+      onSettled,
+    )
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[YOLO] Subagent session action failed',
+      expect.objectContaining({ action: 'resend' }),
+    )
+    expect(onSettled).toHaveBeenCalledTimes(1)
   })
 })
 

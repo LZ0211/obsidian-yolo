@@ -30,6 +30,7 @@ import {
   normalizeActivityLines,
   parseAcceptedSubagentResponse,
   resolveSubagentEffectiveStatus,
+  runSubagentSessionAction,
 } from './subagentCardUtils'
 import {
   SubagentCardView,
@@ -120,15 +121,23 @@ export function SubagentCard({
   // 旁路（C1 恢复）：运行中的实时消息仍按每次运行时快照推送。
   const liveTranscript = useSubagentLiveTranscript(taskId)
 
-  const sessionId = liveTask?.sessionId
-  const sessionSnapshot = useSubagentSessionSnapshot(
+  // runner.ts:1054 恒等 taskId === sessionId：registry record 优先，宿主重载/
+  // registry 裁剪后 subagentResult.taskId 兜底（历史卡片仍有恢复 UI）。
+  const sessionId = liveTask?.sessionId ?? subagentResult?.taskId
+  const [sessionSnapshot, refreshSessionSnapshot] = useSubagentSessionSnapshot(
     sessionId,
     // status/runSequence 变化时重查 snapshot（会话服务无订阅机制）。
     `${liveTask?.status ?? ''}:${liveTask?.runSequence ?? ''}`,
   )
+  const sessionTaskRecord = useMemo(
+    () =>
+      liveTask ??
+      (subagentResult?.taskId ? { sessionId: subagentResult.taskId } : null),
+    [liveTask, subagentResult],
+  )
   const sessionProps = useMemo(
-    () => buildSubagentCardSessionProps(sessionSnapshot, liveTask, t),
-    [sessionSnapshot, liveTask, t],
+    () => buildSubagentCardSessionProps(sessionSnapshot, sessionTaskRecord, t),
+    [sessionSnapshot, sessionTaskRecord, t],
   )
 
   const fallbackError =
@@ -196,28 +205,39 @@ export function SubagentCard({
     if (!sessionId || !sessionSnapshot) return
     const service = getSubagentSessionService()
     if (!service) return
-    void service.recover({
-      sessionId,
-      expectedSessionRevision: sessionSnapshot.session.revision,
-      action: 'mark_interrupted_run_aborted',
-      requestId: `ui:recover:${crypto.randomUUID()}`,
-    })
-  }, [sessionId, sessionSnapshot])
+    // settle 后主动重查快照：恢复条/queued 按钮随新状态刷新（revision_conflict
+    // 时也重查——冲突结果带 current 快照，重拉拿到最新真相）；拒绝 warn 见
+    // runSubagentSessionAction。
+    void runSubagentSessionAction(
+      'recover',
+      service.recover({
+        sessionId,
+        expectedSessionRevision: sessionSnapshot.session.revision,
+        action: 'mark_interrupted_run_aborted',
+        requestId: `ui:recover:${crypto.randomUUID()}`,
+      }),
+      refreshSessionSnapshot,
+    )
+  }, [sessionId, sessionSnapshot, refreshSessionSnapshot])
 
   const handleQueueResend = useCallback(
     (messageId: string) => {
       if (!sessionId || !sessionSnapshot) return
       const service = getSubagentSessionService()
       if (!service) return
-      void service.queueRecovery({
-        sessionId,
-        messageId,
-        expectedSessionRevision: sessionSnapshot.session.revision,
-        action: 'resend',
-        requestId: `ui:resend:${crypto.randomUUID()}`,
-      })
+      void runSubagentSessionAction(
+        'resend',
+        service.queueRecovery({
+          sessionId,
+          messageId,
+          expectedSessionRevision: sessionSnapshot.session.revision,
+          action: 'resend',
+          requestId: `ui:resend:${crypto.randomUUID()}`,
+        }),
+        refreshSessionSnapshot,
+      )
     },
-    [sessionId, sessionSnapshot],
+    [sessionId, sessionSnapshot, refreshSessionSnapshot],
   )
 
   const handleQueueDrop = useCallback(
@@ -225,15 +245,19 @@ export function SubagentCard({
       if (!sessionId || !sessionSnapshot) return
       const service = getSubagentSessionService()
       if (!service) return
-      void service.queueRecovery({
-        sessionId,
-        messageId,
-        expectedSessionRevision: sessionSnapshot.session.revision,
-        action: 'drop',
-        requestId: `ui:drop:${crypto.randomUUID()}`,
-      })
+      void runSubagentSessionAction(
+        'drop',
+        service.queueRecovery({
+          sessionId,
+          messageId,
+          expectedSessionRevision: sessionSnapshot.session.revision,
+          action: 'drop',
+          requestId: `ui:drop:${crypto.randomUUID()}`,
+        }),
+        refreshSessionSnapshot,
+      )
     },
-    [sessionId, sessionSnapshot],
+    [sessionId, sessionSnapshot, refreshSessionSnapshot],
   )
 
   return (

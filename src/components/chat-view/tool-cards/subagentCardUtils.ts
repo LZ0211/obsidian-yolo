@@ -1,4 +1,6 @@
 import {
+  type SubagentQueueRecoveryResult,
+  type SubagentRecoverResult,
   type SubagentSessionSnapshot,
   type SubagentSessionStatus,
 } from '../../../core/agent/subagent/session-types'
@@ -206,14 +208,12 @@ export function formatSessionStatus(
 /**
  * session snapshot → 卡片/弹窗 props 的映射（R12）。快照缺失、task record
  * 无 sessionId 或快照 sessionId 与 record 不一致时返回空 props（组件保持
- * 无 session 的原有行为）。
+ * 无 session 的原有行为）。record 只消费 sessionId（runner.ts:1054 恒等
+ * taskId === sessionId，宿主重载后 subagentResult.taskId 可作后备 record）。
  */
 export function buildSubagentCardSessionProps(
   snapshot: SubagentSessionSnapshot | null | undefined,
-  taskRecord:
-    | Pick<SubagentTaskSummary, 'sessionId' | 'runSequence' | 'mode'>
-    | null
-    | undefined,
+  taskRecord: Pick<SubagentTaskSummary, 'sessionId'> | null | undefined,
   t: (key: string, fallback?: string) => string,
 ): SubagentCardSessionProps {
   if (!snapshot || !taskRecord?.sessionId) return {}
@@ -244,6 +244,37 @@ export function buildSubagentCardSessionProps(
     )
   }
   return props
+}
+
+/**
+ * 执行一次 session 动作并统一处理结果反馈（Task 10 审查 Important 修复）：
+ * - 拒绝（revision_conflict / session_not_sendable 等）不静默——console.warn
+ *   记录 errorCode/retryable；
+ * - 调用本身抛错（store I/O 等）同样 warn，不产生 unhandled rejection；
+ * - settle 后一律 onSettled（组件用它触发快照重查——恢复/resend/drop 只改
+ *   store，registry 不感知，不重查 UI 不刷新）。
+ * 组件侧以 `void runSubagentSessionAction(...)` 包裹（React 异步 handler
+ * 规范）。
+ */
+export async function runSubagentSessionAction(
+  action: 'recover' | 'resend' | 'drop',
+  request: Promise<SubagentRecoverResult | SubagentQueueRecoveryResult>,
+  onSettled: () => void,
+): Promise<void> {
+  try {
+    const result = await request
+    if (!result.accepted) {
+      console.warn('[YOLO] Subagent session action rejected', {
+        action,
+        errorCode: result.errorCode,
+        retryable: result.retryable,
+      })
+    }
+  } catch (error: unknown) {
+    console.warn('[YOLO] Subagent session action failed', { action, error })
+  } finally {
+    onSettled()
+  }
 }
 
 export function buildSubagentCompletionSummary({
