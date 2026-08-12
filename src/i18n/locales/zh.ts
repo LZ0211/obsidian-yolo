@@ -55,6 +55,7 @@ export const zh: TranslationKeys = {
     on: '开',
     off: '关',
     noResults: '未找到匹配项',
+    search: '搜索...',
     configure: '配置',
   },
 
@@ -172,26 +173,27 @@ export const zh: TranslationKeys = {
 
   settings: {
     workspaceAgents: {
-        sectionTitle: "工作空间 Agent",
-        sectionDesc: "每个工作空间 Agent 继承一个 Assistant 模板，并添加工作目录（home）策略。",
-        defaultName: "新建工作空间 Agent",
-        pickTemplate: "选择模板",
-        noTemplates: "请先创建一个 Assistant 作为模板。",
-        template: "模板：{name}",
-        missingTemplate: "模板缺失：{id}",
-        agentName: "名称",
-        editorTitle: "编辑工作空间 Agent",
-        agentNamePlaceholder: "Agent 名称",
-        promptOverride: "提示词覆盖",
-        promptOverrideDesc: "覆盖模板的 system prompt。留空则继承模板。",
-        promptOverridePlaceholder: "继承模板",
-        toolOverridesTitle: "工具覆盖",
-        toolOverridesButton: "工具覆盖",
-        toolApprovalMode: "审批模式",
-        skillOverridesTitle: "技能覆盖",
-        skillOverridesButton: "技能覆盖",
-        skillLoadMode: "加载模式",
-      },
+      sectionTitle: '工作空间 Agent',
+      sectionDesc:
+        '每个工作空间 Agent 继承一个 Assistant 模板，并添加工作目录（home）策略。',
+      defaultName: '新建工作空间 Agent',
+      pickTemplate: '选择模板',
+      noTemplates: '请先创建一个 Assistant 作为模板。',
+      template: '模板：{name}',
+      missingTemplate: '模板缺失：{id}',
+      agentName: '名称',
+      editorTitle: '编辑工作空间 Agent',
+      agentNamePlaceholder: 'Agent 名称',
+      promptOverride: '提示词覆盖',
+      promptOverrideDesc: '覆盖模板的 system prompt。留空则继承模板。',
+      promptOverridePlaceholder: '继承模板',
+      toolOverridesTitle: '工具覆盖',
+      toolOverridesButton: '工具覆盖',
+      toolApprovalMode: '审批模式',
+      skillOverridesTitle: '技能覆盖',
+      skillOverridesButton: '技能覆盖',
+      skillLoadMode: '加载模式',
+    },
     title: 'YOLO 设置',
     tabs: {
       models: '模型',
@@ -201,7 +203,7 @@ export const zh: TranslationKeys = {
       agent: 'Agent',
       modules: '模块',
       others: '其他',
-      bots: "Bot 平台",
+      bots: 'Bot 平台',
     },
     bots: {
       globalTitle: '全局设置',
@@ -296,7 +298,6 @@ export const zh: TranslationKeys = {
         feishuDesc: '飞书开放平台 · 长连接模式',
       },
     },
-
 
     supportYolo: {
       name: '支持 YOLO',
@@ -445,13 +446,16 @@ export const zh: TranslationKeys = {
         },
         sqliteEngine: {
           name: 'SQLite 引擎（移动端）',
-          description: 'sql.js WASM 数据库，移动端无 node:sqlite 时替代记忆存储。',
+          description:
+            'sql.js WASM 数据库，移动端无 node:sqlite 时替代记忆存储。',
           impact: '关闭后移动端记忆索引不可用；桌面端不受影响。',
         },
         jiebaEngine: {
           name: '结巴分词引擎',
-          description: 'worker 线程中运行的结巴中文分词（jieba-rs WASM），用于记忆索引的关键词提取。',
-          impact: '关闭后中文记忆关键词回退到内置分词（Intl.Segmenter + 二元组）。',
+          description:
+            'worker 线程中运行的结巴中文分词（jieba-rs WASM），用于记忆索引的关键词提取。',
+          impact:
+            '关闭后中文记忆关键词回退到内置分词（Intl.Segmenter + 二元组）。',
         },
         bashEngine: {
           name: 'Bash 引擎',
@@ -1474,11 +1478,13 @@ export const zh: TranslationKeys = {
       embeddingModelAlreadyAdded: '该嵌入模型已添加',
       providerIdMissing: '该 Provider 不存在',
       performanceWarningTitle: '性能警告',
-      performanceWarningMessage: '该模型输出 {dimension} 维，但数据库索引的优化维度为：{supported}。\n\n这可能导致搜索性能下降。\n\n仍要继续吗？',
+      performanceWarningMessage:
+        '该模型输出 {dimension} 维，但数据库索引的优化维度为：{supported}。\n\n这可能导致搜索性能下降。\n\n仍要继续吗？',
       invalidDimension: '维度值无效',
       modelNotFound: '未找到模型',
       dimensionUpdatedRebuild: '维度已更新，请重建该模型的索引以刷新已有向量。',
-      noRerankProvider: '没有支持重排序的 Provider，请先配置 OpenAI 兼容的 Provider（如 SiliconFlow、OpenRouter）。',
+      noRerankProvider:
+        '没有支持重排序的 Provider，请先配置 OpenAI 兼容的 Provider（如 SiliconFlow、OpenRouter）。',
       invalidModelData: '模型数据无效',
     },
     rag: {
@@ -2134,6 +2140,7 @@ export const zh: TranslationKeys = {
       explain: '深入解释',
       suggest: '提供建议',
       translateToChinese: '翻译成中文',
+      openIndicator: '打开选区操作',
     },
     length: {
       adjust: '调整篇幅',

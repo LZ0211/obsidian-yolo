@@ -64,6 +64,7 @@ export type TranslationKeys = {
     on?: string
     off?: string
     noResults?: string
+    search?: string
     configure?: string
   }
 
@@ -1918,6 +1919,7 @@ export type TranslationKeys = {
       explain?: string
       suggest?: string
       translateToChinese?: string
+      openIndicator?: string
     }
     length?: {
       adjust?: string

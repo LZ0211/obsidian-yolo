@@ -1,6 +1,8 @@
 import { Sparkles } from 'lucide-react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { useLanguage } from '../../contexts/language-context'
+
 import type { SelectionInfo } from './SelectionManager'
 
 export const getIndicatorPosition = (
@@ -88,6 +90,13 @@ export function SelectionIndicator({
     onHoverChange(false)
   }
 
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!onPress || (event.key !== 'Enter' && event.key !== ' ')) return
+    event.preventDefault()
+    onPress()
+  }
+
+  const { t } = useLanguage()
   const positionStyles = useMemo(
     () => ({
       left: `${Math.round(position.left)}px`,
@@ -107,6 +116,14 @@ export function SelectionIndicator({
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       onClick={onPress}
+      role={onPress ? 'button' : undefined}
+      tabIndex={onPress ? 0 : undefined}
+      aria-label={
+        onPress
+          ? t('selection.actions.openIndicator', 'Open selection actions')
+          : undefined
+      }
+      onKeyDown={handleKeyDown}
     >
       <Sparkles size={14} />
     </div>

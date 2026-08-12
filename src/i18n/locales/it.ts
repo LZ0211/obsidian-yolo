@@ -73,6 +73,7 @@ export const it: DeepPartial<TranslationKeys> = {
     on: 'Attivo',
     off: 'Disattivo',
     noResults: 'Nessuna corrispondenza trovata',
+    search: 'Cerca...',
   },
 
   sidebar: {
@@ -205,6 +206,7 @@ export const it: DeepPartial<TranslationKeys> = {
       explain: 'Spiega in dettaglio',
       suggest: 'Fornisci suggerimenti',
       translateToChinese: 'Traduci in cinese',
+      openIndicator: 'Apri le azioni di selezione',
     },
     length: {
       adjust: 'Regola lunghezza',
@@ -339,7 +341,6 @@ export const it: DeepPartial<TranslationKeys> = {
         feishuDesc: 'Lark Open Platform · modalità socket',
       },
     },
-
 
     supportYolo: {
       name: 'Supporta il progetto',
@@ -494,13 +495,17 @@ export const it: DeepPartial<TranslationKeys> = {
         },
         sqliteEngine: {
           name: 'Motore SQLite (mobile)',
-          description: 'Database sql.js WASM usata come archivio di memoria su piattaforme senza node:sqlite.',
-          impact: "Disattivandolo, l'indice di memoria non funziona su mobile; il desktop non è influenzato.",
+          description:
+            'Database sql.js WASM usata come archivio di memoria su piattaforme senza node:sqlite.',
+          impact:
+            "Disattivandolo, l'indice di memoria non funziona su mobile; il desktop non è influenzato.",
         },
         jiebaEngine: {
           name: 'Motore jieba',
-          description: "Segmentazione cinese (jieba-rs WASM) in un worker, usata dall'indice di memoria per l'estrazione accurata delle parole chiave.",
-          impact: 'Disattivandolo, la segmentazione cinese ripiega su quella integrata (Intl.Segmenter + bigrammi).',
+          description:
+            "Segmentazione cinese (jieba-rs WASM) in un worker, usata dall'indice di memoria per l'estrazione accurata delle parole chiave.",
+          impact:
+            'Disattivandolo, la segmentazione cinese ripiega su quella integrata (Intl.Segmenter + bigrammi).',
         },
         bashEngine: {
           name: 'Motore Bash',
@@ -1116,7 +1121,8 @@ export const it: DeepPartial<TranslationKeys> = {
     },
     workspaceAgents: {
       sectionTitle: 'Agent dello spazio di lavoro',
-      sectionDesc: "Ogni agent dello spazio di lavoro eredita un template Assistant e aggiunge una policy per la directory home.",
+      sectionDesc:
+        'Ogni agent dello spazio di lavoro eredita un template Assistant e aggiunge una policy per la directory home.',
       defaultName: 'Nuovo agent dello spazio di lavoro',
       pickTemplate: 'Scegli un template',
       noTemplates: 'Crea prima un Assistant da usare come template.',
@@ -1125,7 +1131,8 @@ export const it: DeepPartial<TranslationKeys> = {
       agentName: 'Nome',
       agentNamePlaceholder: 'Nome agent',
       promptOverride: 'Override del prompt',
-      promptOverrideDesc: "Sovrascrive il system prompt del template. Vuoto = eredita dal template.",
+      promptOverrideDesc:
+        'Sovrascrive il system prompt del template. Vuoto = eredita dal template.',
       promptOverridePlaceholder: 'Eredita dal template',
       toolOverridesTitle: 'Override strumenti',
       toolOverridesButton: 'Override strumenti',
@@ -1461,14 +1468,18 @@ export const it: DeepPartial<TranslationKeys> = {
       noChatModelsConfigured: 'Nessun modello chat configurato',
       noEmbeddingModelsConfigured: 'Nessun modello embedding configurato',
       modelIdRequired: "È richiesto l'ID del modello",
-      embeddingModelAlreadyAdded: 'Questo modello di embedding è già stato aggiunto',
+      embeddingModelAlreadyAdded:
+        'Questo modello di embedding è già stato aggiunto',
       providerIdMissing: 'Il provider con questo ID non esiste',
       performanceWarningTitle: 'Avviso sulle prestazioni',
-      performanceWarningMessage: "Questo modello produce {dimension} dimensioni, ma le dimensioni ottimizzate per l'indicizzazione sono: {supported}.\n\nPotrebbe ridurre le prestazioni di ricerca.\n\nContinuare comunque?",
+      performanceWarningMessage:
+        "Questo modello produce {dimension} dimensioni, ma le dimensioni ottimizzate per l'indicizzazione sono: {supported}.\n\nPotrebbe ridurre le prestazioni di ricerca.\n\nContinuare comunque?",
       invalidDimension: 'Valore della dimensione non valido',
       modelNotFound: 'Modello non trovato',
-      dimensionUpdatedRebuild: "Dimensione aggiornata. Ricostruisci l'indice di questo modello per aggiornare i vettori esistenti.",
-      noRerankProvider: 'Nessun provider supporta il rerank. Configura prima un provider compatibile OpenAI (es. SiliconFlow, OpenRouter).',
+      dimensionUpdatedRebuild:
+        "Dimensione aggiornata. Ricostruisci l'indice di questo modello per aggiornare i vettori esistenti.",
+      noRerankProvider:
+        'Nessun provider supporta il rerank. Configura prima un provider compatibile OpenAI (es. SiliconFlow, OpenRouter).',
       invalidModelData: 'Dati del modello non validi',
     },
     rag: {

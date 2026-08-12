@@ -55,6 +55,7 @@ export const en: TranslationKeys = {
     on: 'On',
     off: 'Off',
     noResults: 'No matches found',
+    search: 'Search...',
     configure: 'Configure',
   },
 
@@ -188,6 +189,7 @@ export const en: TranslationKeys = {
       explain: 'Explain in depth',
       suggest: 'Provide suggestions',
       translateToChinese: 'Translate to Chinese',
+      openIndicator: 'Open selection actions',
     },
     length: {
       adjust: 'Adjust length',
@@ -204,26 +206,28 @@ export const en: TranslationKeys = {
 
   settings: {
     workspaceAgents: {
-        sectionTitle: "Workspace agents",
-        sectionDesc: "Each workspace agent inherits an Assistant template and adds a home-directory workspace policy.",
-        defaultName: "New workspace agent",
-        pickTemplate: "Pick a template",
-        noTemplates: "Create an Assistant first to use as a template.",
-        template: "Template: {name}",
-        missingTemplate: "Missing template: {id}",
-        agentName: "Name",
-        editorTitle: 'Edit workspace agent',
-        agentNamePlaceholder: "Agent name",
-        promptOverride: "Prompt override",
-        promptOverrideDesc: "Overrides the template system prompt. Empty inherits the template.",
-        promptOverridePlaceholder: "Inherit from template",
-        toolOverridesTitle: "Tool overrides",
-        toolOverridesButton: "Tool overrides",
-        toolApprovalMode: "Approval mode",
-        skillOverridesTitle: "Skill overrides",
-        skillOverridesButton: "Skill overrides",
-        skillLoadMode: "Load mode",
-      },
+      sectionTitle: 'Workspace agents',
+      sectionDesc:
+        'Each workspace agent inherits an Assistant template and adds a home-directory workspace policy.',
+      defaultName: 'New workspace agent',
+      pickTemplate: 'Pick a template',
+      noTemplates: 'Create an Assistant first to use as a template.',
+      template: 'Template: {name}',
+      missingTemplate: 'Missing template: {id}',
+      agentName: 'Name',
+      editorTitle: 'Edit workspace agent',
+      agentNamePlaceholder: 'Agent name',
+      promptOverride: 'Prompt override',
+      promptOverrideDesc:
+        'Overrides the template system prompt. Empty inherits the template.',
+      promptOverridePlaceholder: 'Inherit from template',
+      toolOverridesTitle: 'Tool overrides',
+      toolOverridesButton: 'Tool overrides',
+      toolApprovalMode: 'Approval mode',
+      skillOverridesTitle: 'Skill overrides',
+      skillOverridesButton: 'Skill overrides',
+      skillLoadMode: 'Load mode',
+    },
     title: 'Yolo settings',
     tabs: {
       models: 'Models',
@@ -233,7 +237,7 @@ export const en: TranslationKeys = {
       agent: 'Agent',
       modules: 'Modules',
       others: 'Others',
-      bots: "Bots",
+      bots: 'Bots',
     },
     bots: {
       globalTitle: 'Global',
@@ -339,7 +343,6 @@ export const en: TranslationKeys = {
         feishuDesc: 'Lark Open Platform · socket mode',
       },
     },
-
 
     supportYolo: {
       name: 'Support the project',
@@ -496,13 +499,17 @@ export const en: TranslationKeys = {
         },
         sqliteEngine: {
           name: 'SQLite engine (mobile)',
-          description: 'sql.js WASM database used as the memory store on platforms without node:sqlite.',
-          impact: 'Turning this off disables the memory index on mobile; desktop is unaffected.',
+          description:
+            'sql.js WASM database used as the memory store on platforms without node:sqlite.',
+          impact:
+            'Turning this off disables the memory index on mobile; desktop is unaffected.',
         },
         jiebaEngine: {
           name: 'Jieba engine',
-          description: 'Chinese word segmentation (jieba-rs WASM) in a worker thread, used by the memory index for accurate keyword extraction.',
-          impact: 'Turning this off falls back to the built-in segmentation (Intl.Segmenter + bigrams) for Chinese memory keywords.',
+          description:
+            'Chinese word segmentation (jieba-rs WASM) in a worker thread, used by the memory index for accurate keyword extraction.',
+          impact:
+            'Turning this off falls back to the built-in segmentation (Intl.Segmenter + bigrams) for Chinese memory keywords.',
         },
         bashEngine: {
           name: 'Bash engine',
@@ -1589,11 +1596,14 @@ export const en: TranslationKeys = {
       embeddingModelAlreadyAdded: 'This embedding model has already been added',
       providerIdMissing: 'Provider with this ID does not exist',
       performanceWarningTitle: 'Performance warning',
-      performanceWarningMessage: 'This model outputs {dimension} dimensions, but the optimized dimensions for database indexing are: {supported}.\n\nThis may result in slower search performance.\n\nDo you want to continue anyway?',
+      performanceWarningMessage:
+        'This model outputs {dimension} dimensions, but the optimized dimensions for database indexing are: {supported}.\n\nThis may result in slower search performance.\n\nDo you want to continue anyway?',
       invalidDimension: 'Invalid dimension value',
       modelNotFound: 'Model not found',
-      dimensionUpdatedRebuild: 'Dimension updated. Please rebuild the index for this model to refresh existing vectors.',
-      noRerankProvider: 'No providers support rerank. Please configure an OpenAI-compatible provider (e.g. SiliconFlow, OpenRouter) first.',
+      dimensionUpdatedRebuild:
+        'Dimension updated. Please rebuild the index for this model to refresh existing vectors.',
+      noRerankProvider:
+        'No providers support rerank. Please configure an OpenAI-compatible provider (e.g. SiliconFlow, OpenRouter) first.',
       invalidModelData: 'Invalid model data',
     },
     rag: {

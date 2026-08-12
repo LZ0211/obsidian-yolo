@@ -11,6 +11,7 @@ export type SearchableDropdownProps = {
   onChange: (value: string) => void
   disabled?: boolean
   placeholder?: string
+  ariaLabel?: string
   loading?: boolean
 }
 
@@ -19,7 +20,8 @@ export function SearchableDropdown({
   options,
   onChange,
   disabled = false,
-  placeholder = 'Search...',
+  placeholder,
+  ariaLabel,
   loading = false,
 }: SearchableDropdownProps) {
   const [isOpen, setIsOpen] = useState(false)
@@ -151,6 +153,7 @@ export function SearchableDropdown({
   }
 
   const { t } = useLanguage()
+  const resolvedPlaceholder = placeholder ?? t('common.search', 'Search...')
 
   return (
     <div ref={containerRef} className="yolo-searchable-dropdown">
@@ -162,8 +165,13 @@ export function SearchableDropdown({
         value={searchQuery}
         onChange={handleInputChange}
         onFocus={handleInputFocus}
+        aria-label={ariaLabel ?? resolvedPlaceholder}
         placeholder={
-          disabled ? 'Disabled' : loading ? 'Loading...' : placeholder
+          disabled
+            ? t('common.off', 'Disabled')
+            : loading
+              ? t('common.loading', 'Loading...')
+              : resolvedPlaceholder
         }
         disabled={disabled || loading}
       />
