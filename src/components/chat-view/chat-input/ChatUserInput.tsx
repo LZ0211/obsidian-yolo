@@ -56,6 +56,8 @@ import {
   CHAT_MODES,
   ChatModeSelect,
   type ChatModeSelectValue,
+  type ModuleChatModeOption,
+  narrowToMentionChatMode,
 } from './ChatModeSelect'
 import { ChatQuickAccess } from './ChatQuickAccess'
 import ChatSkillBadge from './ChatSkillBadge'
@@ -119,6 +121,7 @@ export type ChatUserInputProps = {
   chatMode?: ChatModeSelectValue
   onChatModeChange?: (mode: ChatModeSelectValue) => void
   chatModeOptions?: readonly ChatModeSelectValue[]
+  moduleModeOptions?: readonly ModuleChatModeOption[]
   yoloEnabled?: boolean
   onYoloChange?: (enabled: boolean) => void
   controlLayout?: ChatUserInputControlLayout
@@ -200,6 +203,7 @@ const ChatUserInput = forwardRef<ChatUserInputRef, ChatUserInputProps>(
       chatMode,
       onChatModeChange,
       chatModeOptions = CHAT_MODES,
+      moduleModeOptions,
       yoloEnabled = false,
       onYoloChange,
       controlLayout = 'composer-toolbar',
@@ -669,6 +673,7 @@ const ChatUserInput = forwardRef<ChatUserInputRef, ChatUserInputProps>(
           mode={chatMode}
           onChange={onChatModeChange}
           availableModes={chatModeOptions}
+          moduleModeOptions={moduleModeOptions}
           yoloEnabled={yoloEnabled}
           onYoloChange={onYoloChange ?? (() => {})}
           side="top"
@@ -900,11 +905,7 @@ const ChatUserInput = forwardRef<ChatUserInputRef, ChatUserInputProps>(
               assistants={availableAssistants}
               currentAssistantId={currentAssistantId}
               onSelectAssistant={onSelectAssistantForConversation}
-              currentChatMode={
-                currentChatMode === 'ask' || currentChatMode === 'agent'
-                  ? currentChatMode
-                  : undefined
-              }
+              currentChatMode={narrowToMentionChatMode(currentChatMode)}
               onSelectChatMode={
                 onSelectChatModeForConversation
                   ? (mode) => onSelectChatModeForConversation(mode)
