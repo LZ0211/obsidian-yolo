@@ -28,7 +28,7 @@ function response(
     arrayBuffer: bytes.buffer.slice(
       bytes.byteOffset,
       bytes.byteOffset + bytes.byteLength,
-    ),
+    ) as ArrayBuffer,
     text: '',
     json: null,
   }

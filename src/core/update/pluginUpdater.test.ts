@@ -134,7 +134,13 @@ describe('signed update downloads', () => {
       stylesCss: new TextEncoder().encode('style'),
     }
     const digest = async (bytes: Uint8Array) =>
-      [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+      [...new Uint8Array(await crypto.subtle.digest(
+      'SHA-256',
+      bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength,
+      ) as ArrayBuffer,
+    ))]
         .map((value) => value.toString(16).padStart(2, '0'))
         .join('')
     const asset = async (key: keyof typeof values, name: string) => ({

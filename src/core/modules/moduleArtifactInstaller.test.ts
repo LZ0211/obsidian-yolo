@@ -357,7 +357,7 @@ describe('ModuleArtifactInstaller', () => {
     const installer = createInstaller(adapter, download)
     await installer.install(artifact.descriptor)
     const entryPath = 'plugin/modules/learning/0.1.0/entry.js'
-    await adapter.writeBinary(entryPath, encode('corrupt').buffer)
+    await adapter.writeBinary(entryPath, encode('corrupt').buffer as ArrayBuffer)
 
     await expect(installer.repair(artifact.descriptor)).resolves.toMatchObject({
       id: 'learning',
@@ -379,7 +379,7 @@ describe('ModuleArtifactInstaller', () => {
     await installer.install(artifact.descriptor)
     const entryPath = 'plugin/modules/learning/0.1.0/entry.js'
     const corrupt = encode('unique corrupt original')
-    await adapter.writeBinary(entryPath, corrupt.buffer)
+    await adapter.writeBinary(entryPath, corrupt.buffer as ArrayBuffer)
     const offline = createInstaller(adapter, async () => {
       throw new Error('offline')
     })
@@ -397,7 +397,7 @@ describe('ModuleArtifactInstaller', () => {
     await installer.install(artifact.descriptor)
     const entryPath = 'plugin/modules/learning/0.1.0/entry.js'
     const corrupt = encode('original')
-    await adapter.writeBinary(entryPath, corrupt.buffer)
+    await adapter.writeBinary(entryPath, corrupt.buffer as ArrayBuffer)
     const rename = adapter.rename.bind(adapter)
     jest.spyOn(adapter, 'rename').mockImplementation(async (from, to) => {
       if (from.includes('.repair-staging-')) throw new Error('promotion failed')
@@ -444,7 +444,7 @@ describe('ModuleArtifactInstaller', () => {
     await installer.install(artifact.descriptor)
     const entryPath = 'plugin/modules/learning/0.1.0/entry.js'
     const corrupt = encode('original')
-    await adapter.writeBinary(entryPath, corrupt.buffer)
+    await adapter.writeBinary(entryPath, corrupt.buffer as ArrayBuffer)
     const rename = adapter.rename.bind(adapter)
     let rollbackFailures = 1
     jest.spyOn(adapter, 'rename').mockImplementation(async (from, to) => {

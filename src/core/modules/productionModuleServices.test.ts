@@ -152,7 +152,7 @@ function response(body: string | Uint8Array, status = 200): RequestUrlResponse {
     arrayBuffer: bytes.buffer.slice(
       bytes.byteOffset,
       bytes.byteOffset + bytes.byteLength,
-    ),
+    ) as ArrayBuffer,
     json: null,
   }
 }

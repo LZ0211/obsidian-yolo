@@ -8,7 +8,13 @@ export async function sha256Hex(
   bytes: Uint8Array,
   subtleCrypto: Pick<SubtleCrypto, 'digest'>,
 ): Promise<string> {
-  const digest = await subtleCrypto.digest('SHA-256', bytes)
+  const digest = await subtleCrypto.digest(
+    'SHA-256',
+    bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    ) as ArrayBuffer,
+  )
   return toHex(new Uint8Array(digest))
 }
 

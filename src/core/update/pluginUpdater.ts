@@ -333,7 +333,13 @@ function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
 }
 
 async function sha256(bytes: Uint8Array): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes)
+  const digest = await globalThis.crypto.subtle.digest(
+      'SHA-256',
+      bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength,
+      ) as ArrayBuffer,
+    )
   return [...new Uint8Array(digest)]
     .map((value) => value.toString(16).padStart(2, '0'))
     .join('')

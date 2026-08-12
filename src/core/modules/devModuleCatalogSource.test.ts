@@ -264,7 +264,7 @@ describe('createDevModuleCatalogOverlay', () => {
     const moduleDir = '/plugins/yolo/modules/learning/0.1.5-dev.0'
     adapter.files.set(
       `${moduleDir}/module.json`,
-      encode({ id: 'learning', version: '0.1.5-dev.0' }).buffer,
+      encode({ id: 'learning', version: '0.1.5-dev.0' }).buffer as ArrayBuffer,
     )
     const fallbackDownload = jest.fn(async () => {
       throw new Error('fallback must not be used for a bundled candidate')

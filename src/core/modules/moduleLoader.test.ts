@@ -30,7 +30,7 @@ const subtleCrypto: Pick<SubtleCrypto, 'digest'> = {
         : new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
     const digest = SHA256_BY_SOURCE[new TextDecoder().decode(bytes)]
     if (!digest) throw new Error('Unexpected test input')
-    return fromHex(digest).buffer
+    return fromHex(digest) .buffer as ArrayBuffer
   },
 }
 

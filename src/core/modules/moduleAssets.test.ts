@@ -17,7 +17,7 @@ const toHex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
 const subtleCrypto: Pick<SubtleCrypto, 'digest'> = {
   digest: async (_algorithm, data) =>
-    fixtureDigest(new Uint8Array(data as ArrayBuffer)).buffer,
+    fixtureDigest(new Uint8Array(data as ArrayBuffer)).buffer as ArrayBuffer,
 }
 
 function file(

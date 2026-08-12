@@ -26,7 +26,7 @@ const response = (bytes: Uint8Array): RequestUrlResponse => ({
   arrayBuffer: bytes.buffer.slice(
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength,
-  ),
+  ) as ArrayBuffer,
   json: null,
 })
 
