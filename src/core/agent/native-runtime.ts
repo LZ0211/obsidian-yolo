@@ -532,6 +532,7 @@ export class NativeAgentRuntime implements AgentRuntime {
                         toolCapabilityMode: input.toolCapabilityMode,
                         modePersonaPrompt: input.modePersonaPrompt,
                         modePersonaModuleId: input.modePersonaModuleId,
+                        moduleChatModeId: input.moduleChatModeId,
                         contextPolicy: input.contextPolicy,
                       })
                         .then((estimatedNextContextTokens) => {
