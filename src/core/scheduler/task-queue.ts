@@ -31,6 +31,9 @@ export type TaskQueueItem = {
   maxRetries: number
   /** Explicit trigger origin; the run record no longer infers this from priority. */
   source: 'manual' | 'schedule' | 'retry'
+  /** Set when this enqueue is a catch-up of a missed trigger (see scheduler.ts
+   * catchUpMissedTasks): flows onto the run record as `catchUpRunAt` for audit. */
+  catchUpRunAt?: number
 }
 
 /**
@@ -376,6 +379,7 @@ export class TaskQueue {
         triggeredBy: next.source,
         scheduledFor: next.scheduleTime,
         status: TaskRunStatus.PENDING,
+        catchUpRunAt: next.catchUpRunAt,
       }
       this.executing.set(next.taskId, { item: next, run })
       this.emit({ type: 'task-ready', item: next, run })

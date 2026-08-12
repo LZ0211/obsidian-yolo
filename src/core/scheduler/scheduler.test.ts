@@ -1129,6 +1129,124 @@ describe('ScheduledTaskScheduler', () => {
     }
   })
 
+  it('catches up missed cron runs after restart (skip-missed), but not during the quiet window', async () => {
+    jest.useFakeTimers()
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const agentApi = makeAgentApi(async () => ({
+        conversationId: 'conv-1',
+        text: 'done',
+        status: 'completed',
+      }))
+      const executor = new TaskExecutor({ getAgentApi: () => agentApi })
+      const scheduler = new ScheduledTaskScheduler({
+        store,
+        executor,
+        eventBus: new TaskEventBus(),
+      })
+
+      // Every-30-min cron task whose process was closed between its last fire
+      // (T-90min) and a restart at T: the T-60min and T-30min triggers both came
+      // and went while the process wasn't polling. nextRunTime still points at
+      // the first missed trigger point.
+      const now = Date.now()
+      const lastRunAt = now - 90 * 60_000
+      const missedTrigger = now - 60 * 60_000
+      store.createTask(
+        'cron-task',
+        makeTaskConfig({
+          scheduleType: 'cron',
+          cronExpression: '*/30 * * * *',
+          intervalSeconds: null,
+          nextRunTime: missedTrigger,
+        }),
+        lastRunAt,
+      )
+      store.updateTask('cron-task', { lastRunAt }, lastRunAt + 1000)
+
+      scheduler.start()
+      await jest.advanceTimersByTimeAsync(0) // settle the leader poll loop's first check
+
+      // Quiet window (30s after start): the missed trigger must NOT storm the
+      // startup — nothing is enqueued and nextRunTime stays pinned to the
+      // missed trigger point until the catch-up pass is allowed to run.
+      expect(scheduler.getExecutingTasks()).toHaveLength(0)
+      expect(store.getTask('cron-task')?.nextRunTime).toBe(missedTrigger)
+
+      // Once the quiet window elapses, the catch-up pass runs the missed
+      // trigger exactly once (skip-missed — no replay of both missed triggers)
+      // and recomputes nextRunTime from the restart moment.
+      await jest.advanceTimersByTimeAsync(31_000)
+      await jest.advanceTimersByTimeAsync(0) // let the caught-up run settle
+
+      const runs = store.listRunsByTask('cron-task').runs
+      expect(runs).toHaveLength(1)
+      expect(runs[0]?.scheduledFor).toBe(missedTrigger)
+      expect(runs[0]?.catchUpRunAt).not.toBeNull()
+      expect(store.getTask('cron-task')?.nextRunTime).toBeGreaterThan(now)
+
+      scheduler.stop()
+      store.close()
+    } finally {
+      jest.useRealTimers()
+      cleanup(dir)
+    }
+  })
+
+  it('does not catch up tasks with scheduleType once that already ran', async () => {
+    jest.useFakeTimers()
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const executor = new TaskExecutor({
+        getAgentApi: () => makeDeferredAgentApi().agentApi,
+      })
+      const scheduler = new ScheduledTaskScheduler({
+        store,
+        executor,
+        eventBus: new TaskEventBus(),
+      })
+
+      const now = Date.now()
+      const firedAt = now - 60 * 60_000
+      // A once task that already ran: disabled, nextRunTime cleared, lastRunAt
+      // set — exactly the shape the due-check leaves behind after firing it.
+      store.createTask(
+        'once-task',
+        makeTaskConfig({
+          scheduleType: 'once',
+          intervalSeconds: null,
+          oneTimeDateTime: firedAt,
+          nextRunTime: null,
+          enabled: false,
+        }),
+        firedAt,
+      )
+      store.updateTask('once-task', { lastRunAt: firedAt }, firedAt)
+
+      scheduler.start()
+      await jest.advanceTimersByTimeAsync(31_000) // past the quiet window
+      await jest.advanceTimersByTimeAsync(0)
+
+      // Once schedules are never caught up, and a consumed one must not be
+      // revived by the restart — no run is created and the task stays disabled.
+      expect(store.listRunsByTask('once-task').runs).toHaveLength(0)
+      expect(scheduler.getExecutingTasks()).toHaveLength(0)
+      expect(store.getTask('once-task')).toMatchObject({
+        enabled: false,
+        nextRunTime: null,
+        lastRunAt: firedAt,
+      })
+
+      scheduler.stop()
+      store.close()
+    } finally {
+      jest.useRealTimers()
+      cleanup(dir)
+    }
+  })
+
   describe('notifyOn -> Notice', () => {
     beforeEach(() => {
       ;(Notice as jest.Mock).mockClear()

@@ -126,6 +126,14 @@ export type TaskRun = {
   completedAt: number | null
   durationMs: number | null
 
+  /** When the scheduler's catch-up pass enqueued this run to make up a trigger
+   * that was missed while the process wasn't polling. Non-null only on
+   * catch-up runs (see scheduler.ts isMissedTrigger/catchUpMissedTasks) —
+   * run history can distinguish a make-up fire from a regular scheduled one
+   * by `catchUpRunAt` alone; `scheduledFor` still carries the missed trigger
+   * point. */
+  catchUpRunAt: number | null
+
   attempt: number
   parentRunId: string | null
   batchId: string
@@ -169,6 +177,7 @@ export type TaskRunRuntimeState = {
   conversationId?: string
   messagesCount?: number
   parentRunId?: string
+  catchUpRunAt?: number
   logs?: TaskRunLogEntry[]
 }
 
@@ -195,6 +204,7 @@ export function toTaskRunInsert(state: TaskRunRuntimeState): TaskRunInsert {
     messagesCount: state.messagesCount ?? null,
     output: state.output ?? null,
     exitCode: state.exitCode ?? null,
+    catchUpRunAt: state.catchUpRunAt ?? null,
     logs: state.logs ?? null,
   }
 }
@@ -246,6 +256,7 @@ type TaskRunDbRow = {
   messages_count: number | null
   output: string | null
   exit_code: number | null
+  catch_up_run_at: number | null
   logs: string | null
 }
 
@@ -314,6 +325,7 @@ const CREATE_SCHEMA_SQL = `
     output text,
     exit_code integer,
 
+    catch_up_run_at integer,
     logs text
   );
 
@@ -348,6 +360,13 @@ export class ScheduledTasksStore {
     this.runtime.exec(CREATE_SCHEMA_SQL)
     try {
       this.runtime.exec('alter table scheduled_tasks add column timezone text')
+    } catch {
+      // Existing databases already have the additive column.
+    }
+    try {
+      this.runtime.exec(
+        'alter table task_runs add column catch_up_run_at integer',
+      )
     } catch {
       // Existing databases already have the additive column.
     }
@@ -528,13 +547,13 @@ export class ScheduledTasksStore {
           scheduled_for, triggered_by, started_at, completed_at, duration_ms,
           attempt, parent_run_id, batch_id,
           conversation_id, messages_count,
-          output, exit_code, logs
+          output, exit_code, catch_up_run_at, logs
         ) values (
           ?, ?, ?, ?, ?,
           ?, ?, ?, ?, ?,
           ?, ?, ?,
           ?, ?,
-          ?, ?, ?
+          ?, ?, ?, ?
         )
       `,
       [
@@ -555,6 +574,7 @@ export class ScheduledTasksStore {
         run.messagesCount,
         run.output,
         run.exitCode,
+        run.catchUpRunAt,
         run.logs ? JSON.stringify(run.logs) : null,
       ],
     )
@@ -591,6 +611,8 @@ export class ScheduledTasksStore {
       setColumn('messages_count', patch.messagesCount)
     if (patch.output !== undefined) setColumn('output', patch.output)
     if (patch.exitCode !== undefined) setColumn('exit_code', patch.exitCode)
+    if (patch.catchUpRunAt !== undefined)
+      setColumn('catch_up_run_at', patch.catchUpRunAt)
     if (patch.logs !== undefined)
       setColumn('logs', patch.logs ? JSON.stringify(patch.logs) : null)
 
@@ -765,6 +787,7 @@ function fromRunDbRow(row: TaskRunDbRow): TaskRun {
     messagesCount: row.messages_count,
     output: row.output,
     exitCode: row.exit_code,
+    catchUpRunAt: row.catch_up_run_at,
     logs: row.logs ? (JSON.parse(row.logs) as TaskRunLogEntry[]) : null,
   }
 }

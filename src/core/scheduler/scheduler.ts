@@ -51,6 +51,24 @@ export type EnqueueResult =
 const PRUNE_SAFETY_MARGIN_MS = 5 * 60 * 1000
 const CHECK_INTERVAL_MS = 30_000
 
+/**
+ * Startup quiet window: the catch-up pass is deferred this long after
+ * scheduler.start(), so an Obsidian startup with many overdue recurring tasks
+ * doesn't storm the queue with make-up runs while cold-start IO is settling
+ * (cherry-studio's 60s startup-recovery delay, halved). The only startup work
+ * is recoverOrphanedRuns via onLeaderAcquired (backup behavior, unchanged).
+ */
+const CATCH_UP_QUIET_WINDOW_MS = 30_000
+
+/**
+ * A trigger point only counts as "missed" once it has been overdue by more
+ * than one full polling period. Within the 30s tick granularity a due task is
+ * picked up by the regular due-check — without this margin every recurring
+ * task would be labeled a catch-up on its own next fire (lastRunAt is always
+ * before nextRunTime by construction), and normal fires would drift a tick.
+ */
+const CATCH_UP_OVERDUE_THRESHOLD_MS = 2 * CHECK_INTERVAL_MS
+
 const isRetryableError = (error: unknown): boolean => {
   // Deterministic script failure (non-zero exit): retrying repeats the same
   // mistake. Timeouts and everything else stay conservatively retryable.
@@ -58,6 +76,23 @@ const isRetryableError = (error: unknown): boolean => {
   if (error instanceof TaskTimeoutError) return true
   return true
 }
+
+/**
+ * A cron/interval trigger point is "missed" when it came and went while the
+ * process wasn't polling: `nextRunTime` is overdue by more than a full polling
+ * period (see CATCH_UP_OVERDUE_THRESHOLD_MS), and no run has satisfied it
+ * since (`lastRunAt` before the trigger point — a later manual run covers the
+ * trigger and must not be re-executed). `once` schedules are never caught up
+ * (cherry catchUp.ts: "once: never overdue here"; a consumed one is disabled
+ * anyway, an unconsumed one is the regular due-check's job). Missed triggers
+ * belong to the catch-up pass, not the regular due-check: the due-check defers
+ * them so the startup quiet window can hold the make-up runs back.
+ */
+const isMissedTrigger = (task: ScheduledTask, now: number): boolean =>
+  task.scheduleType !== 'once' &&
+  task.nextRunTime != null &&
+  task.nextRunTime <= now - CATCH_UP_OVERDUE_THRESHOLD_MS &&
+  (task.lastRunAt == null || task.lastRunAt < task.nextRunTime)
 
 /**
  * Top-level scheduler. Multi-window leader election uses the Web Locks API (`navigator.locks`)
@@ -73,6 +108,9 @@ export class ScheduledTaskScheduler {
   private isChecking = false // mutex: prevents the 30s timer and a manual trigger from re-entering and double-enqueueing
   private stopped = true
   private shuttingDown = false
+  /** Timestamp of the most recent start(): the catch-up pass is held back until
+   * CATCH_UP_QUIET_WINDOW_MS after it, so a fresh startup never storms the queue. */
+  private startedAt = 0
   private releaseLeaderLock?: () => void
   // Scoped by store.rootDir (one per vault) so two different vaults opened in the same Obsidian
   // process/session never contend for each other's lock, while multiple windows on the *same*
@@ -124,6 +162,7 @@ export class ScheduledTaskScheduler {
     if (this.shuttingDown) return
     if (!this.stopped) return
     this.stopped = false
+    this.startedAt = Date.now() // arms the catch-up quiet window for this start
     if (this.hasWebLocks()) {
       // The callback (and therefore the poll loop) only runs once this window is granted the
       // exclusive lock; the lock is held until the promise it returns resolves, which happens in
@@ -432,7 +471,16 @@ export class ScheduledTaskScheduler {
     this.isChecking = true
     try {
       const now = Date.now()
-      let dueTasks = this.deps.store.listDueTasks(now)
+      // Catch-up first: a missed trigger that the pass enqueues gets its
+      // nextRunTime recomputed from now, so the due-check below naturally
+      // skips it (single enqueue, never a double fire in the same tick).
+      this.catchUpMissedTasks(now)
+      // The regular due-check defers missed triggers to the catch-up pass
+      // (which the quiet window holds back at startup). Everything else —
+      // due within the polling granularity — runs exactly as before.
+      let dueTasks = this.deps.store
+        .listDueTasks(now)
+        .filter((task) => !isMissedTrigger(task, now))
       if (dueTasks.length === 0) return
 
       const maxAgentRunsPerTick = this.deps.getMaxAgentRunsPerTick?.() ?? null
@@ -495,6 +543,80 @@ export class ScheduledTaskScheduler {
       }
     } finally {
       this.isChecking = false
+    }
+  }
+
+  /**
+   * Catch-up pass, run at the top of every tick but held back by the startup
+   * quiet window. For each cron/interval task with a genuinely missed trigger
+   * (see isMissedTrigger) it enqueues ONE make-up run — skip-missed semantics:
+   * the single most recent missed fire, then nextRunTime resumes from now, so
+   * the two triggers missed during a shutdown are not replayed one by one.
+   * Runs are auditable: `scheduledFor` carries the missed trigger point and
+   * `catchUpRunAt` the moment the make-up run was enqueued. Mirrors
+   * cherry-studio's catchUp.ts after-startup policy for our poll-loop model.
+   */
+  private catchUpMissedTasks(now: number): void {
+    // Quiet window: during the first 30s after start() only onLeaderAcquired
+    // (recoverOrphanedRuns) touches startup state — overdue triggers wait, so
+    // an Obsidian startup with many missed recurring tasks doesn't storm the
+    // queue (cherry's 60s startup-recovery delay, halved).
+    if (now - this.startedAt < CATCH_UP_QUIET_WINDOW_MS) return
+
+    const missedTasks = this.deps.store
+      .listTasks({ enabledOnly: true })
+      .filter((task) => isMissedTrigger(task, now))
+    if (missedTasks.length === 0) return
+
+    // The per-tick agent budget applies to catch-up too — otherwise this pass
+    // would start every overdue agent task at once, the exact startup storm
+    // the quiet window exists to prevent. Deferred tasks stay overdue and are
+    // picked up by the next tick's catch-up pass, one budget's worth at a time.
+    const maxAgentRunsPerTick = this.deps.getMaxAgentRunsPerTick?.() ?? null
+    const toEnqueue =
+      maxAgentRunsPerTick != null
+        ? this.limitAgentRunsForTick(missedTasks, maxAgentRunsPerTick)
+        : missedTasks
+    if (toEnqueue.length === 0) return
+
+    const batchId = crypto.randomUUID() // all make-up runs of this round share one batch for dependency resolution
+    this.queue.registerBatchMembers(
+      batchId,
+      toEnqueue.map((task) => task.id),
+    )
+    const expectedCompletionTime =
+      now + Math.max(...toEnqueue.map((task) => task.timeoutSeconds * 1000))
+    this.queue.markBatchExpectedCompletion(batchId, expectedCompletionTime)
+
+    for (const task of toEnqueue) {
+      const missedTrigger = task.nextRunTime
+      if (missedTrigger == null) continue // isMissedTrigger guarantees non-null; re-check for TS narrowing
+      if (this.queue.isTaskQueued(task.id)) continue // dedup: another pass already enqueued it
+      const catchUpAt = Date.now()
+      this.queue.enqueue({
+        taskId: task.id,
+        batchId,
+        queueGroup: task.queueGroup ?? undefined,
+        scheduleTime: missedTrigger, // the missed trigger point, not "now" — run history shows which fire is being made up
+        enqueuedAt: catchUpAt,
+        priority: task.priority,
+        dependency: task.dependsOn?.length
+          ? {
+              dependsOn: task.dependsOn,
+              continueOnDependencyFailure: task.continueOnDependencyFailure,
+            }
+          : undefined,
+        attempt: 1,
+        maxRetries: task.maxRetries,
+        source: 'schedule',
+        catchUpRunAt: catchUpAt, // audit marker on the run record
+      })
+      // Single catch-up, then the schedule resumes from now (skip-missed).
+      this.deps.store.updateTask(
+        task.id,
+        { nextRunTime: calculateNextRunTime(task, now) },
+        now,
+      )
     }
   }
 

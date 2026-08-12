@@ -98,6 +98,7 @@ function makeRunInsert(overrides: Partial<TaskRunInsert> = {}): TaskRunInsert {
     messagesCount: null,
     output: null,
     exitCode: null,
+    catchUpRunAt: null,
     logs: null,
     ...overrides,
   }
