@@ -19,10 +19,12 @@ export const startAnkiWorkerRuntime = (
       now: request.now,
     })
       .then((result) => {
-        const transfer = Object.values(result.mediaFiles).map((bytes) =>
-          bytes.buffer instanceof ArrayBuffer
-            ? bytes.buffer
-            : bytes.buffer.slice(0),
+        // TS 5.9: postMessage transfer 需要 ArrayBuffer[]，SharedArrayBuffer 分支已拷贝为普通 buffer
+        const transfer = Object.values(result.mediaFiles).map(
+          (bytes) =>
+            (bytes.buffer instanceof ArrayBuffer
+              ? bytes.buffer
+              : bytes.buffer.slice(0)) as ArrayBuffer,
         )
         runtime.postMessage(
           { id: request.id, result } satisfies AnkiWorkerResponse,

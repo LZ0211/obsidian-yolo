@@ -15,7 +15,12 @@ const JSZip =
 const wasm = readFileSync(require.resolve('sql.js/dist/sql-wasm.wasm'))
 
 const createCollection = async (): Promise<Uint8Array> => {
-  const SQL = await initSqlJs({ wasmBinary: wasm })
+  const SQL = await initSqlJs({
+    wasmBinary: wasm.buffer.slice(
+      wasm.byteOffset,
+      wasm.byteOffset + wasm.byteLength,
+    ) as ArrayBuffer,
+  })
   const db = new SQL.Database()
   db.run('CREATE TABLE col (decks text, models text)')
   db.run('CREATE TABLE notes (id integer, mid integer, tags text, flds text)')
@@ -93,7 +98,12 @@ describe('Anki parser kernel', () => {
     zip.file('1', new Uint8Array([3]))
     const packageBytes = await zip.generateAsync({ type: 'uint8array' })
     const archive = await readAnkiArchive(packageBytes)
-    const SQL = await initSqlJs({ wasmBinary: wasm })
+    const SQL = await initSqlJs({
+      wasmBinary: wasm.buffer.slice(
+        wasm.byteOffset,
+        wasm.byteOffset + wasm.byteLength,
+      ) as ArrayBuffer,
+    })
     const result = parseAnkiDatabase(
       SQL,
       archive.collection,
@@ -214,7 +224,12 @@ describe('Anki parser kernel', () => {
   })
 
   test('reads schema v18 normalized JSON columns', async () => {
-    const SQL = await initSqlJs({ wasmBinary: wasm })
+    const SQL = await initSqlJs({
+      wasmBinary: wasm.buffer.slice(
+        wasm.byteOffset,
+        wasm.byteOffset + wasm.byteLength,
+      ) as ArrayBuffer,
+    })
     const db = new SQL.Database()
     db.run('CREATE TABLE notetypes (id integer, name text, config text)')
     db.run(

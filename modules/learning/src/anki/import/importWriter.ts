@@ -247,10 +247,11 @@ export async function commitAnkiImportPlan({
     const writeBinary = async (path: string, bytes: Uint8Array) => {
       await vault.createBinary(
         path,
+        // TS 5.9: createBinary 需要 ArrayBuffer，底层 buffer 实际均为普通 ArrayBuffer
         bytes.buffer.slice(
           bytes.byteOffset,
           bytes.byteOffset + bytes.byteLength,
-        ),
+        ) as ArrayBuffer,
       )
       journal.createdFiles.push(path)
       try {

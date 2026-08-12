@@ -298,4 +298,10 @@ export const parseAnkiDatabase = (
 }
 
 export const initAnkiSqlite = (wasmBinary: Uint8Array): Promise<SqlJsStatic> =>
-  initSqlJs({ wasmBinary })
+  initSqlJs({
+    // TS 5.9: initSqlJs 的 wasmBinary 需要 ArrayBuffer，底层 buffer 实际均为普通 ArrayBuffer
+    wasmBinary: wasmBinary.buffer.slice(
+      wasmBinary.byteOffset,
+      wasmBinary.byteOffset + wasmBinary.byteLength,
+    ) as ArrayBuffer,
+  })

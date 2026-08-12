@@ -46,7 +46,14 @@ const safeExtension = (name: string): string => {
 }
 
 const sha256 = async (bytes: Uint8Array): Promise<string> => {
-  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  // TS 5.9: digest 的 BufferSource 需要 ArrayBuffer-backed view，底层 buffer 实际均为普通 ArrayBuffer
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    ) as ArrayBuffer,
+  )
   return [...new Uint8Array(digest)]
     .map((value) => value.toString(16).padStart(2, '0'))
     .join('')
