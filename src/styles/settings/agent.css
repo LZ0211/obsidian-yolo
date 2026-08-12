@@ -182,6 +182,9 @@ button.yolo-agent-mcp-config-copy {
 .yolo-agent-tool-name {
   color: var(--text-normal);
   font-size: var(--font-ui-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .yolo-agent-tool-name--mono {
@@ -993,13 +996,21 @@ button.yolo-agent-chip--more:hover {
   opacity: 0.6;
 }
 
+/* fr 比例列（而非 max-content）：每行是独立 grid，max-content 会让长名称
+   把该行列单独撑宽，行与行、行与表头错位。固定控制列宽度保证所有行
+   解析出相同列宽；超长名称由 nowrap+ellipsis 截断。 */
 .yolo-builtin-tools-table-header,
 .yolo-builtin-tools-table-row {
-  grid-template-columns: minmax(140px, max-content) minmax(200px, max-content) 1fr auto;
+  grid-template-columns: minmax(140px, 1fr) minmax(200px, 2fr) 1fr 100px;
 }
 
 .yolo-builtin-tools-table-header > div:last-child {
   text-align: right;
+}
+
+/* 超长工具名（如注入工具原始 snake_case 名）单行省略，不换行撑行。 */
+.yolo-builtin-tools-table .yolo-mcp-server-name {
+  white-space: nowrap;
 }
 
 .yolo-builtin-tools-table-control {
