@@ -1430,6 +1430,58 @@ describe('AgentService background subagent results', () => {
       service.stopBackgroundTaskResultListener()
     }
   })
+
+  it('projects the completion event cumulative usage onto the parent subagent_result message', () => {
+    const service = new AgentService()
+    const record: SubagentTaskCompletionRecord = {
+      taskId: 'sub_usage_projection',
+      conversationId: 'conv-subagent-usage',
+      source: {
+        type: 'llm_tool_call',
+        toolCallId: 'subagent-call-usage',
+        assistantMessageId: 'assistant-1',
+      },
+      title: 'Research',
+      status: 'completed',
+      createdAt: 1,
+      completedAt: 2,
+      prompt: 'Research the topic',
+      result: {
+        taskId: 'sub_usage_projection',
+        status: 'completed',
+        content: 'done',
+        durationMs: 1,
+        toolUseCount: 1,
+      },
+    }
+    service.startBackgroundTaskResultListener()
+
+    try {
+      backgroundTaskCompletionBus.pushCompleted({
+        kind: 'subagent',
+        taskId: record.taskId,
+        conversationId: record.conversationId,
+        usage: { inputTokens: 150, outputTokens: 30 },
+        record,
+      })
+
+      const subagentResult = service
+        .getState(record.conversationId)
+        .messages.find((message) => message.role === 'subagent_result')
+      // Whole-transcript cumulative sum, not the per-turn usage of any single
+      // child message (pre `service.ts:281-287` projection semantics).
+      expect(subagentResult).toMatchObject({
+        role: 'subagent_result',
+        usage: {
+          prompt_tokens: 150,
+          completion_tokens: 30,
+          total_tokens: 180,
+        },
+      })
+    } finally {
+      service.stopBackgroundTaskResultListener()
+    }
+  })
 })
 
 describe('AgentService subagent result truncation', () => {

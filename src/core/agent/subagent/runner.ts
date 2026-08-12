@@ -180,11 +180,23 @@ const publishBackgroundSubagentCompletion = (
         ? { liveTranscript: record.liveTranscript }
         : {}),
     }
+    // `result.usage` is the child's CUMULATIVE per-turn usage, summed by
+    // `collectTotalAssistantUsage` over its whole transcript. Project it to the
+    // `{ inputTokens, outputTokens }` shape the parent diagnostics consume.
+    const cumulativeUsage = updatedRecord.result?.usage
     backgroundTaskCompletionBus.pushCompleted({
       kind: 'subagent',
       taskId: updatedRecord.taskId,
       conversationId: updatedRecord.conversationId,
       record: completionRecord,
+      ...(cumulativeUsage
+        ? {
+            usage: {
+              inputTokens: cumulativeUsage.prompt_tokens,
+              outputTokens: cumulativeUsage.completion_tokens,
+            },
+          }
+        : {}),
     })
   }
 }

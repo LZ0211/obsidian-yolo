@@ -888,6 +888,77 @@ describe('runSubagent durable spawn', () => {
     )
   })
 
+  it('reports cumulative input/output tokens on a multi-turn child completion', async () => {
+    // Override the module-level NativeAgentRuntime mock for this run only:
+    // the child transcript has two assistant turns whose per-turn usage sums
+    // to the cumulative projection expected on the completion event.
+    const nativeRuntimeModule = jest.requireMock<{
+      NativeAgentRuntime: jest.Mock
+    }>('../native-runtime')
+    nativeRuntimeModule.NativeAgentRuntime.mockImplementationOnce(() => ({
+      subscribe: jest.fn(() => () => {}),
+      run: jest.fn(() => gateRuntimeRun()),
+      getSnapshot: jest.fn().mockReturnValue({
+        messages: [
+          {
+            role: 'assistant',
+            id: 'child-assistant-1',
+            content: 'I will inspect the files first.',
+            metadata: {
+              usage: {
+                prompt_tokens: 100,
+                completion_tokens: 20,
+                total_tokens: 120,
+              },
+            },
+          },
+          {
+            role: 'assistant',
+            id: 'child-assistant-2',
+            content: 'Child result',
+            metadata: {
+              usage: {
+                prompt_tokens: 50,
+                completion_tokens: 10,
+                total_tokens: 60,
+              },
+            },
+          },
+        ],
+        compaction: [],
+        pendingCompactionAnchorMessageId: null,
+      }),
+      setToolCallResponse: jest.fn(),
+    }))
+
+    const settleRun = jest.fn(async () => undefined)
+    const gateway = makeGateway(settleRun)
+    const result = await runSubagent({
+      ...makeParams(gateway, settleRun),
+      onSettleFailure: jest.fn(),
+    })
+    expect(result.accepted).toBe(true)
+
+    await waitForRunGate()
+    releaseRunGate?.()
+    await flushMicrotasks()
+
+    const pushCompleted = (
+      backgroundTaskCompletionBus as unknown as {
+        pushCompleted: jest.Mock
+      }
+    ).pushCompleted
+    expect(pushCompleted).toHaveBeenCalledTimes(1)
+    expect(pushCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'subagent',
+        taskId: 'sub_abc',
+        conversationId: 'c',
+        usage: { inputTokens: 150, outputTokens: 30 },
+      }),
+    )
+  })
+
   it('keeps the in-memory state consistent when settleRun fails', async () => {
     const settleError = new Error('store write failed')
     const settleRun = jest.fn(async () => {

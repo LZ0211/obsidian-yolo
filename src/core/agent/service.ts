@@ -32,6 +32,7 @@ import { parseToolName } from '../mcp/tool-name-utils'
 
 import {
   type BackgroundTaskEvent,
+  type SubagentCumulativeUsage,
   backgroundTaskCompletionBus,
 } from './background-task/completion-bus'
 import {
@@ -262,6 +263,7 @@ const SUBAGENT_TIMEOUT_CONTENT =
 
 function buildSubagentResultMessage(
   record: SubagentTaskCompletionRecord,
+  usage?: SubagentCumulativeUsage,
 ): ChatSubagentResultMessage {
   const completedAt = record.completedAt ?? Date.now()
   const result = record.result
@@ -292,7 +294,16 @@ function buildSubagentResultMessage(
     activityLog: result?.activityLog ?? record.activityLog,
     durationMs: result?.durationMs ?? completedAt - record.createdAt,
     toolUseCount: result?.toolUseCount ?? 0,
-    usage: result?.usage,
+    // Prefer the bus event's cumulative projection (whole-transcript sum) over
+    // the record's own `result.usage` (same source, kept as fallback for
+    // events carrying no projection). Pre `service.ts:281-287` semantics.
+    usage: usage
+      ? {
+          prompt_tokens: usage.inputTokens,
+          completion_tokens: usage.outputTokens,
+          total_tokens: usage.inputTokens + usage.outputTokens,
+        }
+      : result?.usage,
     prompt: result?.prompt ?? record.prompt,
     modelName: result?.modelName,
     transcript: result?.transcript ?? record.liveTranscript,
@@ -1257,7 +1268,7 @@ export class AgentService {
   ): ChatMessage {
     switch (event.kind) {
       case 'subagent':
-        return buildSubagentResultMessage(event.record)
+        return buildSubagentResultMessage(event.record, event.usage)
       case 'terminal_command':
       case 'terminal_command_waiting':
         return buildTerminalCommandResultMessage(event.record)
