@@ -9,6 +9,8 @@ export const zh: TranslationKeys = {
     openNewChatTab: '在新标签页打开新对话',
     openNewChatSplit: '在右侧分屏打开新对话',
     openNewChatWindow: '在新窗口打开新对话',
+    openChatHistory: '打开聊天历史',
+    exportCurrentConversationToVault: '导出当前对话到库',
     addSelectionToChat: '添加选中内容到聊天',
     addFileToChat: '添加文件到聊天',
     addFolderToChat: '添加文件夹到聊天',
@@ -128,6 +130,7 @@ export const zh: TranslationKeys = {
       hideArchived: '收起归档',
       exportConversation: '导出对话到库',
       moreActions: '更多操作',
+      openHistory: '聊天历史',
     },
     composer: {
       title: '灵光写作',
@@ -2198,6 +2201,11 @@ export const zh: TranslationKeys = {
     paneTitle: {
       renameAriaLabel: '点击重命名对话',
       editingAriaLabel: '正在编辑对话标题',
+    },
+    paneMenu: {
+      rename: '重命名',
+      deleteConfirmTitle: '删除该对话？',
+      deleteConfirmMessage: '将永久删除「{title}」，此操作无法撤销。',
     },
     continueResponse: '继续生成',
     messageNavigator: {

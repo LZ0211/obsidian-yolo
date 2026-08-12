@@ -16,6 +16,8 @@ export type TranslationKeys = {
     openNewChatTab: string
     openNewChatSplit: string
     openNewChatWindow: string
+    openChatHistory?: string
+    exportCurrentConversationToVault?: string
     addSelectionToChat: string
     addFileToChat: string
     addFolderToChat: string
@@ -136,6 +138,7 @@ export type TranslationKeys = {
       hideArchived?: string
       exportConversation?: string
       moreActions?: string
+      openHistory?: string
     }
     chat?: {
       exportSuccess?: string
@@ -1984,6 +1987,13 @@ export type TranslationKeys = {
     paneTitle?: {
       renameAriaLabel?: string
       editingAriaLabel?: string
+    }
+    /** ⋯ pane menu (view header, `ItemView.onPaneMenu`) — issue #567 Step 2. */
+    paneMenu?: {
+      rename?: string
+      deleteConfirmTitle?: string
+      /** {title} is replaced client-side with the conversation's display title. */
+      deleteConfirmMessage?: string
     }
     continueResponse?: string
     messageNavigator?: {

@@ -9,6 +9,8 @@ export const en: TranslationKeys = {
     openNewChatTab: 'Open new chat (new tab)',
     openNewChatSplit: 'Open new chat (right split)',
     openNewChatWindow: 'Open new chat (new window)',
+    openChatHistory: 'Open chat history',
+    exportCurrentConversationToVault: 'Export current conversation to vault',
     addSelectionToChat: 'Add selection to chat',
     addFileToChat: 'Add file to chat',
     addFolderToChat: 'Add folder to chat',
@@ -131,6 +133,7 @@ export const en: TranslationKeys = {
       hideArchived: 'Hide archived',
       exportConversation: 'Export conversation to vault',
       moreActions: 'More actions',
+      openHistory: 'Chat history',
     },
     composer: {
       title: 'Sparkle',
@@ -2346,6 +2349,12 @@ export const en: TranslationKeys = {
     paneTitle: {
       renameAriaLabel: 'Click to rename conversation',
       editingAriaLabel: 'Editing conversation title',
+    },
+    paneMenu: {
+      rename: 'Rename',
+      deleteConfirmTitle: 'Delete conversation?',
+      deleteConfirmMessage:
+        'This will permanently delete "{title}". This action cannot be undone.',
     },
     continueResponse: 'Continue response',
     messageNavigator: {
