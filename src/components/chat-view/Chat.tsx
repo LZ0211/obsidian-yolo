@@ -1,6 +1,6 @@
 import { EditorView } from '@codemirror/view'
 import { Pencil, Trash2 } from 'lucide-react'
-import { MarkdownView, TFile, TFolder } from 'obsidian'
+import { MarkdownView, Notice, TFile, TFolder } from 'obsidian'
 import {
   forwardRef,
   useCallback,
@@ -839,7 +839,6 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     assistantGroupBoundaryMessageIds,
   })
   const groupedChatMessages = chatTimelineReadModel.groupedChatMessages
-  const groupedChatMessagesRef = useLatestRef(groupedChatMessages)
 
   const displayedChatMessages = useMemo(() => {
     return groupedChatMessages.flatMap((messageOrGroup): ChatMessage[] => {
@@ -1294,17 +1293,13 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
 
   const {
     handleRecoverPendingToolCall,
-    handleRecoverAnswerUserQuestion,
     handleUserMessageSubmit,
-    handleAssistantMessageGroupRetry,
-    handleAssistantErrorContinue,
     applyMutation,
     handleApply,
     handleUndoEditSummary,
     handleOpenEditSummaryFile,
     handleToolMessageUpdate,
     handleToolCallResponseUpdate,
-    handleContinueResponse,
     handleExportChatToVault,
   } = useChatDomainActions({
     chatMessages,
@@ -1317,15 +1312,11 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     yoloEnabled,
     effectiveCompactionState,
     setCompactionState,
-    setPendingCompactionAnchorMessageId,
     assistantGroupBoundaryMessageIds,
-    setAssistantGroupBoundaryMessageIds,
     activeBranchByUserMessageIdRef,
-    setActiveBranchByUserMessageId,
     messageModelMap,
     reasoningLevel,
     conversationReasoningLevelRef,
-    groupedChatMessagesRef,
     selectedAssistant,
     setQueryProgress,
     setUndoingEditSummaryTarget,
@@ -1339,16 +1330,58 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     normalizeAssistantGroupBoundaryMessageIds,
     serializeMessageModelMap,
     createOrUpdateConversation,
-    createOrUpdateConversationImmediately,
     generateConversationTitle,
     submitChatMutation,
     abortConversationRun,
-    compactConversation,
-    currentConversationRunSummary,
     requestContextBuilder,
     chatManager,
     normalizeReasoningLevel,
   })
+
+  // retry/continue/recover 收编进 ChatSessionController（架构治理第三步
+  // 分期 C3）——这里只做 Notice 翻译的薄包装，参考 handleMainInputSubmit
+  // 在 useChatInputController.ts 里的既有模式。
+  const handleAssistantMessageGroupRetry = useCallback(
+    (messageIds: string[]) => {
+      const result = sessionController.retryAssistantMessageGroup(messageIds)
+      if (result.kind === 'failed') {
+        new Notice(
+          t('chat.regenerateFailed', 'Failed to regenerate this reply'),
+        )
+      }
+    },
+    [sessionController, t],
+  )
+
+  const handleAssistantErrorContinue = useCallback(
+    (assistantMessageId: string) => {
+      const result =
+        sessionController.continueAssistantError(assistantMessageId)
+      if (result.kind === 'failed') {
+        new Notice(
+          t('chat.regenerateFailed', 'Failed to regenerate this reply'),
+        )
+      }
+      // 'pending'（重入保护）与 'started' 均不提示,与迁移前行为一致。
+    },
+    [sessionController, t],
+  )
+
+  const handleContinueResponse = useCallback(() => {
+    sessionController.continueResponse()
+  }, [sessionController])
+
+  const handleRecoverAnswerUserQuestion = useCallback(
+    ({
+      resolvedMessages,
+    }: {
+      resolvedMessages: ChatMessage[]
+      toolCallId: string
+    }) => {
+      sessionController.recoverAnswerUserQuestion(resolvedMessages)
+    },
+    [sessionController],
+  )
 
   const { buildRuntimeSnapshot } = useChatRuntimeSnapshot({
     onRuntimeSnapshotChange: props.onRuntimeSnapshotChange,
