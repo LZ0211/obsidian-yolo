@@ -2244,6 +2244,8 @@ export const zh: TranslationKeys = {
       fieldTypeDesc: '该任务触发时执行的内容',
       typeAgent: '智能体提示词',
       typeScript: '脚本',
+      typeRagIndex: 'RAG 索引',
+      typeRagAutoUpdate: 'RAG 自动更新',
       fieldScriptPath: '脚本路径',
       fieldScriptPathDesc:
         'Vault 内相对路径的 .js 文件，将在 Worker 线程中执行（仅桌面端）',

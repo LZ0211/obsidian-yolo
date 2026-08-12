@@ -297,3 +297,138 @@ describe('TaskExecutor.executeScript', () => {
     ).toBe(true)
   })
 })
+
+describe('TaskExecutor RAG actions', () => {
+  type RagIndexServiceLike = {
+    runIndex: jest.Mock
+    cancelActiveRun: jest.Mock
+  }
+
+  const makeRagIndexService = (
+    overrides: Partial<RagIndexServiceLike> = {},
+  ): RagIndexServiceLike => ({
+    runIndex: jest.fn().mockResolvedValue({
+      permanentFailedPaths: [],
+      chunkifyFailedPaths: [],
+    }),
+    cancelActiveRun: jest.fn(),
+    ...overrides,
+  })
+
+  const makeExecutorWithRag = (service: RagIndexServiceLike): TaskExecutor =>
+    new TaskExecutor({
+      getAgentApi: () =>
+        makeAgentApi(async () => {
+          throw new Error('not used in RAG action tests')
+        }),
+      getRagIndexService: () => service,
+    })
+
+  it('executes a ragIndex action through RagIndexService as a manual vault-wide sync', async () => {
+    const service = makeRagIndexService()
+    const executor = makeExecutorWithRag(service)
+
+    const result = await executor.executeRagIndex()
+
+    expect(service.runIndex).toHaveBeenCalledTimes(1)
+    expect(service.runIndex).toHaveBeenCalledWith({
+      mode: 'sync',
+      scope: { kind: 'all' },
+      trigger: 'manual',
+      retryPolicy: 'none',
+    })
+    expect(result.exitCode).toBe(0)
+    expect(result.output).toContain('completed')
+  })
+
+  it('executes a ragAutoUpdate action as an auto-triggered vault-wide sync', async () => {
+    const service = makeRagIndexService()
+    const executor = makeExecutorWithRag(service)
+
+    const result = await executor.executeRagAutoUpdate()
+
+    expect(service.runIndex).toHaveBeenCalledWith(
+      expect.objectContaining({ trigger: 'auto' }),
+    )
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('surfaces a ragIndex failure as a run failure carrying the underlying message', async () => {
+    const service = makeRagIndexService({
+      runIndex: jest
+        .fn()
+        .mockRejectedValue(new Error('embedding provider unavailable')),
+    })
+    const executor = makeExecutorWithRag(service)
+
+    await expect(executor.executeRagIndex()).rejects.toThrow(
+      'embedding provider unavailable',
+    )
+  })
+
+  it('aborts the active index run when the scheduled run is cancelled', async () => {
+    const cancelActiveRun = jest.fn()
+    const runIndex = jest.fn(
+      () =>
+        new Promise((_, reject) => {
+          cancelActiveRun.mockImplementationOnce(() =>
+            reject(new Error('index aborted')),
+          )
+        }),
+    )
+    const executor = makeExecutorWithRag({ runIndex, cancelActiveRun })
+    const controller = new AbortController()
+
+    const promise = executor.executeRagIndex({
+      externalAbortSignal: controller.signal,
+    })
+    await Promise.resolve()
+    controller.abort()
+
+    await expect(promise).rejects.toThrow('index aborted')
+    expect(cancelActiveRun).toHaveBeenCalled()
+  })
+
+  it('does not start an index run when the scheduled run was already cancelled', async () => {
+    const service = makeRagIndexService()
+    const executor = makeExecutorWithRag(service)
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(
+      executor.executeRagIndex({ externalAbortSignal: controller.signal }),
+    ).rejects.toThrow('cancelled before it started')
+    expect(service.runIndex).not.toHaveBeenCalled()
+  })
+
+  it('rejects with a timeout error when the index run exceeds timeoutMs', async () => {
+    jest.useFakeTimers()
+    const service = makeRagIndexService({
+      runIndex: jest.fn(() => new Promise(() => {})),
+    })
+    const executor = makeExecutorWithRag(service)
+
+    const promise = executor.executeRagIndex({ timeoutMs: 1000 })
+    const expectation = expect(promise).rejects.toThrow('timed out')
+    await jest.advanceTimersByTimeAsync(1000)
+    await expectation
+
+    // The index run itself is owned by RagIndexService and is left to finish
+    // in the background; the executor only bounds the queue slot.
+    expect(service.runIndex).toHaveBeenCalledTimes(1)
+    jest.useRealTimers()
+  })
+
+  it('rejects when no RAG index service is available', async () => {
+    const executor = new TaskExecutor({
+      getAgentApi: () =>
+        makeAgentApi(async () => {
+          throw new Error('not used in RAG action tests')
+        }),
+    })
+
+    await expect(executor.executeRagIndex()).rejects.toThrow(
+      'RAG index service is not available',
+    )
+  })
+})

@@ -4,7 +4,11 @@ import {
 } from '../../database/sqlite/sqliteNativeRuntime'
 import { loadDesktopNodeModuleSync } from '../../utils/platform/desktopNodeModule'
 
-export type ScheduledTaskType = 'script' | 'agent'
+export type ScheduledTaskType =
+  | 'script'
+  | 'agent'
+  | 'ragIndex'
+  | 'ragAutoUpdate'
 export type ScheduledTaskCreatedBy = 'user' | 'agent'
 export type ScheduleType = 'once' | 'cron' | 'interval'
 export type TaskTriggeredBy = 'schedule' | 'manual' | 'agent' | 'retry'
@@ -264,7 +268,7 @@ const CREATE_SCHEMA_SQL = `
   create table if not exists scheduled_tasks (
     id text primary key,
     name text not null,
-    type text not null check (type in ('script', 'agent')),
+    type text not null check (type in ('script', 'agent', 'ragIndex', 'ragAutoUpdate')),
     created_by text not null default 'user' check (created_by in ('user', 'agent')),
 
     schedule_type text not null check (schedule_type in ('once', 'cron', 'interval')),
@@ -369,6 +373,60 @@ export class ScheduledTasksStore {
       )
     } catch {
       // Existing databases already have the additive column.
+    }
+    this.migrateTaskTypeConstraint()
+  }
+
+  /**
+   * Widens the tasks-table type CHECK for databases created before the RAG
+   * action types (`ragIndex`/`ragAutoUpdate`). SQLite cannot alter a CHECK
+   * constraint, so the table is rebuilt in place (rename → recreate → copy →
+   * drop) using the standard FK-safe rebuild pattern: FK enforcement is
+   * suspended around the rebuild and restored afterwards — it cannot be
+   * toggled inside a transaction. Runs only when the existing table SQL still
+   * carries the original two-value constraint; databases created from
+   * `CREATE_SCHEMA_SQL` already have the widened one and are skipped. The
+   * table is small (one row per task) and the rebuild is transactional.
+   */
+  private migrateTaskTypeConstraint(): void {
+    const row = this.db.queryOne<{ sql: string | null }>(
+      "select sql from sqlite_master where type = 'table' and name = 'scheduled_tasks'",
+    )
+    const tableSql = row?.sql ?? ''
+    if (tableSql.includes('ragIndex')) return
+    this.db.exec('pragma foreign_keys = off;')
+    try {
+      this.db.transaction(() => {
+        this.db.exec(
+          'alter table scheduled_tasks rename to scheduled_tasks_old',
+        )
+        // Recreates the table (with the widened constraint) plus its indexes;
+        // the task_runs table and its indexes already exist and are skipped.
+        this.db.exec(CREATE_SCHEMA_SQL)
+        this.db.exec(`
+          insert into scheduled_tasks (
+            id, name, type, created_by,
+            schedule_type, timezone, cron_expression, interval_seconds, one_time_date_time, next_run_time,
+            script_path, agent_prompt, agent_config,
+            queue_group, depends_on, continue_on_dependency_failure, priority,
+            timeout_seconds, max_retries,
+            enabled, notify_on, created_at, updated_at,
+            last_run_at, last_run_status, last_error
+          )
+          select
+            id, name, type, created_by,
+            schedule_type, timezone, cron_expression, interval_seconds, one_time_date_time, next_run_time,
+            script_path, agent_prompt, agent_config,
+            queue_group, depends_on, continue_on_dependency_failure, priority,
+            timeout_seconds, max_retries,
+            enabled, notify_on, created_at, updated_at,
+            last_run_at, last_run_status, last_error
+          from scheduled_tasks_old
+        `)
+        this.db.exec('drop table scheduled_tasks_old')
+      })
+    } finally {
+      this.db.exec('pragma foreign_keys = on;')
     }
   }
 

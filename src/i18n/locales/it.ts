@@ -2155,6 +2155,8 @@ export const it: DeepPartial<TranslationKeys> = {
       fieldTypeDesc: 'Cosa esegue questa attività quando viene attivata',
       typeAgent: 'Prompt agente',
       typeScript: 'Script',
+      typeRagIndex: 'Indice RAG',
+      typeRagAutoUpdate: 'Aggiornamento automatico RAG',
       fieldScriptPath: 'Percorso script',
       fieldScriptPathDesc:
         'Percorso relativo al vault di un file .js da eseguire in un worker thread (solo desktop)',

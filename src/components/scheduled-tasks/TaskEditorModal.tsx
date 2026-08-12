@@ -166,6 +166,11 @@ function TaskEditorModalComponent({
   const taskTypeOptions: Record<ScheduledTaskType, string> = {
     agent: t('settings.scheduledTasks.typeAgent', 'Agent prompt'),
     script: t('settings.scheduledTasks.typeScript', 'Script'),
+    ragIndex: t('settings.scheduledTasks.typeRagIndex', 'RAG index'),
+    ragAutoUpdate: t(
+      'settings.scheduledTasks.typeRagAutoUpdate',
+      'RAG auto-update',
+    ),
   }
 
   const handleSubmit = () => {
@@ -184,7 +189,7 @@ function TaskEditorModalComponent({
           ),
         )
       }
-    } else if (!formData.agentPrompt?.trim()) {
+    } else if (formData.type === 'agent' && !formData.agentPrompt?.trim()) {
       errors.push(
         t('settings.scheduledTasks.errorPromptRequired', 'Prompt is required'),
       )

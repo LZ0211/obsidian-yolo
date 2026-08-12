@@ -5020,6 +5020,9 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
       getAgentApi: () => this.getAgentApi(),
       getVaultBasePath: () => this.resolveVaultBasePath(),
       getScriptExecutionSettings: () => this.settings.scheduledTasks,
+      // The host-owned singleton, so scheduled RAG runs share the run
+      // snapshot/progress the settings page observes.
+      getRagIndexService: () => this.getRagIndexService(),
     })
     const service = new ScheduledTasksService({
       store,

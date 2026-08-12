@@ -1938,6 +1938,8 @@ export type TranslationKeys = {
       fieldTypeDesc?: string
       typeAgent?: string
       typeScript?: string
+      typeRagIndex?: string
+      typeRagAutoUpdate?: string
       fieldScriptPath?: string
       fieldScriptPathDesc?: string
       scriptPathPlaceholder?: string

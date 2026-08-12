@@ -1661,4 +1661,85 @@ describe('ScheduledTaskScheduler', () => {
       }
     })
   })
+
+  describe('RAG action task dispatch', () => {
+    const makeRagExecutor = (runIndex: jest.Mock): TaskExecutor =>
+      new TaskExecutor({
+        getAgentApi: () =>
+          makeAgentApi(async () => {
+            throw new Error('not used in RAG dispatch tests')
+          }),
+        getRagIndexService: () => ({
+          runIndex,
+          cancelActiveRun: jest.fn(),
+        }),
+      })
+
+    it('runs a ragIndex task through the executor and records output and exitCode', async () => {
+      const dir = makeTempDir()
+      try {
+        const store = createScheduledTasksStore(dir)
+        const runIndex = jest.fn().mockResolvedValue({
+          permanentFailedPaths: [],
+          chunkifyFailedPaths: [],
+        })
+        const scheduler = new ScheduledTaskScheduler({
+          store,
+          executor: makeRagExecutor(runIndex),
+          eventBus: new TaskEventBus(),
+        })
+        store.createTask(
+          'task-1',
+          makeTaskConfig({ type: 'ragIndex', agentPrompt: null }),
+          1000,
+        )
+
+        const result = scheduler.executeTaskNow('task-1')
+        if (result.outcome !== 'started') throw new Error('unreachable')
+        await waitForTerminalRun(() => store.getRun(result.runId))
+
+        const run = store.getRun(result.runId)
+        expect(run?.status).toBe(TaskRunStatus.COMPLETED)
+        expect(run?.exitCode).toBe(0)
+        expect(run?.output).toContain('completed')
+        expect(runIndex).toHaveBeenCalledTimes(1)
+
+        store.close()
+      } finally {
+        cleanup(dir)
+      }
+    })
+
+    it('marks a failing ragAutoUpdate task run as FAILED with the underlying message', async () => {
+      const dir = makeTempDir()
+      try {
+        const store = createScheduledTasksStore(dir)
+        const runIndex = jest
+          .fn()
+          .mockRejectedValue(new Error('embedding provider unavailable'))
+        const scheduler = new ScheduledTaskScheduler({
+          store,
+          executor: makeRagExecutor(runIndex),
+          eventBus: new TaskEventBus(),
+        })
+        store.createTask(
+          'task-1',
+          makeTaskConfig({ type: 'ragAutoUpdate', agentPrompt: null }),
+          1000,
+        )
+
+        const result = scheduler.executeTaskNow('task-1')
+        if (result.outcome !== 'started') throw new Error('unreachable')
+        await waitForTerminalRun(() => store.getRun(result.runId))
+
+        const run = store.getRun(result.runId)
+        expect(run?.status).toBe(TaskRunStatus.FAILED)
+        expect(run?.error).toContain('embedding provider unavailable')
+
+        store.close()
+      } finally {
+        cleanup(dir)
+      }
+    })
+  })
 })

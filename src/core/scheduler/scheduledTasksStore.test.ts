@@ -3,6 +3,8 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { openSqliteRuntime } from '../../database/sqlite/sqliteNativeRuntime'
+
 import {
   type TaskConfig,
   type TaskRunInsert,
@@ -418,4 +420,123 @@ describe('ScheduledTasksStore', () => {
       cleanup(dir)
     }
   })
+
+  it('rebuilds the tasks table so databases created before the RAG action types accept them', () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      store.close()
+
+      // Simulate a database from before the RAG action types: the tasks table
+      // only accepts ('script', 'agent') and already holds a task plus a run
+      // row referencing it (exercises FK-safe rebuild).
+      const runtime = openSqliteRuntime({
+        dbPath: path.join(dir, 'scheduled-tasks.sqlite'),
+      })
+      runtime.exec('drop table scheduled_tasks')
+      runtime.exec(OLD_TASKS_TABLE_SQL)
+      runtime.exec(
+        `
+          insert into scheduled_tasks (
+            id, name, type, created_by, schedule_type, cron_expression,
+            interval_seconds, one_time_date_time, next_run_time,
+            script_path, agent_prompt, agent_config,
+            queue_group, depends_on, continue_on_dependency_failure, priority,
+            timeout_seconds, max_retries, enabled, notify_on, created_at, updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          'task-1',
+          'legacy script task',
+          'script',
+          'user',
+          'once',
+          null,
+          null,
+          null,
+          1000,
+          null,
+          null,
+          null,
+          null,
+          null,
+          0,
+          5,
+          300,
+          3,
+          1,
+          '[]',
+          900,
+          900,
+        ],
+      )
+      runtime.exec(
+        `
+          insert into task_runs (
+            id, task_id, status, scheduled_for, triggered_by, attempt, batch_id
+          ) values (?, ?, ?, ?, ?, ?, ?)
+        `,
+        ['run-1', 'task-1', 'completed', 1000, 'schedule', 1, 'batch-1'],
+      )
+      runtime.close()
+
+      store.open()
+      // The migration widens the CHECK constraint so the new types are accepted...
+      const created = store.createTask(
+        'task-2',
+        makeTaskConfig({ type: 'ragIndex', agentPrompt: null }),
+        2000,
+      )
+      expect(created.type).toBe('ragIndex')
+      // ...and legacy tasks and their runs survive the rebuild intact.
+      expect(store.getTask('task-1')).toMatchObject({
+        name: 'legacy script task',
+        type: 'script',
+      })
+      expect(store.getRun('run-1')).toMatchObject({
+        id: 'run-1',
+        taskId: 'task-1',
+      })
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
 })
+
+/** The tasks table as it existed before the RAG action types (same columns as today, original two-value type CHECK). */
+const OLD_TASKS_TABLE_SQL = `
+  create table scheduled_tasks (
+    id text primary key,
+    name text not null,
+    type text not null check (type in ('script', 'agent')),
+    created_by text not null default 'user' check (created_by in ('user', 'agent')),
+
+    schedule_type text not null check (schedule_type in ('once', 'cron', 'interval')),
+    timezone text,
+    cron_expression text,
+    interval_seconds integer,
+    one_time_date_time integer,
+    next_run_time integer,
+
+    script_path text,
+    agent_prompt text,
+    agent_config text,
+
+    queue_group text,
+    depends_on text,
+    continue_on_dependency_failure integer not null default 0,
+    priority integer not null default 5,
+
+    timeout_seconds integer not null default 300,
+    max_retries integer not null default 3,
+
+    enabled integer not null default 1,
+    notify_on text not null default '[]',
+    created_at integer not null,
+    updated_at integer not null,
+    last_run_at integer,
+    last_run_status text,
+    last_error text
+  )
+`

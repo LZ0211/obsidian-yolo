@@ -2421,6 +2421,8 @@ export const en: TranslationKeys = {
       fieldTypeDesc: 'What this task runs when it fires',
       typeAgent: 'Agent prompt',
       typeScript: 'Script',
+      typeRagIndex: 'RAG index',
+      typeRagAutoUpdate: 'RAG auto-update',
       fieldScriptPath: 'Script path',
       fieldScriptPathDesc:
         'Vault-relative path to a .js file to run in a worker thread (desktop only)',

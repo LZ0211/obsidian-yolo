@@ -736,33 +736,52 @@ export class ScheduledTaskScheduler {
     })
 
     try {
-      if (task.type === 'script') {
-        const result = await this.deps.executor.executeScript(
-          task.scriptPath ?? '',
-          {
-            timeoutMs: task.timeoutSeconds * 1000,
-            onLog: this.createLogAppender(runId, run),
-            externalAbortSignal: abortController.signal,
-          },
-        )
-        run.output = result.output
-        run.exitCode = result.exitCode
-        if (result.exitCode !== 0) {
-          throw new ScriptExecutionError(
-            `Script exited with code ${result.exitCode}`,
+      switch (task.type) {
+        case 'script': {
+          const result = await this.deps.executor.executeScript(
+            task.scriptPath ?? '',
+            {
+              timeoutMs: task.timeoutSeconds * 1000,
+              onLog: this.createLogAppender(runId, run),
+              externalAbortSignal: abortController.signal,
+            },
           )
+          run.output = result.output
+          run.exitCode = result.exitCode
+          if (result.exitCode !== 0) {
+            throw new ScriptExecutionError(
+              `Script exited with code ${result.exitCode}`,
+            )
+          }
+          break
         }
-      } else {
-        const result = await this.deps.executor.executeAgent(
-          task.agentPrompt ?? '',
-          {
+        case 'agent': {
+          const result = await this.deps.executor.executeAgent(
+            task.agentPrompt ?? '',
+            {
+              timeoutMs: task.timeoutSeconds * 1000,
+              agentConfig: task.agentConfig,
+              externalAbortSignal: abortController.signal,
+            },
+          )
+          run.result = result.result
+          run.conversationId = result.conversationId
+          break
+        }
+        case 'ragIndex':
+        case 'ragAutoUpdate': {
+          const options = {
             timeoutMs: task.timeoutSeconds * 1000,
-            agentConfig: task.agentConfig,
             externalAbortSignal: abortController.signal,
-          },
-        )
-        run.result = result.result
-        run.conversationId = result.conversationId
+          }
+          const result =
+            task.type === 'ragIndex'
+              ? await this.deps.executor.executeRagIndex(options)
+              : await this.deps.executor.executeRagAutoUpdate(options)
+          run.output = result.output
+          run.exitCode = result.exitCode
+          break
+        }
       }
 
       if (this.shuttingDown) {

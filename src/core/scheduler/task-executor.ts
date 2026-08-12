@@ -1,6 +1,7 @@
 import { Platform } from 'obsidian'
 
 import type { YoloAgentApi } from '../agent/agent-api'
+import type { RagIndexService } from '../rag/ragIndexService'
 
 import type {
   ScheduledTaskAgentConfig,
@@ -11,16 +12,26 @@ import {
   validateScriptPath,
 } from './validateScriptPath'
 
+/** The minimal RagIndexService surface the executor needs, so the RAG actions
+ * stay decoupled from the rest of the service (progress/retry state). */
+export type RagIndexServiceHandle = Pick<
+  RagIndexService,
+  'runIndex' | 'cancelActiveRun'
+>
+
 export type TaskExecutorDeps = {
   getAgentApi: () => YoloAgentApi
   /** Vault filesystem root, used to resolve a task's vault-relative `scriptPath` before spawning a worker. Desktop-only; absent (or returning undefined) means script execution is unavailable. */
   getVaultBasePath?: () => string | undefined
   /** Second line of defense against a bad/disallowed `scriptPath` reaching the worker, in case a caller bypasses the UI/MCP-tool validation at create/update time (e.g. a task edited directly in the store). */
   getScriptExecutionSettings?: () => ScriptExecutionSettings
+  /** Lazily-resolved host-owned RAG index service — the same singleton the settings page observes, so scheduled runs share its snapshot and progress. Absent means the RAG actions are unavailable. */
+  getRagIndexService?: () => RagIndexServiceHandle
 }
 
 export type AgentExecutionResult = { conversationId: string; result: string }
 export type ScriptExecutionResult = { output: string; exitCode: number }
+export type RagRunExecutionResult = { output: string; exitCode: number }
 
 const SCHEDULED_RUN_SYSTEM_MESSAGE = `This is an unattended scheduled task run, not an interactive chat. Execute the requested work without greeting the user or asking follow-up questions. Do not wait for approval: only use permissions explicitly granted to this task. Report only a meaningful result, failure, or required follow-up.`
 
@@ -253,6 +264,76 @@ export class TaskExecutor {
       options?.timeoutMs,
       options?.externalAbortSignal,
     )
+  }
+
+  /**
+   * Scheduled-task `ragIndex` action: triggers one vault-wide incremental RAG
+   * sync through the host-owned `RagIndexService` singleton (`runIndex`, mode
+   * 'sync' = reconcile without truncation, idempotent), recorded as a manual
+   * trigger on the run snapshot. The task run settles when the index run
+   * settles. A timeout settles the task as TIMED_OUT but leaves the index
+   * completing in the background (RagIndexService owns its lifecycle and
+   * retry state); an explicit task-run cancellation aborts the active index
+   * run, matching script/agent cancellation semantics.
+   */
+  async executeRagIndex(options?: {
+    timeoutMs?: number
+    externalAbortSignal?: AbortSignal
+  }): Promise<RagRunExecutionResult> {
+    return this.executeRagRun('manual', options)
+  }
+
+  /**
+   * Scheduled-task `ragAutoUpdate` action: identical to `executeRagIndex`
+   * except the run is recorded as an auto trigger — the same run semantics
+   * the background auto-updater uses (main.ts's `RagAutoUpdateService.runIndex`
+   * wiring), so the run snapshot distinguishes scheduled auto-updates from
+   * manual index runs.
+   */
+  async executeRagAutoUpdate(options?: {
+    timeoutMs?: number
+    externalAbortSignal?: AbortSignal
+  }): Promise<RagRunExecutionResult> {
+    return this.executeRagRun('auto', options)
+  }
+
+  private async executeRagRun(
+    trigger: 'manual' | 'auto',
+    options?: { timeoutMs?: number; externalAbortSignal?: AbortSignal },
+  ): Promise<RagRunExecutionResult> {
+    const service = this.deps.getRagIndexService?.()
+    if (!service) {
+      throw new Error('RAG index service is not available.')
+    }
+    const externalAbortSignal = options?.externalAbortSignal
+    if (externalAbortSignal?.aborted) {
+      // Cancelled before the index run could start: throw instead of running,
+      // so the scheduler's cancel path applies rather than recording a
+      // completed run over the CANCELLED status.
+      throw new Error('RAG index run cancelled before it started.')
+    }
+    const onExternalAbort = (): void => service.cancelActiveRun()
+    externalAbortSignal?.addEventListener('abort', onExternalAbort)
+    try {
+      return await this.executeWithTimeout(
+        async () => {
+          const result = await service.runIndex({
+            mode: 'sync',
+            scope: { kind: 'all' },
+            trigger,
+            retryPolicy: 'none',
+          })
+          return {
+            output: `RAG index sync completed (${result.permanentFailedPaths.length} permanent failures, ${result.chunkifyFailedPaths.length} chunkify failures)`,
+            exitCode: 0,
+          }
+        },
+        options?.timeoutMs,
+        externalAbortSignal,
+      )
+    } finally {
+      externalAbortSignal?.removeEventListener('abort', onExternalAbort)
+    }
   }
 
   private async executeWithTimeout<T>(
