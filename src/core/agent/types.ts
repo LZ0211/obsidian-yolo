@@ -166,6 +166,15 @@ export type AgentRuntimeRunInput = {
    */
   bashReadOnly?: boolean
   /**
+   * For module chat modes: full tool name → the mode's declared
+   * `requiresApproval` for each of the mode's own tools. See
+   * `ChatModeRuntime.moduleToolApprovalPolicies` — threaded through
+   * unchanged to `AgentToolGateway`, which uses it to fix a persisted
+   * `approvalPolicy` (and, for bash calls, `executionConstraints`) onto
+   * every `ToolCallRequest` at creation time. Undefined for built-in modes.
+   */
+  moduleToolApprovalPolicies?: ReadonlyMap<string, boolean>
+  /**
    * Optional per-run memory extraction hook. Invoked after the run settles
    * (hidden LLM extraction of durable user facts/preferences). Provided by
    * the service layer; subagent child runs never set it.
