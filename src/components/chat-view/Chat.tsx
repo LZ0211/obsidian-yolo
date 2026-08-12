@@ -553,7 +553,6 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
   const createOrUpdateConversationImmediatelyRef = useLatestRef(
     createOrUpdateConversationImmediately,
   )
-  const deleteConversationRef = useLatestRef(deleteConversation)
   const updateConversationTitleRef = useLatestRef(updateConversationTitle)
   const generateConversationTitleRef = useLatestRef(generateConversationTitle)
   // C2 additions (提交/中止/压缩/重试收归 controller): two of the new deps
@@ -592,7 +591,6 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       createOrUpdateConversationRef.current(...args),
     createOrUpdateConversationImmediately: (...args) =>
       createOrUpdateConversationImmediatelyRef.current(...args),
-    deleteConversation: (id) => deleteConversationRef.current(id),
     updateConversationTitle: (id, title) =>
       updateConversationTitleRef.current(id, title),
     chatModeForSave,
@@ -680,7 +678,6 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     sessionController,
     currentConversationId,
     assistantGroupBoundaryMessageIds,
-    deleteConversation,
     queuedMessageEditState,
     setQueuedMessageEditState,
     getReasoningLevelForModelId,

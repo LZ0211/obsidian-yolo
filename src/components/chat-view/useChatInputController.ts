@@ -153,7 +153,6 @@ export type UseChatInputControllerParams = {
   sessionController: ChatSessionController
   currentConversationId: string
   assistantGroupBoundaryMessageIds: string[]
-  deleteConversation: (id: string) => Promise<void>
   queuedMessageEditState: {
     preservedInputMessage: ChatUserMessage
     preservedReasoningLevel: ReasoningLevel
@@ -198,7 +197,6 @@ export function useChatInputController({
   sessionController,
   currentConversationId,
   assistantGroupBoundaryMessageIds,
-  deleteConversation,
   queuedMessageEditState,
   setQueuedMessageEditState,
   getReasoningLevelForModelId,
@@ -884,11 +882,7 @@ export function useChatInputController({
         return
       }
 
-      if (nextMessages.length === 0) {
-        void deleteConversation(currentConversationId)
-        return
-      }
-
+      sessionController.syncAgentConversationMessages(nextMessages)
       void sessionController
         .persist(nextMessages, nextAssistantGroupBoundaryMessageIds)
         .then((ok) => {
@@ -898,8 +892,6 @@ export function useChatInputController({
     [
       assistantGroupBoundaryMessageIds,
       chatMessagesStateRef,
-      currentConversationId,
-      deleteConversation,
       getLate,
       inputMessage.id,
       sessionController,
