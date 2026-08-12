@@ -21,11 +21,15 @@ jest.mock('../llm/image', () => ({
 jest.mock('../../core/skills/liteSkills', () => ({
   ...jest.requireActual('../../core/skills/liteSkills'),
   getLiteSkillDocument: jest.fn(),
+  listLiteSkillEntries: jest.fn(async () => []),
 }))
 
 import { SystemPromptSnapshotStore } from '../../core/agent/systemPromptSnapshotStore'
 import { getMemoryPromptContext } from '../../core/memory/memoryManager'
-import { getLiteSkillDocument } from '../../core/skills/liteSkills'
+import {
+  getLiteSkillDocument,
+  listLiteSkillEntries,
+} from '../../core/skills/liteSkills'
 import { readPromptSnapshotEntries } from '../../database/json/chat/promptSnapshotStore'
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import type { ChatUserMessage } from '../../types/chat'
@@ -42,6 +46,9 @@ import {
 
 const mockGetLiteSkillDocument = getLiteSkillDocument as jest.MockedFunction<
   typeof getLiteSkillDocument
+>
+const mockListLiteSkillEntries = listLiteSkillEntries as jest.MockedFunction<
+  typeof listLiteSkillEntries
 >
 const mockReadPromptSnapshotEntries = jest.mocked(readPromptSnapshotEntries)
 
@@ -407,6 +414,112 @@ describe('RequestContextBuilder compileUserMessagePrompt', () => {
     )
     expect(getTextContent(result.promptContent)).toContain('# skill body')
     expect(getTextContent(result.promptContent)).toContain('Use the skill')
+  })
+
+  it('threads an explicit scope through to getLiteSkillDocument for selected skills (compilePlainUserMessagePrompt)', async () => {
+    mockGetLiteSkillDocument.mockResolvedValueOnce({
+      entry: {
+        name: 'outline-skill',
+        description: 'Outline conventions',
+        mode: 'lazy',
+        path: '.obsidian/plugins/yolo/modules/learning/1.0.0/outline.md',
+        isReadOnly: true,
+      },
+      content: '# outline body',
+    })
+
+    const app = createMockApp({ files: [], fileContents: new Map() })
+    const builder = new RequestContextBuilder(app as never, settings)
+
+    await builder.compilePlainUserMessagePrompt({
+      prompt: 'Plan a course',
+      mentionables: [],
+      selectedSkills: [
+        {
+          name: 'outline-skill',
+          description: 'Outline conventions',
+          path: '.obsidian/plugins/yolo/modules/learning/1.0.0/outline.md',
+        },
+      ],
+      scope: { moduleChatModeId: 'module:learning:chat' },
+    })
+
+    expect(mockGetLiteSkillDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'outline-skill',
+        scope: { moduleChatModeId: 'module:learning:chat' },
+      }),
+    )
+  })
+
+  it('threads an explicit scope through to getLiteSkillDocument for selected skills (compileUserMessagePrompt)', async () => {
+    mockGetLiteSkillDocument.mockResolvedValueOnce({
+      entry: {
+        name: 'outline-skill',
+        description: 'Outline conventions',
+        mode: 'lazy',
+        path: '.obsidian/plugins/yolo/modules/learning/1.0.0/outline.md',
+        isReadOnly: true,
+      },
+      content: '# outline body',
+    })
+
+    const app = createMockApp({ files: [], fileContents: new Map() })
+    const builder = new RequestContextBuilder(app as never, settings)
+
+    await builder.compileUserMessagePrompt({
+      message: {
+        ...createUserMessage([]),
+        content: createTextEditorState('Plan a course'),
+        selectedSkills: [
+          {
+            name: 'outline-skill',
+            description: 'Outline conventions',
+            path: '.obsidian/plugins/yolo/modules/learning/1.0.0/outline.md',
+          },
+        ],
+      },
+      scope: { moduleChatModeId: 'module:learning:chat' },
+    })
+
+    expect(mockGetLiteSkillDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'outline-skill',
+        scope: { moduleChatModeId: 'module:learning:chat' },
+      }),
+    )
+  })
+
+  it('omits scope by default so ordinary (non-module) calls are unaffected', async () => {
+    mockGetLiteSkillDocument.mockResolvedValueOnce({
+      entry: {
+        name: 'skill-creator',
+        description: 'Create skills',
+        mode: 'lazy',
+        path: 'builtin://skills/skill-creator',
+        isReadOnly: true,
+      },
+      content: '# skill body',
+    })
+
+    const app = createMockApp({ files: [], fileContents: new Map() })
+    const builder = new RequestContextBuilder(app as never, settings)
+
+    await builder.compilePlainUserMessagePrompt({
+      prompt: 'Use the skill',
+      mentionables: [],
+      selectedSkills: [
+        {
+          name: 'skill-creator',
+          description: 'Create skills',
+          path: 'builtin://skills/skill-creator',
+        },
+      ],
+    })
+
+    expect(mockGetLiteSkillDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'skill-creator', scope: undefined }),
+    )
   })
 
   it('builds unified mentioned file context with outlines for files, current file, and folder files', async () => {
@@ -2657,5 +2770,440 @@ describe('RequestContextBuilder system prompt freezing', () => {
       systemPromptSnapshotMode: 'create',
     })
     expect(getSystemContent(real)).toContain('MEM_V2')
+  })
+})
+
+describe('RequestContextBuilder ChatContextPolicy (module chat modes)', () => {
+  function makeApp(rootFiles: Map<string, string> = new Map()) {
+    return {
+      metadataCache: { getFileCache: jest.fn(() => null) },
+      vault: {
+        adapter: {
+          exists: jest.fn().mockResolvedValue(false),
+          mkdir: jest.fn().mockResolvedValue(undefined),
+          read: jest.fn().mockResolvedValue(''),
+          write: jest.fn().mockResolvedValue(undefined),
+        },
+        cachedRead: jest.fn(async (file: { path: string }) => {
+          return rootFiles.get(file.path) ?? ''
+        }),
+        getAbstractFileByPath: jest.fn((path: string) => {
+          if (!rootFiles.has(path)) return null
+          const file = Object.assign(new TFile(), { path })
+          ;(
+            file as unknown as { parent: InstanceType<typeof TFolder> }
+          ).parent = Object.assign(new TFolder(), { path: '', parent: null })
+          return file
+        }),
+        getRoot: jest.fn(() =>
+          Object.assign(new TFolder(), { path: '', parent: null }),
+        ),
+        getFileByPath: jest.fn(() => null),
+        getFolderByPath: jest.fn(() => null),
+        getMarkdownFiles: jest.fn(() => []),
+      },
+    }
+  }
+
+  const model = {
+    provider: 'openai',
+    model: 'gpt-test',
+    name: 'gpt-test',
+  } as never
+
+  const settingsWithAssistant = {
+    systemPrompt: 'GLOBAL_SYSTEM_PROMPT',
+    currentAssistantId: 'agent-1',
+    assistants: [
+      {
+        id: 'agent-1',
+        name: 'Scoped agent',
+        systemPrompt: 'ASSISTANT_INSTRUCTIONS',
+        enableProjectInstructions: true,
+        workspaceScope: {
+          enabled: true,
+          include: ['Notes'],
+          exclude: [],
+        },
+      },
+    ],
+    chatOptions: {
+      includeCurrentFileContent: false,
+      mentionContextMode: 'light',
+    },
+    skills: {},
+  } as unknown as YoloSettings
+
+  const memMock = jest.mocked(getMemoryPromptContext)
+
+  beforeEach(() => {
+    // Mirrors real getMemoryPromptContext gating: assistant memory only
+    // materializes when an assistantId is actually passed in — required so
+    // this suite can tell "assistant cut off" apart from "mock ignores args".
+    memMock.mockImplementation(async ({ assistantId }) => ({
+      global: 'GLOBAL_MEMORY',
+      assistant: assistantId ? 'ASSISTANT_MEMORY' : null,
+    }))
+  })
+
+  async function buildSystemContent(
+    settings: YoloSettings,
+    opts: {
+      conversationId: string
+      contextPolicy?: { useAssistant: boolean }
+      modePersonaPrompt?: string
+      modePersonaModuleId?: string
+      store?: SystemPromptSnapshotStore
+    },
+  ): Promise<string> {
+    const builder = new RequestContextBuilder(makeApp() as never, settings, {
+      includeSkills: false,
+      systemPromptSnapshotStore: opts.store,
+    })
+    const requestMessages = await builder.generateRequestMessages({
+      systemPromptSnapshotMode: 'create',
+      messages: [
+        {
+          role: 'user',
+          id: 'u1',
+          content: null,
+          promptContent: 'hi',
+          mentionables: [],
+        },
+      ],
+      model,
+      conversationId: opts.conversationId,
+      contextPolicy: opts.contextPolicy,
+      modePersonaPrompt: opts.modePersonaPrompt,
+      modePersonaModuleId: opts.modePersonaModuleId,
+    })
+    const system = requestMessages.find((m) => m.role === 'system')
+    expect(system).toBeDefined()
+    return typeof system!.content === 'string' ? system!.content : ''
+  }
+
+  it('keeps built-in-mode behavior unchanged when contextPolicy is omitted', async () => {
+    const content = await buildSystemContent(settingsWithAssistant, {
+      conversationId: 'conv-builtin-mode',
+    })
+
+    expect(content).toContain('<assistant_instructions name="Scoped agent">')
+    expect(content).toContain('ASSISTANT_INSTRUCTIONS')
+    expect(content).toContain('ASSISTANT_MEMORY')
+    expect(content).toContain('<workspace_scope>')
+    expect(content).not.toContain('module_mode_instructions')
+  })
+
+  it('replaces assistant instructions with the module persona and cuts the assistant out of memory/workspace scope/project instructions', async () => {
+    const content = await buildSystemContent(settingsWithAssistant, {
+      conversationId: 'conv-module-mode',
+      contextPolicy: { useAssistant: false },
+      modePersonaPrompt: 'You are the learning course assistant.',
+      modePersonaModuleId: 'learning',
+    })
+
+    // In-place substitution: same slot as assistant instructions would use.
+    expect(content).toContain('<module_mode_instructions module="learning">')
+    expect(content).toContain('You are the learning course assistant.')
+    expect(content).not.toContain('ASSISTANT_INSTRUCTIONS')
+    expect(content).not.toContain('<assistant_instructions')
+
+    // Assistant memory dropped; global memory retained.
+    expect(content).toContain('GLOBAL_MEMORY')
+    expect(content).not.toContain('ASSISTANT_MEMORY')
+
+    // Workspace scope and project instructions are assistant-scoped fields —
+    // fully cut off, not partially preserved.
+    expect(content).not.toContain('<workspace_scope>')
+    expect(content).not.toContain('Project instructions')
+
+    // Global systemPrompt is user-level context, not assistant-level — kept.
+    expect(content).toContain('GLOBAL_SYSTEM_PROMPT')
+  })
+
+  it('omits the persona section when a module mode has no persona text (defensive)', async () => {
+    const content = await buildSystemContent(settingsWithAssistant, {
+      conversationId: 'conv-module-mode-empty-persona',
+      contextPolicy: { useAssistant: false },
+    })
+
+    expect(content).not.toContain('module_mode_instructions')
+    expect(content).not.toContain('<assistant_instructions')
+  })
+
+  it('includes contextPolicy and the persona prompt in the system prompt fingerprint', async () => {
+    const store = new SystemPromptSnapshotStore()
+
+    const builtIn = await buildSystemContent(settingsWithAssistant, {
+      conversationId: 'conv-fingerprint',
+      store,
+    })
+    // Same conversationId, 'create' mode: only a fingerprint change refreshes
+    // the frozen snapshot — proves contextPolicy/modePersonaPrompt are part
+    // of the cache key, not silently reusing the built-in-mode snapshot.
+    const moduleMode = await buildSystemContent(settingsWithAssistant, {
+      conversationId: 'conv-fingerprint',
+      store,
+      contextPolicy: { useAssistant: false },
+      modePersonaPrompt: 'Persona V1',
+      modePersonaModuleId: 'learning',
+    })
+    expect(moduleMode).not.toEqual(builtIn)
+    expect(moduleMode).toContain('Persona V1')
+
+    const moduleModePersonaChanged = await buildSystemContent(
+      settingsWithAssistant,
+      {
+        conversationId: 'conv-fingerprint',
+        store,
+        contextPolicy: { useAssistant: false },
+        modePersonaPrompt: 'Persona V2',
+        modePersonaModuleId: 'learning',
+      },
+    )
+    expect(moduleModePersonaChanged).not.toEqual(moduleMode)
+    expect(moduleModePersonaChanged).toContain('Persona V2')
+  })
+})
+
+describe('RequestContextBuilder module chat mode skill scope (D6)', () => {
+  function makeApp() {
+    return {
+      metadataCache: { getFileCache: jest.fn(() => null) },
+      vault: {
+        adapter: {
+          exists: jest.fn().mockResolvedValue(false),
+          read: jest.fn().mockResolvedValue(''),
+        },
+        cachedRead: jest.fn().mockResolvedValue(''),
+        getFileByPath: jest.fn(() => null),
+        getFolderByPath: jest.fn(() => null),
+        getMarkdownFiles: jest.fn(() => []),
+      },
+    }
+  }
+
+  const model = {
+    provider: 'openai',
+    model: 'gpt-test',
+    name: 'gpt-test',
+  } as never
+
+  const settings = {
+    systemPrompt: '',
+    currentAssistantId: undefined,
+    assistants: [],
+    chatOptions: {
+      includeCurrentFileContent: false,
+      mentionContextMode: 'light',
+    },
+    skills: {},
+  } as unknown as YoloSettings
+
+  beforeEach(() => {
+    mockListLiteSkillEntries.mockReset()
+    mockListLiteSkillEntries.mockResolvedValue([])
+  })
+
+  it('passes { moduleChatModeId } scope to listLiteSkillEntries for a module chat mode run', async () => {
+    const builder = new RequestContextBuilder(makeApp() as never, settings, {
+      includeSkills: true,
+    })
+
+    await builder.generateRequestMessages({
+      systemPromptSnapshotMode: 'create',
+      messages: [
+        {
+          role: 'user',
+          id: 'u1',
+          content: null,
+          promptContent: 'hi',
+          mentionables: [],
+        },
+      ],
+      model,
+      conversationId: 'conv-module-skills',
+      contextPolicy: { useAssistant: false },
+      moduleChatModeId: 'module:learning:chat',
+    })
+
+    expect(mockListLiteSkillEntries).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        scope: { moduleChatModeId: 'module:learning:chat' },
+      }),
+    )
+  })
+
+  it('passes scope: undefined for a built-in mode run with an assistant selected (no moduleChatModeId)', async () => {
+    const builder = new RequestContextBuilder(
+      makeApp() as never,
+      {
+        ...settings,
+        currentAssistantId: 'agent-1',
+        assistants: [{ id: 'agent-1', name: 'Agent' }],
+      } as unknown as YoloSettings,
+      { includeSkills: true },
+    )
+
+    await builder.generateRequestMessages({
+      systemPromptSnapshotMode: 'create',
+      messages: [
+        {
+          role: 'user',
+          id: 'u1',
+          content: null,
+          promptContent: 'hi',
+          mentionables: [],
+        },
+      ],
+      model,
+      conversationId: 'conv-builtin-skills',
+    })
+
+    expect(mockListLiteSkillEntries).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ scope: undefined }),
+    )
+  })
+
+  it('calls listLiteSkillEntries at all only when an assistant is selected (built-in mode, no assistant)', async () => {
+    const builder = new RequestContextBuilder(makeApp() as never, settings, {
+      includeSkills: true,
+    })
+
+    await builder.generateRequestMessages({
+      systemPromptSnapshotMode: 'create',
+      messages: [
+        {
+          role: 'user',
+          id: 'u1',
+          content: null,
+          promptContent: 'hi',
+          mentionables: [],
+        },
+      ],
+      model,
+      conversationId: 'conv-builtin-skills-no-assistant',
+    })
+
+    expect(mockListLiteSkillEntries).not.toHaveBeenCalled()
+  })
+
+  it('renders a mode-scoped skill into <available_skills>', async () => {
+    mockListLiteSkillEntries.mockResolvedValue([
+      {
+        name: 'outline-skill',
+        description: 'Outline conventions',
+        mode: 'lazy',
+        path: '.obsidian/plugins/yolo/modules/learning/1.0.0/outline.md',
+        isReadOnly: true,
+      },
+    ])
+    const builder = new RequestContextBuilder(makeApp() as never, settings, {
+      includeSkills: true,
+    })
+
+    const requestMessages = await builder.generateRequestMessages({
+      systemPromptSnapshotMode: 'create',
+      messages: [
+        {
+          role: 'user',
+          id: 'u1',
+          content: null,
+          promptContent: 'hi',
+          mentionables: [],
+        },
+      ],
+      model,
+      conversationId: 'conv-module-skills-render',
+      contextPolicy: { useAssistant: false },
+      moduleChatModeId: 'module:learning:chat',
+    })
+
+    const system = requestMessages.find((m) => m.role === 'system')
+    const content = typeof system?.content === 'string' ? system.content : ''
+    expect(content).toContain('<available_skills>')
+    expect(content).toContain('name: outline-skill')
+  })
+})
+
+describe('RequestContextBuilder local-folder mentionables', () => {
+  const settings = {
+    systemPrompt: '',
+    currentAssistantId: undefined,
+    assistants: [],
+    chatOptions: {
+      includeCurrentFileContent: true,
+      mentionContextMode: 'light',
+    },
+    skills: {},
+  } as unknown as YoloSettings
+
+  it('renders absolute local folder paths into the compiled prompt', async () => {
+    const app = createMockApp({
+      files: [],
+      fileContents: new Map(),
+    })
+    const builder = new RequestContextBuilder(app as never, settings)
+
+    const result = await builder.compileUserMessagePrompt({
+      message: {
+        ...createUserMessage([
+          { type: 'local-folder', path: 'D:/workspace/project-a' },
+          { type: 'local-folder', path: 'D:/workspace/project-b' },
+        ]),
+        content: createTextEditorState('Summarize these folders'),
+      },
+    })
+
+    const textContent = getTextContent(result.promptContent)
+    expect(textContent).toContain('## Mentioned Local Folders (outside the vault)')
+    expect(textContent).toContain('- `D:/workspace/project-a`')
+    expect(textContent).toContain('- `D:/workspace/project-b`')
+    expect(textContent).toContain(
+      'Absolute filesystem paths — vault file tools cannot reach them.',
+    )
+  })
+
+  it('deduplicates repeated local folder paths', async () => {
+    const app = createMockApp({
+      files: [],
+      fileContents: new Map(),
+    })
+    const builder = new RequestContextBuilder(app as never, settings)
+
+    const result = await builder.compileUserMessagePrompt({
+      message: {
+        ...createUserMessage([
+          { type: 'local-folder', path: 'D:/workspace/project-a' },
+          { type: 'local-folder', path: 'D:/workspace/project-a' },
+        ]),
+        content: createTextEditorState('Summarize'),
+      },
+    })
+
+    const textContent = getTextContent(result.promptContent)
+    const occurrences = textContent.match(/D:\/workspace\/project-a/g) ?? []
+    expect(occurrences.length).toBe(1)
+  })
+
+  it('omits the local folder section when no local folders are mentioned', async () => {
+    const app = createMockApp({
+      files: [],
+      fileContents: new Map(),
+    })
+    const builder = new RequestContextBuilder(app as never, settings)
+
+    const result = await builder.compileUserMessagePrompt({
+      message: {
+        ...createUserMessage([]),
+        content: createTextEditorState('Plain message'),
+      },
+    })
+
+    expect(getTextContent(result.promptContent)).not.toContain(
+      'Mentioned Local Folders',
+    )
   })
 })

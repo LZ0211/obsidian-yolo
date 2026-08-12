@@ -82,11 +82,13 @@ import type { McpCoordinator } from './core/mcp/mcpCoordinator'
 import type { McpManager } from './core/mcp/mcpManager'
 import {
   CoreModuleAgentCapabilityProvider,
+  CoreModuleChatCapabilityProvider,
   CoreModuleHostCapabilityProvider,
   DomBlobModuleScriptExecutor,
   IndexedDbDataAdapter,
   ManagedModulePathsCapabilityProvider,
   ModuleArtifactArrivalGrace,
+  ModuleChatModeRegistry,
   ModuleAssetsCapabilityProvider,
   ModuleConfigCapabilityProvider,
   ModuleDeviceStateStore,
@@ -104,6 +106,7 @@ import {
   ObsidianModuleUiCapabilityProvider,
   ObsidianModuleVaultCapabilityProvider,
   createDevModuleCatalogOverlay,
+  createModuleChatModeSkillResolver,
   createObsidianModuleConfigBackendFactory,
   createObsidianModuleConfigCreateIfAbsent,
   createObsidianModuleIntentBackend,
@@ -157,6 +160,7 @@ import {
   setRuntimeComponentService,
 } from './core/runtime-components'
 import {
+  configureModuleChatModeSkillSource,
   initializeLiteSkillRegistryService,
   migrateVaultSkillFrontmatter,
   prewarmLiteSkillRegistry,
@@ -310,6 +314,7 @@ export default class YoloPlugin extends Plugin {
   private actionToastController: ActionToastController | null = null
   private readonly moduleSettingsContributions =
     new ModuleSettingsContributionRegistry()
+  private readonly moduleChatModeRegistry = new ModuleChatModeRegistry()
   installationIncompleteDetail: InstallationIncompleteDetail | null = null
   private installationIncompleteBannerDismissed = false
   private installationIncompleteListeners: (() => void)[] = []
@@ -1005,6 +1010,7 @@ export default class YoloPlugin extends Plugin {
         ) => this.addSettingsChangeListener(listener),
         getRagEngine: () => this.getRAGEngine(),
         promptSourceWatcher: agentService.getPromptSourceWatcher(),
+        moduleChatModeRegistry: this.moduleChatModeRegistry,
       })
     }
     return this.mcpCoordinator
@@ -2788,6 +2794,7 @@ export default class YoloPlugin extends Plugin {
     this.disposeCliRuntimeCoordinator()
     this.liteSkillRegistryDispose?.()
     this.liteSkillRegistryDispose = null
+    configureModuleChatModeSkillSource(null)
     this.moduleUpdateController?.dispose()
     this.moduleUpdateController = null
     this.moduleService?.dispose()
@@ -4289,6 +4296,10 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
     return this.moduleSettingsContributions
   }
 
+  getModuleChatModeRegistry(): ModuleChatModeRegistry {
+    return this.moduleChatModeRegistry
+  }
+
   private initializeModuleSystem(): void {
     const store = new ModuleStore({
       adapter: this.app.vault.adapter,
@@ -4339,6 +4350,9 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
             servicesReference.current?.getVerifiedArtifact(moduleId),
         }),
         backgroundActivities: this.getBackgroundActivityRegistry(),
+        chat: new CoreModuleChatCapabilityProvider({
+          sink: this.moduleChatModeRegistry,
+        }),
         config: new ModuleConfigCapabilityProvider({
           createBackend: (moduleId) => {
             if (
@@ -4554,6 +4568,38 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
           },
         })
       },
+    })
+
+    // D6: bridges the module chat mode registry into the skills subsystem —
+    // `LiteSkillRegistryService` reads `this.moduleChatModeRegistry`'s
+    // snapshot fresh on every scoped list/get call (no separate cache), and
+    // resolves each mode's declared skill file names through the same
+    // verified-artifact + `ModuleStore` trusted path resolution `assets`
+    // uses (`servicesReference.current?.getVerifiedArtifact`), never from
+    // manifest/module-supplied path fragments.
+    const chatModeSkillResolver = createModuleChatModeSkillResolver({
+      store,
+      getVerifiedArtifact: (moduleId) =>
+        servicesReference.current?.getVerifiedArtifact(moduleId),
+    })
+    configureModuleChatModeSkillSource({
+      getMode: (fullModeId) => {
+        const entry = this.moduleChatModeRegistry
+          .getSnapshot()
+          .find((candidate) => candidate.fullModeId === fullModeId)
+        if (!entry || entry.availability.status !== 'available') {
+          return undefined
+        }
+        return {
+          moduleId: entry.moduleId,
+          skillFileNames: entry.mode.skills ?? [],
+        }
+      },
+      listModeIds: () =>
+        this.moduleChatModeRegistry
+          .getSnapshot()
+          .map((entry) => entry.fullModeId),
+      resolveSkillPath: chatModeSkillResolver.resolveSkillPath,
     })
   }
 

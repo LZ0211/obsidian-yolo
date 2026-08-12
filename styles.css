@@ -615,6 +615,33 @@ select.yolo-module-settings-select {
   margin-bottom: 0;
   opacity: 0;
 }
+/*
+ * 面板式预览：user message 后的首条 thinking 用多行视口，随内容长高、
+ * 封顶后内容在顶部渐隐遮罩后上滚。高度由组件量测后写入
+ * --yolo-assistant-metadata-preview-viewport-height 驱动，收场时归零。
+ * 动效豁免（height 属布局属性）：视口 contain: layout paint 已隔离重排，
+ * 且 height 过渡必须与 track 的 WAAPI translate 同时长同曲线，旧行才能在
+ * 视口生长时保持静止，无法用纯 transform 表达这一生长。
+ */
+.yolo-assistant-message-metadata-preview--panel {
+  height: var(--yolo-assistant-metadata-preview-viewport-height, 0px);
+  max-height: none;
+  transition:
+    height var(--yolo-anim-duration-enter) var(--yolo-anim-ease-out),
+    opacity 180ms ease,
+    transform var(--yolo-anim-duration-enter) var(--yolo-anim-ease-out),
+    margin-bottom var(--yolo-anim-duration-enter) var(--yolo-anim-ease-out);
+}
+.yolo-assistant-message-metadata.has-preview
+  .yolo-assistant-message-metadata-preview--panel,
+.yolo-assistant-message-metadata.is-expanded
+  .yolo-assistant-message-metadata-preview--panel {
+  max-height: none;
+}
+.yolo-assistant-message-metadata-preview--panel.is-overflowing {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+}
 .yolo-assistant-message-metadata.is-expanded
   .yolo-assistant-message-metadata-body {
   grid-template-rows: 1fr;
@@ -9499,6 +9526,15 @@ svg.svg-icon.yolo-orbit {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+/* `ObsidianIcon` (src/components/common/ObsidianIcon.tsx): a `setIcon`-based
+ * glyph wrapper. Deliberately has no `size` prop — sizing/color are each
+ * consumer's responsibility via a `<container> svg { width; height }` rule,
+ * same convention as the other setIcon-based glyphs in this codebase. */
+.yolo-obsidian-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 .yolo-chat-header {
   display: flex;
   box-sizing: border-box;
@@ -12304,6 +12340,13 @@ button.yolo-assistant-annotation-marker.is-active {
     var(--interactive-accent-hover) 14%,
     transparent
   );
+}
+/* Module chat mode empty state icon (`ObsidianIcon`, setIcon-produced —
+ * sized via CSS, unlike the lucide-react icons above which size via a `size`
+ * prop on the SVG itself). */
+.yolo-chat-empty-state-module-icon svg {
+  width: 18px;
+  height: 18px;
 }
 @keyframes yolo-chat-empty-icon-in {
   from {
@@ -16854,10 +16897,19 @@ button.yolo-mermaid-modal-control:disabled {
 .yolo-lexical-content-editable-root .yolo-mention--folder::before {
   mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z'/%3E%3Cpath d='M2 10h20'/%3E%3C/svg%3E");
 }
+/* local-folder = a directory outside the vault. Same folder glyph as a vault
+   folder: it is the same kind of thing to the reader, and the badge's tooltip
+   carries the absolute path that tells them apart. */
+.yolo-lexical-content-editable-root .yolo-mention--local-folder::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z'/%3E%3Cpath d='M2 10h20'/%3E%3C/svg%3E");
+}
 .yolo-lexical-content-editable-root .yolo-mention--pdf::before {
   mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z'/%3E%3Cpath d='M14 2v4a2 2 0 0 0 2 2h4'/%3E%3Cpath d='M10 9H8'/%3E%3Cpath d='M16 13H8'/%3E%3Cpath d='M16 17H8'/%3E%3C/svg%3E");
 }
 .yolo-lexical-content-editable-root .yolo-mention--office::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z'/%3E%3Cpath d='M14 2v4a2 2 0 0 0 2 2h4'/%3E%3Cpath d='M10 9H8'/%3E%3Cpath d='M16 13H8'/%3E%3Cpath d='M16 17H8'/%3E%3C/svg%3E");
+}
+.yolo-lexical-content-editable-root .yolo-mention--text-attachment::before {
   mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z'/%3E%3Cpath d='M14 2v4a2 2 0 0 0 2 2h4'/%3E%3Cpath d='M10 9H8'/%3E%3Cpath d='M16 13H8'/%3E%3Cpath d='M16 17H8'/%3E%3C/svg%3E");
 }
 .yolo-lexical-content-editable-root .yolo-mention--image::before {

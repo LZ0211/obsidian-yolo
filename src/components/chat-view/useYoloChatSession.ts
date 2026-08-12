@@ -1,5 +1,4 @@
 import { Notice } from 'obsidian'
-import { findUnifiedAgentById, getUnifiedAgentList } from '../../core/agent/workspaceAgentResolver'
 import {
   Dispatch,
   MutableRefObject,
@@ -8,6 +7,7 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -16,6 +16,10 @@ import { usePlugin } from '../../contexts/plugin-context'
 import { useSettings } from '../../contexts/settings-context'
 import { DEFAULT_ASSISTANT_ID } from '../../core/agent/default-assistant'
 import type { AgentConversationRunSummary } from '../../core/agent/service'
+import {
+  findUnifiedAgentById,
+  getUnifiedAgentList,
+} from '../../core/agent/workspaceAgentResolver'
 import {
   type ChatRuntimeId,
   type CliChatMode,
@@ -30,7 +34,6 @@ import {
 } from '../../hooks/useChatHistory'
 import type { Assistant } from '../../types/assistant.types'
 import type {
-  AssistantToolMessageGroup,
   ChatAssistantMessage,
   ChatConversationCompactionState,
   ChatMessage,
@@ -41,7 +44,6 @@ import type { ConversationOverrideSettings } from '../../types/conversation-sett
 import type { MentionableBlockData } from '../../types/mentionable'
 import type { ReasoningLevel } from '../../types/reasoning'
 import { normalizeHydratedConversationMessages } from '../../utils/chat/conversationHydration'
-import { groupAssistantAndToolMessages } from '../../utils/chat/message-groups'
 import {
   collectSelectionHighlightIdsFromMessages,
   createSelectionBlockMentionable,
@@ -49,16 +51,24 @@ import {
 
 import {
   type ChatMode,
-  normalizeChatMode,
+  chatModeForSave,
+  isModuleChatMode,
+  normalizePersistedChatMode,
   normalizeYoloEnabled,
+  resolveEffectiveChatMode,
 } from './chat-input/ChatModeSelect'
 import { editorStateToPlainText } from './chat-input/utils/editor-state-to-plain-text'
+import type { ChatSessionController } from './ChatSessionController'
 import {
   beginChatRuntimeNavigation,
   openCliSessionForNavigation,
   prepareCliConversation,
 } from './cliChatIntegration'
-import { resolveCliModePreference } from './cliRuntimePreferences'
+import {
+  type PrePlanCliModeMemory,
+  prunePrePlanCliMode,
+  resolveCliModePreference,
+} from './cliRuntimePreferences'
 import type { QueryProgressState } from './QueryProgress'
 import type { useChatStreamManager } from './useChatStreamManager'
 
@@ -85,6 +95,12 @@ export const serializeActiveBranchByUserMessageId = (
 }
 
 export type UseYoloChatSessionParams = {
+  /**
+   * 消息态八件套的唯一 owner——见架构治理第三步分期 C1。历史消息编辑/删除/
+   * 分支命令直接调用其命令 API；`loadYoloConversation`/`handleNewChat`
+   * 仍经下方各 setX props 写入（同一批函数，指向 controller 方法）。
+   */
+  sessionController: ChatSessionController
   // Props
   initialConversationId: string | undefined
   onConversationContextChange:
@@ -104,11 +120,7 @@ export type UseYoloChatSessionParams = {
   createOrUpdateConversationImmediately: ReturnType<
     typeof useChatHistory
   >['createOrUpdateConversationImmediately']
-  deleteConversation: ReturnType<typeof useChatHistory>['deleteConversation']
   getConversationById: ReturnType<typeof useChatHistory>['getConversationById']
-  updateConversationTitle: ReturnType<
-    typeof useChatHistory
-  >['updateConversationTitle']
   chatList: ReturnType<typeof useChatHistory>['chatList']
 
   // Stream manager (single instance owned by Chat.tsx)
@@ -134,7 +146,6 @@ export type UseYoloChatSessionParams = {
   // Per-conversation preference maps/refs owned by Chat.tsx
   messageModelMap: Map<string, string>
   setMessageModelMap: Dispatch<SetStateAction<Map<string, string>>>
-  messageReasoningMap: Map<string, ReasoningLevel>
   setMessageReasoningMap: Dispatch<SetStateAction<Map<string, ReasoningLevel>>>
   conversationOverrides: ConversationOverrideSettings | null
   setConversationOverrides: Dispatch<
@@ -144,18 +155,45 @@ export type UseYoloChatSessionParams = {
     Map<string, ConversationOverrideSettings | null>
   >
   conversationModelId: string
-  setConversationModelId: Dispatch<SetStateAction<string>>
   conversationModelIdRef: MutableRefObject<Map<string, string>>
   conversationAssistantId: string
-  setConversationAssistantId: Dispatch<SetStateAction<string>>
   conversationAssistantIdRef: MutableRefObject<Map<string, string>>
   reasoningLevel: ReasoningLevel
-  setReasoningLevel: Dispatch<SetStateAction<ReasoningLevel>>
   conversationReasoningLevelRef: MutableRefObject<Map<string, ReasoningLevel>>
-  chatMode: ChatMode
+  /**
+   * Setter for the effective (runtime) chat mode — see
+   * `resolveEffectiveChatMode`. This hook only ever derives and writes this
+   * value (from `persistedChatMode` + the live module registry); it never
+   * needs to read the current effective value, so only the setter is taken.
+   */
   setChatMode: Dispatch<SetStateAction<ChatMode>>
+  /**
+   * The chat mode as it should be written to conversation storage — never
+   * downgraded by module (un)availability. Updated only alongside the
+   * effective `chatMode` at session load, new-conversation default, branch
+   * copy, and user-driven mode switches (`useChatRuntimePreferences`). All
+   * write-back call sites must read this via `chatModeForSave`.
+   */
+  persistedChatMode: ChatMode
   yoloEnabled: boolean
-  setYoloEnabled: Dispatch<SetStateAction<boolean>>
+  /**
+   * 会话切换（加载已有会话 / 新建会话 / 分支复制）时一次性提交偏好七件套
+   * 中被恢复的字段，并同步写入 ConversationPreferencesController 内部的
+   * 每会话 Ref 缓存——取代逐字段调用 `setX` + 手动 `xRef.current.set` 的
+   * 散落写法。见 `ConversationPreferencesController.switchConversation`。
+   */
+  switchConversation: (
+    conversationId: string,
+    values: Partial<{
+      conversationModelId: string
+      conversationAssistantId: string
+      reasoningLevel: ReasoningLevel
+      chatMode: ChatMode
+      persistedChatMode: ChatMode
+      yoloEnabled: boolean
+      conversationOverrides: ConversationOverrideSettings | null
+    }>,
+  ) => void
   selectedAssistant: Assistant | null
   setCompactionState: Dispatch<SetStateAction<ChatConversationCompactionState>>
   setPendingCompactionAnchorMessageId: Dispatch<SetStateAction<string | null>>
@@ -189,9 +227,7 @@ export type UseYoloChatSessionParams = {
   cliModeRequestGenerationRef: MutableRefObject<number>
   runtimeNavigationGenerationRef: MutableRefObject<number>
   chatMountedRef: MutableRefObject<boolean>
-  prePlanCliModeByConversationRef: MutableRefObject<
-    Map<string, { mode: 'agent'; yoloEnabled: boolean }>
-  >
+  prePlanCliModeByConversationRef: PrePlanCliModeMemory
   setCliChatMode: Dispatch<SetStateAction<CliChatMode>>
   setCliYoloEnabled: Dispatch<SetStateAction<boolean>>
   setCliConversationController: Dispatch<
@@ -214,13 +250,12 @@ export type UseYoloChatSessionParams = {
  * useChatHistory() 单例透传），也不重造 cliChatIntegration.ts 的逻辑。
  */
 export function useYoloChatSession({
+  sessionController,
   initialConversationId,
   onConversationContextChange,
   createOrUpdateConversation,
   createOrUpdateConversationImmediately,
-  deleteConversation,
   getConversationById,
-  updateConversationTitle,
   chatList,
   submitChatMutation,
   chatMessagesStateRef,
@@ -236,24 +271,20 @@ export function useYoloChatSession({
   effectiveCompactionState,
   messageModelMap,
   setMessageModelMap,
-  messageReasoningMap,
   setMessageReasoningMap,
   conversationOverrides,
   setConversationOverrides,
   conversationOverridesRef,
   conversationModelId,
-  setConversationModelId,
   conversationModelIdRef,
   conversationAssistantId,
-  setConversationAssistantId,
   conversationAssistantIdRef,
   reasoningLevel,
-  setReasoningLevel,
   conversationReasoningLevelRef,
-  chatMode,
   setChatMode,
+  persistedChatMode,
   yoloEnabled,
-  setYoloEnabled,
+  switchConversation,
   selectedAssistant,
   setCompactionState,
   setPendingCompactionAnchorMessageId,
@@ -292,6 +323,26 @@ export function useYoloChatSession({
   const agentService = plugin.getAgentService()
   const { settings } = useSettings()
   const { t } = useLanguage()
+
+  const moduleChatModeRegistry = plugin.getModuleChatModeRegistry()
+  const moduleChatModeSnapshot = useSyncExternalStore(
+    moduleChatModeRegistry.subscribe,
+    moduleChatModeRegistry.getSnapshot,
+  )
+
+  // Keeps the effective (runtime) chat mode in sync with the persisted value
+  // and live module availability — e.g. a module getting disabled/enabled
+  // while its chat mode is the active one downgrades/restores `chatMode`
+  // without ever touching `persistedChatMode` or conversation storage.
+  useEffect(() => {
+    setChatMode((current) => {
+      const next = resolveEffectiveChatMode(
+        persistedChatMode,
+        moduleChatModeSnapshot,
+      )
+      return current === next ? current : next
+    })
+  }, [persistedChatMode, moduleChatModeSnapshot, setChatMode])
 
   const [runSummariesByConversationId, setRunSummariesByConversationId] =
     useState<Map<string, AgentConversationRunSummary>>(new Map())
@@ -401,7 +452,7 @@ export function useYoloChatSession({
       try {
         const effectiveOverrides = {
           ...(conversationOverrides ?? {}),
-          chatMode,
+          chatMode: chatModeForSave(persistedChatMode),
           agentYoloEnabled: yoloEnabled,
         }
         await createOrUpdateConversation(
@@ -429,7 +480,7 @@ export function useYoloChatSession({
       }
     },
     [
-      chatMode,
+      persistedChatMode,
       yoloEnabled,
       conversationModelId,
       conversationOverrides,
@@ -454,7 +505,7 @@ export function useYoloChatSession({
       try {
         const effectiveOverrides = {
           ...(conversationOverrides ?? {}),
-          chatMode,
+          chatMode: chatModeForSave(persistedChatMode),
           agentYoloEnabled: yoloEnabled,
         }
         await createOrUpdateConversationImmediately(
@@ -484,7 +535,7 @@ export function useYoloChatSession({
       }
     },
     [
-      chatMode,
+      persistedChatMode,
       yoloEnabled,
       conversationModelId,
       conversationOverrides,
@@ -520,78 +571,29 @@ export function useYoloChatSession({
     [],
   )
 
+  // 消息态写入已收编进 ChatSessionController（架构治理第三步分期 C1）——
+  // 本函数只做 Notice/焦点/高亮释放等 UI 反应，翻译 controller 命令的
+  // 类型化返回结果。
   const removeHistoricalUserMessage = useCallback(
     (messageId: string) => {
-      const sourceMessages = chatMessagesStateRef.current
-      const removedMessages = sourceMessages.filter(
-        (message) => message.role === 'user' && message.id === messageId,
-      )
+      const result = sessionController.removeHistoricalUserMessage(messageId)
       releaseHighlightIds(
-        collectSelectionHighlightIdsFromMessages(removedMessages),
+        collectSelectionHighlightIdsFromMessages(result.removedMessages),
       )
-      const nextMessages = sourceMessages.filter(
-        (message) => !(message.role === 'user' && message.id === messageId),
-      )
-      const nextAssistantGroupBoundaryMessageIds =
-        buildAssistantGroupBoundaryMessageIdsAfterUserRemoval(
-          sourceMessages,
-          nextMessages,
-          assistantGroupBoundaryMessageIds,
-        )
-
-      chatMessagesStateRef.current = nextMessages
-      setChatMessages(nextMessages)
-      setAssistantGroupBoundaryMessageIds(nextAssistantGroupBoundaryMessageIds)
       setFocusedMessageId((prev) =>
         prev === messageId ? inputMessageId : prev,
       )
-      setMessageModelMap((prev) => {
-        if (!prev.has(messageId)) return prev
-        const next = new Map(prev)
-        next.delete(messageId)
-        return next
-      })
-      setMessageReasoningMap((prev) => {
-        if (!prev.has(messageId)) return prev
-        const next = new Map(prev)
-        next.delete(messageId)
-        return next
-      })
-
-      const nextActiveBranchByUserMessageId = new Map(
-        activeBranchByUserMessageIdRef.current,
-      )
-      if (nextActiveBranchByUserMessageId.delete(messageId)) {
-        activeBranchByUserMessageIdRef.current = nextActiveBranchByUserMessageId
-        setActiveBranchByUserMessageId(nextActiveBranchByUserMessageId)
+      if (result.outcome.kind === 'persisted') {
+        void result.outcome.ok.then((ok) => {
+          if (!ok) new Notice('Failed to save chat history')
+        })
       }
-
-      if (nextMessages.length === 0) {
-        void deleteConversation(currentConversationId)
-        return
-      }
-
-      void persistConversation(
-        nextMessages,
-        nextAssistantGroupBoundaryMessageIds,
-      )
     },
     [
-      assistantGroupBoundaryMessageIds,
-      buildAssistantGroupBoundaryMessageIdsAfterUserRemoval,
-      currentConversationId,
-      deleteConversation,
-      inputMessageId,
-      persistConversation,
+      sessionController,
       releaseHighlightIds,
-      chatMessagesStateRef,
-      setChatMessages,
-      setAssistantGroupBoundaryMessageIds,
       setFocusedMessageId,
-      setMessageModelMap,
-      setMessageReasoningMap,
-      activeBranchByUserMessageIdRef,
-      setActiveBranchByUserMessageId,
+      inputMessageId,
     ],
   )
 
@@ -600,34 +602,9 @@ export function useYoloChatSession({
       messageId: string,
       updater: (message: ChatUserMessage) => ChatUserMessage,
     ) => {
-      const nextMessages = chatMessagesStateRef.current.map((message) => {
-        if (message.role !== 'user' || message.id !== messageId) {
-          return message
-        }
-
-        return updater(message)
-      })
-
-      const updatedMessage = nextMessages.find(
-        (message): message is ChatUserMessage =>
-          message.role === 'user' && message.id === messageId,
-      )
-      if (!updatedMessage) {
-        return
-      }
-
-      chatMessagesStateRef.current = nextMessages
-      setChatMessages(nextMessages)
-      setAssistantGroupBoundaryMessageIds((prev) =>
-        normalizeAssistantGroupBoundaryMessageIds(nextMessages, prev),
-      )
+      sessionController.updateHistoricalUserMessage(messageId, updater)
     },
-    [
-      normalizeAssistantGroupBoundaryMessageIds,
-      chatMessagesStateRef,
-      setChatMessages,
-      setAssistantGroupBoundaryMessageIds,
-    ],
+    [sessionController],
   )
 
   const finalizeHistoricalUserMessageEdit = useCallback(
@@ -697,15 +674,15 @@ export function useYoloChatSession({
               reason: normalizedConversation.changed ? 'self-heal' : 'hydrate',
             },
           )
-        setConversationOverrides(
+        // fork 特有：旧会话文件的工作目录（backup 语义）合并进 overrides。
+        const loadedOverrides =
           conversation.workingDirectory &&
-            !conversation.overrides?.workingDirectory
+          !conversation.overrides?.workingDirectory
             ? {
                 ...(conversation.overrides ?? {}),
                 workingDirectory: conversation.workingDirectory,
               }
-            : (conversation.overrides ?? null),
-        )
+            : (conversation.overrides ?? null)
         const loadedAssistantId =
           conversation.assistantId ??
           conversationAssistantIdRef.current.get(conversationId) ??
@@ -714,27 +691,42 @@ export function useYoloChatSession({
           DEFAULT_ASSISTANT_ID
         const loadedAssistantModelId =
           findUnifiedAgentById(settings, loadedAssistantId)?.modelId ?? null
-        setConversationAssistantId(loadedAssistantId)
-        conversationAssistantIdRef.current.set(
-          conversationId,
-          loadedAssistantId,
-        )
-        const loadedChatMode = normalizeChatMode(
+        const loadedPersistedChatMode = normalizePersistedChatMode(
           conversation.overrides?.chatMode,
           settings.chatOptions.chatMode ?? 'agent',
         )
-        setChatMode(loadedChatMode)
-        setYoloEnabled(
-          normalizeYoloEnabled(
-            conversation.overrides?.chatMode,
-            conversation.overrides?.agentYoloEnabled,
-            settings.chatOptions.agentYoloEnabled ?? false,
-          ),
+        const loadedChatMode = resolveEffectiveChatMode(
+          loadedPersistedChatMode,
+          moduleChatModeSnapshot,
         )
-        conversationOverridesRef.current.set(
-          conversationId,
-          conversation.overrides ?? null,
+        const loadedYoloEnabled = normalizeYoloEnabled(
+          conversation.overrides?.chatMode,
+          conversation.overrides?.agentYoloEnabled,
+          settings.chatOptions.agentYoloEnabled ?? false,
         )
+        const modelFromRef =
+          conversation.conversationModelId ??
+          conversationModelIdRef.current.get(conversationId) ??
+          loadedAssistantModelId ??
+          settings.chatModelId
+        const storedReasoningLevel = normalizeReasoningLevel(
+          conversation.reasoningLevel,
+        )
+        const resolvedReasoningLevel =
+          storedReasoningLevel ?? getReasoningLevelForModelId(modelFromRef)
+
+        // 偏好七件套一次性提交 + 写入每会话 Ref 缓存——取代原先逐字段
+        // setX + 手动 ref.set 的散落写法。
+        switchConversation(conversationId, {
+          conversationOverrides: loadedOverrides,
+          conversationAssistantId: loadedAssistantId,
+          persistedChatMode: loadedPersistedChatMode,
+          chatMode: loadedChatMode,
+          yoloEnabled: loadedYoloEnabled,
+          conversationModelId: modelFromRef,
+          reasoningLevel: resolvedReasoningLevel,
+        })
+
         const cliRuntimeForPrefs: CliRuntimeId =
           activeRuntimeIdRef.current === 'yolo'
             ? lastCliRuntimeIdRef.current
@@ -742,23 +734,16 @@ export function useYoloChatSession({
         const loadedCliMode = resolveCliModePreference(
           settings,
           cliRuntimeForPrefs,
-          conversation.overrides ?? null,
+          loadedOverrides,
         )
         setCliChatMode(loadedCliMode.mode)
         setCliYoloEnabled(loadedCliMode.yoloEnabled)
-        if (
-          cliRuntimeForPrefs === 'claude-code' &&
-          loadedCliMode.mode !== 'plan'
-        ) {
-          prePlanCliModeByConversationRef.current.delete(conversationId)
-        }
-        const modelFromRef =
-          conversation.conversationModelId ??
-          conversationModelIdRef.current.get(conversationId) ??
-          loadedAssistantModelId ??
-          settings.chatModelId
-        setConversationModelId(modelFromRef)
-        conversationModelIdRef.current.set(conversationId, modelFromRef)
+        prunePrePlanCliMode(
+          prePlanCliModeByConversationRef,
+          conversationId,
+          cliRuntimeForPrefs,
+          loadedCliMode.mode,
+        )
         const loadedConversationTitle = getConversationDisplayTitle(
           chatList.find((chat) => chat.id === conversationId)?.title,
           t('chat.untitledConversation', 'New chat'),
@@ -768,18 +753,8 @@ export function useYoloChatSession({
           currentConversationPersisted: true,
           currentConversationTitle: loadedConversationTitle,
           currentModelId: modelFromRef,
-          currentOverrides: conversation.overrides ?? undefined,
+          currentOverrides: loadedOverrides ?? undefined,
         })
-        const storedReasoningLevel = normalizeReasoningLevel(
-          conversation.reasoningLevel,
-        )
-        const resolvedReasoningLevel =
-          storedReasoningLevel ?? getReasoningLevelForModelId(modelFromRef)
-        setReasoningLevel(resolvedReasoningLevel)
-        conversationReasoningLevelRef.current.set(
-          conversationId,
-          resolvedReasoningLevel,
-        )
         setMessageModelMap(
           new Map(Object.entries(conversation.messageModelMap ?? {})),
         )
@@ -857,20 +832,13 @@ export function useYoloChatSession({
       setAssistantGroupBoundaryMessageIds,
       setCompactionState,
       setPendingCompactionAnchorMessageId,
-      setConversationOverrides,
-      conversationAssistantIdRef,
-      setConversationAssistantId,
-      setChatMode,
-      setYoloEnabled,
-      conversationOverridesRef,
+      switchConversation,
+      moduleChatModeSnapshot,
       lastCliRuntimeIdRef,
       setCliChatMode,
       setCliYoloEnabled,
       prePlanCliModeByConversationRef,
       conversationModelIdRef,
-      setConversationModelId,
-      setReasoningLevel,
-      conversationReasoningLevelRef,
       setMessageModelMap,
       activeBranchByUserMessageIdRef,
       setActiveBranchByUserMessageId,
@@ -931,9 +899,12 @@ export function useYoloChatSession({
         conversationOverridesRef.current.set(conversationId, restoredOverrides)
         setCliChatMode(modePreference.mode)
         setCliYoloEnabled(modePreference.yoloEnabled)
-        if (ref.runtimeId === 'claude-code' && modePreference.mode !== 'plan') {
-          prePlanCliModeByConversationRef.current.delete(conversationId)
-        }
+        prunePrePlanCliMode(
+          prePlanCliModeByConversationRef,
+          conversationId,
+          ref.runtimeId,
+          modePreference.mode,
+        )
         if (result.overlayError) {
           console.warn('[YOLO] Failed to restore CLI conversation metadata', {
             conversationId,
@@ -1057,21 +1028,30 @@ export function useYoloChatSession({
       }
       const newId = uuidv4()
       setCurrentConversationId(newId)
-      conversationAssistantIdRef.current.set(newId, conversationAssistantId)
-      setConversationAssistantId(conversationAssistantId)
-      setConversationOverrides(null)
-      const defaultChatMode = chatMode
-      setChatMode(defaultChatMode)
-      setYoloEnabled(yoloEnabled)
-      const defaultConversationModelId =
-        selectedAssistant?.modelId ?? settings.chatModelId
-      conversationModelIdRef.current.set(newId, defaultConversationModelId)
-      setConversationModelId(defaultConversationModelId)
+      const defaultPersistedChatMode = persistedChatMode
+      const defaultChatMode = resolveEffectiveChatMode(
+        defaultPersistedChatMode,
+        moduleChatModeSnapshot,
+      )
+      const defaultConversationModelId = isModuleChatMode(defaultChatMode)
+        ? settings.chatModelId
+        : (selectedAssistant?.modelId ?? settings.chatModelId)
       const defaultReasoningLevel = getReasoningLevelForModelId(
         defaultConversationModelId,
       )
-      setReasoningLevel(defaultReasoningLevel)
-      conversationReasoningLevelRef.current.set(newId, defaultReasoningLevel)
+
+      // 偏好七件套一次性提交 + 写入每会话 Ref 缓存——取代原先逐字段
+      // setX + 手动 ref.set 的散落写法。新会话延续当前会话的 assistant/
+      // yolo 值,重置 overrides,mode/model/reasoningLevel 取默认值。
+      switchConversation(newId, {
+        conversationAssistantId,
+        conversationOverrides: null,
+        persistedChatMode: defaultPersistedChatMode,
+        chatMode: defaultChatMode,
+        yoloEnabled,
+        conversationModelId: defaultConversationModelId,
+        reasoningLevel: defaultReasoningLevel,
+      })
       setMessageModelMap(new Map())
       setAssistantGroupBoundaryMessageIds([])
       activeBranchByUserMessageIdRef.current = new Map()
@@ -1108,21 +1088,14 @@ export function useYoloChatSession({
       createFreshCliConversation,
       setInputMessage,
       setCurrentConversationId,
-      conversationAssistantIdRef,
       conversationAssistantId,
-      setConversationAssistantId,
-      setConversationOverrides,
-      chatMode,
-      setChatMode,
+      switchConversation,
+      persistedChatMode,
+      moduleChatModeSnapshot,
       yoloEnabled,
-      setYoloEnabled,
       selectedAssistant,
       settings,
-      conversationModelIdRef,
-      setConversationModelId,
       getReasoningLevelForModelId,
-      setReasoningLevel,
-      conversationReasoningLevelRef,
       setMessageModelMap,
       setAssistantGroupBoundaryMessageIds,
       activeBranchByUserMessageIdRef,
@@ -1146,57 +1119,18 @@ export function useYoloChatSession({
 
   const handleAssistantMessageEditSave = useCallback(
     (groupAnchorMessageId: string, replacementMessages: ChatMessage[]) => {
-      setChatMessages((prevChatHistory) => {
-        const groupedMessages = groupAssistantAndToolMessages(
-          prevChatHistory,
-          assistantGroupBoundaryMessageIds,
-        )
-        const targetGroup = groupedMessages.find(
-          (item): item is AssistantToolMessageGroup =>
-            Array.isArray(item) &&
-            item.some((message) => message.id === groupAnchorMessageId),
-        )
-        if (!targetGroup) {
-          return prevChatHistory
-        }
-
-        const anchorMessage = targetGroup.find(
-          (message) => message.id === groupAnchorMessageId,
-        )
-        const anchorBranchId = anchorMessage?.metadata?.branchId
-        const targetMessages = anchorBranchId
-          ? targetGroup.filter(
-              (message) => message.metadata?.branchId === anchorBranchId,
-            )
-          : targetGroup
-        const targetIds = new Set(targetMessages.map((message) => message.id))
-        const targetIndexes = prevChatHistory
-          .map((message, index) => (targetIds.has(message.id) ? index : null))
-          .filter((index): index is number => index !== null)
-        const startIndex = targetIndexes[0]
-        const endIndex = targetIndexes.at(-1)
-        if (startIndex === undefined || endIndex === undefined) {
-          return prevChatHistory
-        }
-
-        const nextMessages = [
-          ...prevChatHistory.slice(0, startIndex),
-          ...replacementMessages,
-          ...prevChatHistory.slice(endIndex + 1),
-        ]
-        chatMessagesStateRef.current = nextMessages
-        void persistConversation(nextMessages)
-        return nextMessages
-      })
+      const result = sessionController.handleAssistantMessageEditSave(
+        groupAnchorMessageId,
+        replacementMessages,
+      )
       setEditingAssistantMessageId(null)
+      if (result.outcome?.kind === 'persisted') {
+        void result.outcome.ok.then((ok) => {
+          if (!ok) new Notice('Failed to save chat history')
+        })
+      }
     },
-    [
-      assistantGroupBoundaryMessageIds,
-      persistConversation,
-      setChatMessages,
-      chatMessagesStateRef,
-      setEditingAssistantMessageId,
-    ],
+    [sessionController, setEditingAssistantMessageId],
   )
 
   const handleAssistantMessageEditCancel = useCallback(() => {
@@ -1206,146 +1140,60 @@ export function useYoloChatSession({
   const handleAssistantMessageGroupDelete = useCallback(
     (messageIds: string[]) => {
       const idsToRemove = new Set(messageIds)
-      const nextMessages = chatMessagesStateRef.current.filter(
-        (message) => !idsToRemove.has(message.id),
-      )
-      const nextAssistantGroupBoundaryMessageIds =
-        normalizeAssistantGroupBoundaryMessageIds(
-          nextMessages,
-          assistantGroupBoundaryMessageIds,
-        )
-      chatMessagesStateRef.current = nextMessages
-      setChatMessages(nextMessages)
-      setAssistantGroupBoundaryMessageIds(nextAssistantGroupBoundaryMessageIds)
-      void persistConversation(
-        nextMessages,
-        nextAssistantGroupBoundaryMessageIds,
-      )
+      const result =
+        sessionController.handleAssistantMessageGroupDelete(messageIds)
       setEditingAssistantMessageId((prev) =>
         prev && idsToRemove.has(prev) ? null : prev,
       )
+      if (result.outcome.kind === 'persisted') {
+        void result.outcome.ok.then((ok) => {
+          if (!ok) new Notice('Failed to save chat history')
+        })
+      }
     },
-    [
-      assistantGroupBoundaryMessageIds,
-      normalizeAssistantGroupBoundaryMessageIds,
-      persistConversation,
-      chatMessagesStateRef,
-      setChatMessages,
-      setAssistantGroupBoundaryMessageIds,
-      setEditingAssistantMessageId,
-    ],
+    [sessionController, setEditingAssistantMessageId],
   )
 
   const handleHistoricalUserMessageDelete = useCallback(
     (userMessageId: string) => {
       if (isCurrentConversationRunActive) return
-      const sourceMessages = chatMessagesStateRef.current
-      const startIdx = sourceMessages.findIndex(
-        (m) => m.id === userMessageId && m.role === 'user',
-      )
-      if (startIdx < 0) return
-      let endIdx = sourceMessages.length
-      for (let i = startIdx + 1; i < sourceMessages.length; i += 1) {
-        if (sourceMessages[i].role === 'user') {
-          endIdx = i
-          break
-        }
-      }
-      const removedIds = new Set(
-        sourceMessages.slice(startIdx, endIdx).map((m) => m.id),
-      )
-      const removedMessages = sourceMessages.slice(startIdx, endIdx)
+      const result =
+        sessionController.handleHistoricalUserMessageDelete(userMessageId)
+      if (!result) return
       releaseHighlightIds(
-        collectSelectionHighlightIdsFromMessages(removedMessages),
+        collectSelectionHighlightIdsFromMessages(result.removedMessages),
       )
-      const nextMessages = sourceMessages.filter((m) => !removedIds.has(m.id))
-      const nextAssistantGroupBoundaryMessageIds =
-        normalizeAssistantGroupBoundaryMessageIds(
-          nextMessages,
-          assistantGroupBoundaryMessageIds,
-        )
-      chatMessagesStateRef.current = nextMessages
-      setChatMessages(nextMessages)
-      setAssistantGroupBoundaryMessageIds(nextAssistantGroupBoundaryMessageIds)
-
-      setMessageModelMap((prev) => {
-        if (!prev.has(userMessageId)) return prev
-        const next = new Map(prev)
-        next.delete(userMessageId)
-        return next
-      })
-      setMessageReasoningMap((prev) => {
-        if (!prev.has(userMessageId)) return prev
-        const next = new Map(prev)
-        next.delete(userMessageId)
-        return next
-      })
-      if (activeBranchByUserMessageIdRef.current.has(userMessageId)) {
-        const nextBranchMap = new Map(activeBranchByUserMessageIdRef.current)
-        nextBranchMap.delete(userMessageId)
-        activeBranchByUserMessageIdRef.current = nextBranchMap
-        setActiveBranchByUserMessageId(nextBranchMap)
-      }
+      const removedIds = new Set(result.removedMessages.map((m) => m.id))
       setEditingAssistantMessageId((prev) =>
         prev && removedIds.has(prev) ? null : prev,
       )
       setFocusedMessageId((prev) =>
         prev && removedIds.has(prev) ? inputMessageId : prev,
       )
-      if (nextMessages.length === 0) {
-        void deleteConversation(currentConversationId)
-        return
+      if (result.outcome.kind === 'persisted') {
+        void result.outcome.ok.then((ok) => {
+          if (!ok) new Notice('Failed to save chat history')
+        })
       }
-      void persistConversation(
-        nextMessages,
-        nextAssistantGroupBoundaryMessageIds,
-      )
     },
     [
-      assistantGroupBoundaryMessageIds,
-      currentConversationId,
-      deleteConversation,
+      sessionController,
       inputMessageId,
       isCurrentConversationRunActive,
-      normalizeAssistantGroupBoundaryMessageIds,
-      persistConversation,
       releaseHighlightIds,
-      chatMessagesStateRef,
-      setChatMessages,
-      setAssistantGroupBoundaryMessageIds,
-      setMessageModelMap,
-      setMessageReasoningMap,
-      activeBranchByUserMessageIdRef,
-      setActiveBranchByUserMessageId,
       setEditingAssistantMessageId,
       setFocusedMessageId,
     ],
   )
 
+  // 消息态/偏好切换/AgentService 注册/持久化全部收编进
+  // ChatSessionController.branchFromAssistantGroup（含分支缺口修复：分支的
+  // 消息现在会注册进 AgentService 内存态,不再只写 React state + 磁盘）。
+  // 本函数只解析 policy（settings / i18n 都不下放进 controller）并翻译
+  // 结果为 UI 反应。
   const handleAssistantMessageGroupBranch = useCallback(
     (messageIds: string[]) => {
       if (messageIds.length === 0) return
-
-      const sourceMessages = chatMessagesStateRef.current
-      const targetIds = new Set(messageIds)
-      let branchEndIndex = -1
-      for (let i = sourceMessages.length - 1; i >= 0; i -= 1) {
-        if (targetIds.has(sourceMessages[i].id)) {
-          branchEndIndex = i
-          break
-        }
-      }
-
-      if (branchEndIndex < 0) {
-        new Notice(t('chat.branchCreateFailed', 'Failed to create branch'))
-        return
-      }
-
-      const nextMessages = sourceMessages.slice(0, branchEndIndex + 1)
-      if (nextMessages.length === 0) {
-        new Notice(t('chat.branchCreateFailed', 'Failed to create branch'))
-        return
-      }
 
       const sourceTitle = getConversationDisplayTitle(
         chatList.find((chat) => chat.id === currentConversationId)?.title,
@@ -1353,18 +1201,23 @@ export function useYoloChatSession({
       )
       const branchTitle = `${sourceTitle} (copy)`
 
-      const newConversationId = uuidv4()
       const nextOverrides =
         conversationOverridesRef.current.get(currentConversationId) ??
         conversationOverrides ??
         null
-      const nextChatMode = normalizeChatMode(nextOverrides?.chatMode, chatMode)
+      const nextPersistedChatMode = normalizePersistedChatMode(
+        nextOverrides?.chatMode,
+        persistedChatMode,
+      )
+      const nextChatMode = resolveEffectiveChatMode(
+        nextPersistedChatMode,
+        moduleChatModeSnapshot,
+      )
       const nextYoloEnabled = normalizeYoloEnabled(
         nextOverrides?.chatMode,
         nextOverrides?.agentYoloEnabled,
         yoloEnabled,
       )
-
       const resolvedConversationModelId =
         conversationModelIdRef.current.get(currentConversationId) ??
         conversationModelId ??
@@ -1373,149 +1226,55 @@ export function useYoloChatSession({
         conversationReasoningLevelRef.current.get(currentConversationId) ??
         reasoningLevel
 
-      const retainedUserMessageIds = new Set(
-        nextMessages
-          .filter(
-            (message): message is ChatUserMessage => message.role === 'user',
-          )
-          .map((message) => message.id),
-      )
+      const result = sessionController.branchFromAssistantGroup(messageIds, {
+        nextOverrides,
+        nextChatMode,
+        nextPersistedChatMode,
+        nextYoloEnabled,
+        conversationAssistantId,
+        resolvedConversationModelId,
+        resolvedReasoningLevel,
+        branchTitle,
+      })
 
-      const nextMessageModelMap = new Map(
-        Array.from(messageModelMap.entries()).filter(([messageId]) =>
-          retainedUserMessageIds.has(messageId),
-        ),
-      )
-      const nextMessageReasoningMap = new Map(
-        Array.from(messageReasoningMap.entries()).filter(([messageId]) =>
-          retainedUserMessageIds.has(messageId),
-        ),
-      )
-      const nextAssistantGroupBoundaryMessageIds =
-        normalizeAssistantGroupBoundaryMessageIds(
-          nextMessages,
-          assistantGroupBoundaryMessageIds,
-        )
-      const nextActiveBranchByUserMessageId = new Map(
-        Array.from(activeBranchByUserMessageIdRef.current.entries()).filter(
-          ([messageId]) => retainedUserMessageIds.has(messageId),
-        ),
-      )
-      const branchedCompactionState = effectiveCompactionState.filter((entry) =>
-        nextMessages.some((message) => message.id === entry.anchorMessageId),
-      )
-
-      setCurrentConversationId(newConversationId)
-      setChatMessages(nextMessages)
-      setCompactionState(branchedCompactionState)
-      setPendingCompactionAnchorMessageId(null)
-      setEditingAssistantMessageId(null)
-
-      setConversationOverrides(nextOverrides)
-      if (nextOverrides) {
-        conversationOverridesRef.current.set(newConversationId, nextOverrides)
-      } else {
-        conversationOverridesRef.current.delete(newConversationId)
+      if (!result) {
+        new Notice(t('chat.branchCreateFailed', 'Failed to create branch'))
+        return
       }
 
-      setChatMode(nextChatMode)
-      setYoloEnabled(nextYoloEnabled)
-
-      setConversationAssistantId(conversationAssistantId)
-      conversationAssistantIdRef.current.set(
-        newConversationId,
-        conversationAssistantId,
+      setEditingAssistantMessageId(null)
+      const newInputMessage = buildNewInputMessage(
+        result.resolvedReasoningLevel,
       )
-
-      setConversationModelId(resolvedConversationModelId)
-      conversationModelIdRef.current.set(
-        newConversationId,
-        resolvedConversationModelId,
-      )
-
-      setReasoningLevel(resolvedReasoningLevel)
-      conversationReasoningLevelRef.current.set(
-        newConversationId,
-        resolvedReasoningLevel,
-      )
-
-      setMessageModelMap(nextMessageModelMap)
-      setMessageReasoningMap(nextMessageReasoningMap)
-      setAssistantGroupBoundaryMessageIds(nextAssistantGroupBoundaryMessageIds)
-      activeBranchByUserMessageIdRef.current = nextActiveBranchByUserMessageId
-      setActiveBranchByUserMessageId(nextActiveBranchByUserMessageId)
-
-      const newInputMessage = buildNewInputMessage(resolvedReasoningLevel)
       replaceInputMessage(newInputMessage)
       setFocusedMessageId(newInputMessage.id)
       setQueryProgress({ type: 'idle' })
 
-      void (async () => {
-        await createOrUpdateConversationImmediately(
-          newConversationId,
-          nextMessages,
-          {
-            ...(nextOverrides ?? {}),
-            chatMode: nextChatMode,
-            agentYoloEnabled: nextYoloEnabled,
-          },
-          resolvedConversationModelId,
-          serializeMessageModelMap(nextMessages, nextMessageModelMap),
-          serializeActiveBranchByUserMessageId(
-            nextMessages,
-            nextActiveBranchByUserMessageId,
-          ),
-          resolvedReasoningLevel,
-          branchedCompactionState,
-          nextAssistantGroupBoundaryMessageIds,
-        )
-        await updateConversationTitle(newConversationId, branchTitle)
-        new Notice(t('chat.branchCreated', 'Branch created'))
-      })().catch((error) => {
-        new Notice(t('chat.branchCreateFailed', 'Failed to create branch'))
-        console.error('Failed to create branched conversation', error)
+      void result.persisted.then((ok) => {
+        if (ok) {
+          new Notice(t('chat.branchCreated', 'Branch created'))
+        } else {
+          new Notice(t('chat.branchCreateFailed', 'Failed to create branch'))
+        }
       })
     },
     [
+      sessionController,
       chatList,
-      chatMode,
-      yoloEnabled,
-      conversationAssistantId,
-      conversationModelId,
-      conversationOverrides,
-      createOrUpdateConversationImmediately,
       currentConversationId,
-      effectiveCompactionState,
-      messageModelMap,
-      messageReasoningMap,
-      assistantGroupBoundaryMessageIds,
-      normalizeAssistantGroupBoundaryMessageIds,
-      reasoningLevel,
-      serializeMessageModelMap,
-      settings,
       t,
-      updateConversationTitle,
-      chatMessagesStateRef,
       conversationOverridesRef,
+      conversationOverrides,
+      persistedChatMode,
+      moduleChatModeSnapshot,
+      yoloEnabled,
       conversationModelIdRef,
+      conversationModelId,
+      settings,
       conversationReasoningLevelRef,
-      activeBranchByUserMessageIdRef,
-      setCurrentConversationId,
-      setChatMessages,
-      setCompactionState,
-      setPendingCompactionAnchorMessageId,
+      reasoningLevel,
+      conversationAssistantId,
       setEditingAssistantMessageId,
-      setConversationOverrides,
-      setChatMode,
-      setYoloEnabled,
-      setConversationAssistantId,
-      conversationAssistantIdRef,
-      setConversationModelId,
-      setReasoningLevel,
-      setMessageModelMap,
-      setMessageReasoningMap,
-      setAssistantGroupBoundaryMessageIds,
-      setActiveBranchByUserMessageId,
       buildNewInputMessage,
       replaceInputMessage,
       setFocusedMessageId,

@@ -2,6 +2,7 @@ import type { App, TFile, TFolder } from 'obsidian'
 import { normalizePath } from 'obsidian'
 
 import { editorStateToPlainText } from '../../components/chat-view/chat-input/utils/editor-state-to-plain-text'
+import type { ChatContextPolicy } from '../../components/chat-view/chat-runtime-profiles'
 import type { QueryProgressState } from '../../components/chat-view/QueryProgress'
 import {
   buildCompactionResumeMessage,
@@ -35,6 +36,7 @@ import {
   resolveProjectInstructionFilePaths,
 } from '../../core/project-instructions'
 import {
+  type LiteSkillScope,
   getLiteSkillDocument,
   listLiteSkillEntries,
 } from '../../core/skills/liteSkills'
@@ -68,6 +70,7 @@ import type {
   MentionableFile,
   MentionableFolder,
   MentionableImage,
+  MentionableLocalFolder,
   MentionableOffice,
   MentionablePDF,
   MentionableTextAttachment,
@@ -582,6 +585,13 @@ export class RequestContextBuilder {
     compaction?: ChatConversationCompactionLike | null
     contextualInjections?: ContextualInjection[]
     runtimeModePrompt?: string
+    /** Module chat mode persona — see `ChatContextPolicy`. */
+    modePersonaPrompt?: string
+    modePersonaModuleId?: string
+    /** Full running mode id — scopes skill resolution to the mode's own
+     * declared skills. See `ChatModeRuntime.moduleChatModeId`. */
+    moduleChatModeId?: string
+    contextPolicy?: ChatContextPolicy
     systemPromptOverride?: string
     systemPromptSnapshotMode: SystemPromptSnapshotMode
   }): Promise<RequestMessage[]> {
@@ -606,6 +616,10 @@ export class RequestContextBuilder {
     compaction,
     contextualInjections,
     runtimeModePrompt,
+    modePersonaPrompt,
+    modePersonaModuleId,
+    moduleChatModeId,
+    contextPolicy,
     systemPromptOverride,
     systemPromptSnapshotMode,
   }: {
@@ -618,6 +632,12 @@ export class RequestContextBuilder {
     compaction?: ChatConversationCompactionLike | null
     contextualInjections?: ContextualInjection[]
     runtimeModePrompt?: string
+    modePersonaPrompt?: string
+    modePersonaModuleId?: string
+    /** Full running mode id — scopes skill resolution to the mode's own
+     * declared skills. See `ChatModeRuntime.moduleChatModeId`. */
+    moduleChatModeId?: string
+    contextPolicy?: ChatContextPolicy
     systemPromptOverride?: string
     systemPromptSnapshotMode: SystemPromptSnapshotMode
   }): Promise<{
@@ -627,6 +647,10 @@ export class RequestContextBuilder {
     if (messages.length === 0) {
       throw new Error('No messages provided')
     }
+
+    const skillScope: LiteSkillScope | undefined = moduleChatModeId
+      ? { moduleChatModeId }
+      : undefined
 
     const compiledMessages = [...messages]
 
@@ -650,6 +674,7 @@ export class RequestContextBuilder {
     if (!lastUserMessage.promptContent) {
       const { promptContent } = await this.compileUserMessagePrompt({
         message: lastUserMessage,
+        scope: skillScope,
       })
       compiledMessages[lastUserMessageIndex] = {
         ...lastUserMessage,
@@ -684,6 +709,7 @@ export class RequestContextBuilder {
 
       const { promptContent } = await this.compileUserMessagePrompt({
         message,
+        scope: skillScope,
       })
       compiledMessages[i] = {
         ...message,
@@ -712,6 +738,10 @@ export class RequestContextBuilder {
           hasOnDemandTools,
           compaction,
           runtimeModePrompt,
+          modePersonaPrompt,
+          modePersonaModuleId,
+          moduleChatModeId,
+          contextPolicy,
           mode: systemPromptSnapshotMode,
         })
     const systemMessage: RequestMessage = {
@@ -729,6 +759,7 @@ export class RequestContextBuilder {
         messages: compiledMessages,
         snapshotEntries,
         compaction,
+        scope: skillScope,
       })),
     ]
 
@@ -769,6 +800,12 @@ export class RequestContextBuilder {
     compaction?: ChatConversationCompactionLike | null
     contextualInjections?: ContextualInjection[]
     runtimeModePrompt?: string
+    modePersonaPrompt?: string
+    modePersonaModuleId?: string
+    /** Full running mode id — scopes skill resolution to the mode's own
+     * declared skills. See `ChatModeRuntime.moduleChatModeId`. */
+    moduleChatModeId?: string
+    contextPolicy?: ChatContextPolicy
     requestTools?: unknown[] | undefined
     systemPromptSnapshotMode: SystemPromptSnapshotMode
   }): Promise<PromptSection[]> {
@@ -902,10 +939,12 @@ export class RequestContextBuilder {
     messages,
     snapshotEntries,
     compaction,
+    scope,
   }: {
     messages: ChatMessage[]
     snapshotEntries: Record<string, string | ContentPart[]>
     compaction?: ChatConversationCompactionLike | null
+    scope?: LiteSkillScope
   }): Promise<RequestMessage[]> {
     const requestMessages: RequestMessage[] = []
     const prunedToolCallIds = collectContextPrunedToolCallIds(messages)
@@ -933,6 +972,7 @@ export class RequestContextBuilder {
               content: await this.getUserMessageContent({
                 message,
                 snapshotEntries,
+                scope,
               }),
             })
             continue
@@ -986,6 +1026,7 @@ export class RequestContextBuilder {
           content: await this.getUserMessageContent({
             message,
             snapshotEntries,
+            scope,
           }),
         })
         continue
@@ -1026,9 +1067,11 @@ export class RequestContextBuilder {
   private async getUserMessageContent({
     message,
     snapshotEntries,
+    scope,
   }: {
     message: ChatUserMessage
     snapshotEntries: Record<string, string | ContentPart[]>
+    scope?: LiteSkillScope
   }): Promise<string | ContentPart[]> {
     const withTimeContext = (
       content: string | ContentPart[],
@@ -1084,6 +1127,10 @@ export class RequestContextBuilder {
     const webSelections = message.mentionables.filter(
       (m): m is MentionableWebSelection => m.type === 'web-selection',
     )
+    const localFolders = message.mentionables.filter(
+      (m): m is MentionableLocalFolder => m.type === 'local-folder',
+    )
+    const localFolderPrompt = this.buildLocalFolderPrompt(localFolders)
     const blockPrompt = this.buildUserSelectedContentPrompt(blocks)
     const assistantQuotePrompt = this.buildAssistantQuotePrompt(assistantQuotes)
     const webSelectionPrompt = this.buildWebSelectionPrompt(webSelections)
@@ -1112,8 +1159,9 @@ export class RequestContextBuilder {
 
     const selectedSkillsPrompt = await this.buildSelectedSkillsPrompt(
       message.selectedSkills,
+      scope,
     )
-    const textContent = `${blockPrompt}${assistantQuotePrompt}${webSelectionPrompt}${officePrompt}${textAttachmentPrompt}${legacyPdfFallbackText}${selectedSkillsPrompt}\n\n${query}\n\n`
+    const textContent = `${localFolderPrompt}${blockPrompt}${assistantQuotePrompt}${webSelectionPrompt}${officePrompt}${textAttachmentPrompt}${legacyPdfFallbackText}${selectedSkillsPrompt}\n\n${query}\n\n`
     if (imageParts.length === 0 && pdfDocumentParts.length === 0) {
       return withTimeContext(textContent)
     }
@@ -1146,6 +1194,7 @@ export class RequestContextBuilder {
 
   private async buildSelectedSkillsPrompt(
     selectedSkills?: ChatSelectedSkill[],
+    scope?: LiteSkillScope,
   ): Promise<string> {
     if (!selectedSkills || selectedSkills.length === 0) {
       return ''
@@ -1157,6 +1206,7 @@ export class RequestContextBuilder {
           app: this.app,
           name: skill.name,
           settings: this.settings,
+          scope,
         })
 
         if (document) {
@@ -1365,9 +1415,15 @@ ${message.annotations
   public async compileUserMessagePrompt({
     message,
     onQueryProgressChange,
+    scope,
   }: {
     message: ChatUserMessage
     onQueryProgressChange?: (queryProgress: QueryProgressState) => void
+    /** Scopes skill resolution — see `LiteSkillScope`. Omitted (the default)
+     * for every non-module call site; the module chat mode send path passes
+     * `{ moduleChatModeId }` explicitly. This body compile happens before
+     * runtime-profile resolution, so it cannot infer the mode on its own. */
+    scope?: LiteSkillScope
   }): Promise<{
     promptContent: ChatUserMessage['promptContent']
   }> {
@@ -1392,6 +1448,7 @@ ${message.annotations
           mentionables: message.mentionables,
           selectedSkills: message.selectedSkills,
           onQueryProgressChange,
+          scope,
         }),
       }
     } catch (error) {
@@ -1408,11 +1465,13 @@ ${message.annotations
     mentionables,
     selectedSkills,
     onQueryProgressChange,
+    scope,
   }: {
     prompt: string
     mentionables: Mentionable[]
     selectedSkills?: ChatSelectedSkill[]
     onQueryProgressChange?: (queryProgress: QueryProgressState) => void
+    scope?: LiteSkillScope
   }): Promise<{
     promptContent: ChatUserMessage['promptContent']
   }> {
@@ -1433,6 +1492,7 @@ ${message.annotations
           mentionables,
           selectedSkills,
           onQueryProgressChange,
+          scope,
         }),
       }
     } catch (error) {
@@ -1449,11 +1509,13 @@ ${message.annotations
     mentionables,
     selectedSkills,
     onQueryProgressChange,
+    scope,
   }: {
     query: string
     mentionables: Mentionable[]
     selectedSkills?: ChatSelectedSkill[]
     onQueryProgressChange?: (queryProgress: QueryProgressState) => void
+    scope?: LiteSkillScope
   }): Promise<ChatUserMessage['promptContent']> {
     onQueryProgressChange?.({
       type: 'reading-mentionables',
@@ -1493,6 +1555,10 @@ ${message.annotations
     const webSelections = mentionables.filter(
       (m): m is MentionableWebSelection => m.type === 'web-selection',
     )
+    const localFolders = mentionables.filter(
+      (m): m is MentionableLocalFolder => m.type === 'local-folder',
+    )
+    const localFolderPrompt = this.buildLocalFolderPrompt(localFolders)
     const blockPrompt = this.buildUserSelectedContentPrompt(blocks)
     const assistantQuotePrompt = this.buildAssistantQuotePrompt(assistantQuotes)
     const webSelectionPrompt = this.buildWebSelectionPrompt(webSelections)
@@ -1541,8 +1607,10 @@ ${message.annotations
       )
     ).filter((url): url is string => url !== null)
     const imageDataUrls = [...inlineImageDataUrls, ...vaultImageDataUrls]
-    const selectedSkillsPrompt =
-      await this.buildSelectedSkillsPrompt(selectedSkills)
+    const selectedSkillsPrompt = await this.buildSelectedSkillsPrompt(
+      selectedSkills,
+      scope,
+    )
 
     onQueryProgressChange?.({
       type: 'idle',
@@ -1560,9 +1628,27 @@ ${message.annotations
       ...pdfDocumentParts,
       {
         type: 'text',
-        text: `${filePrompt}${blockPrompt}${assistantQuotePrompt}${webSelectionPrompt}${officePrompt}${textAttachmentPrompt}${legacyPdfFallbackText}${selectedSkillsPrompt}\n\n${query}\n\n`,
+        text: `${filePrompt}${localFolderPrompt}${blockPrompt}${assistantQuotePrompt}${webSelectionPrompt}${officePrompt}${textAttachmentPrompt}${legacyPdfFallbackText}${selectedSkillsPrompt}\n\n${query}\n\n`,
       },
     ]
+  }
+
+  /**
+   * Directories outside the vault have no vault reader, so the absolute path
+   * is the whole context — the agent reaches the contents itself.
+   */
+  private buildLocalFolderPrompt(folders: MentionableLocalFolder[]): string {
+    if (folders.length === 0) {
+      return ''
+    }
+
+    const uniquePaths = [...new Set(folders.map((folder) => folder.path))]
+    // State the fact, name no tool: which tools can reach an absolute path
+    // depends on the user's settings, so the model picks from what it has.
+    return `## Mentioned Local Folders (outside the vault)
+${uniquePaths.map((path) => `- \`${path}\``).join('\n')}
+
+Absolute filesystem paths — vault file tools cannot reach them.\n\n`
   }
 
   private buildWebSelectionPrompt(
@@ -1740,6 +1826,10 @@ ${entries}
     hasOnDemandTools,
     compaction,
     runtimeModePrompt,
+    modePersonaPrompt,
+    modePersonaModuleId,
+    moduleChatModeId,
+    contextPolicy,
     mode,
   }: {
     conversationId: string
@@ -1749,6 +1839,12 @@ ${entries}
     hasOnDemandTools: boolean
     compaction?: ChatConversationCompactionLike | null
     runtimeModePrompt?: string
+    modePersonaPrompt?: string
+    modePersonaModuleId?: string
+    /** Full running mode id — scopes skill resolution to the mode's own
+     * declared skills. See `ChatModeRuntime.moduleChatModeId`. */
+    moduleChatModeId?: string
+    contextPolicy?: ChatContextPolicy
     mode: SystemPromptSnapshotMode
   }): Promise<SystemPromptSnapshot> {
     const build = async (): Promise<SystemPromptSnapshot> => {
@@ -1758,6 +1854,10 @@ ${entries}
         hasMemoryTools,
         hasOnDemandTools,
         runtimeModePrompt,
+        modePersonaPrompt,
+        modePersonaModuleId,
+        moduleChatModeId,
+        contextPolicy,
         compaction,
       )
       const systemContent = systemSections
@@ -1780,6 +1880,9 @@ ${entries}
       hasOnDemandTools,
       compaction,
       runtimeModePrompt,
+      modePersonaPrompt,
+      contextPolicy,
+      moduleChatModeId,
     )
     return store.getOrCreate(conversationId, fingerprint, build, {
       reuseOnly: mode === 'reuse',
@@ -1800,8 +1903,18 @@ ${entries}
     hasOnDemandTools: boolean,
     compaction?: ChatConversationCompactionLike | null,
     runtimeModePrompt?: string,
+    modePersonaPrompt?: string,
+    contextPolicy?: ChatContextPolicy,
+    moduleChatModeId?: string,
   ): string {
-    const assistant = this.getCurrentAssistant()
+    // `useAssistant === false` (module chat modes) makes `getCurrentAssistant`
+    // return null below, which already changes the `assistant` field of this
+    // fingerprint whenever an assistant WAS selected. The explicit
+    // `useAssistant`/`modePersonaPrompt` entries below additionally cover the
+    // "no assistant selected either way" edge case, and the persona text
+    // itself, which the `assistant` field can't see.
+    const useAssistant = contextPolicy?.useAssistant ?? true
+    const assistant = useAssistant ? this.getCurrentAssistant() : null
     const latestCompaction = getLatestChatConversationCompaction(compaction)
     // The exact memory files this request will read. Captures baseDir, the
     // assistant name, AND the sibling-driven duplicate index — so a same-named
@@ -1829,6 +1942,8 @@ ${entries}
       hasMemoryTools,
       hasOnDemandTools,
       runtimeModePrompt: runtimeModePrompt?.trim() ?? '',
+      useAssistant,
+      modePersonaPrompt: modePersonaPrompt?.trim() ?? '',
       includeSkills: this.includeSkills,
       systemPrompt: this.settings.systemPrompt ?? '',
       // Normalize the same way the real path/skill lookups do, so cosmetic-only
@@ -1838,6 +1953,11 @@ ${entries}
         .map((id) => id.trim())
         .sort(),
       currentAssistantId: this.settings.currentAssistantId ?? '',
+      // Distinguishes module modes whose `modePersonaPrompt` text happens to
+      // be identical (unlikely but not disallowed) — the mode's declared
+      // skill set can still differ, and that's what `<available_skills>`
+      // reflects.
+      moduleChatModeId: moduleChatModeId ?? '',
       memoryPaths,
       promptSourceRevision: this.getPromptSourceRevision?.() ?? 0,
       // A context compaction restarts the conversation from a compressed
@@ -1879,10 +1999,21 @@ ${entries}
     hasMemoryTools: boolean,
     hasOnDemandTools: boolean,
     runtimeModePrompt: string | undefined,
+    modePersonaPrompt: string | undefined,
+    modePersonaModuleId: string | undefined,
+    moduleChatModeId: string | undefined,
+    contextPolicy: ChatContextPolicy | undefined,
     compaction: ChatConversationCompactionLike | null | undefined,
   ): Promise<SystemPromptSections> {
     const sections: SystemPromptSections = []
-    const currentAssistant = this.getCurrentAssistant()
+    const useAssistant = contextPolicy?.useAssistant ?? true
+    // `useAssistant === false` (module chat modes) is a complete product
+    // contract of its own: gating `currentAssistant` to null here is what
+    // makes assistant memory / workspace scope / project instructions all
+    // fall out below for free (each already keys off `currentAssistant`).
+    // Only the assistant-instructions section and skills policy need an
+    // explicit branch — see `buildCustomInstructionsSubsections`.
+    const currentAssistant = useAssistant ? this.getCurrentAssistant() : null
 
     // Custom-instructions block — split into sub-sections so that memory /
     // skills / system text can be counted independently. Order MUST match the
@@ -1892,6 +2023,10 @@ ${entries}
         messages,
         hasMemoryTools,
         compaction,
+        useAssistant,
+        modePersonaPrompt,
+        modePersonaModuleId,
+        moduleChatModeId,
       )
     sections.push(...customInstructionSubsections)
 
@@ -1976,14 +2111,21 @@ ${entries}
     messages: ChatMessage[],
     hasMemoryTools: boolean,
     compaction: ChatConversationCompactionLike | null | undefined,
+    useAssistant = true,
+    modePersonaPrompt?: string,
+    modePersonaModuleId?: string,
+    moduleChatModeId?: string,
   ): Promise<SystemPromptSections> {
     const sections: SystemPromptSections = []
-    const currentAssistant = this.getCurrentAssistant()
+    const currentAssistant = useAssistant ? this.getCurrentAssistant() : null
 
     // Custom system prompt (global)
     const customInstruction = this.settings.systemPrompt.trim()
 
-    // Assistant instructions — bucket: system (assistant prompt is system-prompt-side)
+    // Assistant instructions — bucket: system (assistant prompt is system-prompt-side).
+    // Module chat modes (`useAssistant === false`) inject their persona in
+    // the exact same slot instead — an in-place substitution, not an
+    // addition, per `ChatContextPolicy`.
     if (currentAssistant?.systemPrompt) {
       const resolvedAssistantSystemPrompt = currentAssistant.systemPrompt.trim()
       if (resolvedAssistantSystemPrompt) {
@@ -1995,6 +2137,14 @@ ${resolvedAssistantSystemPrompt}
 </assistant_instructions>`,
         })
       }
+    } else if (!useAssistant && modePersonaPrompt?.trim()) {
+      sections.push({
+        bucket: 'system',
+        id: 'system.assistant-instructions',
+        content: `<module_mode_instructions module="${modePersonaModuleId ?? ''}">
+${modePersonaPrompt.trim()}
+</module_mode_instructions>`,
+      })
     }
 
     // Memory block — bucket: memory. Stable profile/preferences come from the
@@ -2051,18 +2201,29 @@ ${memoryParts.join('\n\n')}
 
     if (this.includeSkills) {
       const disabledSkillNames = this.settings.skills?.disabledSkillIds ?? []
-      const enabledSkillEntries = currentAssistant
-        ? (
-            await listLiteSkillEntries(this.app, { settings: this.settings })
-          ).filter((skill) =>
-            isSkillEnabledForAssistant({
-              assistant: currentAssistant,
-              skillName: skill.name,
-              disabledSkillNames,
-              defaultLoadMode: skill.mode,
-            }),
-          )
-        : []
+      const skillScope: LiteSkillScope | undefined = moduleChatModeId
+        ? { moduleChatModeId }
+        : undefined
+      // Module chat modes bypass assistant skill preferences entirely: the
+      // allowed set is the mode's own declared skills (scoped by
+      // `moduleChatModeId`) plus every enabled vault skill. Built-in modes
+      // keep the exact prior behavior: no assistant selected means no skills.
+      const enabledSkillEntries =
+        useAssistant && !currentAssistant
+          ? []
+          : (
+              await listLiteSkillEntries(this.app, {
+                settings: this.settings,
+                scope: skillScope,
+              })
+            ).filter((skill) =>
+              isSkillEnabledForAssistant({
+                assistant: useAssistant ? currentAssistant : null,
+                skillName: skill.name,
+                disabledSkillNames,
+                defaultLoadMode: skill.mode,
+              }),
+            )
 
       if (enabledSkillEntries.length > 0) {
         sections.push({
@@ -2107,6 +2268,7 @@ ${enabledSkillEntries
               app: this.app,
               name: skill.name,
               settings: this.settings,
+              scope: skillScope,
             }),
           ),
         )

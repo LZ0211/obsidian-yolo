@@ -1,6 +1,6 @@
 import { EditorView } from '@codemirror/view'
 import { Pencil, Trash2 } from 'lucide-react'
-import { MarkdownView, TFile, TFolder } from 'obsidian'
+import { MarkdownView, Notice, TFile, TFolder } from 'obsidian'
 import {
   forwardRef,
   useCallback,
@@ -10,6 +10,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react'
 import type { CSSProperties } from 'react'
 import { flushSync } from 'react-dom'
@@ -25,17 +26,20 @@ import {
 } from '../../core/agent/assistant-capabilities'
 import { resolveAssistantModelId } from '../../core/agent/assistant-model'
 import { getLatestAssistantContextUsage } from '../../core/agent/compaction'
-import { DEFAULT_ASSISTANT_ID } from '../../core/agent/default-assistant'
 import { findUnifiedAgentById } from '../../core/agent/workspaceAgentResolver'
 import type { ChatRuntime } from '../../core/chat-runtime/contract'
 import {
   type ChatRuntimeId,
   type CliRuntimeScope,
   type CliSessionRef,
+  RUNTIME_CAPABILITIES,
+  buildCliEnvironmentContext,
   createYoloChatRuntimeActions,
+  isCliRuntime,
   isCliRuntimeAvailable,
 } from '../../core/cli-runtime'
 import { getMemoryIndexRuntimeHandle } from '../../core/memory/memoryIndexRuntime'
+import { resolveLocalizedText } from '../../core/modules/moduleI18n'
 import {
   isConversationFileScopeLocked,
   resolveConversationFileScope,
@@ -50,11 +54,7 @@ import { useChatManager } from '../../hooks/useJsonManagers'
 import { useLiteSkillEntries } from '../../hooks/useLiteSkillEntries'
 import type { YoloRuntime } from '../../runtime/yoloRuntime.types'
 import { useOptionalYoloRuntime } from '../../runtime/YoloRuntimeProvider'
-import type {
-  ChatConversationCompactionState,
-  ChatMessage,
-  ChatUserMessage,
-} from '../../types/chat'
+import type { ChatMessage, ChatUserMessage } from '../../types/chat'
 import type { ConversationOverrideSettings } from '../../types/conversation-settings.types'
 import type {
   Mentionable,
@@ -79,6 +79,7 @@ import {
   createSelectionBlockMentionable,
 } from '../../utils/chat/selection-mentionables'
 import { resolveEffectiveMaxContextTokens } from '../../utils/llm/model-capability-registry'
+import { ObsidianIcon } from '../common/ObsidianIcon'
 
 // removed Prompt Templates feature
 
@@ -87,6 +88,9 @@ import {
   CLAUDE_CODE_CHAT_MODES,
   CODEX_CHAT_MODES,
   type ChatMode,
+  type ModuleChatModeOption,
+  chatModeForSave,
+  isModuleChatMode,
 } from './chat-input/ChatModeSelect'
 import ChatUserInput from './chat-input/ChatUserInput'
 import type { ChatUserInputProps } from './chat-input/ChatUserInput'
@@ -101,6 +105,11 @@ import {
   getDisplayedAssistantToolMessages,
   getSourceUserMessageIdForGroup,
 } from './chatRetry'
+import type {
+  ChatSessionCliContext,
+  ChatSessionControllerDeps,
+} from './ChatSessionController'
+import { ChatSessionController } from './ChatSessionController'
 import CliChatSurface from './CliChatSurface'
 import Composer from './Composer'
 import { useActiveViewState } from './hooks/useActiveViewState'
@@ -196,6 +205,8 @@ export type ChatRuntimeSnapshot = {
   conversationModelId: string
   conversationAssistantId: string
   chatMode: ChatMode
+  /** Persisted (never runtime-downgraded) chat mode — see `chatModeForSave`. */
+  persistedChatMode: ChatMode
   yoloEnabled: boolean
   reasoningLevel: ReasoningLevel
   conversationOverrides: ConversationOverrideSettings | null
@@ -275,9 +286,32 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     [agentService, injectedRuntime],
   )
   const { settings, setSettings, updateSettings } = useSettings()
-  const quickAccessSkillEntries = useLiteSkillEntries(app, { settings })
   const quickAccessSnippetEntries = useSnippetEntries()
-  const { t } = useLanguage()
+  const { t, language } = useLanguage()
+
+  // Module chat modes (Phase D): subscribed here so the mode selector, empty
+  // state, and assistant/YOLO visibility all react live to a module being
+  // enabled/disabled — same registry `useSyncExternalStore` pattern as
+  // `useChatStreamManager`/`useYoloChatSession`.
+  const moduleChatModeRegistry = plugin.getModuleChatModeRegistry()
+  const moduleChatModeSnapshot = useSyncExternalStore(
+    moduleChatModeRegistry.subscribe,
+    moduleChatModeRegistry.getSnapshot,
+  )
+  const moduleModeOptions = useMemo<ModuleChatModeOption[]>(
+    () =>
+      moduleChatModeSnapshot
+        .filter((entry) => entry.availability.status === 'available')
+        .map((entry) => ({
+          value: entry.fullModeId as ModuleChatModeOption['value'],
+          label: resolveLocalizedText(entry.mode.label, language),
+          description: entry.mode.description
+            ? resolveLocalizedText(entry.mode.description, language)
+            : undefined,
+          icon: entry.mode.icon,
+        })),
+    [moduleChatModeSnapshot, language],
+  )
 
   const {
     createOrUpdateConversation,
@@ -318,79 +352,31 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       chatMountedRef.current = false
     }
   }, [])
-  const [conversationAssistantId, setConversationAssistantId] =
-    useState<string>(
-      seededRuntimeSnapshot?.conversationAssistantId ??
-        settings.currentAssistantId ??
-        DEFAULT_ASSISTANT_ID,
-    )
-  // seed 早于 useChatInputController：activeRuntimeId 直接消费本 state。
-  const [currentConversationId, setCurrentConversationId] = useState<string>(
+  // seed 早于 useChatInputController：activeRuntimeId 直接消费本 state。会话
+  // 身份的唯一 owner 是下方构造的 ChatSessionController；这里只是它构造
+  // 前（早于 preferencesController 就绪）需要的一次性初始值，构造完成后
+  // `currentConversationId` 这个标识符改为从 controller 快照读取——写一次、
+  // 不再更新的种子 useState 没有 setter。
+  const [initialConversationId] = useState<string>(
     () =>
       seededRuntimeSnapshot?.currentConversationId ??
       props.initialConversationId ??
       uuidv4(),
   )
-  const {
-    activeRuntimeId,
-    activeRuntimeIdRef,
-    setRequestedRuntimeId,
-    lastCliRuntimeIdRef,
-    initialActiveRuntimeId,
-    initialCliModePreference,
-    cliModeRequestGenerationRef,
-    prePlanCliModeByConversationRef,
-    runtimeNavigationGenerationRef,
-    handleRuntimeChange,
-    conversationModelIdRef,
-    conversationReasoningLevelRef,
-    conversationAssistantIdRef,
-    conversationOverridesRef,
-    persistReasoningLevelForModel,
-    persistChatRuntimePreference,
-    applyAssistantDefaultModel,
-    handleConversationAssistantSelect,
-    handleChatModeChange,
-    handleYoloChange,
-    handleWorkingDirectoryChange,
-    handleOpenWorkingDirectoryPicker,
-    lateStateRef: runtimePreferencesLateStateRef,
-  } = useChatRuntimePreferences({
-    app,
-    t,
-    settings,
-    setSettings,
-    cliRuntimeScope,
-    cliRuntimeAvailable,
-    chatMountedRef,
-    seededActiveRuntimeId: seededRuntimeSnapshot?.activeRuntimeId,
-    seededConversationOverrides: seededRuntimeSnapshot?.conversationOverrides,
-    hasInitialConversationId: props.initialConversationId !== undefined,
-    currentConversationId,
-    conversationAssistantId,
-    setConversationAssistantId,
-  })
-  const effectiveSettings = useMemo(
-    () => ({
-      ...settings,
-      currentAssistantId: conversationAssistantId,
-    }),
-    [conversationAssistantId, settings],
-  )
-  const requestContextBuilder = useMemo(() => {
-    return new RequestContextBuilder(app, effectiveSettings, {
-      systemPromptSnapshotStore: agentService.getSystemPromptSnapshotStore(),
-      getPromptSourceRevision: () =>
-        agentService.getPromptSourceWatcher().getRevision(),
-      promptSourcePathsCallback: (paths) =>
-        agentService.getPromptSourceWatcher().setWatchedPaths(paths),
-      memoryIndexRuntime: getMemoryIndexRuntimeHandle(
-        app,
-        () => effectiveSettings,
-      ),
-    })
-  }, [app, effectiveSettings, agentService])
-
+  // ChatSessionController 要等 preferencesController（下方 useChatRuntimePreferences
+  // 的产出）就绪才能构造,但 useChatRuntimePreferences 本身在每次渲染都要读取
+  // 「当前」会话 id（推进 ConversationPreferencesController 内部的会话游标）。
+  // 用同一个 ref 承接：首次渲染 controller 尚未构造,退回 initialConversationId；
+  // 此后每次渲染 controller 已经从上一轮渲染起持续存在,直接读它的最新快照。
+  const sessionControllerRef = useRef<ChatSessionController | null>(null)
+  const currentConversationId =
+    sessionControllerRef.current?.getSnapshot().currentConversationId ??
+    initialConversationId
+  // normalizeReasoningLevel / initialReasoningLevel / getReasoningLevelForModelId
+  // 只依赖全局 settings（与 conversationAssistantId 等会话级偏好无关），提到
+  // useChatRuntimePreferences 调用之前计算好传入——这是消灭原环 1 里
+  // 「useChatRuntimePreferences 需要反过来经 lateStateRef 读取这两个值」的
+  // 关键：现在两者在调用时已经现成可用,不再需要延迟绑定。
   const normalizeReasoningLevel = useCallback(
     (value?: string): ReasoningLevel | null => {
       const normalized = normalizeStoredReasoningLevel(value)
@@ -414,6 +400,123 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     settings.chatOptions.reasoningLevelByModelId,
   ])
 
+  const getReasoningLevelForModelId = useCallback(
+    (modelId?: string | null): ReasoningLevel => {
+      if (!modelId) return 'off'
+      const model = settings.chatModels.find((m) => m.id === modelId) ?? null
+      const rememberedLevel = normalizeReasoningLevel(
+        settings.chatOptions.reasoningLevelByModelId?.[modelId],
+      )
+      return rememberedLevel ?? getDefaultReasoningLevel(model)
+    },
+    [
+      normalizeReasoningLevel,
+      settings.chatModels,
+      settings.chatOptions.reasoningLevelByModelId,
+    ],
+  )
+
+  const {
+    activeRuntimeId,
+    activeRuntimeIdRef,
+    setRequestedRuntimeId,
+    lastCliRuntimeIdRef,
+    initialActiveRuntimeId,
+    initialCliModePreference,
+    cliModeRequestGenerationRef,
+    prePlanCliModeByConversationRef,
+    runtimeNavigationGenerationRef,
+    handleRuntimeChange,
+    conversationModelId,
+    conversationAssistantId,
+    reasoningLevel,
+    chatMode,
+    persistedChatMode,
+    yoloEnabled,
+    conversationOverrides,
+    setConversationModelId,
+    setConversationAssistantId,
+    setReasoningLevel,
+    setChatMode,
+    setConversationOverrides,
+    conversationModelIdRef,
+    conversationReasoningLevelRef,
+    conversationAssistantIdRef,
+    conversationOverridesRef,
+    switchConversation,
+    persistReasoningLevelForModel,
+    persistChatRuntimePreference,
+    applyAssistantDefaultModel,
+    handleConversationAssistantSelect,
+    handleChatModeChange,
+    handleYoloChange,
+    onAssistantDefaultModelApplied,
+    handleWorkingDirectoryChange,
+    handleOpenWorkingDirectoryPicker,
+    cliRuntimeSwitchLateStateRef,
+    preferencesController,
+  } = useChatRuntimePreferences({
+    app,
+    t,
+    settings,
+    setSettings,
+    cliRuntimeScope,
+    cliRuntimeAvailable,
+    chatMountedRef,
+    seededActiveRuntimeId: seededRuntimeSnapshot?.activeRuntimeId,
+    hasInitialConversationId: props.initialConversationId !== undefined,
+    currentConversationId,
+    seededPreferences: seededRuntimeSnapshot
+      ? {
+          conversationModelId: seededRuntimeSnapshot.conversationModelId,
+          conversationAssistantId:
+            seededRuntimeSnapshot.conversationAssistantId,
+          reasoningLevel: seededRuntimeSnapshot.reasoningLevel,
+          chatMode: seededRuntimeSnapshot.chatMode,
+          persistedChatMode: seededRuntimeSnapshot.persistedChatMode,
+          yoloEnabled: seededRuntimeSnapshot.yoloEnabled,
+          conversationOverrides: seededRuntimeSnapshot.conversationOverrides,
+        }
+      : undefined,
+    initialReasoningLevel,
+    getReasoningLevelForModelId,
+  })
+  // Quick-access skill entries for the composer's `/` menu — scoped to the
+  // active module chat mode's own skills (in addition to the always-included
+  // user/global bucket) so a module's skills are only offered while its mode
+  // is selected. Declared after `chatMode` so the scope can read it; hook
+  // ordering across renders stays stable since this always runs.
+  const quickAccessSkillEntries = useLiteSkillEntries(app, {
+    settings,
+    scope: isModuleChatMode(chatMode)
+      ? { moduleChatModeId: chatMode }
+      : undefined,
+  })
+  const effectiveSettings = useMemo(
+    () => ({
+      ...settings,
+      currentAssistantId: conversationAssistantId,
+    }),
+    [conversationAssistantId, settings],
+  )
+  const requestContextBuilder = useMemo(() => {
+    return new RequestContextBuilder(app, effectiveSettings, {
+      systemPromptSnapshotStore: agentService.getSystemPromptSnapshotStore(),
+      getPromptSourceRevision: () =>
+        agentService.getPromptSourceWatcher().getRevision(),
+      promptSourcePathsCallback: (paths) =>
+        agentService.getPromptSourceWatcher().setWatchedPaths(paths),
+      memoryIndexRuntime: getMemoryIndexRuntimeHandle(
+        app,
+        () => effectiveSettings,
+      ),
+    })
+  }, [app, effectiveSettings, agentService])
+  // RequestContextBuilder changes identity when `settings` changes — the
+  // controller reads it through this ref (never a captured reference) so a
+  // settings change doesn't leave the controller calling a stale instance.
+  const requestContextBuilderRef = useLatestRef(requestContextBuilder)
+
   const { file: activeFile, viewState: activeViewState } = useActiveViewState()
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [containerElement, setContainerElement] =
@@ -435,15 +538,135 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     preservedInputMessage: ChatUserMessage
     preservedReasoningLevel: ReasoningLevel
   } | null>(null)
-  const chatMessagesStateRef = useRef<ChatMessage[]>([])
-  const activeBranchByUserMessageIdRef = useRef<Map<string, string>>(new Map())
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
-  const [compactionState, setCompactionState] =
-    useState<ChatConversationCompactionState>([])
-  const [
+
+  // 消息态八件套（会话身份 + chatMessages/compactionState/
+  // pendingCompactionAnchorMessageId/messageModelMap/messageReasoningMap/
+  // assistantGroupBoundaryMessageIds/activeBranchByUserMessageId）的唯一
+  // owner——见架构治理第三步分期 C1。deps 经 getter 闭包注入,与
+  // preferencesController 同款;构造一次,随 ChatView 实例存活。
+  // useChatHistory() 的四个持久化函数经 chatManager（settings 变化时
+  // 重建,见 useJsonManagers.ts）间接依赖 settings,并非跨渲染稳定引用——
+  // 必须经 useLatestRef 转发,不能被 sessionControllerDepsRef 的一次性
+  // ??= 直接捕获(否则 settings 变更后 controller 会一直调用第一次渲染
+  // 时那个已过期的闭包)。
+  const createOrUpdateConversationRef = useLatestRef(createOrUpdateConversation)
+  const createOrUpdateConversationImmediatelyRef = useLatestRef(
+    createOrUpdateConversationImmediately,
+  )
+  const deleteConversationRef = useLatestRef(deleteConversation)
+  const updateConversationTitleRef = useLatestRef(updateConversationTitle)
+  const generateConversationTitleRef = useLatestRef(generateConversationTitle)
+  // C2 additions (提交/中止/压缩/重试收归 controller): two of the new deps
+  // can only be assembled once hooks called *after* this point are ready
+  // (useChatStreamManager's mutation/abort/compact, and the CLI orchestration
+  // bag) — same "assign later, read through a getter" technique as
+  // `cliRuntimeSwitchLateStateRef` in useChatRuntimePreferences.ts. Declared
+  // here (before the controller is constructed) so `sessionControllerDeps`'s
+  // one-time `??=` object can close over stable ref identities.
+  const sessionRunLateDepsRef = useRef<{
+    submitChatMutation: ReturnType<
+      typeof useChatStreamManager
+    >['submitChatMutation']
+    abortConversationRun: ReturnType<
+      typeof useChatStreamManager
+    >['abortConversationRun']
+    compactConversation: ReturnType<
+      typeof useChatStreamManager
+    >['compactConversation']
+    forceScrollToBottom: () => void
+  } | null>(null)
+  const getSessionRunLateDeps = useCallback(() => {
+    const late = sessionRunLateDepsRef.current
+    if (!late) {
+      throw new Error(
+        '[YOLO] Chat: sessionController run deps accessed before useChatStreamManager hydrated sessionRunLateDepsRef',
+      )
+    }
+    return late
+  }, [])
+  const cliSubmitContextRef = useRef<ChatSessionCliContext | null>(null)
+  const sessionControllerDepsRef = useRef<ChatSessionControllerDeps>()
+  const sessionControllerDeps = (sessionControllerDepsRef.current ??= {
+    getAgentService: () => plugin.getAgentService(),
+    createOrUpdateConversation: (...args) =>
+      createOrUpdateConversationRef.current(...args),
+    createOrUpdateConversationImmediately: (...args) =>
+      createOrUpdateConversationImmediatelyRef.current(...args),
+    deleteConversation: (id) => deleteConversationRef.current(id),
+    updateConversationTitle: (id, title) =>
+      updateConversationTitleRef.current(id, title),
+    chatModeForSave,
+    getRequestContextBuilder: () => requestContextBuilderRef.current,
+    runConversation: (params, options) =>
+      getSessionRunLateDeps().submitChatMutation.mutate(params, options),
+    abortConversationRun: (conversationId) =>
+      getSessionRunLateDeps().abortConversationRun(conversationId),
+    compactConversation: (messages) =>
+      getSessionRunLateDeps().compactConversation(messages),
+    generateConversationTitle: (...args) =>
+      generateConversationTitleRef.current(...args),
+    forceScrollToBottom: (options) => {
+      if (options?.deferToNextFrame) {
+        requestAnimationFrame(() =>
+          getSessionRunLateDeps().forceScrollToBottom(),
+        )
+        return
+      }
+      getSessionRunLateDeps().forceScrollToBottom()
+    },
+    setQueryProgress: (action) => setQueryProgress(action),
+    runtimeNavigationGenerationRef,
+    getCliSubmitContext: () => cliSubmitContextRef.current,
+  })
+  const sessionController = (sessionControllerRef.current ??=
+    new ChatSessionController(
+      initialConversationId,
+      {
+        chatMessages: [],
+        compactionState: [],
+        pendingCompactionAnchorMessageId: null,
+        messageModelMap: new Map(),
+        messageReasoningMap: new Map(),
+        assistantGroupBoundaryMessageIds: [],
+        activeBranchByUserMessageId: new Map(),
+      },
+      preferencesController,
+      sessionControllerDeps,
+    ))
+  useEffect(() => {
+    // StrictMode（dev 构建）会把本 effect 重放为 setup→cleanup→setup：
+    // cleanup 的 dispose() 掉线后由 setup 幂等重建 AgentService 订阅。
+    sessionController.resumeAgentSubscription()
+    return () => sessionController.dispose()
+  }, [sessionController])
+
+  const {
+    chatMessages,
+    compactionState,
     pendingCompactionAnchorMessageId,
-    setPendingCompactionAnchorMessageId,
-  ] = useState<string | null>(null)
+    messageModelMap,
+    messageReasoningMap,
+    assistantGroupBoundaryMessageIds,
+    activeBranchByUserMessageId,
+  } = useSyncExternalStore(
+    sessionController.subscribe,
+    sessionController.getSnapshot,
+  )
+  const chatMessagesStateRef = sessionController.chatMessagesStateRef
+  const activeBranchByUserMessageIdRef =
+    sessionController.activeBranchByUserMessageIdRef
+  const setChatMessages = sessionController.setChatMessages
+  const setCompactionState = sessionController.setCompactionState
+  const setPendingCompactionAnchorMessageId =
+    sessionController.setPendingCompactionAnchorMessageId
+  const setMessageModelMap = sessionController.setMessageModelMap
+  const setMessageReasoningMap = sessionController.setMessageReasoningMap
+  const setAssistantGroupBoundaryMessageIds =
+    sessionController.setAssistantGroupBoundaryMessageIds
+  const setActiveBranchByUserMessageId =
+    sessionController.setActiveBranchByUserMessageId
+  const setCurrentConversationId = sessionController.setCurrentConversationId
+
   const inputController = useChatInputController({
     seededInputMessage: seededRuntimeSnapshot?.inputMessage,
     seededInputDraftRevision: seededRuntimeSnapshot?.inputDraftRevision,
@@ -453,6 +676,15 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     buildNewInputMessage: getNewInputMessage,
     chatMessagesStateRef,
     setChatMessages,
+    preferencesController,
+    sessionController,
+    currentConversationId,
+    assistantGroupBoundaryMessageIds,
+    deleteConversation,
+    queuedMessageEditState,
+    setQueuedMessageEditState,
+    getReasoningLevelForModelId,
+    persistReasoningLevelForModel,
   })
   const {
     inputMessage,
@@ -507,12 +739,6 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     Boolean(props.initialConversationId),
   )
   const untitledFallback = t('chat.untitledConversation', 'New chat')
-  const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevel>(
-    seededRuntimeSnapshot?.reasoningLevel ?? initialReasoningLevel,
-  )
-  const [messageReasoningMap, setMessageReasoningMap] = useState<
-    Map<string, ReasoningLevel>
-  >(new Map())
   const [editingAssistantMessageId, setEditingAssistantMessageId] = useState<
     string | null
   >(null)
@@ -576,24 +802,6 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     ...(fontScale != null ? { zoom: fontScale } : {}),
   } as CSSProperties
 
-  // Per-conversation override settings (temperature, top_p, context, stream)
-  const [conversationOverrides, setConversationOverrides] =
-    useState<ConversationOverrideSettings | null>(
-      seededRuntimeSnapshot?.conversationOverrides ?? null,
-    )
-  const [chatMode, setChatMode] = useState<ChatMode>(() => {
-    if (seededRuntimeSnapshot) {
-      return seededRuntimeSnapshot.chatMode
-    }
-    const defaultMode = settings.chatOptions.chatMode ?? 'agent'
-    return defaultMode
-  })
-  const [yoloEnabled, setYoloEnabled] = useState<boolean>(() => {
-    if (seededRuntimeSnapshot) {
-      return seededRuntimeSnapshot.yoloEnabled
-    }
-    return settings.chatOptions.agentYoloEnabled ?? false
-  })
   const selectedAssistant = useMemo(() => {
     return findUnifiedAgentById(settings, conversationAssistantId) ?? null
   }, [conversationAssistantId, settings])
@@ -639,17 +847,6 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     ],
   )
 
-  // Per-conversation model id (do NOT write back to global settings)
-  const [conversationModelId, setConversationModelId] = useState<string>(() => {
-    if (seededRuntimeSnapshot) {
-      return seededRuntimeSnapshot.conversationModelId
-    }
-    const initialAssistantId =
-      settings.currentAssistantId ?? DEFAULT_ASSISTANT_ID
-    const initialAssistant = findUnifiedAgentById(settings, initialAssistantId)
-    return initialAssistant?.modelId ?? settings.chatModelId
-  })
-
   const currentConversationModel = useMemo(() => {
     return (
       settings.chatModels.find((model) => model.id === conversationModelId) ??
@@ -680,39 +877,11 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     }
   }, [chatMessages, effectiveMaxContextTokens])
 
-  const getReasoningLevelForModelId = useCallback(
-    (modelId?: string | null): ReasoningLevel => {
-      if (!modelId) return 'off'
-      const model = settings.chatModels.find((m) => m.id === modelId) ?? null
-      const rememberedLevel = normalizeReasoningLevel(
-        settings.chatOptions.reasoningLevelByModelId?.[modelId],
-      )
-      return rememberedLevel ?? getDefaultReasoningLevel(model)
-    },
-    [
-      normalizeReasoningLevel,
-      settings.chatModels,
-      settings.chatOptions.reasoningLevelByModelId,
-    ],
-  )
-
-  // Per-message model mapping for historical user messages
-  const [messageModelMap, setMessageModelMap] = useState<Map<string, string>>(
-    new Map(),
-  )
-  const [
-    assistantGroupBoundaryMessageIds,
-    setAssistantGroupBoundaryMessageIds,
-  ] = useState<string[]>([])
-  const [activeBranchByUserMessageId, setActiveBranchByUserMessageId] =
-    useState<Map<string, string>>(new Map())
-
   const chatTimelineReadModel = useChatTimelineReadModel({
     messages: chatMessages,
     assistantGroupBoundaryMessageIds,
   })
   const groupedChatMessages = chatTimelineReadModel.groupedChatMessages
-  const groupedChatMessagesRef = useLatestRef(groupedChatMessages)
 
   const displayedChatMessages = useMemo(() => {
     return groupedChatMessages.flatMap((messageOrGroup): ChatMessage[] => {
@@ -741,9 +910,8 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     setQueuedMessageEditState(null)
   }, [currentConversationId])
 
-  useEffect(() => {
-    chatMessagesStateRef.current = chatMessages
-  }, [chatMessages])
+  // `chatMessagesStateRef` is now a live facade over the controller's own
+  // snapshot (see ChatSessionController) — no forwarding effect needed.
 
   // Selection-highlight lifecycle — see useChatHighlightSession for the full
   // contract. In-input mentions reconcile immediately on delete; sent
@@ -837,21 +1005,19 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     activeViewState,
   })
 
-  // useChatRuntimePreferences 的处理器（applyAssistantDefaultModel/
-  // handleConversationAssistantSelect/handleChatModeChange/handleYoloChange/
-  // handleRuntimeChange）依赖输入控制器与 CLI 编排 hook 都已就绪之后才产生
-  // 的值,一律经 lateStateRef 注入——与 inputController.lateStateRef 完全
-  // 相同的惯例,只是本对象在两者都就绪后立即写入。
-  runtimePreferencesLateStateRef.current = {
-    setInputMessage,
-    conversationModelId,
-    setConversationModelId,
-    setReasoningLevel,
-    setChatMode,
-    setYoloEnabled,
-    conversationOverrides,
-    setConversationOverrides,
-    selectedAssistant,
+  // handleRuntimeChange（useChatRuntimePreferences）依赖 CLI 编排 hook 就绪
+  // 之后才产生的值——偏好六件套已经由 ConversationPreferencesController
+  // 直接持有,不再需要经 late ref 注入;只有 CLI 编排相关的量与 fork 的
+  // 工作目录领域（均依赖本组件稍后才产生的值）仍需要在此写入。
+  cliRuntimeSwitchLateStateRef.current = {
+    cliPreferenceSettingsRef,
+    cliModelCatalog,
+    setCliConversationController,
+    setCliConversationId,
+    setCliChatMode,
+    setCliYoloEnabled,
+    transitionCliSession,
+    activeHistoryConversationId,
     conversationWorkingDirectoryLocked:
       isLoadingConversation || isConversationFileScopeLocked(chatMessages),
     conversationWorkingDirectory: explicitConversationWorkingDirectory,
@@ -861,16 +1027,59 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
         workingDirectory: directory ?? null,
       })),
     selectedAssistantFilePolicy: selectedAssistant?.workspaceAccessPolicy,
-    getReasoningLevelForModelId,
-    cliPreferenceSettingsRef,
-    cliModelCatalog,
-    setCliConversationController,
-    setCliConversationId,
-    setCliChatMode,
-    setCliYoloEnabled,
-    transitionCliSession,
-    activeHistoryConversationId,
   }
+
+  // 当前活跃 CLI 运行时侧的一袋依赖，经 `sessionController.deps` 的
+  // `getCliSubmitContext()` 读取——CLI 编排状态在 C3 前仍归
+  // useCliRuntimeOrchestration 的 React state 所有（见计划分期 C 的边界
+  // 规则）；`null` 表示活跃运行时是 'yolo' 或该 hook 尚未产出就绪的
+  // controller/coordinator/scope，镜像迁移前 handleMainInputSubmit 里的
+  // `if (!controller || !coordinator || !scope) return` 守卫。
+  cliSubmitContextRef.current =
+    activeRuntimeId !== 'yolo' &&
+    cliConversationController &&
+    cliOperationCoordinator &&
+    cliRuntimeScope
+      ? {
+          runtimeId: activeRuntimeId,
+          controller: cliConversationController,
+          coordinator: cliOperationCoordinator,
+          scope: cliRuntimeScope,
+          settings,
+          chatMode: cliChatMode,
+          yoloEnabled: cliYoloEnabled,
+          cliConversationId,
+          getDraftRevision: () => inputDraftRevisionRef.current,
+          buildEnvironmentContext: () =>
+            buildCliEnvironmentContext({
+              app,
+              settings,
+              currentFile: activeFile,
+              currentFileViewState: activeViewState,
+            }),
+          createOrTouchCliConversation,
+          generateConversationTitle,
+          syncCliConversationTitle,
+          setCliConversationId,
+          consumeAcceptedCliDraft,
+          isMounted: () => chatMountedRef.current,
+        }
+      : null
+
+  // applyAssistantDefaultModel 触达输入层（写回草稿 reasoningLevel）的一次
+  // 性事件——由 controller 在 assistant 切换/chatMode 级联触发默认模型应用
+  // 时发出，这里连接到 setInputMessage。取代原
+  // ChatRuntimePreferencesLateState.setInputMessage 反向依赖。
+  useEffect(
+    () =>
+      onAssistantDefaultModelApplied((level: ReasoningLevel) => {
+        setInputMessage((prev) => ({
+          ...prev,
+          reasoningLevel: level,
+        }))
+      }),
+    [onAssistantDefaultModelApplied, setInputMessage],
+  )
 
   const currentConversationPersisted = useMemo(
     () =>
@@ -1015,9 +1224,6 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     submitChatMutation,
     buildContextBreakdownInputs,
   } = useChatStreamManager({
-    setChatMessages,
-    setCompactionState,
-    setPendingCompactionAnchorMessageId,
     autoScrollToBottom: triggerAutoScrollToBottom,
     requestContextBuilder,
     currentConversationId,
@@ -1032,16 +1238,22 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     compaction: effectiveCompactionState,
   })
   const isCurrentConversationRunActive = currentConversationRunSummary.isActive
+  // Hydrate the C2 run-deps late ref every render — see its declaration for
+  // why this can't be captured once at construction time.
+  sessionRunLateDepsRef.current = {
+    submitChatMutation,
+    abortConversationRun,
+    compactConversation,
+    forceScrollToBottom: triggerForceScrollToBottom,
+  }
 
   const {
     runSummariesByConversationId,
     queuedUserMessages,
     serializeMessageModelMap,
     normalizeAssistantGroupBoundaryMessageIds,
-    buildAssistantGroupBoundaryMessageIdsAfterUserRemoval,
     persistConversation,
     persistConversationImmediately,
-    isUserMessageEffectivelyEmpty,
     updateHistoricalUserMessage,
     finalizeHistoricalUserMessageEdit,
     dismissHistoricalUserMessage,
@@ -1053,13 +1265,12 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     handleHistoricalUserMessageDelete,
     handleAssistantMessageGroupBranch,
   } = useYoloChatSession({
+    sessionController,
     initialConversationId: props.initialConversationId,
     onConversationContextChange: props.onConversationContextChange,
     createOrUpdateConversation,
     createOrUpdateConversationImmediately,
-    deleteConversation,
     getConversationById,
-    updateConversationTitle,
     chatList,
     submitChatMutation,
     chatMessagesStateRef,
@@ -1075,24 +1286,20 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     effectiveCompactionState,
     messageModelMap,
     setMessageModelMap,
-    messageReasoningMap,
     setMessageReasoningMap,
     conversationOverrides,
     setConversationOverrides,
     conversationOverridesRef,
     conversationModelId,
-    setConversationModelId,
     conversationModelIdRef,
     conversationAssistantId,
-    setConversationAssistantId,
     conversationAssistantIdRef,
     reasoningLevel,
-    setReasoningLevel,
     conversationReasoningLevelRef,
-    chatMode,
     setChatMode,
+    persistedChatMode,
     yoloEnabled,
-    setYoloEnabled,
+    switchConversation,
     selectedAssistant,
     setCompactionState,
     setPendingCompactionAnchorMessageId,
@@ -1129,19 +1336,14 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
   })
 
   const {
-    handleManualContextCompaction,
     handleRecoverPendingToolCall,
-    handleRecoverAnswerUserQuestion,
     handleUserMessageSubmit,
-    handleAssistantMessageGroupRetry,
-    handleAssistantErrorContinue,
     applyMutation,
     handleApply,
     handleUndoEditSummary,
     handleOpenEditSummaryFile,
     handleToolMessageUpdate,
     handleToolCallResponseUpdate,
-    handleContinueResponse,
     handleExportChatToVault,
   } = useChatDomainActions({
     chatMessages,
@@ -1154,15 +1356,11 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     yoloEnabled,
     effectiveCompactionState,
     setCompactionState,
-    setPendingCompactionAnchorMessageId,
     assistantGroupBoundaryMessageIds,
-    setAssistantGroupBoundaryMessageIds,
     activeBranchByUserMessageIdRef,
-    setActiveBranchByUserMessageId,
     messageModelMap,
     reasoningLevel,
     conversationReasoningLevelRef,
-    groupedChatMessagesRef,
     selectedAssistant,
     setQueryProgress,
     setUndoingEditSummaryTarget,
@@ -1176,16 +1374,58 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     normalizeAssistantGroupBoundaryMessageIds,
     serializeMessageModelMap,
     createOrUpdateConversation,
-    createOrUpdateConversationImmediately,
     generateConversationTitle,
     submitChatMutation,
     abortConversationRun,
-    compactConversation,
-    currentConversationRunSummary,
     requestContextBuilder,
     chatManager,
     normalizeReasoningLevel,
   })
+
+  // retry/continue/recover 收编进 ChatSessionController（架构治理第三步
+  // 分期 C3）——这里只做 Notice 翻译的薄包装，参考 handleMainInputSubmit
+  // 在 useChatInputController.ts 里的既有模式。
+  const handleAssistantMessageGroupRetry = useCallback(
+    (messageIds: string[]) => {
+      const result = sessionController.retryAssistantMessageGroup(messageIds)
+      if (result.kind === 'failed') {
+        new Notice(
+          t('chat.regenerateFailed', 'Failed to regenerate this reply'),
+        )
+      }
+    },
+    [sessionController, t],
+  )
+
+  const handleAssistantErrorContinue = useCallback(
+    (assistantMessageId: string) => {
+      const result =
+        sessionController.continueAssistantError(assistantMessageId)
+      if (result.kind === 'failed') {
+        new Notice(
+          t('chat.regenerateFailed', 'Failed to regenerate this reply'),
+        )
+      }
+      // 'pending'（重入保护）与 'started' 均不提示,与迁移前行为一致。
+    },
+    [sessionController, t],
+  )
+
+  const handleContinueResponse = useCallback(() => {
+    sessionController.continueResponse()
+  }, [sessionController])
+
+  const handleRecoverAnswerUserQuestion = useCallback(
+    ({
+      resolvedMessages,
+    }: {
+      resolvedMessages: ChatMessage[]
+      toolCallId: string
+    }) => {
+      sessionController.recoverAnswerUserQuestion(resolvedMessages)
+    },
+    [sessionController],
+  )
 
   const { buildRuntimeSnapshot } = useChatRuntimeSnapshot({
     onRuntimeSnapshotChange: props.onRuntimeSnapshotChange,
@@ -1199,6 +1439,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     conversationModelId,
     conversationAssistantId,
     chatMode,
+    persistedChatMode,
     yoloEnabled,
     reasoningLevel,
     conversationOverrides,
@@ -1330,6 +1571,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       lastCliRuntimeIdRef={lastCliRuntimeIdRef}
       cliRuntimeAvailable={cliRuntimeAvailable}
       cliRuntimeScope={cliRuntimeScope}
+      chatMode={chatMode}
       containerRef={containerRef}
       isWorkspaceWideHeader={isWorkspaceWideHeader}
       setIsWorkspaceWideHeader={setIsWorkspaceWideHeader}
@@ -1356,65 +1598,23 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     buildContextBreakdownInputs,
   )
 
-  // 输入控制器的「延迟依赖」——CLI 编排、会话持久化、useChatStreamManager
-  // 均在 useChatInputController 调用之后才产生；本对象在每次渲染的这个
-  // 位置写入最新快照，供 handleMainInputSubmit 等已经在 hook 内部创建好
-  // 的处理器通过 lateStateRef 读取。取代原先的 mainInputSubmitStateRef /
-  // releaseHighlightIdsRef 等各个独立 useLatestRef。
+  // 输入控制器的「延迟依赖」——现只剩真正晚于 useChatInputController 产生的
+  // 值：CLI 编排（useCliRuntimeOrchestration）、选区高亮会话
+  // （useChatHighlightSession）、运行态摘要（useChatStreamManager）。提交/
+  // 中止/压缩/编辑历史消息/mentionable 持久化等已收归
+  // `sessionController`（架构治理第三步分期 C2），不再经此对象读写——见
+  // `ChatInputLateState` 的类型文档。
   inputController.lateStateRef.current = {
-    reasoningLevel,
-    updateHistoricalUserMessage,
     releaseHighlightIds,
-    isUserMessageEffectivelyEmpty,
-    buildAssistantGroupBoundaryMessageIdsAfterUserRemoval,
-    assistantGroupBoundaryMessageIds,
-    setAssistantGroupBoundaryMessageIds,
-    persistConversation,
-    deleteConversation,
-    currentConversationId,
-    setMessageModelMap,
-    setMessageReasoningMap,
-    activeBranchByUserMessageIdRef,
-    setActiveBranchByUserMessageId,
-    activeFile,
-    activeViewState,
-    agentService,
-    app,
-    chatMessages,
-    cliChatMode,
-    cliConversationId,
     commitSentSelectionHighlights,
-    conversationModelId,
-    conversationOverrides,
+    cliChatMode,
     cliConversationController,
     cliOperationCoordinator,
     cliRuntimeScope,
-    currentConversationRunSummary,
-    createOrTouchCliConversation,
-    displayedChatMessages,
-    handleUserMessageSubmit,
-    generateConversationTitle,
-    syncCliConversationTitle,
-    messageModelMap,
-    queuedMessageEditState,
-    setQueuedMessageEditState,
-    selectedAssistant,
-    settings,
-    t,
     cliYoloEnabled,
-    setCliConversationId,
-    consumeAcceptedCliDraft,
-    conversationReasoningLevelRef,
-    setReasoningLevel,
-    chatMountedRef,
-    handleManualContextCompaction,
     cliPreferenceSettingsRef,
     refreshCliSkills,
-    abortConversationRun,
-    setConversationModelId,
-    conversationModelIdRef,
-    getReasoningLevelForModelId,
-    persistReasoningLevelForModel,
+    currentConversationRunSummary,
   }
 
   const buildMainInputContextBreakdownInputs = useCallback(() => {
@@ -1453,42 +1653,32 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
         : {}),
     }
   }, [activeCliConversationSnapshot?.contextUsage, t])
-  // `/` 菜单按运行时暴露的原生动作条目：claude-code 有插件管理 + MCP 状态，
-  // codex 仅 MCP 状态（无插件机制），yolo 运行时没有对应 CLI 客户端。
+  // `/` 菜单按运行时 capability 组装原生动作条目：hasPluginManagement 贡献
+  // 插件管理入口，hasNativeMcpPanel 贡献 MCP 状态入口；yolo 两者皆无。
   const nativeSlashCommands = useMemo<SlashCommand[]>(() => {
-    if (activeRuntimeId === 'claude-code') {
-      return [
-        {
-          id: 'open-plugin-manager',
-          name: t('chat.slashCommands.openPluginManager.label', '插件管理'),
-          description: t(
-            'chat.slashCommands.openPluginManager.description',
-            '管理已安装的 Claude Code 插件，或从 Marketplace 安装新插件。',
-          ),
-        },
-        {
-          id: 'open-mcp-servers',
-          name: t('chat.slashCommands.openMcpServers.label', 'MCP 服务器'),
-          description: t(
-            'chat.slashCommands.openMcpServers.description',
-            '查看当前会话加载的 MCP 服务器状态。',
-          ),
-        },
-      ]
+    const capabilities = RUNTIME_CAPABILITIES[activeRuntimeId]
+    const commands: SlashCommand[] = []
+    if (capabilities.hasPluginManagement) {
+      commands.push({
+        id: 'open-plugin-manager',
+        name: t('chat.slashCommands.openPluginManager.label', '插件管理'),
+        description: t(
+          'chat.slashCommands.openPluginManager.description',
+          '管理已安装的 Claude Code 插件，或从 Marketplace 安装新插件。',
+        ),
+      })
     }
-    if (activeRuntimeId === 'codex') {
-      return [
-        {
-          id: 'open-mcp-servers',
-          name: t('chat.slashCommands.openMcpServers.label', 'MCP 服务器'),
-          description: t(
-            'chat.slashCommands.openMcpServers.description',
-            '查看当前会话加载的 MCP 服务器状态。',
-          ),
-        },
-      ]
+    if (capabilities.hasNativeMcpPanel) {
+      commands.push({
+        id: 'open-mcp-servers',
+        name: t('chat.slashCommands.openMcpServers.label', 'MCP 服务器'),
+        description: t(
+          'chat.slashCommands.openMcpServers.description',
+          '查看当前会话加载的 MCP 服务器状态。',
+        ),
+      })
     }
-    return []
+    return commands
   }, [activeRuntimeId, t])
   const mainInputSelectedSkills =
     inputMessage.selectedSkills ?? EMPTY_SELECTED_SKILLS
@@ -1510,7 +1700,26 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       {workspaceTitleParts.slice(1).join('{vaultName}')}
     </>
   ) : undefined
-  const isCliRuntimeActive = activeRuntimeId !== 'yolo'
+  const currentModuleModeOption = isModuleChatMode(chatMode)
+    ? moduleModeOptions.find((option) => option.value === chatMode)
+    : undefined
+  const emptyStateModuleContent = currentModuleModeOption
+    ? {
+        title: currentModuleModeOption.label,
+        description: currentModuleModeOption.description ?? '',
+        icon: (
+          <ObsidianIcon
+            name={currentModuleModeOption.icon}
+            className="yolo-chat-empty-state-module-icon"
+          />
+        ),
+      }
+    : undefined
+  const isCliRuntimeActive = isCliRuntime(activeRuntimeId)
+  // Main-input display/config differences are looked up from the static
+  // capability table (see B1/B2 in the step-2 runtime-contract plan) rather
+  // than branched inline; only "which data source" ternaries stay here.
+  const mainInputCapabilities = RUNTIME_CAPABILITIES[activeRuntimeId]
   const activeSurfaceEmpty = isCliRuntimeActive
     ? (activeCliConversationSnapshot?.messages.length ?? 0) === 0 &&
       !isCliRunActive
@@ -1640,16 +1849,18 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
         selectedSkills={mainInputSelectedSkills}
         setSelectedSkills={handleMainInputRuntimeSkillsChange}
         enableSkills
-        skipImageModelCapabilityCheck={isCliRuntimeActive}
+        skipImageModelCapabilityCheck={
+          mainInputCapabilities.skipsImageModelCapabilityCheck
+        }
         skillEntries={isCliRuntimeActive ? cliSkillEntries : undefined}
         workingDirectoryControl={workingDirectoryControl}
         modelId={conversationModelId}
         onModelChange={handleMainInputModelChange}
-        showModelControl={!isCliRuntimeActive}
-        allowModelMentions={!isCliRuntimeActive}
+        showModelControl={mainInputCapabilities.supportsModelControl}
+        allowModelMentions={mainInputCapabilities.supportsModelControl}
         reasoningLevel={reasoningLevel}
         onReasoningChange={handleMainInputReasoningChange}
-        showReasoningSelect={!isCliRuntimeActive}
+        showReasoningSelect={mainInputCapabilities.supportsReasoningSelect}
         runtimeControls={
           isCliRuntimeActive ? (
             <CliRuntimeControls
@@ -1672,10 +1883,14 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
         displayMentionables={displayMentionablesForInput}
         onDeleteFromAll={handleMainInputMentionableDelete}
         currentAssistantId={
-          isCliRuntimeActive ? undefined : conversationAssistantId
+          isCliRuntimeActive || isModuleChatMode(chatMode)
+            ? undefined
+            : conversationAssistantId
         }
         onSelectAssistantForConversation={
-          isCliRuntimeActive ? undefined : handleConversationAssistantSelect
+          isCliRuntimeActive || isModuleChatMode(chatMode)
+            ? undefined
+            : handleConversationAssistantSelect
         }
         currentChatMode={isCliRuntimeActive ? cliChatMode : chatMode}
         onSelectChatModeForConversation={
@@ -1686,12 +1901,18 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
           isCliRuntimeActive ? handleCliModeSelectChange : handleChatModeChange
         }
         chatModeOptions={
-          activeRuntimeId === 'claude-code'
-            ? CLAUDE_CODE_CHAT_MODES
-            : activeRuntimeId === 'codex'
-              ? CODEX_CHAT_MODES
+          isCliRuntimeActive
+            ? mainInputCapabilities.supportsPlanMode
+              ? CLAUDE_CODE_CHAT_MODES
+              : CODEX_CHAT_MODES
+            : moduleModeOptions.length > 0
+              ? [
+                  ...CHAT_MODES,
+                  ...moduleModeOptions.map((option) => option.value),
+                ]
               : CHAT_MODES
         }
+        moduleModeOptions={moduleModeOptions}
         yoloEnabled={isCliRuntimeActive ? cliYoloEnabled : yoloEnabled}
         onYoloChange={
           isCliRuntimeActive ? handleCliYoloChange : handleYoloChange
@@ -1707,7 +1928,9 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
             : currentConversationRunSummary.isAbortable
         }
         canQueueWhileGenerating={
-          isCliRuntimeActive ? false : currentConversationRunSummary.isQueueable
+          mainInputCapabilities.supportsQueueWhileGenerating
+            ? currentConversationRunSummary.isQueueable
+            : false
         }
         onAbort={handleMainInputAbort}
         contextUsage={
@@ -1766,6 +1989,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
           editingAssistantMessageId={editingAssistantMessageId}
           setEditingAssistantMessageId={setEditingAssistantMessageId}
           emptyStateWorkspaceTitle={workspaceEmptyStateTitle}
+          emptyStateModuleContent={emptyStateModuleContent}
           bottomSpacerHeight={inputOverlayHeight}
           footerContent={mainInputFooter}
           runtimeActions={runtimeActions}

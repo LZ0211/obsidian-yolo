@@ -1,4 +1,4 @@
-import type { AgentLoopPolicy } from './loop-policy'
+import type { ChatContextPolicy } from '../../components/chat-view/chat-runtime-profiles'
 import type {
   AssistantToolApprovalMode,
   WorkspaceAccessPolicy,
@@ -20,6 +20,7 @@ import { McpManager } from '../mcp/mcpManager'
 
 import type { CitationRegistry } from './citationRegistry'
 import type { AutoContextCompactionChatOptions } from './compaction'
+import type { AgentLoopPolicy } from './loop-policy'
 import type { ToolCapabilityMode } from './tool-capability-prompt'
 
 export type AgentRunContext = {
@@ -106,6 +107,21 @@ export type AgentRuntimeRunInput = {
   allowedSkillPaths?: string[]
   contextualInjections?: ContextualInjection[]
   toolCapabilityMode?: ToolCapabilityMode
+  /** Module chat mode persona, injected in place of assistant instructions. */
+  modePersonaPrompt?: string
+  /** The owning module id, for the persona injection's `module="..."` attribute. */
+  modePersonaModuleId?: string
+  /** Full running mode id (`module:<moduleId>:<modeId>`) — scopes skill
+   * resolution to the mode's own declared skills. See
+   * `ChatModeRuntime.moduleChatModeId`. Undefined for built-in modes. */
+  moduleChatModeId?: string
+  /**
+   * Explicit context-assembly policy from `resolveChatModeRuntime`. Absent
+   * (built-in modes) is equivalent to `{ useAssistant: true }` — every
+   * consumer defaults accordingly, so omitting it never changes existing
+   * behavior.
+   */
+  contextPolicy?: ChatContextPolicy
   geminiTools?: {
     useWebSearch?: boolean
     useUrlContext?: boolean
@@ -149,6 +165,15 @@ export type AgentRuntimeRunInput = {
    * `vault-read` module agent capability). Defaults to false.
    */
   bashReadOnly?: boolean
+  /**
+   * For module chat modes: full tool name → the mode's declared
+   * `requiresApproval` for each of the mode's own tools. See
+   * `ChatModeRuntime.moduleToolApprovalPolicies` — threaded through
+   * unchanged to `AgentToolGateway`, which uses it to fix a persisted
+   * `approvalPolicy` (and, for bash calls, `executionConstraints`) onto
+   * every `ToolCallRequest` at creation time. Undefined for built-in modes.
+   */
+  moduleToolApprovalPolicies?: ReadonlyMap<string, boolean>
   /**
    * Optional per-run memory extraction hook. Invoked after the run settles
    * (hidden LLM extraction of durable user facts/preferences). Provided by

@@ -174,6 +174,12 @@ export type YoloChatSurfaceProps = {
   editingAssistantMessageId: string | null
   setEditingAssistantMessageId: Dispatch<SetStateAction<string | null>>
   emptyStateWorkspaceTitle?: ReactNode
+  /** See `ChatConversationPaneProps['emptyStateModuleContent']`. */
+  emptyStateModuleContent?: {
+    title: ReactNode
+    description: ReactNode
+    icon?: ReactNode
+  }
   bottomSpacerHeight: number
   footerContent: ReactNode
   runtimeActions: ChatRuntimeActions
@@ -244,15 +250,21 @@ export type YoloChatSurfaceProps = {
   handleChatModeChange: ChatRuntimePreferences['handleChatModeChange']
   handleUserMessageSubmit: ChatDomainActions['handleUserMessageSubmit']
   handleRecoverPendingToolCall: ChatDomainActions['handleRecoverPendingToolCall']
-  handleRecoverAnswerUserQuestion: ChatDomainActions['handleRecoverAnswerUserQuestion']
-  handleAssistantMessageGroupRetry: ChatDomainActions['handleAssistantMessageGroupRetry']
-  handleAssistantErrorContinue: ChatDomainActions['handleAssistantErrorContinue']
+  // 架构治理第三步分期 C3：retry/continue/recover 收编进
+  // ChatSessionController——类型不再从 useChatDomainActions 派生,直接写
+  // 消费方（AssistantToolMessageGroupItem）期望的函数签名。
+  handleRecoverAnswerUserQuestion: (payload: {
+    resolvedMessages: ChatMessage[]
+    toolCallId: string
+  }) => void
+  handleAssistantMessageGroupRetry: (messageIds: string[]) => void
+  handleAssistantErrorContinue: (assistantMessageId: string) => void
   handleApply: ChatDomainActions['handleApply']
   handleUndoEditSummary: ChatDomainActions['handleUndoEditSummary']
   handleOpenEditSummaryFile: ChatDomainActions['handleOpenEditSummaryFile']
   handleToolMessageUpdate: ChatDomainActions['handleToolMessageUpdate']
   handleToolCallResponseUpdate: ChatDomainActions['handleToolCallResponseUpdate']
-  handleContinueResponse: ChatDomainActions['handleContinueResponse']
+  handleContinueResponse: () => void
 }
 
 export function YoloChatSurface({
@@ -263,6 +275,7 @@ export function YoloChatSurface({
   editingAssistantMessageId,
   setEditingAssistantMessageId,
   emptyStateWorkspaceTitle,
+  emptyStateModuleContent,
   bottomSpacerHeight,
   footerContent,
   runtimeActions,
@@ -1551,6 +1564,7 @@ export function YoloChatSurface({
         '让 AI 自主执行 · YOLO 模式',
       )}
       emptyStateWorkspaceTitle={emptyStateWorkspaceTitle}
+      emptyStateModuleContent={emptyStateModuleContent}
       emptyStateAskDescription={t(
         'chat.emptyState.askDescription',
         '适合提问、润色与改写，专注表达本身',

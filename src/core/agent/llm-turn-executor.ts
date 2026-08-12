@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid'
 
+import type { ChatContextPolicy } from '../../components/chat-view/chat-runtime-profiles'
 import type {
   AssistantToolPreference,
   AssistantToolServerPreference,
@@ -88,6 +89,10 @@ type AgentLlmTurnExecutorInput = {
   }
   contextualInjections?: ContextualInjection[]
   toolCapabilityMode?: ToolCapabilityMode
+  modePersonaPrompt?: string
+  modePersonaModuleId?: string
+  moduleChatModeId?: string
+  contextPolicy?: ChatContextPolicy
   transientRequestMessages?: RequestMessage[]
   geminiTools?: {
     useWebSearch?: boolean
@@ -264,6 +269,10 @@ export class AgentLlmTurnExecutor {
           compaction: this.input.compaction,
           contextualInjections: this.input.contextualInjections,
           runtimeModePrompt,
+          modePersonaPrompt: this.input.modePersonaPrompt,
+          modePersonaModuleId: this.input.modePersonaModuleId,
+          moduleChatModeId: this.input.moduleChatModeId,
+          contextPolicy: this.input.contextPolicy,
           systemPromptOverride: this.input.systemPromptOverride,
           systemPromptSnapshotMode: 'create',
         })

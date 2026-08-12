@@ -2395,7 +2395,7 @@ export const en: TranslationKeys = {
       clear: 'Clear working directory',
       locked: 'Working directory is locked',
     },
-    dropFilesHint: 'Drop to add files',
+    dropFilesHint: 'Drop to add to the conversation',
     imageUnsupportedByModel:
       'This model has not declared image support. Enable the "Vision" input modality in the model settings to attach images.',
     unsupportedFileType: 'Unsupported file type: {names}',

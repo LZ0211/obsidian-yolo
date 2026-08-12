@@ -7,12 +7,15 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 
-import { resolveAssistantModelId } from '../../core/agent/assistant-model'
 import { DEFAULT_ASSISTANT_ID } from '../../core/agent/default-assistant'
-import { findUnifiedAgentById, getUnifiedAgentList } from '../../core/agent/workspaceAgentResolver'
+import {
+  findUnifiedAgentById,
+  getUnifiedAgentList,
+} from '../../core/agent/workspaceAgentResolver'
 import {
   type ChatRuntimeId,
   type CliChatMode,
@@ -21,29 +24,35 @@ import {
   type CliRuntimeModel,
   type CliRuntimeScope,
 } from '../../core/cli-runtime'
-import type { YoloSettings } from '../../settings/schema/setting.types'
-import type { Assistant } from '../../types/assistant.types'
-import type { ChatUserMessage } from '../../types/chat'
-import type { ConversationOverrideSettings } from '../../types/conversation-settings.types'
-import type { ReasoningLevel } from '../../types/reasoning'
 import {
   isAgentCompatibleWithDirectory,
   normalizeConversationWorkingDirectory,
 } from '../../core/workspace/conversationFileScope'
+import type { YoloSettings } from '../../settings/schema/setting.types'
 import type { WorkspaceAccessPolicy } from '../../types/assistant.types'
+import type { ReasoningLevel } from '../../types/reasoning'
 import { AcknowledgementModal } from '../modals/AcknowledgementModal'
 import { FolderPickerModal } from '../settings/modals/FolderPickerModal'
 
-import { type ChatMode, isAgentChatMode } from './chat-input/ChatModeSelect'
+import {
+  type BuiltinChatMode,
+  type ChatMode,
+} from './chat-input/ChatModeSelect'
 import {
   beginChatRuntimeNavigation,
   resolveChatRuntimeId,
 } from './cliChatIntegration'
 import {
   type CliModePreference,
+  type PrePlanCliModeEntry,
   resolveCliModePreference,
   resolveCliRuntimePreference,
 } from './cliRuntimePreferences'
+import {
+  ConversationPreferencesController,
+  type ConversationPreferencesControllerDeps,
+  type ConversationPreferencesSnapshot,
+} from './ConversationPreferencesController'
 
 function useLatestRef<T>(value: T) {
   const ref = useRef(value)
@@ -52,24 +61,18 @@ function useLatestRef<T>(value: T) {
 }
 
 /**
- * useCliRuntimeOrchestration 与 useChatStreamManager 之后才产生的依赖——
- * handleRuntimeChange 反过来消费它们。与 useChatInputController 的
- * lateStateRef 惯例完全一致：Chat.tsx 在 CLI 编排 hook 就绪之后写入
- * 最新快照，本 hook 内的处理器一律经 getLate() 读取。
+ * `handleRuntimeChange` 的运行时切换编排与 CLI 编排 hook（在本 hook 之后
+ * 才调用）纠缠——这部分不是「偏好」的所有权问题，是 hooks 顺序本身的
+ * 依赖倒置，架构治理第三步分期 B 的范围之外（见设计文档约束 6）。继续用
+ * 与 `useChatInputController.lateStateRef` 相同的惯例经 late ref 注入，
+ * 但只承载 CLI 编排相关的量——偏好六件套已经改由
+ * `ConversationPreferencesController` 直接持有,不再需要 late 绑定。
+ *
+ * fork 扩展：工作目录领域（backup 语义）的四个量仍然晚于本 hook 产生
+ * （依赖 Chat.tsx 的 chatMessages/isLoadingConversation 与 conversationOverrides
+ * 状态），继续经同一 late ref 注入。
  */
-export type ChatRuntimePreferencesLateState = {
-  setInputMessage: Dispatch<SetStateAction<ChatUserMessage>>
-  conversationModelId: string
-  setConversationModelId: Dispatch<SetStateAction<string>>
-  setReasoningLevel: Dispatch<SetStateAction<ReasoningLevel>>
-  setChatMode: Dispatch<SetStateAction<ChatMode>>
-  setYoloEnabled: Dispatch<SetStateAction<boolean>>
-  conversationOverrides: ConversationOverrideSettings | null
-  setConversationOverrides: Dispatch<
-    SetStateAction<ConversationOverrideSettings | null>
-  >
-  selectedAssistant: Assistant | null
-  getReasoningLevelForModelId: (modelId?: string | null) => ReasoningLevel
+export type CliRuntimeSwitchLateState = {
   cliPreferenceSettingsRef: MutableRefObject<YoloSettings>
   cliModelCatalog: ReadonlyMap<CliRuntimeId, readonly CliRuntimeModel[]>
   setCliConversationController: Dispatch<
@@ -82,7 +85,7 @@ export type ChatRuntimePreferencesLateState = {
     action: (isCurrent: () => boolean) => void | Promise<void>,
   ) => Promise<boolean>
   activeHistoryConversationId: string
-  // 工作目录领域（backup 语义）
+  // 工作目录领域（fork 特有扩展——backup 语义，非上游字段）
   conversationWorkingDirectoryLocked: boolean
   conversationWorkingDirectory: string | undefined
   setConversationWorkingDirectory: (directory: string | undefined) => void
@@ -100,27 +103,78 @@ export type UseChatRuntimePreferencesParams = {
 
   // 运行时切换初始值：仅首次渲染读取
   seededActiveRuntimeId: ChatRuntimeId | undefined
-  seededConversationOverrides: ConversationOverrideSettings | null | undefined
   hasInitialConversationId: boolean
 
   // 会话身份——由 Chat.tsx 持有，本 hook 调用时已可用
   currentConversationId: string
 
-  // 每会话 assistant 偏好——raw state 仍declared 在 Chat.tsx
-  conversationAssistantId: string
-  setConversationAssistantId: Dispatch<SetStateAction<string>>
+  // pop-out 重建：偏好六件套的种子快照，只在挂载时读取一次。用
+  // `Partial<ConversationPreferencesSnapshot>` 而不是 Chat.tsx 的
+  // `ChatRuntimeSnapshot`（后者字段更多、且反向 import 会与
+  // `Chat.tsx -> useChatRuntimePreferences.ts` 的既有依赖方向成环）。
+  seededPreferences: Partial<ConversationPreferencesSnapshot> | undefined
+
+  // 偏好六件套里 reasoningLevel / conversationModelId 的默认值计算依赖
+  // settings，在 Chat.tsx 里于本 hook 调用之前算好传入,避免本 hook 又要
+  // 反过来经 lateStateRef 拿这两个值（消灭原环 1 的反向依赖之一）。
+  initialReasoningLevel: ReasoningLevel
+  getReasoningLevelForModelId: (modelId?: string | null) => ReasoningLevel
+}
+
+function computeInitialSnapshot(
+  settings: YoloSettings,
+  seeded: Partial<ConversationPreferencesSnapshot> | undefined,
+  initialReasoningLevel: ReasoningLevel,
+): ConversationPreferencesSnapshot {
+  const conversationAssistantId =
+    seeded?.conversationAssistantId ??
+    settings.currentAssistantId ??
+    DEFAULT_ASSISTANT_ID
+  const chatMode: ChatMode =
+    seeded?.chatMode ?? settings.chatOptions.chatMode ?? 'agent'
+  const persistedChatMode: ChatMode = seeded?.persistedChatMode ?? chatMode
+  const yoloEnabled =
+    seeded?.yoloEnabled ?? settings.chatOptions.agentYoloEnabled ?? false
+  const conversationModelId =
+    seeded?.conversationModelId ??
+    (() => {
+      const initialAssistantId =
+        settings.currentAssistantId ?? DEFAULT_ASSISTANT_ID
+      const initialAssistant = findUnifiedAgentById(
+        settings,
+        initialAssistantId,
+      )
+      return initialAssistant?.modelId ?? settings.chatModelId
+    })()
+  const reasoningLevel = seeded?.reasoningLevel ?? initialReasoningLevel
+  const conversationOverrides = seeded?.conversationOverrides ?? null
+
+  return {
+    conversationModelId,
+    conversationAssistantId,
+    reasoningLevel,
+    chatMode,
+    persistedChatMode,
+    yoloEnabled,
+    conversationOverrides,
+  }
 }
 
 /**
- * 运行时切换（requestedRuntimeId/handleRuntimeChange）+ 每会话偏好持久化
- * （model/reasoning/assistant/mode/yolo 的 Map 缓存与 persist* 全族）。
+ * 运行时切换（requestedRuntimeId/handleRuntimeChange）+ 会话级偏好六件套
+ * 的订阅适配与命令转发。
  *
- * 本 hook 必须在 useChatInputController 之前调用——后者的
- * UseChatInputControllerParams.activeRuntimeId 直接消费本 hook 的输出。
- * 但 handleRuntimeChange 等处理器反过来需要 useCliRuntimeOrchestration /
- * 输入控制器 / 会话状态在本 hook 调用之后才产生的值，因此这些处理器一律
- * 经 `lateStateRef` 读取——Chat.tsx 在 CLI 编排 hook 就绪之后写入最新
- * 快照，写入时机与既有 `inputController.lateStateRef` 完全一致。
+ * 偏好六件套（conversationModelId/conversationAssistantId/reasoningLevel/
+ * chatMode/yoloEnabled/conversationOverrides）及其每会话 Ref 缓存的唯一
+ * owner 是 `ConversationPreferencesController`（普通 TS class，本 hook 内经
+ * `useRef` 构造，随 Chat.tsx 组件实例创建/销毁）。本 hook 只做三件事：
+ * ① 用 `useSyncExternalStore` 订阅 controller 快照；
+ * ② 把 controller 的命令方法转发为与迁移前同名的 handler（
+ * `handleConversationAssistantSelect`/`handleChatModeChange`/
+ * `handleYoloChange`/`applyAssistantDefaultModel`）；③ 保留运行时切换
+ * （`handleRuntimeChange`）——它与 CLI 编排 hook 的产出纠缠，仍需要一个
+ * 局限于 CLI 编排量 + fork 工作目录领域的 late ref（`CliRuntimeSwitchLateState`），
+ * 但偏好读写部分已经直接调用 controller 命令，不再经 late 绑定。
  */
 export function useChatRuntimePreferences({
   app,
@@ -131,11 +185,11 @@ export function useChatRuntimePreferences({
   cliRuntimeAvailable,
   chatMountedRef,
   seededActiveRuntimeId,
-  seededConversationOverrides,
   hasInitialConversationId,
   currentConversationId,
-  conversationAssistantId,
-  setConversationAssistantId,
+  seededPreferences,
+  initialReasoningLevel,
+  getReasoningLevelForModelId,
 }: UseChatRuntimePreferencesParams) {
   const preferredCliRuntimeId =
     settings.chatOptions.lastCliRuntimeId ?? 'claude-code'
@@ -169,50 +223,13 @@ export function useChatRuntimePreferences({
     initialActiveRuntimeId === 'yolo'
       ? preferredCliRuntimeId
       : initialActiveRuntimeId,
-    seededConversationOverrides ?? null,
+    seededPreferences?.conversationOverrides ?? null,
   )
   const prePlanCliModeByConversationRef = useRef(
-    new Map<string, { mode: 'agent'; yoloEnabled: boolean }>(),
+    new Map<string, PrePlanCliModeEntry>(),
   )
   const cliModeRequestGenerationRef = useRef(0)
   const runtimeNavigationGenerationRef = useRef(0)
-
-  // 每会话偏好缓存：切换会话/运行时时用于恢复上次使用的 model/reasoning/
-  // assistant/mode+yolo。mode 与 yolo 合并存放在 conversationOverridesRef
-  // 中（与 conversationOverrides 状态的形状一致）。
-  const conversationModelIdRef = useRef<Map<string, string>>(new Map())
-  const conversationReasoningLevelRef = useRef<Map<string, ReasoningLevel>>(
-    new Map(),
-  )
-  const conversationAssistantIdRef = useRef<Map<string, string>>(new Map())
-  const conversationOverridesRef = useRef<
-    Map<string, ConversationOverrideSettings | null>
-  >(new Map())
-
-  useEffect(() => {
-    if (
-      getUnifiedAgentList(settings).some(
-        (assistant) => assistant.id === conversationAssistantId,
-      )
-    ) {
-      return
-    }
-    const fallbackAssistantId =
-      settings.currentAssistantId ??
-      getUnifiedAgentList(settings)[0]?.id ??
-      DEFAULT_ASSISTANT_ID
-    setConversationAssistantId(fallbackAssistantId)
-    conversationAssistantIdRef.current.set(
-      currentConversationId,
-      fallbackAssistantId,
-    )
-  }, [
-    conversationAssistantId,
-    currentConversationId,
-    settings.assistants,
-    settings.currentAssistantId,
-    setConversationAssistantId,
-  ])
 
   const persistReasoningLevelForModel = useCallback(
     async (modelId: string, level: ReasoningLevel) => {
@@ -238,7 +255,7 @@ export function useChatRuntimePreferences({
   )
 
   const persistPreferredChatMode = useCallback(
-    async (mode: ChatMode) => {
+    async (mode: BuiltinChatMode) => {
       if (settings.chatOptions.chatMode === mode) {
         return
       }
@@ -322,54 +339,101 @@ export function useChatRuntimePreferences({
     [setSettings, settings],
   )
 
-  // === 以下依赖 CLI 编排 / 输入控制器 / 会话状态稍后才产生的值,统一经
-  // lateStateRef 注入 ===
-  const lateStateRef = useRef<ChatRuntimePreferencesLateState | null>(null)
-  const getLate = useCallback((): ChatRuntimePreferencesLateState => {
-    const late = lateStateRef.current
+  // === 偏好六件套：唯一 owner 是 ConversationPreferencesController ===
+
+  // 长期存活对象经 getter 读取当前值，不缓存闭包——每次渲染刷新，
+  // controller 构造时注入的 deps 对象本身保持稳定引用（CLAUDE.md「Runtime
+  // Boundaries」：长期存活服务必须读取当前设置而非闭包捕获的旧值）。
+  const settingsRef = useLatestRef(settings)
+  const getReasoningLevelForModelIdRef = useLatestRef(
+    getReasoningLevelForModelId,
+  )
+  const persistPreferredAssistantIdRef = useLatestRef(
+    (assistantId: string) => void persistPreferredAssistantId(assistantId),
+  )
+  const persistPreferredChatModeRef = useLatestRef(
+    (mode: BuiltinChatMode) => void persistPreferredChatMode(mode),
+  )
+
+  const controllerDepsRef = useRef<ConversationPreferencesControllerDeps>()
+  const controllerDeps = (controllerDepsRef.current ??= {
+    getSettings: () => settingsRef.current,
+    getReasoningLevelForModelId: (modelId) =>
+      getReasoningLevelForModelIdRef.current(modelId),
+    persistPreferredAssistantId: (assistantId) =>
+      persistPreferredAssistantIdRef.current(assistantId),
+    persistPreferredChatMode: (mode) =>
+      persistPreferredChatModeRef.current(mode),
+  })
+
+  const controllerRef = useRef<ConversationPreferencesController>()
+  const preferencesController = (controllerRef.current ??=
+    new ConversationPreferencesController(
+      currentConversationId,
+      computeInitialSnapshot(
+        settings,
+        seededPreferences,
+        initialReasoningLevel,
+      ),
+      controllerDeps,
+    ))
+  preferencesController.setActiveConversationId(currentConversationId)
+
+  const preferencesSnapshot = useSyncExternalStore(
+    preferencesController.subscribe,
+    preferencesController.getSnapshot,
+  )
+
+  // 会话恢复/新建/分支时，assistant 可能来自一个已被删除的旧值——回退到
+  // 当前可用的 assistant，与迁移前 useEffect 的语义一致，只是写入目标换成
+  // 了 controller。
+  const conversationAssistantId = preferencesSnapshot.conversationAssistantId
+  useEffect(() => {
+    if (
+      getUnifiedAgentList(settings).some(
+        (assistant) => assistant.id === conversationAssistantId,
+      )
+    ) {
+      return
+    }
+    const fallbackAssistantId =
+      settings.currentAssistantId ??
+      getUnifiedAgentList(settings)[0]?.id ??
+      DEFAULT_ASSISTANT_ID
+    preferencesController.setConversationAssistantId(fallbackAssistantId)
+    preferencesController.conversationAssistantIdRef.current.set(
+      currentConversationId,
+      fallbackAssistantId,
+    )
+  }, [
+    conversationAssistantId,
+    currentConversationId,
+    preferencesController,
+    settings.assistants,
+    settings.workspaceAgents,
+    settings.currentAssistantId,
+  ])
+
+  // === handleRuntimeChange：与 CLI 编排 hook 的产出纠缠，保留局限于 CLI
+  // 编排量 + fork 工作目录领域的 late ref（不再承载偏好六件套）===
+  const cliRuntimeSwitchLateStateRef = useRef<CliRuntimeSwitchLateState | null>(
+    null,
+  )
+  const getCliLate = useCallback((): CliRuntimeSwitchLateState => {
+    const late = cliRuntimeSwitchLateStateRef.current
     if (!late) {
       throw new Error(
-        '[YOLO] useChatRuntimePreferences: accessed before Chat.tsx hydrated lateStateRef',
+        '[YOLO] useChatRuntimePreferences: accessed CLI runtime state before Chat.tsx hydrated cliRuntimeSwitchLateStateRef',
       )
     }
     return late
   }, [])
 
-  const applyAssistantDefaultModel = useCallback(
-    (assistantModelId?: string | null) => {
-      if (!assistantModelId) {
-        return
-      }
-      const matchedModel = settings.chatModels.find(
-        (model) => model.id === assistantModelId,
-      )
-      if (!matchedModel) {
-        return
-      }
-      const late = getLate()
-      late.setConversationModelId(assistantModelId)
-      conversationModelIdRef.current.set(
-        currentConversationId,
-        assistantModelId,
-      )
-      const nextReasoningLevel =
-        late.getReasoningLevelForModelId(assistantModelId)
-      late.setReasoningLevel(nextReasoningLevel)
-      conversationReasoningLevelRef.current.set(
-        currentConversationId,
-        nextReasoningLevel,
-      )
-      late.setInputMessage((prev) => ({
-        ...prev,
-        reasoningLevel: nextReasoningLevel,
-      }))
-    },
-    [currentConversationId, getLate, settings.chatModels],
-  )
-
   const handleConversationAssistantSelect = useCallback(
     (assistantId: string) => {
-      const explicitDirectory = getLate().conversationWorkingDirectory
+      // fork 特有：工作目录兼容门控——显式工作目录存在时，目标 Agent 必须
+      // 兼容该目录，否则拒绝切换（backup 语义）。
+      const explicitDirectory = getCliLate().conversationWorkingDirectory
       if (explicitDirectory) {
         const candidate = findUnifiedAgentById(settings, assistantId)
         const compatible = candidate
@@ -388,56 +452,16 @@ export function useChatRuntimePreferences({
           return
         }
       }
-      setConversationAssistantId(assistantId)
-      conversationAssistantIdRef.current.set(currentConversationId, assistantId)
-      void persistPreferredAssistantId(assistantId)
-      const assistant = findUnifiedAgentById(settings, assistantId)
-      applyAssistantDefaultModel(
-        resolveAssistantModelId(assistant?.modelId, settings.chatModelId),
-      )
+      preferencesController.selectAssistant(assistantId)
     },
-    [
-      applyAssistantDefaultModel,
-      currentConversationId,
-      getLate,
-      persistPreferredAssistantId,
-      setConversationAssistantId,
-      settings.assistants,
-      settings.chatModelId,
-      t,
-    ],
+    [getCliLate, preferencesController, settings, t],
   )
 
-  const applyChatModeChange = useCallback(
+  const handleChatModeChange = useCallback(
     (nextMode: ChatMode) => {
-      const late = getLate()
-      late.setChatMode(nextMode)
-      late.setConversationOverrides((prev) => ({
-        ...(prev ?? {}),
-        chatMode: nextMode,
-      }))
-      conversationOverridesRef.current.set(currentConversationId, {
-        ...(conversationOverridesRef.current.get(currentConversationId) ?? {}),
-        chatMode: nextMode,
-      })
+      preferencesController.changeChatMode(nextMode)
     },
-    [currentConversationId, getLate],
-  )
-
-  const applyYoloChange = useCallback(
-    (enabled: boolean) => {
-      const late = getLate()
-      late.setYoloEnabled(enabled)
-      late.setConversationOverrides((prev) => ({
-        ...(prev ?? {}),
-        agentYoloEnabled: enabled,
-      }))
-      conversationOverridesRef.current.set(currentConversationId, {
-        ...(conversationOverridesRef.current.get(currentConversationId) ?? {}),
-        agentYoloEnabled: enabled,
-      })
-    },
-    [currentConversationId, getLate],
+    [preferencesController],
   )
 
   const handleYoloChange = useCallback(
@@ -479,7 +503,7 @@ export function useChatRuntimePreferences({
           ),
           confirmTone: 'warning',
           onConfirm: () => {
-            applyYoloChange(true)
+            preferencesController.toggleYolo(true)
             void (async () => {
               try {
                 await setSettings({
@@ -502,33 +526,24 @@ export function useChatRuntimePreferences({
         return
       }
 
-      applyYoloChange(enabled)
+      preferencesController.toggleYolo(enabled)
       void persistPreferredYolo(enabled)
     },
-    [app, applyYoloChange, persistPreferredYolo, setSettings, settings, t],
+    [
+      app,
+      persistPreferredYolo,
+      preferencesController,
+      setSettings,
+      settings,
+      t,
+    ],
   )
 
-  const handleChatModeChange = useCallback(
-    (nextMode: ChatMode) => {
-      applyChatModeChange(nextMode)
-      void persistPreferredChatMode(nextMode)
-
-      const late = getLate()
-      if (
-        isAgentChatMode(nextMode) &&
-        late.selectedAssistant?.modelId &&
-        late.conversationModelId === settings.chatModelId
-      ) {
-        applyAssistantDefaultModel(late.selectedAssistant.modelId)
-      }
+  const applyAssistantDefaultModel = useCallback(
+    (assistantModelId?: string | null) => {
+      preferencesController.applyAssistantDefaultModel(assistantModelId)
     },
-    [
-      applyAssistantDefaultModel,
-      applyChatModeChange,
-      getLate,
-      persistPreferredChatMode,
-      settings,
-    ],
+    [preferencesController],
   )
 
   const handleRuntimeChange = useCallback(
@@ -537,7 +552,7 @@ export function useChatRuntimePreferences({
       if (runtimeId !== 'yolo' && (!cliRuntimeScope || !cliRuntimeAvailable)) {
         return
       }
-      const late = getLate()
+      const cliLate = getCliLate()
       cliModeRequestGenerationRef.current += 1
       const isLatestNavigation = beginChatRuntimeNavigation(
         runtimeNavigationGenerationRef,
@@ -547,8 +562,10 @@ export function useChatRuntimePreferences({
       const applyRuntimeChange = () => {
         if (!isLatestNavigation()) return
         if (runtimeId === 'yolo') {
-          late.setConversationOverrides(
-            conversationOverridesRef.current.get(currentConversationId) ?? null,
+          preferencesController.applyOverrides(
+            preferencesController.conversationOverridesRef.current.get(
+              currentConversationId,
+            ) ?? null,
           )
           activeRuntimeIdRef.current = 'yolo'
           setRequestedRuntimeId('yolo')
@@ -556,35 +573,37 @@ export function useChatRuntimePreferences({
           return
         }
         if (!cliRuntimeScope) return
-        conversationOverridesRef.current.set(
-          late.activeHistoryConversationId,
-          late.conversationOverrides,
+        preferencesController.conversationOverridesRef.current.set(
+          cliLate.activeHistoryConversationId,
+          preferencesController.getSnapshot().conversationOverrides,
         )
         const controller = cliRuntimeScope.selectConversationRuntime(runtimeId)
         if (!controller.getSnapshot().sessionRef) {
           controller.stageConfiguration(
             resolveCliRuntimePreference(
-              late.cliPreferenceSettingsRef.current,
+              cliLate.cliPreferenceSettingsRef.current,
               runtimeId,
-              late.cliModelCatalog.get(runtimeId) ?? [],
+              cliLate.cliModelCatalog.get(runtimeId) ?? [],
             ),
           )
         }
         const nextCliConversationId = uuidv4()
-        late.setCliConversationController(controller)
-        late.setCliConversationId(nextCliConversationId)
-        late.setConversationOverrides(null)
+        cliLate.setCliConversationController(controller)
+        cliLate.setCliConversationId(nextCliConversationId)
+        preferencesController.applyOverrides(null)
         lastCliRuntimeIdRef.current = runtimeId
         activeRuntimeIdRef.current = runtimeId
         setRequestedRuntimeId(runtimeId)
         persistChatRuntimePreference(runtimeId)
         const modePreference = resolveCliModePreference(
-          late.cliPreferenceSettingsRef.current,
+          cliLate.cliPreferenceSettingsRef.current,
           runtimeId,
-          conversationOverridesRef.current.get(nextCliConversationId) ?? null,
+          preferencesController.conversationOverridesRef.current.get(
+            nextCliConversationId,
+          ) ?? null,
         )
-        late.setCliChatMode(modePreference.mode)
-        late.setCliYoloEnabled(modePreference.yoloEnabled)
+        cliLate.setCliChatMode(modePreference.mode)
+        cliLate.setCliYoloEnabled(modePreference.yoloEnabled)
       }
 
       if (activeRuntimeId === 'yolo') {
@@ -604,7 +623,7 @@ export function useChatRuntimePreferences({
         return
       }
 
-      void late.transitionCliSession((isCurrent) => {
+      void cliLate.transitionCliSession((isCurrent) => {
         if (!isCurrent() || !isLatestNavigation()) return
         applyRuntimeChange()
       })
@@ -615,15 +634,16 @@ export function useChatRuntimePreferences({
       cliRuntimeAvailable,
       cliRuntimeScope,
       currentConversationId,
-      getLate,
+      getCliLate,
       persistChatRuntimePreference,
+      preferencesController,
       t,
     ],
   )
 
   // 工作目录领域（backup 语义照抄）：可选性 = 目录存在 + Agent 文件策略
   // 兼容；弹窗根 = workspace agent 的 home，普通 assistant 为 vault 根；
-  // 冻结（已开始对话/加载中）时选择与变更均被门控。状态经 lateState 读取。
+  // 冻结（已开始对话/加载中）时选择与变更均被门控。状态经 late state 读取。
   const isWorkingDirectorySelectable = useCallback(
     (folderPath: string) => {
       let directory: string
@@ -638,16 +658,16 @@ export function useChatRuntimePreferences({
         : app.vault.getRoot()
       if (!(entry instanceof TFolder)) return false
       return isAgentCompatibleWithDirectory(
-        getLate().selectedAssistantFilePolicy,
+        getCliLate().selectedAssistantFilePolicy,
         directory,
       ).ok
     },
-    [app.vault, getLate],
+    [app.vault, getCliLate],
   )
 
   const handleWorkingDirectoryChange = useCallback(
     (folderPath: string | undefined) => {
-      const late = getLate()
+      const late = getCliLate()
       if (late.conversationWorkingDirectoryLocked) return
       if (folderPath === undefined) {
         late.setConversationWorkingDirectory(undefined)
@@ -665,11 +685,11 @@ export function useChatRuntimePreferences({
       const directory = normalizeConversationWorkingDirectory(folderPath || '/')
       late.setConversationWorkingDirectory(directory)
     },
-    [getLate, isWorkingDirectorySelectable, t],
+    [getCliLate, isWorkingDirectorySelectable, t],
   )
 
   const handleOpenWorkingDirectoryPicker = useCallback(() => {
-    const late = getLate()
+    const late = getCliLate()
     if (late.conversationWorkingDirectoryLocked) return
     const policy = late.selectedAssistantFilePolicy
     const rootPath = policy?.enabled
@@ -677,12 +697,11 @@ export function useChatRuntimePreferences({
           policy.workspaceRoot.trim() || '/',
         ).replace(/^\/+/, '')
       : undefined
-    const existing =
-      late.conversationWorkingDirectory
-        ? [late.conversationWorkingDirectory.replace(/^\/+/, '')].filter(
-            (path) => path !== '',
-          )
-        : []
+    const existing = late.conversationWorkingDirectory
+      ? [late.conversationWorkingDirectory.replace(/^\/+/, '')].filter(
+          (path) => path !== '',
+        )
+      : []
     new FolderPickerModal(
       app,
       app.vault,
@@ -694,7 +713,7 @@ export function useChatRuntimePreferences({
     ).open()
   }, [
     app,
-    getLate,
+    getCliLate,
     handleWorkingDirectoryChange,
     isWorkingDirectorySelectable,
   ])
@@ -712,27 +731,61 @@ export function useChatRuntimePreferences({
     runtimeNavigationGenerationRef,
     handleRuntimeChange,
 
-    // 每会话偏好缓存
-    conversationModelIdRef,
-    conversationReasoningLevelRef,
-    conversationAssistantIdRef,
-    conversationOverridesRef,
+    // 偏好七件套快照（唯一 owner 是 preferencesController）
+    conversationModelId: preferencesSnapshot.conversationModelId,
+    conversationAssistantId: preferencesSnapshot.conversationAssistantId,
+    reasoningLevel: preferencesSnapshot.reasoningLevel,
+    chatMode: preferencesSnapshot.chatMode,
+    persistedChatMode: preferencesSnapshot.persistedChatMode,
+    yoloEnabled: preferencesSnapshot.yoloEnabled,
+    conversationOverrides: preferencesSnapshot.conversationOverrides,
+
+    // 原始字段 setter（Dispatch<SetStateAction<T>> 同构）+ 每会话 Ref 缓存：
+    // 供 useYoloChatSession / useCliRuntimeOrchestration / useChatDomainActions
+    // 等消费 hook 的会话生命周期逻辑直接替换原 useState setter。
+    setConversationModelId: preferencesController.setConversationModelId,
+    setConversationAssistantId:
+      preferencesController.setConversationAssistantId,
+    setReasoningLevel: preferencesController.setReasoningLevel,
+    setChatMode: preferencesController.setChatMode,
+    setPersistedChatMode: preferencesController.setPersistedChatMode,
+    setYoloEnabled: preferencesController.setYoloEnabled,
+    setConversationOverrides: preferencesController.applyOverrides,
+    conversationModelIdRef: preferencesController.conversationModelIdRef,
+    conversationReasoningLevelRef:
+      preferencesController.conversationReasoningLevelRef,
+    conversationAssistantIdRef:
+      preferencesController.conversationAssistantIdRef,
+    conversationOverridesRef: preferencesController.conversationOverridesRef,
+
+    // switchConversation：会话加载/新建/分支时一次性提交恢复值 + 写入 Ref
+    // 缓存，供 useYoloChatSession 替换原「setX + 手动 ref.set」散落写法。
+    switchConversation: preferencesController.switchConversation,
+
+    // controller 实例本身：供 useChatInputController 直接注入（跨渲染稳定，
+    // 不需要 late ref）——见架构治理第三步分期 C1，消灭事件处理器中的偏好
+    // 残留 late 绑定。
+    preferencesController,
 
     // persist* 全族
     persistReasoningLevelForModel,
     persistChatRuntimePreference,
 
-    // assistant / mode / yolo 处理器
+    // assistant / mode / yolo 语义命令
     applyAssistantDefaultModel,
     handleConversationAssistantSelect,
     handleChatModeChange,
     handleYoloChange,
+    onAssistantDefaultModelApplied:
+      preferencesController.onAssistantDefaultModelApplied,
 
-    // 工作目录领域
+    // 工作目录领域（fork 特有）
     isWorkingDirectorySelectable,
     handleWorkingDirectoryChange,
     handleOpenWorkingDirectoryPicker,
 
-    lateStateRef,
+    // CLI 编排相关 late ref（仅 handleRuntimeChange + 工作目录领域使用；
+    // 偏好六件套已不再经 late 绑定）
+    cliRuntimeSwitchLateStateRef,
   }
 }

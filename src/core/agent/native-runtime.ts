@@ -162,6 +162,7 @@ export class NativeAgentRuntime implements AgentRuntime {
       blockedCommandPrefixes: input.blockedCommandPrefixes,
       bypassToolApproval: input.bypassToolApproval,
       bashReadOnly: input.bashReadOnly,
+      moduleToolApprovalPolicies: input.moduleToolApprovalPolicies,
     })
     const worker = createAgentLoopWorker()
     const runId = uuidv4()
@@ -290,6 +291,10 @@ export class NativeAgentRuntime implements AgentRuntime {
                     messages: conversationMessages,
                   }),
                   toolCapabilityMode: input.toolCapabilityMode,
+                  modePersonaPrompt: input.modePersonaPrompt,
+                  modePersonaModuleId: input.modePersonaModuleId,
+                  moduleChatModeId: input.moduleChatModeId,
+                  contextPolicy: input.contextPolicy,
                   transientRequestMessages: autoContextCompactionNotice
                     ? [
                         autoContextCompactionNotice,
@@ -526,6 +531,10 @@ export class NativeAgentRuntime implements AgentRuntime {
                           messages: conversationMessages,
                         }),
                         toolCapabilityMode: input.toolCapabilityMode,
+                        modePersonaPrompt: input.modePersonaPrompt,
+                        modePersonaModuleId: input.modePersonaModuleId,
+                        moduleChatModeId: input.moduleChatModeId,
+                        contextPolicy: input.contextPolicy,
                       })
                         .then((estimatedNextContextTokens) => {
                           const saved =
@@ -737,6 +746,10 @@ export class NativeAgentRuntime implements AgentRuntime {
       requestParams: input.requestParams,
       contextualInjections: input.contextualInjections,
       toolCapabilityMode: input.toolCapabilityMode,
+      modePersonaPrompt: input.modePersonaPrompt,
+      modePersonaModuleId: input.modePersonaModuleId,
+      moduleChatModeId: input.moduleChatModeId,
+      contextPolicy: input.contextPolicy,
       geminiTools: input.geminiTools,
       systemPromptOverride: input.systemPromptOverride,
       transientRequestMessages: resumeAssistantMessage

@@ -1472,11 +1472,25 @@ export class AgentService {
     }
 
     if (allowForConversation) {
-      lastRunInput.mcpManager.allowToolForConversation(
-        toolCall.request.name,
-        conversationId,
-        getToolCallArgumentsObject(toolCall.request.arguments),
-      )
+      if (toolCall.request.metadata?.approvalPolicy === 'always-require-user') {
+        // Module chat mode tools declared `requiresApproval: true` are an
+        // unconditional per-call confirmation gate (see
+        // `tool-gateway.ts`'s `attachModuleChatModeSnapshot` /
+        // `resolveInitialResponse`). The UI hides the "allow for this
+        // conversation" option for these calls (see `ToolMessage.tsx`), but
+        // this is the enforcement point of last resort — never honor the
+        // flag even if a caller passes it.
+        console.warn(
+          '[YOLO] Ignoring allowForConversation: tool call approval policy is always-require-user',
+          { conversationId, toolCallId, toolName: toolCall.request.name },
+        )
+      } else {
+        lastRunInput.mcpManager.allowToolForConversation(
+          toolCall.request.name,
+          conversationId,
+          getToolCallArgumentsObject(toolCall.request.arguments),
+        )
+      }
     }
 
     const messagesBeforeApproval =
@@ -1528,6 +1542,12 @@ export class AgentService {
               lastRunInput,
               lastLoopConfig,
             ),
+            // This call bypasses `AgentToolGateway` (approval already
+            // happened), so it can't read the gateway's live `bashReadOnly`
+            // option — read the persisted snapshot instead. See
+            // `ToolCallRequest.metadata.executionConstraints`.
+            bashReadOnly:
+              toolCall.request.metadata?.executionConstraints?.bashReadOnly,
           }),
         getResponseBody: (response) => response,
       }),
@@ -1785,11 +1805,27 @@ export class AgentService {
       // Scope the per-conversation allow to the parent conversation so the
       // user's "allow for this chat" decision applies uniformly to both the
       // parent and any subagents it dispatches.
-      entry.mcpManager.allowToolForConversation(
-        request.name,
-        entry.parentConversationId,
-        getToolCallArgumentsObject(request.arguments),
-      )
+      if (request.metadata?.approvalPolicy === 'always-require-user') {
+        // Mirrors the parent-conversation guard in `approveToolCall`:
+        // module chat mode tools declared `requiresApproval: true` are an
+        // unconditional per-call confirmation gate and must never be added
+        // to the conversation's "always allow" list, even when the approval
+        // is routed into a subagent runtime.
+        console.warn(
+          '[YOLO] Ignoring allowForConversation: tool call approval policy is always-require-user',
+          {
+            conversationId: entry.parentConversationId,
+            toolCallId,
+            toolName: request.name,
+          },
+        )
+      } else {
+        entry.mcpManager.allowToolForConversation(
+          request.name,
+          entry.parentConversationId,
+          getToolCallArgumentsObject(request.arguments),
+        )
+      }
     }
 
     entry.runtime.setToolCallResponse(toolCallId, {
@@ -1807,6 +1843,11 @@ export class AgentService {
           conversationId: entry.parentConversationId,
           conversationMessages: entry.runtime.getMessages(),
           roundId: located.toolMessage.id,
+          // This call bypasses `AgentToolGateway` (approval already
+          // happened), so it can't read the gateway's live `bashReadOnly`
+          // option — read the persisted snapshot instead. See
+          // `ToolCallRequest.metadata.executionConstraints`.
+          bashReadOnly: request.metadata?.executionConstraints?.bashReadOnly,
         }),
       )
     } catch (error) {
