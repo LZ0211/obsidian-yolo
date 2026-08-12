@@ -201,6 +201,8 @@ export type ChatRuntimeSnapshot = {
   conversationModelId: string
   conversationAssistantId: string
   chatMode: ChatMode
+  /** Persisted (never runtime-downgraded) chat mode — see `chatModeForSave`. */
+  persistedChatMode: ChatMode
   yoloEnabled: boolean
   reasoningLevel: ReasoningLevel
   conversationOverrides: ConversationOverrideSettings | null
@@ -402,11 +404,13 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     conversationAssistantId,
     reasoningLevel,
     chatMode,
+    persistedChatMode,
     yoloEnabled,
     conversationOverrides,
     setConversationModelId,
     setConversationAssistantId,
     setReasoningLevel,
+    setChatMode,
     setConversationOverrides,
     conversationModelIdRef,
     conversationReasoningLevelRef,
@@ -442,6 +446,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
             seededRuntimeSnapshot.conversationAssistantId,
           reasoningLevel: seededRuntimeSnapshot.reasoningLevel,
           chatMode: seededRuntimeSnapshot.chatMode,
+          persistedChatMode: seededRuntimeSnapshot.persistedChatMode,
           yoloEnabled: seededRuntimeSnapshot.yoloEnabled,
           conversationOverrides: seededRuntimeSnapshot.conversationOverrides,
         }
@@ -1253,7 +1258,8 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     conversationAssistantIdRef,
     reasoningLevel,
     conversationReasoningLevelRef,
-    chatMode,
+    setChatMode,
+    persistedChatMode,
     yoloEnabled,
     switchConversation,
     selectedAssistant,
@@ -1395,6 +1401,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     conversationModelId,
     conversationAssistantId,
     chatMode,
+    persistedChatMode,
     yoloEnabled,
     reasoningLevel,
     conversationOverrides,

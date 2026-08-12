@@ -7,6 +7,7 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -50,8 +51,11 @@ import {
 
 import {
   type ChatMode,
-  normalizeChatMode,
+  chatModeForSave,
+  isModuleChatMode,
+  normalizePersistedChatMode,
   normalizeYoloEnabled,
+  resolveEffectiveChatMode,
 } from './chat-input/ChatModeSelect'
 import { editorStateToPlainText } from './chat-input/utils/editor-state-to-plain-text'
 import type { ChatSessionController } from './ChatSessionController'
@@ -156,10 +160,24 @@ export type UseYoloChatSessionParams = {
   conversationAssistantIdRef: MutableRefObject<Map<string, string>>
   reasoningLevel: ReasoningLevel
   conversationReasoningLevelRef: MutableRefObject<Map<string, ReasoningLevel>>
-  chatMode: ChatMode
+  /**
+   * Setter for the effective (runtime) chat mode — see
+   * `resolveEffectiveChatMode`. This hook only ever derives and writes this
+   * value (from `persistedChatMode` + the live module registry); it never
+   * needs to read the current effective value, so only the setter is taken.
+   */
+  setChatMode: Dispatch<SetStateAction<ChatMode>>
+  /**
+   * The chat mode as it should be written to conversation storage — never
+   * downgraded by module (un)availability. Updated only alongside the
+   * effective `chatMode` at session load, new-conversation default, branch
+   * copy, and user-driven mode switches (`useChatRuntimePreferences`). All
+   * write-back call sites must read this via `chatModeForSave`.
+   */
+  persistedChatMode: ChatMode
   yoloEnabled: boolean
   /**
-   * 会话切换（加载已有会话 / 新建会话 / 分支复制）时一次性提交偏好六件套
+   * 会话切换（加载已有会话 / 新建会话 / 分支复制）时一次性提交偏好七件套
    * 中被恢复的字段，并同步写入 ConversationPreferencesController 内部的
    * 每会话 Ref 缓存——取代逐字段调用 `setX` + 手动 `xRef.current.set` 的
    * 散落写法。见 `ConversationPreferencesController.switchConversation`。
@@ -171,6 +189,7 @@ export type UseYoloChatSessionParams = {
       conversationAssistantId: string
       reasoningLevel: ReasoningLevel
       chatMode: ChatMode
+      persistedChatMode: ChatMode
       yoloEnabled: boolean
       conversationOverrides: ConversationOverrideSettings | null
     }>,
@@ -262,7 +281,8 @@ export function useYoloChatSession({
   conversationAssistantIdRef,
   reasoningLevel,
   conversationReasoningLevelRef,
-  chatMode,
+  setChatMode,
+  persistedChatMode,
   yoloEnabled,
   switchConversation,
   selectedAssistant,
@@ -303,6 +323,26 @@ export function useYoloChatSession({
   const agentService = plugin.getAgentService()
   const { settings } = useSettings()
   const { t } = useLanguage()
+
+  const moduleChatModeRegistry = plugin.getModuleChatModeRegistry()
+  const moduleChatModeSnapshot = useSyncExternalStore(
+    moduleChatModeRegistry.subscribe,
+    moduleChatModeRegistry.getSnapshot,
+  )
+
+  // Keeps the effective (runtime) chat mode in sync with the persisted value
+  // and live module availability — e.g. a module getting disabled/enabled
+  // while its chat mode is the active one downgrades/restores `chatMode`
+  // without ever touching `persistedChatMode` or conversation storage.
+  useEffect(() => {
+    setChatMode((current) => {
+      const next = resolveEffectiveChatMode(
+        persistedChatMode,
+        moduleChatModeSnapshot,
+      )
+      return current === next ? current : next
+    })
+  }, [persistedChatMode, moduleChatModeSnapshot, setChatMode])
 
   const [runSummariesByConversationId, setRunSummariesByConversationId] =
     useState<Map<string, AgentConversationRunSummary>>(new Map())
@@ -412,7 +452,7 @@ export function useYoloChatSession({
       try {
         const effectiveOverrides = {
           ...(conversationOverrides ?? {}),
-          chatMode,
+          chatMode: chatModeForSave(persistedChatMode),
           agentYoloEnabled: yoloEnabled,
         }
         await createOrUpdateConversation(
@@ -440,7 +480,7 @@ export function useYoloChatSession({
       }
     },
     [
-      chatMode,
+      persistedChatMode,
       yoloEnabled,
       conversationModelId,
       conversationOverrides,
@@ -465,7 +505,7 @@ export function useYoloChatSession({
       try {
         const effectiveOverrides = {
           ...(conversationOverrides ?? {}),
-          chatMode,
+          chatMode: chatModeForSave(persistedChatMode),
           agentYoloEnabled: yoloEnabled,
         }
         await createOrUpdateConversationImmediately(
@@ -495,7 +535,7 @@ export function useYoloChatSession({
       }
     },
     [
-      chatMode,
+      persistedChatMode,
       yoloEnabled,
       conversationModelId,
       conversationOverrides,
@@ -651,9 +691,13 @@ export function useYoloChatSession({
           DEFAULT_ASSISTANT_ID
         const loadedAssistantModelId =
           findUnifiedAgentById(settings, loadedAssistantId)?.modelId ?? null
-        const loadedChatMode = normalizeChatMode(
+        const loadedPersistedChatMode = normalizePersistedChatMode(
           conversation.overrides?.chatMode,
           settings.chatOptions.chatMode ?? 'agent',
+        )
+        const loadedChatMode = resolveEffectiveChatMode(
+          loadedPersistedChatMode,
+          moduleChatModeSnapshot,
         )
         const loadedYoloEnabled = normalizeYoloEnabled(
           conversation.overrides?.chatMode,
@@ -671,11 +715,12 @@ export function useYoloChatSession({
         const resolvedReasoningLevel =
           storedReasoningLevel ?? getReasoningLevelForModelId(modelFromRef)
 
-        // 偏好六件套一次性提交 + 写入每会话 Ref 缓存——取代原先逐字段
+        // 偏好七件套一次性提交 + 写入每会话 Ref 缓存——取代原先逐字段
         // setX + 手动 ref.set 的散落写法。
         switchConversation(conversationId, {
           conversationOverrides: loadedOverrides,
           conversationAssistantId: loadedAssistantId,
+          persistedChatMode: loadedPersistedChatMode,
           chatMode: loadedChatMode,
           yoloEnabled: loadedYoloEnabled,
           conversationModelId: modelFromRef,
@@ -788,6 +833,7 @@ export function useYoloChatSession({
       setCompactionState,
       setPendingCompactionAnchorMessageId,
       switchConversation,
+      moduleChatModeSnapshot,
       lastCliRuntimeIdRef,
       setCliChatMode,
       setCliYoloEnabled,
@@ -982,19 +1028,25 @@ export function useYoloChatSession({
       }
       const newId = uuidv4()
       setCurrentConversationId(newId)
-      const defaultChatMode = chatMode
-      const defaultConversationModelId =
-        selectedAssistant?.modelId ?? settings.chatModelId
+      const defaultPersistedChatMode = persistedChatMode
+      const defaultChatMode = resolveEffectiveChatMode(
+        defaultPersistedChatMode,
+        moduleChatModeSnapshot,
+      )
+      const defaultConversationModelId = isModuleChatMode(defaultChatMode)
+        ? settings.chatModelId
+        : (selectedAssistant?.modelId ?? settings.chatModelId)
       const defaultReasoningLevel = getReasoningLevelForModelId(
         defaultConversationModelId,
       )
 
-      // 偏好六件套一次性提交 + 写入每会话 Ref 缓存——取代原先逐字段
+      // 偏好七件套一次性提交 + 写入每会话 Ref 缓存——取代原先逐字段
       // setX + 手动 ref.set 的散落写法。新会话延续当前会话的 assistant/
       // yolo 值,重置 overrides,mode/model/reasoningLevel 取默认值。
       switchConversation(newId, {
         conversationAssistantId,
         conversationOverrides: null,
+        persistedChatMode: defaultPersistedChatMode,
         chatMode: defaultChatMode,
         yoloEnabled,
         conversationModelId: defaultConversationModelId,
@@ -1038,7 +1090,8 @@ export function useYoloChatSession({
       setCurrentConversationId,
       conversationAssistantId,
       switchConversation,
-      chatMode,
+      persistedChatMode,
+      moduleChatModeSnapshot,
       yoloEnabled,
       selectedAssistant,
       settings,
@@ -1152,7 +1205,14 @@ export function useYoloChatSession({
         conversationOverridesRef.current.get(currentConversationId) ??
         conversationOverrides ??
         null
-      const nextChatMode = normalizeChatMode(nextOverrides?.chatMode, chatMode)
+      const nextPersistedChatMode = normalizePersistedChatMode(
+        nextOverrides?.chatMode,
+        persistedChatMode,
+      )
+      const nextChatMode = resolveEffectiveChatMode(
+        nextPersistedChatMode,
+        moduleChatModeSnapshot,
+      )
       const nextYoloEnabled = normalizeYoloEnabled(
         nextOverrides?.chatMode,
         nextOverrides?.agentYoloEnabled,
@@ -1169,6 +1229,7 @@ export function useYoloChatSession({
       const result = sessionController.branchFromAssistantGroup(messageIds, {
         nextOverrides,
         nextChatMode,
+        nextPersistedChatMode,
         nextYoloEnabled,
         conversationAssistantId,
         resolvedConversationModelId,
@@ -1204,7 +1265,8 @@ export function useYoloChatSession({
       t,
       conversationOverridesRef,
       conversationOverrides,
-      chatMode,
+      persistedChatMode,
+      moduleChatModeSnapshot,
       yoloEnabled,
       conversationModelIdRef,
       conversationModelId,

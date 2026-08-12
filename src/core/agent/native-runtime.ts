@@ -290,6 +290,9 @@ export class NativeAgentRuntime implements AgentRuntime {
                     messages: conversationMessages,
                   }),
                   toolCapabilityMode: input.toolCapabilityMode,
+                  modePersonaPrompt: input.modePersonaPrompt,
+                  modePersonaModuleId: input.modePersonaModuleId,
+                  contextPolicy: input.contextPolicy,
                   transientRequestMessages: autoContextCompactionNotice
                     ? [
                         autoContextCompactionNotice,
@@ -526,6 +529,9 @@ export class NativeAgentRuntime implements AgentRuntime {
                           messages: conversationMessages,
                         }),
                         toolCapabilityMode: input.toolCapabilityMode,
+                        modePersonaPrompt: input.modePersonaPrompt,
+                        modePersonaModuleId: input.modePersonaModuleId,
+                        contextPolicy: input.contextPolicy,
                       })
                         .then((estimatedNextContextTokens) => {
                           const saved =
@@ -737,6 +743,9 @@ export class NativeAgentRuntime implements AgentRuntime {
       requestParams: input.requestParams,
       contextualInjections: input.contextualInjections,
       toolCapabilityMode: input.toolCapabilityMode,
+      modePersonaPrompt: input.modePersonaPrompt,
+      modePersonaModuleId: input.modePersonaModuleId,
+      contextPolicy: input.contextPolicy,
       geminiTools: input.geminiTools,
       systemPromptOverride: input.systemPromptOverride,
       transientRequestMessages: resumeAssistantMessage

@@ -34,7 +34,10 @@ import type { ReasoningLevel } from '../../types/reasoning'
 import { AcknowledgementModal } from '../modals/AcknowledgementModal'
 import { FolderPickerModal } from '../settings/modals/FolderPickerModal'
 
-import { type ChatMode } from './chat-input/ChatModeSelect'
+import {
+  type BuiltinChatMode,
+  type ChatMode,
+} from './chat-input/ChatModeSelect'
 import {
   beginChatRuntimeNavigation,
   resolveChatRuntimeId,
@@ -129,6 +132,7 @@ function computeInitialSnapshot(
     DEFAULT_ASSISTANT_ID
   const chatMode: ChatMode =
     seeded?.chatMode ?? settings.chatOptions.chatMode ?? 'agent'
+  const persistedChatMode: ChatMode = seeded?.persistedChatMode ?? chatMode
   const yoloEnabled =
     seeded?.yoloEnabled ?? settings.chatOptions.agentYoloEnabled ?? false
   const conversationModelId =
@@ -150,6 +154,7 @@ function computeInitialSnapshot(
     conversationAssistantId,
     reasoningLevel,
     chatMode,
+    persistedChatMode,
     yoloEnabled,
     conversationOverrides,
   }
@@ -250,7 +255,7 @@ export function useChatRuntimePreferences({
   )
 
   const persistPreferredChatMode = useCallback(
-    async (mode: ChatMode) => {
+    async (mode: BuiltinChatMode) => {
       if (settings.chatOptions.chatMode === mode) {
         return
       }
@@ -347,7 +352,7 @@ export function useChatRuntimePreferences({
     (assistantId: string) => void persistPreferredAssistantId(assistantId),
   )
   const persistPreferredChatModeRef = useLatestRef(
-    (mode: ChatMode) => void persistPreferredChatMode(mode),
+    (mode: BuiltinChatMode) => void persistPreferredChatMode(mode),
   )
 
   const controllerDepsRef = useRef<ConversationPreferencesControllerDeps>()
@@ -726,11 +731,12 @@ export function useChatRuntimePreferences({
     runtimeNavigationGenerationRef,
     handleRuntimeChange,
 
-    // 偏好六件套快照（唯一 owner 是 preferencesController）
+    // 偏好七件套快照（唯一 owner 是 preferencesController）
     conversationModelId: preferencesSnapshot.conversationModelId,
     conversationAssistantId: preferencesSnapshot.conversationAssistantId,
     reasoningLevel: preferencesSnapshot.reasoningLevel,
     chatMode: preferencesSnapshot.chatMode,
+    persistedChatMode: preferencesSnapshot.persistedChatMode,
     yoloEnabled: preferencesSnapshot.yoloEnabled,
     conversationOverrides: preferencesSnapshot.conversationOverrides,
 
@@ -742,6 +748,7 @@ export function useChatRuntimePreferences({
       preferencesController.setConversationAssistantId,
     setReasoningLevel: preferencesController.setReasoningLevel,
     setChatMode: preferencesController.setChatMode,
+    setPersistedChatMode: preferencesController.setPersistedChatMode,
     setYoloEnabled: preferencesController.setYoloEnabled,
     setConversationOverrides: preferencesController.applyOverrides,
     conversationModelIdRef: preferencesController.conversationModelIdRef,

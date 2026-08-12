@@ -203,6 +203,7 @@ function createPreferencesController(conversationId: string) {
       conversationAssistantId: 'assistant-1',
       reasoningLevel: 'off',
       chatMode: 'agent',
+      persistedChatMode: 'agent',
       yoloEnabled: false,
       conversationOverrides: null,
     },
@@ -437,6 +438,7 @@ describe('ChatSessionController', () => {
     const result = controller.branchFromAssistantGroup(['assistant-1'], {
       nextOverrides: null,
       nextChatMode: 'agent',
+      nextPersistedChatMode: 'agent',
       nextYoloEnabled: false,
       conversationAssistantId: 'assistant-1',
       resolvedConversationModelId: 'model-1',
@@ -481,6 +483,7 @@ describe('ChatSessionController', () => {
     const result = controller.branchFromAssistantGroup(['missing'], {
       nextOverrides: null,
       nextChatMode: 'agent',
+      nextPersistedChatMode: 'agent',
       nextYoloEnabled: false,
       conversationAssistantId: 'assistant-1',
       resolvedConversationModelId: 'model-1',

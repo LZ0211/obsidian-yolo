@@ -58,6 +58,7 @@ function createController(
       conversationAssistantId: 'assistant-1',
       reasoningLevel: 'off',
       chatMode: 'agent',
+      persistedChatMode: 'agent',
       yoloEnabled: false,
       conversationOverrides: null,
     },
@@ -144,18 +145,32 @@ describe('ConversationPreferencesController', () => {
   })
 
   describe('changeChatMode', () => {
-    it('updates chatMode and merges the override, and persists the preference', () => {
+    it('updates chatMode + persistedChatMode together and merges the override', () => {
       const { controller, persistPreferredChatMode } = createController('c1')
 
       controller.changeChatMode('ask')
 
       const snapshot = controller.getSnapshot()
       expect(snapshot.chatMode).toBe('ask')
+      expect(snapshot.persistedChatMode).toBe('ask')
       expect(snapshot.conversationOverrides).toEqual({ chatMode: 'ask' })
       expect(controller.conversationOverridesRef.current.get('c1')).toEqual({
         chatMode: 'ask',
       })
       expect(persistPreferredChatMode).toHaveBeenCalledWith('ask')
+    })
+
+    it('never learns a module chat mode into global settings', () => {
+      const { controller, persistPreferredChatMode } = createController('c1')
+
+      controller.changeChatMode('module:demo:writer')
+
+      expect(controller.getSnapshot().chatMode).toBe('module:demo:writer')
+      expect(persistPreferredChatMode).not.toHaveBeenCalled()
+      // The conversation-scoped override still records it.
+      expect(controller.getSnapshot().conversationOverrides).toEqual({
+        chatMode: 'module:demo:writer',
+      })
     })
 
     it('re-applies the assistant default model when switching back into agent mode at the global default', () => {

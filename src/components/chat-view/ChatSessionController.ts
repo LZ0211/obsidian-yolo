@@ -312,11 +312,12 @@ type Listener = () => void
 
 /** Policy inputs the caller (hook layer) resolves before branching — settings,
  * module-chat-mode registry availability, and i18n all stay out of the
- * controller (see class doc). fork 适配：无 persistedChatMode（模块聊天模式
- * 属 U4 范围），nextChatMode 即持久化值。 */
+ * controller (see class doc). */
 export type BranchFromAssistantGroupPolicy = {
   nextOverrides: ConversationOverrideSettings | null
   nextChatMode: ChatMode
+  /** Persisted (never runtime-downgraded) chat mode for the branch copy. */
+  nextPersistedChatMode: ChatMode
   nextYoloEnabled: boolean
   conversationAssistantId: string
   resolvedConversationModelId: string
@@ -608,7 +609,7 @@ export class ChatSessionController {
     const prefs = this.preferencesController.getSnapshot()
     const effectiveOverrides = {
       ...(prefs.conversationOverrides ?? {}),
-      chatMode: this.deps.chatModeForSave(prefs.chatMode),
+      chatMode: this.deps.chatModeForSave(prefs.persistedChatMode),
       agentYoloEnabled: prefs.yoloEnabled,
     }
     const reasoningLevel =
@@ -659,7 +660,7 @@ export class ChatSessionController {
     const prefs = this.preferencesController.getSnapshot()
     const effectiveOverrides = {
       ...(prefs.conversationOverrides ?? {}),
-      chatMode: this.deps.chatModeForSave(prefs.chatMode),
+      chatMode: this.deps.chatModeForSave(prefs.persistedChatMode),
       agentYoloEnabled: prefs.yoloEnabled,
     }
     const reasoningLevel =
@@ -1354,6 +1355,7 @@ export class ChatSessionController {
     this.preferencesController.switchConversation(newConversationId, {
       conversationOverrides: policy.nextOverrides,
       chatMode: policy.nextChatMode,
+      persistedChatMode: policy.nextPersistedChatMode,
       yoloEnabled: policy.nextYoloEnabled,
       conversationAssistantId: policy.conversationAssistantId,
       conversationModelId: policy.resolvedConversationModelId,
@@ -1393,7 +1395,7 @@ export class ChatSessionController {
           nextMessages,
           {
             ...(policy.nextOverrides ?? {}),
-            chatMode: this.deps.chatModeForSave(policy.nextChatMode),
+            chatMode: this.deps.chatModeForSave(policy.nextPersistedChatMode),
             agentYoloEnabled: policy.nextYoloEnabled,
           },
           policy.resolvedConversationModelId,
@@ -1603,8 +1605,10 @@ export class ChatSessionController {
           nextCompactionHistory,
         )
 
-      // 与迁移前行为完全一致（fork 无 persistedChatMode，chatMode 即持久化
-      // 值，persist() 与这里的写法本就相同）。
+      // 与迁移前行为完全一致——这里的写入目标是「persist() 用的持久化值」，
+      // 但本路径（自动压缩隐式同步）写入的就是用户当前所选的值本身，不存在
+      // 降级，故直接写 prefs.chatMode 而不用 chatModeForSave(persistedChatMode)
+      // （上游同样如此——见该文件 upstream 对应注释）。
       const effectiveOverrides = {
         ...(prefs.conversationOverrides ?? {}),
         chatMode: prefs.chatMode,

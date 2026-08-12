@@ -4,7 +4,13 @@ import type { YoloSettings } from '../../settings/schema/setting.types'
 import type { ConversationOverrideSettings } from '../../types/conversation-settings.types'
 import type { ReasoningLevel } from '../../types/reasoning'
 
-import { type ChatMode, isAgentChatMode } from './chat-input/ChatModeSelect'
+import {
+  type BuiltinChatMode,
+  type ChatMode,
+  chatModeForSave,
+  isAgentChatMode,
+  isModuleChatMode,
+} from './chat-input/ChatModeSelect'
 
 /**
  * 与 React `Dispatch<SetStateAction<T>>` 同构——命令方法既能替换原
@@ -18,6 +24,8 @@ export type ConversationPreferencesSnapshot = {
   conversationAssistantId: string
   reasoningLevel: ReasoningLevel
   chatMode: ChatMode
+  /** Persisted (never runtime-downgraded) chat mode — see `chatModeForSave`. */
+  persistedChatMode: ChatMode
   yoloEnabled: boolean
   conversationOverrides: ConversationOverrideSettings | null
 }
@@ -30,7 +38,7 @@ export type ConversationPreferencesControllerDeps = {
   getSettings: () => YoloSettings
   getReasoningLevelForModelId: (modelId?: string | null) => ReasoningLevel
   persistPreferredAssistantId: (assistantId: string) => void
-  persistPreferredChatMode: (mode: ChatMode) => void
+  persistPreferredChatMode: (mode: BuiltinChatMode) => void
 }
 
 type Listener = () => void
@@ -43,9 +51,9 @@ function resolveNext<T>(action: SetStateActionLike<T>, prev: T): T {
 }
 
 /**
- * 会话级偏好六件套（conversationModelId / conversationAssistantId /
- * reasoningLevel / chatMode / yoloEnabled / conversationOverrides）及各自的
- * 每会话 Ref 缓存的唯一 owner。
+ * 会话级偏好七件套（conversationModelId / conversationAssistantId /
+ * reasoningLevel / chatMode / persistedChatMode / yoloEnabled /
+ * conversationOverrides）及各自的每会话 Ref 缓存的唯一 owner。
  *
  * 见 docs/plans/2026-08-11-arch-governance-step3-chat-state-ownership.md
  * 「分期 B」。普通 TS class，零 React 依赖——由
@@ -63,9 +71,6 @@ function resolveNext<T>(action: SetStateActionLike<T>, prev: T): T {
  *   `applyAssistantDefaultModel` / `switchConversation`）：对应今天
  *   `useChatRuntimePreferences` 里同名 handler 的完整语义（字段变更 + Ref
  *   缓存写入 + 覆盖项合并 + 持久化回调 + 级联），供真正的用户操作入口使用。
- *
- * fork 适配：上游对应快照含 persistedChatMode（模块聊天模式持久化），fork
- * 无模块聊天模式（U4 范围），chatMode 即持久化值，故只持有六件套。
  */
 export class ConversationPreferencesController {
   private snapshot: ConversationPreferencesSnapshot
@@ -171,6 +176,15 @@ export class ConversationPreferencesController {
     this.commit({ chatMode: resolveNext(action, this.snapshot.chatMode) })
   }
 
+  setPersistedChatMode = (action: SetStateActionLike<ChatMode>): void => {
+    this.commit({
+      persistedChatMode: resolveNext(
+        action,
+        this.snapshot.persistedChatMode,
+      ),
+    })
+  }
+
   setYoloEnabled = (action: SetStateActionLike<boolean>): void => {
     this.commit({
       yoloEnabled: resolveNext(action, this.snapshot.yoloEnabled),
@@ -234,14 +248,16 @@ export class ConversationPreferencesController {
   }
 
   /**
-   * 等价于原 `handleChatModeChange`（含 `applyChatModeChange`）：fork 无模块
-   * 聊天模式（U4 范围），chatMode 即应持久化的值，不需要持久化/生效双轨。
+   * 等价于原 `handleChatModeChange`（含 `applyChatModeChange`）：这是唯一
+   * 会更新 `persistedChatMode` 的入口——用户驱动的选择按构造既是当前生效值
+   * 也是应持久化的值。
    */
   changeChatMode = (nextMode: ChatMode): void => {
     this.setChatMode(nextMode)
+    this.setPersistedChatMode(nextMode)
     const nextOverrides = {
       ...(this.snapshot.conversationOverrides ?? {}),
-      chatMode: nextMode,
+      chatMode: chatModeForSave(nextMode),
     }
     this.applyOverrides(nextOverrides)
     this.conversationOverridesRef.current.set(
@@ -249,7 +265,11 @@ export class ConversationPreferencesController {
       nextOverrides,
     )
 
-    this.deps.persistPreferredChatMode(nextMode)
+    // 全局 settings 永不学习 module chat mode——只有会话覆盖（上面已写入）
+    // 会。module 可能被卸载，全局默认值不能指向它。
+    if (!isModuleChatMode(nextMode)) {
+      this.deps.persistPreferredChatMode(nextMode as BuiltinChatMode)
+    }
 
     const settings = this.deps.getSettings()
     const assistant =
@@ -282,10 +302,10 @@ export class ConversationPreferencesController {
   }
 
   /**
-   * 会话切换（加载已有会话 / 新建会话 / 分支复制）时一次性提交六件套中被
+   * 会话切换（加载已有会话 / 新建会话 / 分支复制）时一次性提交七件套中被
    * 恢复的字段，并同步写入对应 Ref 缓存——取代调用方原先「setX + 手动
    * ref.set」的逐字段散落写法。只提交调用方实际给出的字段；未给出的字段
-   * 保持不变（调用方通常一次性给出全部六个字段，但不强制）。
+   * 保持不变（调用方通常一次性给出全部七个字段，但不强制）。
    */
   switchConversation = (
     conversationId: string,

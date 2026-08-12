@@ -1,6 +1,12 @@
 import { UseMutationResult, useMutation } from '@tanstack/react-query'
 import { Platform, TFile } from 'obsidian'
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from 'react'
 
 import { useApp } from '../../contexts/app-context'
 import { useMcp } from '../../contexts/mcp-context'
@@ -60,7 +66,7 @@ import { RequestContextBuilder } from '../../utils/chat/requestContextBuilder'
 import { resolveEffectiveMaxContextTokens } from '../../utils/llm/model-capability-registry'
 import { ErrorModal } from '../modals/ErrorModal'
 
-import { ChatMode } from './chat-input/ChatModeSelect'
+import { ChatMode, isModuleChatMode } from './chat-input/ChatModeSelect'
 import {
   resolveWorkspaceAccessPolicyForRuntimeInput,
   resolveWorkspaceScopeForRuntimeInput,
@@ -232,6 +238,26 @@ export function useChatStreamManager({
   const { settings, setSettings } = useSettings()
   const { getMcpManager } = useMcp()
 
+  const moduleChatModeRegistry = plugin.getModuleChatModeRegistry()
+  const moduleChatModeSnapshot = useSyncExternalStore(
+    moduleChatModeRegistry.subscribe,
+    moduleChatModeRegistry.getSnapshot,
+  )
+  // `chatMode` here is always an *effective* value (see
+  // `resolveEffectiveChatMode` in `useYoloChatSession`) — an unavailable
+  // module id never reaches this hook as `'agent'` is substituted upstream.
+  // Still guard on a registered+available match so a stale mode id (e.g. a
+  // module disabled between render and this lookup) degrades to the
+  // built-in branch of `resolveChatModeRuntime` instead of throwing.
+  const resolveModuleChatMode = useCallback(() => {
+    if (!isModuleChatMode(chatMode)) return undefined
+    return moduleChatModeSnapshot.find(
+      (entry) =>
+        entry.fullModeId === chatMode &&
+        entry.availability.status === 'available',
+    )
+  }, [chatMode, moduleChatModeSnapshot])
+
   const activeStreamAbortControllersRef = useRef<Map<string, AbortController>>(
     new Map(),
   )
@@ -341,8 +367,14 @@ export function useChatStreamManager({
       const selectedAssistant = effectiveAssistantId
         ? findUnifiedAgentById(settings, effectiveAssistantId) || null
         : null
+      // Module chat modes never inherit an assistant's default model —
+      // ChatContextPolicy.useAssistant === false cuts the assistant out of
+      // model resolution entirely. A user's own in-session model pick
+      // (`modelId`) still always wins.
       const requestedModelId =
-        modelId || selectedAssistant?.modelId || settings.chatModelId
+        modelId ||
+        (isModuleChatMode(chatMode) ? undefined : selectedAssistant?.modelId) ||
+        settings.chatModelId
 
       let resolvedClient: ReturnType<typeof getChatModelClient>
       try {
@@ -376,6 +408,7 @@ export function useChatStreamManager({
           assistant: selectedAssistant,
           assistantEnabledToolNames:
             getEnabledAssistantToolNames(selectedAssistant),
+          moduleChatMode: resolveModuleChatMode(),
         }),
         autoContextCompactionOptions.autoContextCompactionEnabled,
       )
@@ -452,6 +485,9 @@ export function useChatStreamManager({
           compaction: manualCompaction,
           contextualInjections: manualContextualInjections,
           runtimeModePrompt,
+          modePersonaPrompt: chatModeRuntime.modePersonaPrompt,
+          modePersonaModuleId: chatModeRuntime.modePersonaModuleId,
+          contextPolicy: chatModeRuntime.contextPolicy,
           // Reuse the frozen snapshot; never create one outside the real request.
           systemPromptSnapshotMode: 'reuse',
         })
@@ -492,6 +528,9 @@ export function useChatStreamManager({
             toolServerPreferences: chatModeRuntime.toolServerPreferences,
             toolCapabilityMode: chatModeRuntime.toolCapabilityMode,
             contextualInjections: manualContextualInjections,
+            modePersonaPrompt: chatModeRuntime.modePersonaPrompt,
+            modePersonaModuleId: chatModeRuntime.modePersonaModuleId,
+            contextPolicy: chatModeRuntime.contextPolicy,
           })
       } catch (error) {
         console.warn(
@@ -518,6 +557,7 @@ export function useChatStreamManager({
       app,
       assistantIdOverride,
       chatMode,
+      resolveModuleChatMode,
       yoloEnabled,
       currentConversationId,
       currentFileOverride,
@@ -574,7 +614,11 @@ export function useChatStreamManager({
           : null
 
         const requestedModelId =
-          modelId || selectedAssistant?.modelId || settings.chatModelId
+          modelId ||
+          (isModuleChatMode(chatMode)
+            ? undefined
+            : selectedAssistant?.modelId) ||
+          settings.chatModelId
         const targetModelIds = assistantContinuation?.modelId
           ? [assistantContinuation.modelId]
           : branchTarget?.branchModelId?.trim()
@@ -626,15 +670,22 @@ export function useChatStreamManager({
         const modelMaxTokens = resolvedClient.model.maxOutputTokens
         const effectiveModel = resolvedClient.model
         const disabledSkillNames = settings.skills?.disabledSkillIds ?? []
-        const enabledSkillEntries = selectedAssistant
-          ? (await listLiteSkillEntries(app, { settings })).filter((skill) =>
-              isSkillEnabledForAssistant({
-                assistant: selectedAssistant,
-                skillName: skill.name,
-                disabledSkillNames,
-              }),
-            )
-          : []
+        // Module chat modes have no per-mode skills yet (D6) — the allowed
+        // set is every enabled vault skill, bypassing assistant preferences
+        // entirely (ChatContextPolicy.useAssistant === false). Built-in
+        // modes keep the exact prior behavior: no assistant selected means
+        // no skills.
+        const isModuleMode = isModuleChatMode(chatMode)
+        const enabledSkillEntries =
+          isModuleMode || selectedAssistant
+            ? (await listLiteSkillEntries(app, { settings })).filter((skill) =>
+                isSkillEnabledForAssistant({
+                  assistant: isModuleMode ? null : selectedAssistant,
+                  skillName: skill.name,
+                  disabledSkillNames,
+                }),
+              )
+            : []
         const allowedSkillPaths = enabledSkillEntries.map((skill) => skill.path)
 
         const autoContextCompactionOptions =
@@ -646,6 +697,7 @@ export function useChatStreamManager({
             assistant: selectedAssistant,
             assistantEnabledToolNames:
               getEnabledAssistantToolNames(selectedAssistant),
+            moduleChatMode: resolveModuleChatMode(),
           }),
           autoContextCompactionOptions.autoContextCompactionEnabled,
         )
@@ -690,13 +742,26 @@ export function useChatStreamManager({
           blockedCommandPrefixes: settings.mcp.builtinToolOptions[
             TERMINAL_COMMAND_TOOL_NAME
           ]?.blockedPrefixes ?? [...DEFAULT_BLOCKED_PREFIXES],
-          workspaceScope:
-            resolveWorkspaceScopeForRuntimeInput(selectedAssistant),
-          workspaceAccessPolicy: resolveWorkspaceAccessPolicyForRuntimeInput(
-            selectedAssistant,
-            conversationOverrides?.workingDirectory ?? undefined,
-          ),
+          // The assistant selector stays populated in settings even while a
+          // module chat mode is active (D4 hides it in the UI); its
+          // workspace scope must not leak into a run where the assistant
+          // otherwise takes no part at all.
+          workspaceScope: isModuleMode
+            ? undefined
+            : resolveWorkspaceScopeForRuntimeInput(selectedAssistant),
+          // fork 特有：工作目录领域（backup 语义）同样受模块模式隔离——
+          // assistant 不参与时，其 workspace access policy 不得泄入运行。
+          workspaceAccessPolicy: isModuleMode
+            ? undefined
+            : resolveWorkspaceAccessPolicyForRuntimeInput(
+                selectedAssistant,
+                conversationOverrides?.workingDirectory ?? undefined,
+              ),
           allowedSkillPaths,
+          bashReadOnly: chatModeRuntime.bashReadOnly,
+          modePersonaPrompt: chatModeRuntime.modePersonaPrompt,
+          modePersonaModuleId: chatModeRuntime.modePersonaModuleId,
+          contextPolicy: chatModeRuntime.contextPolicy,
           requestParams,
           contextualInjections: buildChatContextualInjections({
             app,
@@ -905,8 +970,14 @@ export function useChatStreamManager({
       const selectedAssistant = effectiveAssistantId
         ? findUnifiedAgentById(settings, effectiveAssistantId) || null
         : null
+      // Module chat modes never inherit an assistant's default model —
+      // ChatContextPolicy.useAssistant === false cuts the assistant out of
+      // model resolution entirely. A user's own in-session model pick
+      // (`modelId`) still always wins.
       const requestedModelId =
-        modelId || selectedAssistant?.modelId || settings.chatModelId
+        modelId ||
+        (isModuleChatMode(chatMode) ? undefined : selectedAssistant?.modelId) ||
+        settings.chatModelId
 
       let resolvedClient: ReturnType<typeof getChatModelClient>
       try {
@@ -937,6 +1008,7 @@ export function useChatStreamManager({
         assistant: selectedAssistant,
         assistantEnabledToolNames:
           getEnabledAssistantToolNames(selectedAssistant),
+        moduleChatMode: resolveModuleChatMode(),
       })
       const provider = settings.providers.find(
         (p) => p.id === effectiveModel.providerId,
@@ -958,6 +1030,9 @@ export function useChatStreamManager({
         toolPreferences: chatModeRuntime.toolPreferences,
         toolServerPreferences: chatModeRuntime.toolServerPreferences,
         toolCapabilityMode: chatModeRuntime.toolCapabilityMode,
+        modePersonaPrompt: chatModeRuntime.modePersonaPrompt,
+        modePersonaModuleId: chatModeRuntime.modePersonaModuleId,
+        contextPolicy: chatModeRuntime.contextPolicy,
         contextualInjections: buildChatContextualInjections({
           app,
           includeFocusSync: resolveAssistantIncludeCurrentFileContent(
@@ -973,6 +1048,7 @@ export function useChatStreamManager({
       app,
       assistantIdOverride,
       chatMode,
+      resolveModuleChatMode,
       yoloEnabled,
       compaction,
       currentConversationId,
