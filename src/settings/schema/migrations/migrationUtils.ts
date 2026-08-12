@@ -1,3 +1,5 @@
+import { deepMerge } from '../../../features/config-transfer/merge-utils'
+
 import { SettingMigration } from '../setting.types'
 
 export type ExistingSettingsData = Parameters<SettingMigration['migrate']>[0]
@@ -20,12 +22,13 @@ export const getMigratedProviders = (
         (p as { type: string }).type === provider.type &&
         (p as { id: string }).id === provider.id,
     )
+    // Deep merge: 用户已有子字段（如 thinking/web_search_options 内的自定义项）
+    // 逐字段保留，默认值只填补用户未设置的字段，冲突标量以默认值为准。
     return existingProvider
-      ? // FIXME: Replace Object.assign with deep merge to properly handle nested objects
-        // like reasoning, thinking, web_search_options. Object.assign only does shallow
-        // merging, which overwrites entire nested objects instead of merging their properties.
-        // This causes user settings to be overwritten by default settings.
-        Object.assign(existingProvider, provider)
+      ? (deepMerge(
+          existingProvider as Record<string, unknown>,
+          provider as unknown as Record<string, unknown>,
+        ) as DefaultProviders[number])
       : provider
   })
   const customProviders = (existingData.providers as unknown[]).filter(
@@ -70,11 +73,12 @@ export const getMigratedChatModels = (
       },
     )
     if (existingModel) {
-      // FIXME: Replace Object.assign with deep merge to properly handle nested objects
-      // like reasoning, thinking, web_search_options. Object.assign only does shallow
-      // merging, which overwrites entire nested objects instead of merging their properties.
-      // This causes user settings to be overwritten by default settings.
-      return Object.assign(existingModel, model)
+      // Deep merge：用户已有的 thinking/web_search_options 子字段不被默认值
+      // 整块覆盖，冲突标量以默认值为准，用户独有子字段保留。
+      return deepMerge(
+        existingModel as Record<string, unknown>,
+        model as unknown as Record<string, unknown>,
+      ) as DefaultChatModels[number]
     }
     return model
   })
@@ -118,7 +122,12 @@ export const getMigratedEmbeddingModels = (
         },
       )
       if (existingModel) {
-        return Object.assign(existingModel, model)
+        // 与 providers/chatModels 同规则深合并（当前 embedding 无嵌套字段，
+        // 行为与浅合并一致，但防止未来引入嵌套字段时重蹈覆盖 bug）。
+        return deepMerge(
+          existingModel as Record<string, unknown>,
+          model as unknown as Record<string, unknown>,
+        ) as DefaultEmbeddingModels[number]
       }
       return model
     },
