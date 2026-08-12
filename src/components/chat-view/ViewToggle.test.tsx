@@ -1,5 +1,14 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 
+jest.mock('../../assets/provider-icons/anthropic.svg', () => ({
+  __esModule: true,
+  default: 'anthropic-logo',
+}))
+jest.mock('../../assets/provider-icons/openai.svg', () => ({
+  __esModule: true,
+  default: 'openai-logo',
+}))
+
 type CapturedRollerProps = {
   value: string
   options: Array<{ value: string; label: string }>
@@ -26,130 +35,156 @@ jest.mock('../common/RollerSelect', () => ({
 
 import ViewToggle from './ViewToggle'
 
-describe('ViewToggle chat surface hierarchy', () => {
+const BASE_PROPS = {
+  activeView: 'chat' as const,
+  onChangeView: () => {},
+  activeRuntimeId: 'yolo' as const,
+  onChangeRuntime: () => {},
+  runtimeOptions: ['yolo', 'claude-code', 'codex'] as const,
+}
+
+describe('ViewToggle single runtime picker', () => {
   beforeEach(() => {
     mockRollerProps = null
   })
 
-  it('uses the original header roller for the Chat and CLI top-level modes', () => {
-    const onChangeChatSurface = jest.fn()
+  it('lists YOLO plus the available CLI runtimes in picker order', () => {
     const onChangeView = jest.fn()
 
     renderToStaticMarkup(
-      <ViewToggle
-        activeView="chat"
-        onChangeView={onChangeView}
-        activeChatSurface="chat"
-        onChangeChatSurface={onChangeChatSurface}
-        showCliMode
-      />,
+      <ViewToggle {...BASE_PROPS} onChangeView={onChangeView} />,
     )
 
-    expect(mockRollerProps?.value).toBe('chat')
+    expect(mockRollerProps?.value).toBe('yolo')
     expect(mockRollerProps?.options.map((option) => option.value)).toEqual([
-      'chat',
-      'cli',
+      'yolo',
+      'claude-code',
+      'codex',
     ])
-
-    mockRollerProps?.onChange('cli')
-    expect(onChangeChatSurface).toHaveBeenCalledWith('cli')
-    expect(onChangeView).toHaveBeenCalledWith('chat')
   })
 
-  it('switches from Agent to CLI when the visible mode is clicked', () => {
-    const onChangeChatSurface = jest.fn()
+  it('switches runtime directly from the picker menu', () => {
+    const onChangeRuntime = jest.fn()
     const onChangeView = jest.fn()
 
     renderToStaticMarkup(
       <ViewToggle
-        activeView="chat"
+        {...BASE_PROPS}
+        onChangeRuntime={onChangeRuntime}
         onChangeView={onChangeView}
-        activeChatSurface="chat"
-        onChangeChatSurface={onChangeChatSurface}
-        showCliMode
+      />,
+    )
+
+    mockRollerProps?.onChange('claude-code')
+
+    expect(onChangeRuntime).toHaveBeenCalledWith('claude-code')
+    expect(onChangeView).toHaveBeenCalledWith('chat')
+  })
+
+  it('ignores unknown picker values', () => {
+    const onChangeRuntime = jest.fn()
+    const onChangeView = jest.fn()
+
+    renderToStaticMarkup(
+      <ViewToggle
+        {...BASE_PROPS}
+        onChangeRuntime={onChangeRuntime}
+        onChangeView={onChangeView}
+      />,
+    )
+
+    mockRollerProps?.onChange('unknown-runtime')
+
+    expect(onChangeRuntime).not.toHaveBeenCalled()
+    expect(onChangeView).not.toHaveBeenCalled()
+  })
+
+  it('does not re-commit the already active runtime', () => {
+    const onChangeRuntime = jest.fn()
+    const onChangeView = jest.fn()
+
+    renderToStaticMarkup(
+      <ViewToggle
+        {...BASE_PROPS}
+        onChangeRuntime={onChangeRuntime}
+        onChangeView={onChangeView}
+      />,
+    )
+
+    mockRollerProps?.onChange('yolo')
+
+    expect(onChangeRuntime).not.toHaveBeenCalled()
+    expect(onChangeView).not.toHaveBeenCalled()
+  })
+
+  it('quick-toggles between exactly two choices on trigger click', () => {
+    const onChangeRuntime = jest.fn()
+    const onChangeView = jest.fn()
+
+    renderToStaticMarkup(
+      <ViewToggle
+        {...BASE_PROPS}
+        activeRuntimeId="yolo"
+        runtimeOptions={['yolo', 'codex']}
+        onChangeRuntime={onChangeRuntime}
+        onChangeView={onChangeView}
       />,
     )
 
     mockRollerProps?.onValueClick()
 
-    expect(onChangeChatSurface).toHaveBeenCalledWith('cli')
+    expect(onChangeRuntime).toHaveBeenCalledWith('codex')
     expect(onChangeView).toHaveBeenCalledWith('chat')
   })
 
-  it('switches from CLI to Agent when the visible mode is clicked', () => {
-    const onChangeChatSurface = jest.fn()
+  it('opens the menu instead of toggling when more than two choices exist', () => {
+    const onChangeRuntime = jest.fn()
     const onChangeView = jest.fn()
 
     renderToStaticMarkup(
       <ViewToggle
-        activeView="chat"
+        {...BASE_PROPS}
+        onChangeRuntime={onChangeRuntime}
         onChangeView={onChangeView}
-        activeChatSurface="cli"
-        onChangeChatSurface={onChangeChatSurface}
-        showCliMode
       />,
     )
 
     mockRollerProps?.onValueClick()
 
-    expect(onChangeChatSurface).toHaveBeenCalledWith('chat')
-    expect(onChangeView).toHaveBeenCalledWith('chat')
+    expect(onChangeRuntime).not.toHaveBeenCalled()
+    expect(onChangeView).not.toHaveBeenCalled()
   })
 
-  it('only enters Agent without changing runtime when clicked from composer', () => {
-    const onChangeChatSurface = jest.fn()
+  it('only enters Agent without changing runtime when activated from composer', () => {
+    const onChangeRuntime = jest.fn()
     const onChangeView = jest.fn()
 
     renderToStaticMarkup(
       <ViewToggle
+        {...BASE_PROPS}
         activeView="composer"
+        onChangeRuntime={onChangeRuntime}
         onChangeView={onChangeView}
-        activeChatSurface="chat"
-        onChangeChatSurface={onChangeChatSurface}
-        showCliMode
-      />,
-    )
-
-    mockRollerProps?.onValueClick()
-
-    expect(onChangeChatSurface).not.toHaveBeenCalled()
-    expect(onChangeView).toHaveBeenCalledWith('chat')
-  })
-
-  it('keeps the caret activation separate from the shortcut switch', () => {
-    const onChangeChatSurface = jest.fn()
-    const onChangeView = jest.fn()
-
-    renderToStaticMarkup(
-      <ViewToggle
-        activeView="chat"
-        onChangeView={onChangeView}
-        activeChatSurface="chat"
-        onChangeChatSurface={onChangeChatSurface}
-        showCliMode
       />,
     )
 
     mockRollerProps?.onActivate()
 
-    expect(onChangeChatSurface).not.toHaveBeenCalled()
+    expect(onChangeRuntime).not.toHaveBeenCalled()
     expect(onChangeView).toHaveBeenCalledWith('chat')
   })
 
-  it('renders a fixed Chat entry when CLI is unavailable', () => {
+  it('renders a fixed YOLO entry when no CLI runtime is available', () => {
     const html = renderToStaticMarkup(
       <ViewToggle
-        activeView="chat"
-        onChangeView={() => {}}
-        activeChatSurface="chat"
-        onChangeChatSurface={() => {}}
-        showCliMode={false}
+        {...BASE_PROPS}
+        runtimeOptions={['yolo']}
         showComposer={false}
       />,
     )
 
     expect(mockRollerProps).toBeNull()
-    expect(html).toContain('>Agent<')
+    expect(html).toContain('>YOLO<')
     expect(html).not.toContain('data-roller-value')
   })
 })

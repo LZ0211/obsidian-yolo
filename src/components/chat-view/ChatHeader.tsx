@@ -1,20 +1,13 @@
 import { Download, History, Plus } from 'lucide-react'
-import type {
-  Dispatch,
-  MutableRefObject,
-  RefObject,
-  SetStateAction,
-} from 'react'
-import { useEffect, useRef } from 'react'
+import type { Dispatch, RefObject, SetStateAction } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 
 import { useLanguage } from '../../contexts/language-context'
 import type { AgentConversationRunSummary } from '../../core/agent/service'
 import {
   type ChatRuntimeId,
-  type CliRuntimeId,
   type CliRuntimeScope,
   RUNTIME_CAPABILITIES,
-  isCliRuntime,
 } from '../../core/cli-runtime'
 import type {
   ChatConversationCliSession,
@@ -30,7 +23,6 @@ import type { MentionableBlockData } from '../../types/mentionable'
 import { AssistantSelector } from './AssistantSelector'
 import { type ChatMode, isModuleChatMode } from './chat-input/ChatModeSelect'
 import { ChatListDropdown } from './ChatListDropdown'
-import { RuntimeSelector } from './RuntimeSelector'
 import ViewToggle from './ViewToggle'
 
 const WORKSPACE_WIDE_HEADER_MIN_WIDTH = 1200
@@ -41,7 +33,6 @@ export type ChatHeaderProps = {
   onChangeView?: (view: 'chat' | 'composer') => void
   activeRuntimeId: ChatRuntimeId
   handleRuntimeChange: (runtimeId: ChatRuntimeId) => void
-  lastCliRuntimeIdRef: MutableRefObject<CliRuntimeId>
   cliRuntimeAvailable: boolean
   cliRuntimeScope: CliRuntimeScope | undefined
   /** Gates the assistant selector — hidden while a module chat mode is active. */
@@ -96,7 +87,6 @@ export function ChatHeader({
   onChangeView,
   activeRuntimeId,
   handleRuntimeChange,
-  lastCliRuntimeIdRef,
   cliRuntimeAvailable,
   cliRuntimeScope,
   chatMode,
@@ -122,6 +112,18 @@ export function ChatHeader({
 }: ChatHeaderProps) {
   const { t } = useLanguage()
   const headerRef = useRef<HTMLDivElement | null>(null)
+
+  // Single-dropdown runtime picker options: native YOLO plus the locally
+  // detected CLI runtimes. Unavailable CLI runtimes simply aren't listed
+  // (aligned with backup's ViewToggle interaction); the scope gate keeps the
+  // web lazy-resolve window equivalent to the old showCliMode behavior.
+  const runtimeOptions = useMemo<readonly ChatRuntimeId[]>(
+    () =>
+      cliRuntimeAvailable && cliRuntimeScope !== undefined
+        ? (['yolo', 'claude-code', 'codex'] as ChatRuntimeId[])
+        : (['yolo'] as ChatRuntimeId[]),
+    [cliRuntimeAvailable, cliRuntimeScope],
+  )
 
   useEffect(() => {
     if (isSidebarPlacement) {
@@ -191,13 +193,9 @@ export function ChatHeader({
           <ViewToggle
             activeView={activeView}
             onChangeView={onChangeView}
-            activeChatSurface={activeRuntimeId === 'yolo' ? 'chat' : 'cli'}
-            onChangeChatSurface={(surface) => {
-              handleRuntimeChange(
-                surface === 'chat' ? 'yolo' : lastCliRuntimeIdRef.current,
-              )
-            }}
-            showCliMode={cliRuntimeAvailable && cliRuntimeScope !== undefined}
+            activeRuntimeId={activeRuntimeId}
+            onChangeRuntime={handleRuntimeChange}
+            runtimeOptions={runtimeOptions}
             showComposer={isSidebarPlacement}
           />
         ) : (
@@ -205,12 +203,6 @@ export function ChatHeader({
             {t('sidebar.tabs.chat', 'Chat')}
           </h1>
         )}
-        {activeView === 'chat' && isCliRuntime(activeRuntimeId) ? (
-          <RuntimeSelector
-            currentRuntimeId={activeRuntimeId}
-            onRuntimeChange={handleRuntimeChange}
-          />
-        ) : null}
       </div>
       {activeView === 'chat' && (
         <div className="yolo-chat-header-right">

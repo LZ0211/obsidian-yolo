@@ -1565,7 +1565,6 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       onChangeView={onChangeView}
       activeRuntimeId={activeRuntimeId}
       handleRuntimeChange={handleRuntimeChange}
-      lastCliRuntimeIdRef={lastCliRuntimeIdRef}
       cliRuntimeAvailable={cliRuntimeAvailable}
       cliRuntimeScope={cliRuntimeScope}
       chatMode={chatMode}

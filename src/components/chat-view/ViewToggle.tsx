@@ -1,28 +1,53 @@
-import { Sparkles, SquareTerminal } from 'lucide-react'
-import React, { useEffect, useRef, useState } from 'react'
+import { Sparkles } from 'lucide-react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 
+import anthropicLogo from '../../assets/provider-icons/anthropic.svg'
+import openaiLogo from '../../assets/provider-icons/openai.svg'
 import { useLanguage } from '../../contexts/language-context'
-import RollerSelect from '../common/RollerSelect'
+import type { ChatRuntimeId, CliRuntimeId } from '../../core/cli-runtime'
+import RollerSelect, { type RollerOption } from '../common/RollerSelect'
 import { YoloOrbitIcon } from '../common/YoloOrbitIcon'
-
-export type ChatSurfaceKind = 'chat' | 'cli'
 
 type ViewToggleProps = {
   activeView: 'chat' | 'composer'
   onChangeView: (view: 'chat' | 'composer') => void
-  activeChatSurface: ChatSurfaceKind
-  onChangeChatSurface: (surface: ChatSurfaceKind) => void
-  showCliMode: boolean
+  activeRuntimeId: ChatRuntimeId
+  onChangeRuntime: (runtimeId: ChatRuntimeId) => void
+  /** Native YOLO plus the locally detected CLI runtimes (in picker order). */
+  runtimeOptions: readonly ChatRuntimeId[]
   showComposer?: boolean
   disabled?: boolean
+}
+
+const CLI_RUNTIME_META: Record<
+  CliRuntimeId,
+  {
+    labelKey: string
+    descriptionKey: string
+    src: string
+    provider: 'anthropic' | 'openai'
+  }
+> = {
+  'claude-code': {
+    labelKey: 'sidebar.runtimeSelector.claudeCodeLabel',
+    descriptionKey: 'sidebar.runtimeSelector.claudeCodeDescription',
+    src: anthropicLogo,
+    provider: 'anthropic',
+  },
+  codex: {
+    labelKey: 'sidebar.runtimeSelector.codexLabel',
+    descriptionKey: 'sidebar.runtimeSelector.codexDescription',
+    src: openaiLogo,
+    provider: 'openai',
+  },
 }
 
 const ViewToggle: React.FC<ViewToggleProps> = ({
   activeView,
   onChangeView,
-  activeChatSurface,
-  onChangeChatSurface,
-  showCliMode,
+  activeRuntimeId,
+  onChangeRuntime,
+  runtimeOptions,
   showComposer = true,
   disabled = false,
 }) => {
@@ -38,32 +63,48 @@ const ViewToggle: React.FC<ViewToggleProps> = ({
   const clickOpenBlockTimeoutRef = useRef<number | null>(null)
   const hoverCloseTimeoutRef = useRef<number | null>(null)
 
-  const chatLabel = t('sidebar.runtimeSelector.chatLabel', 'Agent')
-  const cliLabel = t('sidebar.runtimeSelector.cliLabel', 'CLI')
+  const yoloLabel = t('sidebar.runtimeSelector.yoloLabel', 'YOLO')
   const composerLabel = t('sidebar.tabs.composer', 'Sparkle')
-  const modeOptions = [
-    {
-      value: 'chat',
-      label: chatLabel,
-      description: t(
-        'sidebar.runtimeSelector.chatDescription',
-        'Built-in YOLO chat',
-      ),
-      icon: <YoloOrbitIcon size={14} />,
-    },
-    {
-      value: 'cli',
-      label: cliLabel,
-      description: t(
-        'sidebar.runtimeSelector.cliDescription',
-        'Claude Code or Codex on this device',
-      ),
-      icon: <SquareTerminal size={14} strokeWidth={2} />,
-    },
-  ]
+
+  const pickerOptions = useMemo<RollerOption[]>(() => {
+    const cliOptions = runtimeOptions
+      .filter(
+        (runtimeId): runtimeId is CliRuntimeId => runtimeId !== 'yolo',
+      )
+      .map((runtimeId) => {
+        const meta = CLI_RUNTIME_META[runtimeId]
+        return {
+          value: runtimeId,
+          label: t(meta.labelKey),
+          description: t(meta.descriptionKey),
+          icon: (
+            <img
+              className="yolo-runtime-selector__provider-logo"
+              src={meta.src}
+              alt=""
+              draggable={false}
+              data-provider={meta.provider}
+            />
+          ),
+        }
+      })
+    return [
+      {
+        value: 'yolo',
+        label: yoloLabel,
+        description: t(
+          'sidebar.runtimeSelector.chatDescription',
+          'Built-in YOLO chat',
+        ),
+        icon: <YoloOrbitIcon size={14} />,
+      },
+      ...cliOptions,
+    ]
+  }, [runtimeOptions, t, yoloLabel])
 
   const expandedView = showComposer ? hoveredView || activeView : 'chat'
   const isActiveExpanded = expandedView === activeView
+  const hasRuntimeChoices = pickerOptions.length > 1
 
   useEffect(() => {
     if (activeView !== 'chat') {
@@ -106,7 +147,7 @@ const ViewToggle: React.FC<ViewToggleProps> = ({
 
   useEffect(() => {
     const element = toggleRef.current
-    if (!element || !showCliMode) return
+    if (!element || !hasRuntimeChoices) return
 
     const updateWidth = () => {
       const nextToggleWidth = Math.round(element.getBoundingClientRect().width)
@@ -130,7 +171,7 @@ const ViewToggle: React.FC<ViewToggleProps> = ({
     const resizeObserver = new ResizeObserver(updateWidth)
     resizeObserver.observe(element)
     return () => resizeObserver.disconnect()
-  }, [showCliMode])
+  }, [hasRuntimeChoices])
 
   const clearHoverCloseTimeout = () => {
     if (hoverCloseTimeoutRef.current !== null) {
@@ -147,11 +188,19 @@ const ViewToggle: React.FC<ViewToggleProps> = ({
     }, 150)
   }
 
+  const commitRuntimeChange = (runtimeId: ChatRuntimeId) => {
+    onChangeRuntime(runtimeId)
+    onChangeView('chat')
+    clearHoverCloseTimeout()
+    setIsModeMenuOpen(false)
+  }
+
   const chatTriggerClassName = `yolo-view-toggle-button ${
-    showCliMode ? 'yolo-view-toggle-button--roller ' : ''
+    hasRuntimeChoices ? 'yolo-view-toggle-button--roller ' : ''
   }${activeView === 'chat' ? 'yolo-view-toggle-button--active' : ''} ${
     expandedView === 'chat' ? 'yolo-view-toggle-button--expanded' : ''
   }`
+
   return (
     <div
       ref={toggleRef}
@@ -159,10 +208,10 @@ const ViewToggle: React.FC<ViewToggleProps> = ({
       data-expanded-view={expandedView}
       data-active-expanded={isActiveExpanded ? 'true' : 'false'}
     >
-      {showCliMode ? (
+      {hasRuntimeChoices ? (
         <RollerSelect
-          value={activeChatSurface}
-          options={modeOptions}
+          value={activeRuntimeId}
+          options={pickerOptions}
           onActivate={() => {
             if (activeView !== 'chat') setIsModeClickOpenBlocked(true)
             onChangeView('chat')
@@ -182,24 +231,18 @@ const ViewToggle: React.FC<ViewToggleProps> = ({
             if (open) setHoveredView('chat')
           }}
           onChange={(value) => {
-            if (value !== 'chat' && value !== 'cli') return
-            onChangeChatSurface(value)
-            onChangeView('chat')
-            clearHoverCloseTimeout()
-            setIsModeMenuOpen(false)
+            if (value !== 'yolo' && !(value in CLI_RUNTIME_META)) return
+            if (value === activeRuntimeId) return
+            commitRuntimeChange(value as ChatRuntimeId)
           }}
           onValueClick={() => {
-            if (activeView !== 'chat') {
-              onChangeView('chat')
-              clearHoverCloseTimeout()
-              setIsModeMenuOpen(false)
-              return
-            }
-            const nextSurface = activeChatSurface === 'chat' ? 'cli' : 'chat'
-            onChangeChatSurface(nextSurface)
-            onChangeView('chat')
-            clearHoverCloseTimeout()
-            setIsModeMenuOpen(false)
+            // Quick toggle between exactly two choices; with more options the
+            // click opens the menu instead.
+            if (pickerOptions.length !== 2) return
+            const other = pickerOptions.find(
+              (option) => option.value !== activeRuntimeId,
+            )
+            if (other) commitRuntimeChange(other.value as ChatRuntimeId)
           }}
           disabled={disabled}
           ariaLabel={t(
@@ -256,7 +299,7 @@ const ViewToggle: React.FC<ViewToggleProps> = ({
           <span className="yolo-view-toggle-button-icon" aria-hidden="true">
             <YoloOrbitIcon size={16} />
           </span>
-          <span className="yolo-view-toggle-button-label">{chatLabel}</span>
+          <span className="yolo-view-toggle-button-label">{yoloLabel}</span>
         </button>
       )}
       {showComposer ? (
