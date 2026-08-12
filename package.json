@@ -37,7 +37,9 @@
     "test": "jest --maxWorkers=50%",
     "test:watch": "jest --watch",
     "test:changed": "jest -o",
-    "models:update:openrouter": "node scripts/update-openrouter-model-capabilities.mjs"
+    "models:update:openrouter": "node scripts/update-openrouter-model-capabilities.mjs",
+    "deps:check": "node scripts/check-circular.mjs",
+    "deps:baseline": "node scripts/check-circular.mjs --update"
   },
   "keywords": [],
   "author": "",
@@ -89,7 +91,8 @@
     "tslib": "2.4.0",
     "typescript": "^5.6.2",
     "typescript-eslint": "^8.50.1",
-    "wrangler": "4.26.1"
+    "wrangler": "4.26.1",
+    "madge": "^8.0.0"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

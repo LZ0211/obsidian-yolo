@@ -12,6 +12,7 @@ YOLO is an Obsidian plugin for AI chat, agent workflows, RAG, writing assistance
 - `npm test` - Run the full Jest suite; use `npx jest <test-file> --runInBand` for serial debugging
 - `npm run styles:build` - Regenerate the host `styles.css` from `src/styles/**`
 - `npx drizzle-kit generate --name <name>` then `npm run migrate:compile` - Generate and compile database migrations
+- `npm run deps:check` / `npm run deps:baseline` - Circular-dependency ratchet (madge): fail on new cycles; run `deps:baseline` after removing cycles to tighten the baseline
 
 ## Architecture
 
