@@ -471,75 +471,102 @@ export class ScheduledTaskScheduler {
     this.isChecking = true
     try {
       const now = Date.now()
-      // Catch-up first: a missed trigger that the pass enqueues gets its
-      // nextRunTime recomputed from now, so the due-check below naturally
-      // skips it (single enqueue, never a double fire in the same tick).
-      this.catchUpMissedTasks(now)
-      // The regular due-check defers missed triggers to the catch-up pass
-      // (which the quiet window holds back at startup). Everything else —
-      // due within the polling granularity — runs exactly as before.
-      let dueTasks = this.deps.store
+      // The round = catch-up (quiet-window gated, missed triggers) + regular
+      // due-check (due within the polling granularity). The regular due-check
+      // defers missed triggers to the catch-up pass — everything else runs
+      // exactly as before.
+      const missedTasks = this.listMissedTasks(now)
+      const dueTasks = this.deps.store
         .listDueTasks(now)
         .filter((task) => !isMissedTrigger(task, now))
-      if (dueTasks.length === 0) return
 
+      // Cross-batch dependency deferral: a task whose dependency is a live
+      // recurring task OUTSIDE this round's batch would be fast-failed by the
+      // queue's batch-scoped judgment ("not in this batch") even though the
+      // dependency WILL run — it just lands in a later tick (the catch-up pass
+      // is held back by the quiet window, or the dependency fires on a slower
+      // cadence, or it already ran this startup and its next fire is later).
+      // Deferring keeps nextRunTime due and re-evaluates next tick, so the
+      // chain enqueues together in one batch once the dependency joins a round
+      // (e.g. a missed task depending on a task due at restart, or a due task
+      // depending on a missed one). A queued/executing dependency is treated
+      // the same way: its in-flight completion lands in an OLDER batch, and
+      // this round's batch would only hold a phantom member the dependent
+      // could wait on forever — defer to the dependency's next fire instead.
+      // Deleted/disabled/once dependencies are NOT deferred — they can never
+      // run, and the queue's fast-fail surfaces them as config errors, exactly
+      // as before. The fixpoint also defers dependents of deferred tasks (a
+      // task whose dependency is itself being deferred this tick can't resolve
+      // either).
+      const roundIds = new Set([...missedTasks, ...dueTasks].map((t) => t.id))
+      const deferredIds = new Set<string>()
+      let deferralGrew: boolean
+      do {
+        deferralGrew = false
+        for (const task of [...missedTasks, ...dueTasks]) {
+          if (deferredIds.has(task.id)) continue
+          const defer = (task.dependsOn ?? []).some((depId) => {
+            if (deferredIds.has(depId)) return true // dependent of a deferred task
+            if (this.queue.isTaskQueued(depId)) return true // in-flight from an older batch
+            if (roundIds.has(depId)) return false // will run in this round's batch
+            const dep = this.deps.store.getTask(depId)
+            return (
+              dep != null &&
+              dep.enabled &&
+              dep.scheduleType !== 'once' &&
+              dep.nextRunTime != null
+            )
+          })
+          if (defer) {
+            deferredIds.add(task.id)
+            deferralGrew = true
+          }
+        }
+      } while (deferralGrew)
+
+      // C8: the per-tick agent budget spans the WHOLE round (catch-up + due),
+      // exactly like the pre-catch-up semantics — at most maxAgentRunsPerTick
+      // agent tasks may start per schedule tick, so the catch-up pass can't
+      // blow the budget on top of the due-check's allowance. Deferred tasks
+      // keep their due nextRunTime and are picked up by the next tick.
       const maxAgentRunsPerTick = this.deps.getMaxAgentRunsPerTick?.() ?? null
-      if (maxAgentRunsPerTick != null) {
-        dueTasks = this.limitAgentRunsForTick(dueTasks, maxAgentRunsPerTick)
-        if (dueTasks.length === 0) return
-      }
+      const roundTasks = [...missedTasks, ...dueTasks].filter(
+        (task) => !deferredIds.has(task.id),
+      )
+      const toEnqueue =
+        maxAgentRunsPerTick != null
+          ? this.limitAgentRunsForTick(roundTasks, maxAgentRunsPerTick)
+          : roundTasks
+      if (toEnqueue.length === 0) return
 
-      const batchId = crypto.randomUUID() // tasks discovered due in the same tick share one batch for dependency resolution
+      // ONE batch per tick, shared by the catch-up and due passes: dependency
+      // resolution is scoped to the batch (see task-queue.ts), so a missed
+      // task whose dependency is due in the same tick — or a due task
+      // depending on a missed one — must live in the same batch or it gets
+      // fast-failed as "not in this batch". This preserves the same-batch
+      // guarantee the due-check alone provided before catch-up existed.
+      const batchId = crypto.randomUUID()
 
       // Batch membership must be registered before the first enqueue(): enqueue() synchronously
-      // triggers tryProcessNext() -> dequeue(), so if a task depends on another due task that
-      // happens to sort later in this loop, batchMembers must already reflect the full round's
+      // triggers tryProcessNext() -> dequeue(), so if a task depends on another task that
+      // happens to sort later in this round, batchMembers must already reflect the full round's
       // membership — otherwise "not processed yet" gets misjudged as "doesn't exist in this
       // batch" and fails fast unnecessarily (see task-queue.ts findUnresolvableDependency).
       this.queue.registerBatchMembers(
         batchId,
-        dueTasks.map((task) => task.id),
+        toEnqueue.map((task) => task.id),
       )
       const expectedCompletionTime =
-        now + Math.max(...dueTasks.map((task) => task.timeoutSeconds * 1000))
+        now + Math.max(...toEnqueue.map((task) => task.timeoutSeconds * 1000))
       this.queue.markBatchExpectedCompletion(batchId, expectedCompletionTime)
 
-      for (const task of dueTasks) {
-        // Dedup: the previous trigger's run hasn't finished yet (e.g. it ran longer than the
-        // 30s check interval) — skip without recomputing nextRunTime or enqueueing again; once
-        // it actually finishes and is cleared from executing via markCompleted/markFailed, the
-        // next tick will naturally pick it up again since nextRunTime is still "due".
-        if (this.queue.isTaskQueued(task.id)) continue
-
-        // Compute the next time / whether to disable before enqueueing: even if the follow-up
-        // updateTask fails, the enqueue has already happened, so a "recompute failure" won't
-        // cause this run to be silently repeated next tick.
-        const isOneTime = task.scheduleType === 'once'
-        this.queue.enqueue({
-          taskId: task.id,
-          batchId,
-          queueGroup: task.queueGroup ?? undefined,
-          scheduleTime: now,
-          enqueuedAt: now,
-          priority: task.priority,
-          dependency: task.dependsOn?.length
-            ? {
-                dependsOn: task.dependsOn,
-                continueOnDependencyFailure: task.continueOnDependencyFailure,
-              }
-            : undefined,
-          attempt: 1,
-          maxRetries: task.maxRetries,
-          source: 'schedule',
-        })
-
-        this.deps.store.updateTask(
-          task.id,
-          isOneTime
-            ? { enabled: false, nextRunTime: null } // one-time tasks are disabled permanently after running once, so they can't "revive"
-            : { nextRunTime: calculateNextRunTime(task, now) },
-          now,
-        )
+      const catchUpIds = new Set(missedTasks.map((task) => task.id))
+      for (const task of toEnqueue) {
+        if (catchUpIds.has(task.id)) {
+          this.enqueueCatchUpRun(task, batchId, now)
+        } else {
+          this.enqueueScheduledRun(task, batchId, now)
+        }
       }
     } finally {
       this.isChecking = false
@@ -547,77 +574,104 @@ export class ScheduledTaskScheduler {
   }
 
   /**
-   * Catch-up pass, run at the top of every tick but held back by the startup
-   * quiet window. For each cron/interval task with a genuinely missed trigger
-   * (see isMissedTrigger) it enqueues ONE make-up run — skip-missed semantics:
+   * Catch-up scan, held back by the startup quiet window: during the first
+   * 30s after start() only onLeaderAcquired (recoverOrphanedRuns) touches
+   * startup state — overdue triggers wait, so an Obsidian startup with many
+   * missed recurring tasks doesn't storm the queue (cherry's 60s
+   * startup-recovery delay, halved). Returns the cron/interval tasks with a
+   * genuinely missed trigger (see isMissedTrigger); the actual enqueue
+   * happens in enqueueCatchUpRun, sharing the tick's batch.
+   */
+  private listMissedTasks(now: number): ScheduledTask[] {
+    if (now - this.startedAt < CATCH_UP_QUIET_WINDOW_MS) return []
+    return this.deps.store
+      .listTasks({ enabledOnly: true })
+      .filter((task) => isMissedTrigger(task, now))
+  }
+
+  /**
+   * Enqueues ONE make-up run for a missed trigger — skip-missed semantics:
    * the single most recent missed fire, then nextRunTime resumes from now, so
    * the two triggers missed during a shutdown are not replayed one by one.
    * Runs are auditable: `scheduledFor` carries the missed trigger point and
    * `catchUpRunAt` the moment the make-up run was enqueued. Mirrors
    * cherry-studio's catchUp.ts after-startup policy for our poll-loop model.
    */
-  private catchUpMissedTasks(now: number): void {
-    // Quiet window: during the first 30s after start() only onLeaderAcquired
-    // (recoverOrphanedRuns) touches startup state — overdue triggers wait, so
-    // an Obsidian startup with many missed recurring tasks doesn't storm the
-    // queue (cherry's 60s startup-recovery delay, halved).
-    if (now - this.startedAt < CATCH_UP_QUIET_WINDOW_MS) return
-
-    const missedTasks = this.deps.store
-      .listTasks({ enabledOnly: true })
-      .filter((task) => isMissedTrigger(task, now))
-    if (missedTasks.length === 0) return
-
-    // The per-tick agent budget applies to catch-up too — otherwise this pass
-    // would start every overdue agent task at once, the exact startup storm
-    // the quiet window exists to prevent. Deferred tasks stay overdue and are
-    // picked up by the next tick's catch-up pass, one budget's worth at a time.
-    const maxAgentRunsPerTick = this.deps.getMaxAgentRunsPerTick?.() ?? null
-    const toEnqueue =
-      maxAgentRunsPerTick != null
-        ? this.limitAgentRunsForTick(missedTasks, maxAgentRunsPerTick)
-        : missedTasks
-    if (toEnqueue.length === 0) return
-
-    const batchId = crypto.randomUUID() // all make-up runs of this round share one batch for dependency resolution
-    this.queue.registerBatchMembers(
+  private enqueueCatchUpRun(
+    task: ScheduledTask,
+    batchId: string,
+    now: number,
+  ): void {
+    const missedTrigger = task.nextRunTime
+    if (missedTrigger == null) return // listMissedTasks guarantees non-null; re-check for TS narrowing
+    if (this.queue.isTaskQueued(task.id)) return // dedup: already enqueued (e.g. by a manual run)
+    const catchUpAt = Date.now()
+    this.queue.enqueue({
+      taskId: task.id,
       batchId,
-      toEnqueue.map((task) => task.id),
+      queueGroup: task.queueGroup ?? undefined,
+      scheduleTime: missedTrigger, // the missed trigger point, not "now" — run history shows which fire is being made up
+      enqueuedAt: catchUpAt,
+      priority: task.priority,
+      dependency: task.dependsOn?.length
+        ? {
+            dependsOn: task.dependsOn,
+            continueOnDependencyFailure: task.continueOnDependencyFailure,
+          }
+        : undefined,
+      attempt: 1,
+      maxRetries: task.maxRetries,
+      source: 'schedule',
+      catchUpRunAt: catchUpAt, // audit marker on the run record
+    })
+    // Single catch-up, then the schedule resumes from now (skip-missed).
+    this.deps.store.updateTask(
+      task.id,
+      { nextRunTime: calculateNextRunTime(task, now) },
+      now,
     )
-    const expectedCompletionTime =
-      now + Math.max(...toEnqueue.map((task) => task.timeoutSeconds * 1000))
-    this.queue.markBatchExpectedCompletion(batchId, expectedCompletionTime)
+  }
 
-    for (const task of toEnqueue) {
-      const missedTrigger = task.nextRunTime
-      if (missedTrigger == null) continue // isMissedTrigger guarantees non-null; re-check for TS narrowing
-      if (this.queue.isTaskQueued(task.id)) continue // dedup: another pass already enqueued it
-      const catchUpAt = Date.now()
-      this.queue.enqueue({
-        taskId: task.id,
-        batchId,
-        queueGroup: task.queueGroup ?? undefined,
-        scheduleTime: missedTrigger, // the missed trigger point, not "now" — run history shows which fire is being made up
-        enqueuedAt: catchUpAt,
-        priority: task.priority,
-        dependency: task.dependsOn?.length
-          ? {
-              dependsOn: task.dependsOn,
-              continueOnDependencyFailure: task.continueOnDependencyFailure,
-            }
-          : undefined,
-        attempt: 1,
-        maxRetries: task.maxRetries,
-        source: 'schedule',
-        catchUpRunAt: catchUpAt, // audit marker on the run record
-      })
-      // Single catch-up, then the schedule resumes from now (skip-missed).
-      this.deps.store.updateTask(
-        task.id,
-        { nextRunTime: calculateNextRunTime(task, now) },
-        now,
-      )
-    }
+  private enqueueScheduledRun(
+    task: ScheduledTask,
+    batchId: string,
+    now: number,
+  ): void {
+    // Dedup: the previous trigger's run hasn't finished yet (e.g. it ran longer than the
+    // 30s check interval) — skip without recomputing nextRunTime or enqueueing again; once
+    // it actually finishes and is cleared from executing via markCompleted/markFailed, the
+    // next tick will naturally pick it up again since nextRunTime is still "due".
+    if (this.queue.isTaskQueued(task.id)) return
+
+    // Compute the next time / whether to disable before enqueueing: even if the follow-up
+    // updateTask fails, the enqueue has already happened, so a "recompute failure" won't
+    // cause this run to be silently repeated next tick.
+    const isOneTime = task.scheduleType === 'once'
+    this.queue.enqueue({
+      taskId: task.id,
+      batchId,
+      queueGroup: task.queueGroup ?? undefined,
+      scheduleTime: now,
+      enqueuedAt: now,
+      priority: task.priority,
+      dependency: task.dependsOn?.length
+        ? {
+            dependsOn: task.dependsOn,
+            continueOnDependencyFailure: task.continueOnDependencyFailure,
+          }
+        : undefined,
+      attempt: 1,
+      maxRetries: task.maxRetries,
+      source: 'schedule',
+    })
+
+    this.deps.store.updateTask(
+      task.id,
+      isOneTime
+        ? { enabled: false, nextRunTime: null } // one-time tasks are disabled permanently after running once, so they can't "revive"
+        : { nextRunTime: calculateNextRunTime(task, now) },
+      now,
+    )
   }
 
   /**

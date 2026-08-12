@@ -1194,6 +1194,216 @@ describe('ScheduledTaskScheduler', () => {
     }
   })
 
+  it("resolves a missed task's dependency that is due in the same tick (catch-up and due share one batch)", async () => {
+    jest.useFakeTimers()
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const resolvers: Array<(result: YoloAgentRunResult) => void> = []
+      const agentApi = makeAgentApi(
+        () =>
+          new Promise<YoloAgentRunResult>((resolve) => {
+            resolvers.push(resolve)
+          }),
+      )
+      const executor = new TaskExecutor({ getAgentApi: () => agentApi })
+      const events: TaskEvent[] = []
+      const eventBus = new TaskEventBus()
+      eventBus.subscribeAll((e) => events.push(e))
+      const scheduler = new ScheduledTaskScheduler({
+        store,
+        executor,
+        eventBus,
+      })
+
+      // Review scenario: B (every 1 min) becomes due within 60s of restart
+      // (nextRunTime 29s out → due batch at the t=30s tick), while A (every 2
+      // min, depends on B) missed its trigger by 90s (→ catch-up batch, same
+      // tick). Before the fix the two passes made separate batches and A was
+      // fast-failed as "dependency not in this batch" — the same-batch
+      // guarantee the due-check alone used to provide.
+      const now = Date.now()
+      store.createTask(
+        'task-b',
+        makeTaskConfig({
+          name: 'B',
+          scheduleType: 'interval',
+          cronExpression: null,
+          intervalSeconds: 60,
+          nextRunTime: now + 29_000,
+        }),
+        now - 120_000,
+      )
+      store.updateTask('task-b', { lastRunAt: now - 90_000 }, now - 90_000)
+      store.createTask(
+        'task-a',
+        makeTaskConfig({
+          name: 'A',
+          scheduleType: 'interval',
+          cronExpression: null,
+          intervalSeconds: 120,
+          nextRunTime: now - 90_000,
+          dependsOn: ['task-b'],
+        }),
+        now - 180_000,
+      )
+      store.updateTask('task-a', { lastRunAt: now - 180_000 }, now - 180_000)
+
+      scheduler.start()
+      await jest.advanceTimersByTimeAsync(0) // quiet window: first check enqueues nothing
+      await jest.advanceTimersByTimeAsync(31_000) // catch-up + due passes of this tick
+
+      // A waits on B inside the shared batch instead of fast-failing; B runs first.
+      expect(scheduler.getPendingTasks().map((item) => item.taskId)).toEqual([
+        'task-a',
+      ])
+      expect(scheduler.getExecutingTasks().map((run) => run.taskId)).toEqual([
+        'task-b',
+      ])
+
+      // B completes → A is unblocked within the same batch and runs to completion.
+      resolvers[0]?.({
+        conversationId: 'conv-b',
+        text: 'b',
+        status: 'completed',
+      })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(scheduler.getExecutingTasks().map((run) => run.taskId)).toEqual([
+        'task-a',
+      ])
+      resolvers[1]?.({
+        conversationId: 'conv-a',
+        text: 'a',
+        status: 'completed',
+      })
+      await jest.advanceTimersByTimeAsync(0)
+
+      const runs = store.listRunsByTask('task-a').runs
+      expect(runs).toHaveLength(1)
+      expect(runs[0]?.status).toBe(TaskRunStatus.COMPLETED)
+      // No dependency fast-fail anywhere in the round.
+      expect(events.some((e) => e.type === 'task_failed')).toBe(false)
+      // A's catch-up audit stays intact: one make-up run, schedule resumed from now.
+      expect(runs[0]?.catchUpRunAt).not.toBeNull()
+      expect(store.getTask('task-a')?.nextRunTime).toBeGreaterThan(now)
+
+      scheduler.stop()
+      store.close()
+    } finally {
+      jest.useRealTimers()
+      cleanup(dir)
+    }
+  })
+
+  it('defers a missed task whose dependency already ran at restart, until both land in one batch', async () => {
+    jest.useFakeTimers()
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const resolvers: Array<(result: YoloAgentRunResult) => void> = []
+      const agentApi = makeAgentApi(
+        () =>
+          new Promise<YoloAgentRunResult>((resolve) => {
+            resolvers.push(resolve)
+          }),
+      )
+      const executor = new TaskExecutor({ getAgentApi: () => agentApi })
+      const events: TaskEvent[] = []
+      const eventBus = new TaskEventBus()
+      eventBus.subscribeAll((e) => events.push(e))
+      const scheduler = new ScheduledTaskScheduler({
+        store,
+        executor,
+        eventBus,
+      })
+
+      // Same chain, but B is due AT restart (overdue 20s): the quiet window
+      // makes B run in the t=0 tick while A's catch-up only becomes eligible
+      // at t=30s — two different ticks. A must be deferred (not enqueued to
+      // fast-fail) until B's next fire joins the same round at t=60s.
+      const now = Date.now()
+      store.createTask(
+        'task-b',
+        makeTaskConfig({
+          name: 'B',
+          scheduleType: 'interval',
+          cronExpression: null,
+          intervalSeconds: 60,
+          nextRunTime: now - 20_000,
+        }),
+        now - 120_000,
+      )
+      store.updateTask('task-b', { lastRunAt: now - 90_000 }, now - 90_000)
+      store.createTask(
+        'task-a',
+        makeTaskConfig({
+          name: 'A',
+          scheduleType: 'interval',
+          cronExpression: null,
+          intervalSeconds: 120,
+          nextRunTime: now - 90_000,
+          dependsOn: ['task-b'],
+        }),
+        now - 180_000,
+      )
+      store.updateTask('task-a', { lastRunAt: now - 180_000 }, now - 180_000)
+
+      scheduler.start()
+      await jest.advanceTimersByTimeAsync(0) // t=0 tick: B (due) runs, A gated by the quiet window
+
+      // t=30s tick: A is eligible for catch-up but B is not in this round —
+      // deferring A instead of enqueueing it to fast-fail against B's absence.
+      await jest.advanceTimersByTimeAsync(31_000)
+      expect(scheduler.getPendingTasks().map((item) => item.taskId)).toEqual([])
+      expect(store.listRunsByTask('task-a').runs).toHaveLength(0)
+
+      // B's t=0 run settles (a normal short run), then t=60s tick: B's next
+      // fire and A's catch-up land in the SAME batch — A waits for B, then runs.
+      resolvers[0]?.({
+        conversationId: 'conv-b',
+        text: 'b',
+        status: 'completed',
+      })
+      await jest.advanceTimersByTimeAsync(30_000)
+      expect(scheduler.getPendingTasks().map((item) => item.taskId)).toEqual([
+        'task-a',
+      ])
+      expect(scheduler.getExecutingTasks().map((run) => run.taskId)).toEqual([
+        'task-b',
+      ])
+
+      resolvers[1]?.({
+        conversationId: 'conv-b',
+        text: 'b',
+        status: 'completed',
+      })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(scheduler.getExecutingTasks().map((run) => run.taskId)).toEqual([
+        'task-a',
+      ])
+      resolvers[2]?.({
+        conversationId: 'conv-a',
+        text: 'a',
+        status: 'completed',
+      })
+      await jest.advanceTimersByTimeAsync(0)
+
+      const aRuns = store.listRunsByTask('task-a').runs
+      expect(aRuns).toHaveLength(1)
+      expect(aRuns[0]?.status).toBe(TaskRunStatus.COMPLETED)
+      expect(aRuns[0]?.catchUpRunAt).not.toBeNull()
+      // B fired twice — its restart fire (t=0) and its regular next fire (t=60s).
+      expect(store.listRunsByTask('task-b').runs).toHaveLength(2)
+      expect(events.some((e) => e.type === 'task_failed')).toBe(false)
+
+      scheduler.stop()
+      store.close()
+    } finally {
+      jest.useRealTimers()
+      cleanup(dir)
+    }
+  })
+
   it('does not catch up tasks with scheduleType once that already ran', async () => {
     jest.useFakeTimers()
     const dir = makeTempDir()
