@@ -8,6 +8,7 @@ import {
   normalizePath,
   requestUrl,
 } from 'obsidian'
+import { v4 as uuidv4 } from 'uuid'
 
 import { upsertEditReviewSnapshot } from '../../database/json/chat/editReviewSnapshotStore'
 import { buildPdfPageImageCacheKey } from '../../database/json/chat/imageCacheStore'
@@ -133,6 +134,10 @@ import {
   isRuntimeComponentEnabled,
 } from '../runtime-components/runtimeComponentAccess'
 import { getLiteSkillDocumentByPath } from '../skills/liteSkills'
+import {
+  AGENT_SESSION_MODE,
+  type AgentSessionMode,
+} from '../state/contracts'
 import {
   WEB_SCRAPE_TOOL_NAME,
   WEB_SEARCH_TOOL_NAME,
@@ -4306,10 +4311,9 @@ export async function callLocalFileTool({
           }
         }
 
-        // 会话服务网关（Task 5 单例）：工具路径为 ephemeral 派发（无预建会话），
-        // settleRun 对未知 session 静默 no-op（session-service.ts:543），内存态与
-        // pushCompleted 投递与无 gateway 路径一致；有外部 spawn 的会话由 Task 9
-        // 的 runSubagentSessionContinuation 承担续跑。
+        // 会话服务网关（Task 5 单例）：settleRun/query/deliverQueuedIntents 供
+        // runSubagent 结算与 Task 9 续跑使用；无 service（未初始化）时保持纯
+        // ephemeral 路径（与迁移前逐字节一致）。
         const { getSubagentSessionService } = await import(
           '../agent/subagent/session-service'
         )
@@ -4322,6 +4326,40 @@ export async function callLocalFileTool({
                 sessionService.deliverQueuedIntents.bind(sessionService),
             } satisfies SubagentSessionGatewayLike)
           : undefined
+
+        // 审查 Critical 修复（8b）：durable 委托场景（delegatedRoleId + gateway）
+        // 先 spawn 持久会话——否则 settleRun 对未 spawn 会话静默 no-op
+        // （session-service.ts:543），recover/deliverQueuedIntents/continuation
+        // 全链路无源可作用（backup 的 mode: 'persistent' 工具入口；master 以
+        // delegatedRoleId + gateway 判定）。无 gateway 或无 delegatedRoleId →
+        // 纯 ephemeral，行为与迁移前一致。requestId 每次新 uuid，不做去重
+        // （backup 的 request_id_reused 语义交 Task 9/11 重新审视）。
+        let sessionId: string | undefined
+        let sessionMode: AgentSessionMode | undefined
+        if (sessionService && delegatedProfile) {
+          const spawned = await sessionService.spawn({
+            title: description,
+            prompt: taskPrompt,
+            mode: AGENT_SESSION_MODE.PERSISTENT,
+            delegatedRoleId,
+            ...(modelPreferenceId ? { modelPreferenceId } : {}),
+            requestId: uuidv4(),
+            parentConversationId: conversationId,
+            originAssistantMessageId: assistantMessageId,
+            originToolCallId: toolCallId ?? '',
+            // 父 run 的 assistant id 即冻结的父记忆身份（profile 的
+            // memoryAssistantIdOverride 语义，delegated-assistant-profile.ts:76-93）；
+            // 取不到时以空串回退为委托角色自身身份（resolver 内 ?? assistant.id）。
+            memoryAssistantId: subagentParentContext.assistantId ?? '',
+          })
+          if (!spawned.accepted) {
+            throw new Error(
+              `Failed to spawn a durable subagent session: ${spawned.errorCode}`,
+            )
+          }
+          sessionId = spawned.sessionId
+          sessionMode = AGENT_SESSION_MODE.PERSISTENT
+        }
         const { runSubagent } = await import('../agent/subagent/runner')
         const accepted = await runSubagent({
           description,
@@ -4340,6 +4378,10 @@ export async function callLocalFileTool({
           },
           signal,
           ...(delegatedProfile ? { delegatedProfile } : {}),
+          // runSequence 1 对齐 spawn 已创建的 run 1（settleRun 按 runKey 定位）
+          ...(sessionId && sessionMode
+            ? { sessionId, runSequence: 1, mode: sessionMode }
+            : {}),
           ...(sessionGateway
             ? {
                 sessionGateway,

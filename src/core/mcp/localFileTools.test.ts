@@ -18,6 +18,12 @@ jest.mock('../agent/subagent/delegated-assistant-profile', () => ({
   resolveDelegatedAssistantProfile: jest.fn(),
 }))
 
+// 8b：会话服务单例受控 mock——默认返回 undefined（无 gateway → 纯 ephemeral），
+// durable 场景按测试注入假 service 断言 spawn 接线。
+jest.mock('../agent/subagent/session-service', () => ({
+  getSubagentSessionService: jest.fn(),
+}))
+
 jest.mock('../browser/activeWebviewProbe', () => ({
   BROWSER_PAGE_ID_PATTERN: /^page_[a-z0-9]{8}_[a-z0-9]{8}$/,
   findWebviewHandleByPageId: jest.fn(),
@@ -52,6 +58,7 @@ import {
   resolveDelegatedAssistantProfile,
 } from '../agent/subagent/delegated-assistant-profile'
 import { runSubagent } from '../agent/subagent/runner'
+import { getSubagentSessionService } from '../agent/subagent/session-service'
 import { findWebviewHandleByPageId } from '../browser/activeWebviewProbe'
 import { readActiveWebviewHtml } from '../browser/activeWebviewReader'
 import type {
@@ -59,6 +66,7 @@ import type {
   RuntimeComponentLease,
 } from '../runtime-components/contracts'
 import { setRuntimeComponentAcquirerForTests } from '../runtime-components/runtimeComponentAccess'
+import { AGENT_SESSION_MODE } from '../state/contracts'
 
 import { buildJsSandboxToolDescription } from './jsSandboxSettings'
 import {
@@ -2848,18 +2856,40 @@ describe('delegate_subagent model selection', () => {
   })
 
   describe('delegated role resolution', () => {
-    beforeEach(() => {
-      ;(resolveDelegatedAssistantProfile as jest.Mock).mockReset()
-    })
-
-    it('resolves a delegated role profile and uses its model', async () => {
-      ;(resolveDelegatedAssistantProfile as jest.Mock).mockResolvedValue({
+    const mockDelegatedProfile = () =>
+      ({
         delegatedRole: { id: 'role_1', name: 'Role One' },
         modelId: 'openai/gpt-5',
         allowedToolNames: [],
         allowedSkillPaths: [],
         loopConfig: { enableTools: false },
-      } as unknown as DelegatedAssistantProfile)
+      }) as unknown as DelegatedAssistantProfile
+
+    const mockSessionService = (spawnImpl?: jest.Mock) => {
+      const spawn = spawnImpl ?? jest.fn().mockResolvedValue({
+        accepted: true,
+        sessionId: 'sub_durable01',
+        runKey: 'sub_durable01:1',
+        sessionRevision: 1,
+      })
+      jest.mocked(getSubagentSessionService).mockReturnValue({
+        spawn,
+        settleRun: jest.fn(),
+        query: jest.fn(),
+        deliverQueuedIntents: jest.fn(),
+      } as never)
+      return spawn
+    }
+
+    beforeEach(() => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockReset()
+      jest.mocked(getSubagentSessionService).mockReset()
+    })
+
+    it('resolves a delegated role profile and uses its model', async () => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockResolvedValue(
+        mockDelegatedProfile(),
+      )
 
       const result = await callDelegateSubagent({ delegatedRoleId: 'role_1' })
 
@@ -2879,6 +2909,94 @@ describe('delegate_subagent model selection', () => {
             model: expect.objectContaining({ id: 'openai/gpt-5' }),
           }),
         }),
+      )
+    })
+
+    it('spawns a durable session when a session gateway is available', async () => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockResolvedValue(
+        mockDelegatedProfile(),
+      )
+      const spawnMock = mockSessionService()
+
+      const result = await callDelegateSubagent({ delegatedRoleId: 'role_1' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      expect(spawnMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Scan',
+          prompt: 'Scan notes',
+          mode: AGENT_SESSION_MODE.PERSISTENT,
+          delegatedRoleId: 'role_1',
+          parentConversationId: 'conv',
+          originAssistantMessageId: '',
+          originToolCallId: 'tool-call',
+          requestId: expect.any(String),
+        }),
+      )
+      expect(runSubagent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 'sub_durable01',
+          runSequence: 1,
+          mode: AGENT_SESSION_MODE.PERSISTENT,
+          sessionGateway: expect.anything(),
+          delegatedProfile: expect.objectContaining({
+            delegatedRole: expect.objectContaining({ id: 'role_1' }),
+          }),
+        }),
+      )
+    })
+
+    it('rejects when the durable session spawn fails', async () => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockResolvedValue(
+        mockDelegatedProfile(),
+      )
+      mockSessionService(
+        jest.fn().mockResolvedValue({
+          accepted: false,
+          errorCode: 'durability_failed',
+          retryable: false,
+        }),
+      )
+
+      const result = await callDelegateSubagent({ delegatedRoleId: 'role_1' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      if (result.status === ToolCallResponseStatus.Error) {
+        expect(result.error).toContain('Failed to spawn a durable subagent session')
+      }
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+
+    it('stays ephemeral without a session gateway', async () => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockResolvedValue(
+        mockDelegatedProfile(),
+      )
+      jest.mocked(getSubagentSessionService).mockReturnValue(null)
+
+      const result = await callDelegateSubagent({ delegatedRoleId: 'role_1' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      expect(runSubagent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          delegatedProfile: expect.objectContaining({
+            delegatedRole: expect.objectContaining({ id: 'role_1' }),
+          }),
+        }),
+      )
+      expect(runSubagent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: expect.any(String) }),
+      )
+    })
+
+    it('does not spawn a session for the generic path even with a gateway', async () => {
+      const spawnMock = mockSessionService()
+
+      const result = await callDelegateSubagent({})
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      expect(spawnMock).not.toHaveBeenCalled()
+      expect(runSubagent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: expect.any(String) }),
       )
     })
 
