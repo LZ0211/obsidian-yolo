@@ -5,12 +5,17 @@ import type {
   SubagentResultStatus,
 } from '../../../types/chat'
 import {
+  type ToolCallRequest,
   type ToolCallResponse,
   ToolCallResponseStatus,
 } from '../../../types/tool-call.types'
 import { formatTokenCount } from '../../../utils/llm/formatTokenCount'
 
-import type { SubagentPendingApproval } from './SubagentApprovalBlock'
+/** 待审批工具调用（原定义在 SubagentApprovalBlock——落位本文件避免三向环）。 */
+export type SubagentPendingApproval = {
+  toolCallId: string
+  request: ToolCallRequest
+}
 
 export type SubagentCardArgs = {
   title?: string

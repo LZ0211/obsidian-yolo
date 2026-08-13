@@ -12,11 +12,7 @@ import {
 
 import { buildSubagentApprovalSummary } from './subagentApprovalSummary'
 import { SubagentDetailModal } from './SubagentDetailModal'
-
-export type SubagentPendingApproval = {
-  toolCallId: string
-  request: ToolCallRequest
-}
+import type { SubagentPendingApproval } from './subagentCardUtils'
 
 type SubagentApprovalBlockProps = {
   conversationId: string

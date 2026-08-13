@@ -49,7 +49,7 @@ import { createRoot } from 'react-dom/client'
 
 import type { ToolCallRequest } from '../../../types/tool-call.types'
 import { ConfirmModal } from '../../modals/ConfirmModal'
-import type { SubagentPendingApproval } from './SubagentApprovalBlock'
+import type { SubagentPendingApproval } from './subagentCardUtils'
 import { SubagentApprovalBlock } from './SubagentApprovalBlock'
 import { SubagentDetailModal } from './SubagentDetailModal'
 
