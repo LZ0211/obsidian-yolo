@@ -400,18 +400,19 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
     } catch (error) {
       // No node:sqlite (mobile) or it failed to load: fall back to the
       // sqlite-engine runtime component (sql.js in-memory + vault file).
+      // Same pattern as shardedSqlite's toVaultRelativePath: without a
+      // FileSystemAdapter (mobile) the path is already vault-relative and
+      // passes through unchanged — the wasm opener resolves it against the
+      // vault.
       const adapter = this.options.app.vault.adapter
-      const basePath =
-        adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null
-      if (!basePath) {
-        throw new MemoryIndexUnavailableError(
-          'SQLite memory index is unavailable: no vault adapter',
-          { cause: error },
-        )
-      }
-      const relativePath = absolutePath.startsWith(basePath)
-        ? absolutePath.slice(basePath.length).replace(/^[\\/]+/, '')
-        : absolutePath
+      const relativePath =
+        adapter instanceof FileSystemAdapter
+          ? absolutePath.startsWith(adapter.getBasePath())
+            ? absolutePath
+                .slice(adapter.getBasePath().length)
+                .replace(/^[\\/]+/, '')
+            : absolutePath
+          : absolutePath
       try {
         const lease = await acquireRuntimeComponent('sqlite-engine')
         try {
