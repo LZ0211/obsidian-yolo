@@ -76,11 +76,54 @@ export class MemoryRecallOrchestrator {
       .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
       .slice(0, MAX_RECALL_ENTRIES)
 
+    // Reinforce only lexical hits: store.query also returns category-priority
+    // entries that never matched the query, and strengthening those would
+    // reward noise. Fire-and-forget so a reinforce failure never delays the
+    // request path.
+    const hitKeys = entries
+      .filter((entry) => this.isLexicalHit(entry, target.keywords))
+      .map((entry) => entry.memoryKey)
+    if (hitKeys.length > 0) {
+      void this.reinforceHits(hitKeys, partition).catch((error) => {
+        console.error('[YOLO][Memory] recall reinforce failed', error)
+      })
+    }
+
     return {
       partition,
       sourceFileFingerprint,
       entries,
       paths: result.paths,
+    }
+  }
+
+  private isLexicalHit(
+    entry: MemoryAgentEntryLike,
+    queryKeywords: readonly string[],
+  ): boolean {
+    const entryKeywords = Array.isArray(entry.keywords)
+      ? entry.keywords.filter((keyword): keyword is string => typeof keyword === 'string')
+      : []
+    if (
+      entryKeywords.some((keyword) =>
+        queryKeywords.some((queryKeyword) => keyword === queryKeyword),
+      )
+    )
+      return true
+    const content = typeof entry.content === 'string' ? entry.content : ''
+    return queryKeywords.some((keyword) => content.includes(keyword))
+  }
+
+  private async reinforceHits(
+    memoryKeys: readonly string[],
+    partition: MemoryPartition,
+  ): Promise<void> {
+    const nowMs = Date.now()
+    const prefix = `${partition.partitionKey}::`
+    for (const memoryKey of memoryKeys) {
+      const localId = memoryKey.slice(prefix.length)
+      if (!localId || localId === memoryKey) continue
+      await this.store.reinforce({ partition, localId, nowMs })
     }
   }
 

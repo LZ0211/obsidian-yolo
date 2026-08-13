@@ -26,6 +26,7 @@ import {
 import { executeSingleTurn } from '../../core/ai/single-turn'
 import { getChatModelClient } from '../../core/llm/manager'
 import { getEmbeddingModelClient } from '../../core/rag/embedding'
+import { QueryEmbeddingMemoryCache } from '../../core/rag/queryEmbeddingMemoryCache'
 import {
   getMemoryPromptContext,
   loadMemorySourceSnapshot,
@@ -544,6 +545,7 @@ export class RequestContextBuilder {
   private getPromptSourceRevision?: () => number
   private promptSourcePathsCallback?: (paths: Set<string>) => void
   private memoryIndexRuntime?: MemoryIndexRuntimeHandle
+  private readonly memoryEmbeddingQueryCache = new QueryEmbeddingMemoryCache()
 
   constructor(
     app: App,
@@ -2748,12 +2750,17 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
         async (query: string): Promise<number[] | null> => {
           const embeddingModelId = this.settings.embeddingModelId?.trim()
           if (!embeddingModelId) return null
+          const cacheKey = `${embeddingModelId}::${query.trim().toLowerCase()}`
+          const cached = this.memoryEmbeddingQueryCache.get(cacheKey)
+          if (cached) return cached
           try {
             const client = getEmbeddingModelClient({
               settings: this.settings,
               embeddingModelId,
             })
-            return await client.getEmbedding(query)
+            const embedding = await client.getEmbedding(query)
+            this.memoryEmbeddingQueryCache.set(cacheKey, embedding)
+            return embedding
           } catch (error) {
             console.warn(
               '[YOLO][Memory] embedding unavailable for recall',

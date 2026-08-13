@@ -5,13 +5,34 @@ import * as path from 'node:path'
 import { App, FileSystemAdapter, normalizePath, TFile, TFolder } from 'obsidian'
 
 import { executeSingleTurn } from '../ai/single-turn'
+import { getEmbeddingModelClient } from '../../core/rag/embedding'
 import { RequestContextBuilder } from '../../utils/chat/requestContextBuilder'
 import { loadMemorySourceSnapshot, memoryAdd } from './memoryManager'
 import { openMemoryIndexStore } from './memoryIndex'
 import { getMemoryIndexRuntimeHandle, closeMemoryIndexRuntime } from './memoryIndexRuntime'
 
+jest.mock('../../database/json/chat/promptSnapshotStore', () => ({
+  readPromptSnapshotEntries: jest.fn(async () => ({})),
+}))
+
 jest.mock('../ai/single-turn', () => ({
   executeSingleTurn: jest.fn(),
+}))
+
+jest.mock('../../core/rag/embedding', () => ({
+  getEmbeddingModelClient: jest.fn(() => ({
+    getEmbedding: jest.fn(async () => Array(8).fill(0.1)),
+  })),
+}))
+
+jest.mock('../../core/skills/liteSkills', () => ({
+  ...jest.requireActual('../../core/skills/liteSkills'),
+  getLiteSkillDocument: jest.fn(),
+  listLiteSkillEntries: jest.fn(async () => []),
+}))
+
+jest.mock('./memoryJiebaTokenizer', () => ({
+  cutForSearchWithJieba: jest.fn(async () => ['极简']),
 }))
 
 const executeSingleTurnMock = executeSingleTurn as jest.Mock
@@ -86,8 +107,14 @@ describe('memory wiring integration (extract → persist → reconcile → recal
     settings = {
       yolo: { baseDir: 'YOLO' },
       advancedMemoryIndexEnabled: true,
+      systemPrompt: '',
+      memoryAgentModelId: '',
+      embeddingModelId: 'test-embed',
+      currentAssistantId: undefined,
+      skills: { disabledSkillIds: [] },
     } as never
     executeSingleTurnMock.mockReset()
+    ;(getEmbeddingModelClient as jest.Mock).mockClear()
   })
 
   afterEach(async () => {
@@ -233,5 +260,134 @@ describe('memory wiring integration (extract → persist → reconcile → recal
     expect(indexed.map((entry) => entry.content)).toEqual(
       expect.arrayContaining(['用户是前端工程师']),
     )
+  })
+
+  describe('memory recall embedding query cache', () => {
+    it('embeds the same recall query only once across request builds', async () => {
+    const memoryFile = 'YOLO/memory/global.md'
+    await app.vault.create(memoryFile, '- 用户偏好极简风格的设计')
+    await memoryAdd({
+      app,
+      settings,
+      content: '用户偏好极简风格的设计',
+      category: 'preferences',
+      scope: 'global',
+    })
+
+    const handle = getMemoryIndexRuntimeHandle(app, () => ({
+      ...settings,
+      embeddingModelId: 'test-embed',
+    }))
+    const store = await handle.getStore()
+    const snapshot = await loadMemorySourceSnapshot({
+      app,
+      settings: { ...settings, embeddingModelId: 'test-embed' } as never,
+      scope: 'global',
+    })
+    await (
+      store as { reconcilePartition: (input: never) => Promise<void> }
+    ).reconcilePartition({
+      partition: { scope: 'global', assistantId: null, partitionKey: 'global' },
+      sourcePath: memoryFile,
+      sourceFileFingerprint: snapshot.sourceFileFingerprint,
+      parserVersion: snapshot.parserVersion,
+      entries: snapshot.entries,
+    } as never)
+
+    const builder = new RequestContextBuilder(
+      app,
+      { ...settings, embeddingModelId: 'test-embed' } as never,
+      { memoryIndexRuntime: handle },
+    )
+    const model = { id: 'test-model', model: 'test-model' } as never
+    const userMessage = {
+      role: 'user',
+      id: 'u1',
+      content: {
+        root: {
+          children: [
+            {
+              children: [
+                {
+                  detail: 0,
+                  format: 0,
+                  mode: 'normal',
+                  style: '',
+                  text: '极简设计',
+                  type: 'text',
+                  version: 1,
+                },
+              ],
+              direction: 'ltr',
+              format: '',
+              indent: 0,
+              type: 'paragraph',
+              version: 1,
+            },
+          ],
+          direction: 'ltr',
+          format: '',
+          indent: 0,
+          type: 'root',
+          version: 1,
+        },
+      },
+      promptContent: null,
+      mentionables: [],
+      mtime: Date.now(),
+    } as never
+    const requestArgs = {
+      messages: [userMessage],
+      model,
+      conversationId: 'conv-cache-test',
+      systemPromptSnapshotMode: 'create' as const,
+    } as unknown as Parameters<typeof builder.generateRequestSections>[0]
+
+    await builder.generateRequestSections(requestArgs)
+    await builder.generateRequestSections(requestArgs)
+
+    // Second identical request hits the in-memory embedding query cache, so
+    // the embedding model client is only created once.
+    expect(getEmbeddingModelClient).toHaveBeenCalledTimes(1)
+
+    await builder.generateRequestSections({
+      ...requestArgs,
+      messages: [
+        {
+          ...userMessage,
+          content: {
+            root: {
+              children: [
+                {
+                  children: [
+                    {
+                      detail: 0,
+                      format: 0,
+                      mode: 'normal',
+                      style: '',
+                      text: '另一个主题',
+                      type: 'text',
+                      version: 1,
+                    },
+                  ],
+                  direction: 'ltr',
+                  format: '',
+                  indent: 0,
+                  type: 'paragraph',
+                  version: 1,
+                },
+              ],
+              direction: 'ltr',
+              format: '',
+              indent: 0,
+              type: 'root',
+              version: 1,
+            },
+          } as never,
+        },
+      ],
+    })
+    expect(getEmbeddingModelClient).toHaveBeenCalledTimes(2)
+  })
   })
 })

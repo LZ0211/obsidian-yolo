@@ -6,6 +6,10 @@ import { getAbsoluteYoloMemoryIndexPath } from '../paths/yoloPaths'
 import { acquireRuntimeComponent } from '../runtime-components/runtimeComponentAccess'
 
 import {
+  SALIENCE_DECAY_LAMBDA,
+  calcEffectiveSalience,
+} from './decay'
+import {
   MAX_GRAPH_CANDIDATES,
   MAX_GRAPH_DEGREE,
   MAX_GRAPH_EXPANSIONS,
@@ -125,6 +129,11 @@ export type MemoryIndexMaintenanceStore = {
   forceClose?(): void
   /** Raw sqlite runtime; the recall orchestrator builds the embedding store from it. */
   getRuntime(): Promise<SqliteNativeRuntimeFacade>
+  /** Recompute stored salience against elapsed time; keeps `updated_at` stable. */
+  applyDecay(input: {
+    partition: MemoryPartition
+    nowMs: number
+  }): Promise<void>
   rebuildEdges(input: {
     partition: MemoryPartition
     localIds: readonly string[]
@@ -885,6 +894,50 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
     })
   }
 
+  async applyDecay(input: {
+    partition: MemoryPartition
+    nowMs: number
+  }): Promise<void> {
+    return this.enqueue(async () => {
+      const runtime = await this.getRuntime()
+      const rows = runtime.query<{
+        local_id: string
+        salience: number
+        created_at: number
+        last_recalled_at: number | null
+      }>(
+        'select local_id, salience, created_at, last_recalled_at from memory_index where partition_key = ?',
+        [input.partition.partitionKey],
+      )
+      const decayed = rows.flatMap((row) => {
+        const effective = calcEffectiveSalience({
+          storedSalience: row.salience,
+          createdAtMs: row.created_at,
+          lastRecalledAtMs: row.last_recalled_at,
+          nowMs: input.nowMs,
+          lambda: SALIENCE_DECAY_LAMBDA,
+        })
+        if (Math.abs(effective - row.salience) <= 1e-6) return []
+        return [
+          {
+            salience: effective,
+            partitionKey: input.partition.partitionKey,
+            localId: row.local_id,
+          },
+        ]
+      })
+      if (decayed.length === 0) return
+      runtime.transaction(() => {
+        for (const { salience, partitionKey, localId } of decayed) {
+          runtime.exec(
+            'update memory_index set salience = ? where partition_key = ? and local_id = ?',
+            [salience, partitionKey, localId],
+          )
+        }
+      })
+    })
+  }
+
   async markDirty(input: {
     partition: MemoryPartition
     reason: string
@@ -1376,6 +1429,9 @@ class UnavailableMemoryIndexStore implements MemoryIndexMaintenanceStore {
     return false
   }
   async reinforce(): Promise<void> {
+    return
+  }
+  async applyDecay(): Promise<void> {
     return
   }
   async markDirty(): Promise<void> {

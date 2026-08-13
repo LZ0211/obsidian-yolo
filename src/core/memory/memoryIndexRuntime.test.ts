@@ -8,6 +8,7 @@ import { FileSystemAdapter } from 'obsidian'
 
 import { openSqliteRuntime } from '../../database/sqlite/sqliteNativeRuntime'
 
+import { MemoryEmbeddingStore } from './memoryEmbeddings'
 import { openMemoryIndexStore } from './memoryIndex'
 import { buildMemoryPartition } from './memoryIndex'
 import type { MemoryIndexMaintenanceStore } from './memoryIndex'
@@ -20,6 +21,12 @@ import {
   resolveMemoryRename,
 } from './memoryIndexRuntime'
 import type { MemorySourceSnapshot } from './memoryManager'
+import { MemoryRecallOrchestrator } from './memoryRecallOrchestrator'
+import type { MemoryPartition } from './memoryTypes'
+
+jest.mock('./memoryJiebaTokenizer', () => ({
+  cutForSearchWithJieba: jest.fn(async () => ['minimal', 'design']),
+}))
 
 class TestFileSystemAdapter extends FileSystemAdapter {
   constructor(private readonly basePath: string) {
@@ -839,6 +846,186 @@ describe('memory index runtime adapter', () => {
       expect(
         fs.existsSync(path.join(root, 'YOLO-2', 'memory', 'index.sqlite')),
       ).toBe(true)
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('recall reinforce wiring', () => {
+  const waitFor = async (
+    predicate: () => Promise<boolean>,
+    timeoutMs = 2000,
+  ): Promise<void> => {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (await predicate()) return
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    throw new Error('timed out waiting for condition')
+  }
+
+  it('recall strengthens matched entries and refreshes last_recalled_at', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-reinforce-'))
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const entries = [
+      {
+        localId: 'Memory_minimal',
+        content: '用户偏好极简风格的设计',
+        keywords: ['minimal'],
+        category: 'preferences' as const,
+        partition,
+        sourcePath: 'global.md',
+        entryFingerprint: 'minimal-v1',
+      },
+      {
+        localId: 'Memory_noise',
+        content: '一段与查询无关的记忆',
+        keywords: ['noise'],
+        category: 'other' as const,
+        partition,
+        sourcePath: 'global.md',
+        entryFingerprint: 'noise-v1',
+      },
+    ]
+    const fingerprint = 'file-v1'
+    const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
+    const store = await openMemoryIndexStore({
+      app,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot: async () => ({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: fingerprint,
+        parserVersion: 'p',
+        entries,
+        valid: true,
+      }),
+    })
+    try {
+      await store.reconcilePartition({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: fingerprint,
+        parserVersion: 'p',
+        entries,
+      })
+      const orchestrator = new MemoryRecallOrchestrator(
+        store as never,
+        new MemoryEmbeddingStore(await store.getRuntime()),
+        async () => null,
+      )
+      const context = await orchestrator.recall(
+        {
+          latestQuery: 'minimal design',
+          recentUserMessages: ['minimal design'],
+          assistantId: undefined,
+        },
+        partition,
+        fingerprint,
+      )
+      expect(context.entries.map((entry) => entry.memoryKey)).toEqual(
+        expect.arrayContaining(['global::Memory_minimal']),
+      )
+
+      const row = (localId: string) =>
+        store
+          .getRuntime()
+          .then((runtime) =>
+            runtime.queryOne<{ salience: number; last_recalled_at: number | null }>(
+              'select salience, last_recalled_at from memory_index where partition_key = ? and local_id = ?',
+              [partition.partitionKey, localId],
+            ),
+          )
+
+      await waitFor(async () => ((await row('Memory_minimal'))?.salience ?? 0) > 0.5)
+      expect((await row('Memory_minimal'))?.last_recalled_at).not.toBeNull()
+      expect((await row('Memory_noise'))?.salience).toBe(0.5)
+      expect((await row('Memory_noise'))?.last_recalled_at).toBeNull()
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('memory salience decay', () => {
+  it('decays salience by elapsed time and keeps updated_at stable', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-decay-'))
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const entry = {
+      localId: 'Memory_stale',
+      content: '长期未用的记忆',
+      keywords: ['stale'],
+      category: 'other' as const,
+      partition,
+      sourcePath: 'global.md',
+      entryFingerprint: 'stale-v1',
+    }
+    const fingerprint = 'file-v1'
+    const t0 = Date.parse('2026-08-01T00:00:00Z')
+    const clock = jest.fn(() => t0)
+    const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
+    const store = await openMemoryIndexStore({
+      app,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot: async () => ({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: fingerprint,
+        parserVersion: 'p',
+        entries: [entry],
+        valid: true,
+      }),
+      clock,
+    })
+    try {
+      await store.reconcilePartition({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: fingerprint,
+        parserVersion: 'p',
+        entries: [entry],
+      })
+      const before = await store
+        .getRuntime()
+        .then((runtime) =>
+          runtime.queryOne<{
+            salience: number
+            updated_at: number
+          }>(
+            'select salience, updated_at from memory_index where partition_key = ? and local_id = ?',
+            [partition.partitionKey, 'Memory_stale'],
+          ),
+        )
+      expect(before?.salience).toBe(0.5)
+
+      await (
+        store as MemoryIndexMaintenanceStore & {
+          applyDecay(input: {
+            partition: MemoryPartition
+            nowMs: number
+          }): Promise<void>
+        }
+      ).applyDecay({ partition, nowMs: t0 + 30 * 86_400_000 })
+
+      const after = await store
+        .getRuntime()
+        .then((runtime) =>
+          runtime.queryOne<{
+            salience: number
+            updated_at: number
+          }>(
+            'select salience, updated_at from memory_index where partition_key = ? and local_id = ?',
+            [partition.partitionKey, 'Memory_stale'],
+          ),
+        )
+      expect(after?.salience).toBeLessThan(0.5)
+      expect(after?.salience).toBeGreaterThan(0)
+      expect(after?.updated_at).toBe(before?.updated_at)
     } finally {
       if ('close' in store && typeof store.close === 'function')
         await store.close()

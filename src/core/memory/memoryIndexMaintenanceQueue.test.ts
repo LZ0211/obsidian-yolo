@@ -35,6 +35,7 @@ const makeStore = (
     query: jest.fn(async () => []),
     isPartitionReady: jest.fn(async () => true),
     reinforce: jest.fn(async () => undefined),
+    applyDecay: jest.fn(async () => undefined),
     markDirty: jest.fn(async () => undefined),
     rebuildEdges: jest.fn(async () => undefined),
     expandViaEdges: jest.fn(async ({ seeds }) => seeds),
@@ -69,6 +70,27 @@ describe('MemoryIndexMaintenanceQueue', () => {
 
     expect(reconciled).toEqual(['one', 'three'])
     expect(store.rebuildEdges).toHaveBeenCalledTimes(2)
+  })
+
+  it('applies salience decay after each reconcile using the injected clock', async () => {
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const store = makeStore(async () => undefined)
+    const snapshot = makeSnapshot(partition, 'one')
+    const clock = jest.fn(() => 1_000_000)
+    const queue = new MemoryIndexMaintenanceQueue({
+      store,
+      getSourceSnapshot: async () => snapshot,
+      clock,
+    })
+
+    queue.enqueueReconcile({ partition, sourcePath: snapshot.sourcePath })
+    await queue.drain()
+
+    expect(store.applyDecay).toHaveBeenCalledWith({
+      partition,
+      nowMs: 1_000_000,
+    })
+    expect(store.applyDecay).toHaveBeenCalledTimes(1)
   })
 
   it('runs at most two partition lanes concurrently', async () => {

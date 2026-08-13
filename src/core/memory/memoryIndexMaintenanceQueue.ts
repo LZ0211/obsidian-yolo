@@ -24,7 +24,16 @@ type ReflectionTask = Readonly<{
   partition: MemoryPartition
 }>
 
-type MaintenanceTask = ReconcileTask | GraphTask | ReflectionTask
+type DecayTask = Readonly<{
+  kind: 'decay'
+  partition: MemoryPartition
+}>
+
+type MaintenanceTask =
+  | ReconcileTask
+  | GraphTask
+  | ReflectionTask
+  | DecayTask
 
 type MaintenanceLane = {
   active: boolean
@@ -236,6 +245,13 @@ export class MemoryIndexMaintenanceQueue {
       })
       return
     }
+    if (task.kind === 'decay') {
+      await this.options.store.applyDecay({
+        partition: task.partition,
+        nowMs: this.options.clock?.() ?? Date.now(),
+      })
+      return
+    }
 
     const snapshot = await this.options.getSourceSnapshot(task.partition)
     await this.options.store.reconcilePartition({
@@ -260,6 +276,7 @@ export class MemoryIndexMaintenanceQueue {
     const lane = this.lanes.get(task.partition.partitionKey)
     if (!lane) return
     const followUps: MaintenanceTask[] = [
+      { kind: 'decay', partition: task.partition },
       {
         kind: 'graph',
         partition: task.partition,

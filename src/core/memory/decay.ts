@@ -1,5 +1,6 @@
 export const DAY_MS = 86_400_000
 export const RECENCY_DECAY_LAMBDA = 0.015
+export const SALIENCE_DECAY_LAMBDA = 0.05
 
 export type EffectiveSalienceParams = Readonly<{
   storedSalience: number
