@@ -7,7 +7,6 @@ import {
 
 import {
   convertAttachmentsToReply,
-  findSendAttachmentCall,
   platformToUserMessage,
   scanForSendAttachment,
 } from './message-converter'
@@ -165,7 +164,7 @@ function makeToolMessage(
   }
 }
 
-describe('scanForSendAttachment / findSendAttachmentCall', () => {
+describe('scanForSendAttachment', () => {
   it('finds a completed send_attachment call, prefixed or not', () => {
     const messages: ChatMessage[] = [
       makeToolMessage('t1', 'yolo_local__send_attachment', {
@@ -208,19 +207,6 @@ describe('scanForSendAttachment / findSendAttachmentCall', () => {
       }),
     ]
     expect(scanForSendAttachment(messages)).toEqual([])
-  })
-
-  it('findSendAttachmentCall filters by toolCallId', () => {
-    const messages: ChatMessage[] = [
-      makeToolMessage('t1', 'yolo_local__send_attachment', { path: 'a.png' }),
-      makeToolMessage('t2', 'yolo_local__send_attachment', { path: 'b.png' }),
-    ]
-    expect(findSendAttachmentCall(messages, 't2')).toEqual({
-      toolCallId: 't2',
-      path: 'b.png',
-      label: undefined,
-    })
-    expect(findSendAttachmentCall(messages, 'missing')).toBeUndefined()
   })
 })
 

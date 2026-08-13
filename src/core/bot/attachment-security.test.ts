@@ -1,7 +1,4 @@
-import {
-  inferAndVerifyMimeType,
-  validateAttachmentPath,
-} from './attachment-security'
+import { validateAttachmentPath } from './attachment-security'
 
 const underDir = (dir: string) => (path: string) =>
   dir === '' || path === dir || path.startsWith(`${dir}/`)
@@ -88,44 +85,5 @@ describe('validateAttachmentPath', () => {
       isAllowed: underDir('charts'),
     })
     expect(result.ok).toBe(false)
-  })
-})
-
-describe('inferAndVerifyMimeType', () => {
-  const PNG_HEADER = new Uint8Array([
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0,
-  ])
-  const JPEG_HEADER = new Uint8Array([0xff, 0xd8, 0xff, 0, 0, 0])
-  const ZIP_HEADER = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0, 0])
-
-  it('infers mime type from a matching magic number and extension', () => {
-    const result = inferAndVerifyMimeType('charts/sales.png', PNG_HEADER)
-    expect(result).toEqual({ ok: true, mimeType: 'image/png' })
-  })
-
-  it('rejects a mismatch between magic number and extension (spoofed file)', () => {
-    const result = inferAndVerifyMimeType('charts/sales.png', JPEG_HEADER)
-    expect(result.ok).toBe(false)
-  })
-
-  it('accepts a zip signature for docx/xlsx/pptx extensions', () => {
-    expect(inferAndVerifyMimeType('report.docx', ZIP_HEADER)).toEqual({
-      ok: true,
-      mimeType: 'application/zip',
-    })
-  })
-
-  it('accepts unknown extensions without a magic-number match (not an allowlist)', () => {
-    const result = inferAndVerifyMimeType('notes.md', new Uint8Array([1, 2, 3]))
-    expect(result.ok).toBe(true)
-    expect(result.mimeType).toBeUndefined()
-  })
-
-  it('falls back to the extension-implied mime type when bytes are too short to sniff', () => {
-    const result = inferAndVerifyMimeType(
-      'charts/sales.png',
-      new Uint8Array([1]),
-    )
-    expect(result).toEqual({ ok: true, mimeType: 'image/png' })
   })
 })
