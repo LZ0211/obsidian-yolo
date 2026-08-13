@@ -1016,6 +1016,7 @@ export default class YoloPlugin extends Plugin {
           listener: (settings: YoloSettings) => void,
         ) => this.addSettingsChangeListener(listener),
         getRagEngine: () => this.getRAGEngine(),
+        getScheduledTasksService: () => this.getScheduledTasksService(),
         promptSourceWatcher: agentService.getPromptSourceWatcher(),
         moduleChatModeRegistry: this.moduleChatModeRegistry,
       })

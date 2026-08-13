@@ -124,6 +124,11 @@ import {
   acquireRuntimeComponent,
   isRuntimeComponentEnabled,
 } from '../runtime-components/runtimeComponentAccess'
+import type {
+  ScheduledTask,
+  ScheduledTaskAgentConfig,
+  TaskConfig,
+} from '../scheduler/scheduledTasksStore'
 import { MetadataFilterDslError } from '../search/metadataFilterDsl'
 import {
   type MetadataFileSearchHit,
@@ -183,6 +188,22 @@ import {
 } from './localFileToolNames'
 import { parseToolName } from './tool-name-utils'
 import { ensureParentFolderExists, validateVaultPath } from './vaultFileOps'
+
+/**
+ * localFileTools 可消费的调度服务结构子集。就地声明避免
+ * localFileTools → scheduled-tasks-service → scheduler → task-executor 的
+ * 静态/type 导入边（madge 对 type-only 导入计边；task-executor 依赖 agent
+ * runtime，会经 tool-selection 与 localFileTools 回流成环）。完整形态见
+ * `IScheduledTasksService`（src/core/scheduled-tasks-service.ts）。
+ */
+export type ScheduledTaskServiceLike = {
+  createTask(config: TaskConfig): Promise<ScheduledTask>
+  getTask(id: string): Promise<ScheduledTask>
+  updateTask(id: string, config: Partial<TaskConfig>): Promise<void>
+  deleteTask(id: string): Promise<void>
+  listTasks(filters?: { enabled?: boolean }): Promise<ScheduledTask[]>
+  executeTaskNow(taskId: string): Promise<unknown>
+}
 
 export { recoverLikelyEscapedBackslashSequences }
 const MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024
@@ -1184,6 +1205,12 @@ export function getLocalFileTools(options?: {
       description:
         'Manage durable project and task files under the host-managed Projects directory (parent-only; this is the sole way to read/write project/task state — those files are excluded from the normal fs tools). Pass action plus the action-specific fields: action="init" creates a project, "get" reads one task (taskId present) or lists tasks (status filter), "status" returns the project summary + signals (reclaimed, concurrent_running, all_terminal), "update" applies a patch or claims a task for a run (requires expectedRevision/expectedContentHash from a prior get), "review" records an approved/rework/escalated decision with evidence.',
       inputSchema: buildConsolidatedToolSchemas().project_ops,
+    },
+    {
+      name: 'scheduled_task_ops',
+      description:
+        'Manage scheduled agent tasks: a prompt that runs automatically once, on an interval, or on a cron schedule. Pass action plus the action-specific fields: action="create" registers a new task, "update" patches a task by id, "delete" removes a task and its run history, "list" lists tasks (optionally filtered by enabled), "get" fetches one task, "run_now" triggers an immediate run subject to queue/concurrency limits.',
+      inputSchema: buildConsolidatedToolSchemas().scheduled_task_ops,
     },
     {
       name: 'ask_user_question',
@@ -2511,11 +2538,13 @@ export async function callLocalFileTool({
   promptSourceWatcher,
   bashApprovalMode,
   bashReadOnly,
+  getScheduledTasksService,
 }: {
   app: App
   settings?: YoloSettings
   openApplyReview?: (state: ApplyViewState) => Promise<boolean>
   getRagEngine?: () => Promise<RAGEngine>
+  getScheduledTasksService?: () => ScheduledTaskServiceLike | null
   conversationId?: string
   conversationMessages?: ChatMessage[]
   roundId?: string
@@ -4535,6 +4564,60 @@ export async function callLocalFileTool({
         }
       }
 
+      case 'scheduled_task_ops': {
+        const service = getScheduledTasksService?.()
+        if (!service) {
+          throw new Error('Scheduled tasks service is not available.')
+        }
+        const action = getTextArg(args, 'action')
+        switch (action) {
+          case 'create':
+            return await executeScheduledTaskCreate({
+              service,
+              args,
+              tool: 'scheduled_task_ops',
+              action: 'create',
+            })
+          case 'update':
+            return await executeScheduledTaskUpdate({
+              service,
+              args,
+              tool: 'scheduled_task_ops',
+              action: 'update',
+            })
+          case 'delete':
+            return await executeScheduledTaskDelete({
+              service,
+              args,
+              tool: 'scheduled_task_ops',
+              action: 'delete',
+            })
+          case 'list':
+            return await executeScheduledTaskList({
+              service,
+              args,
+              tool: 'scheduled_task_ops',
+              action: 'list',
+            })
+          case 'get':
+            return await executeScheduledTaskGet({
+              service,
+              args,
+              tool: 'scheduled_task_ops',
+              action: 'get',
+            })
+          case 'run_now':
+            return await executeScheduledTaskRunNow({
+              service,
+              args,
+              tool: 'scheduled_task_ops',
+              action: 'run_now',
+            })
+          default:
+            throw new Error(`Unsupported scheduled_task_ops action: ${action}`)
+        }
+      }
+
       case TERMINAL_COMMAND_TOOL_NAME: {
         const { runBash } = await import('../agent/bash/index')
 
@@ -4692,6 +4775,369 @@ export async function callLocalFileTool({
       status: ToolCallResponseStatus.Error,
       error: asErrorMessage(error),
     }
+  }
+}
+
+const getOptionalStringArrayArg = (
+  args: Record<string, unknown>,
+  key: string,
+): string[] | undefined => {
+  const value = args[key]
+  if (value === undefined) {
+    return undefined
+  }
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+    throw new Error(`${key} must be an array of strings.`)
+  }
+  const normalized = [
+    ...new Set(value.map((item) => item.trim()).filter(Boolean)),
+  ]
+  if (normalized.length > 64) {
+    throw new Error(`${key} cannot contain more than 64 tools.`)
+  }
+  return normalized
+}
+
+const withResultAction = <T extends Record<string, unknown>>(
+  action: string | undefined,
+  payload: T,
+): Record<string, unknown> =>
+  action === undefined ? payload : { ...payload, action }
+
+const getScheduledTaskNotifyOnArg = (
+  args: Record<string, unknown>,
+): ('success' | 'failure')[] => {
+  if (args.notifyOn === undefined) {
+    return []
+  }
+  const values = getStringArrayArg(args, 'notifyOn')
+  for (const value of values) {
+    if (value !== 'success' && value !== 'failure') {
+      throw new Error('notifyOn entries must be "success" or "failure".')
+    }
+  }
+  return values as ('success' | 'failure')[]
+}
+
+const executeScheduledTaskCreate = async ({
+  service,
+  args,
+  tool,
+  action,
+}: {
+  service: ScheduledTaskServiceLike
+  args: Record<string, unknown>
+  tool: string
+  action?: string
+}): Promise<LocalToolCallResult> => {
+  const name = getOptionalTextArg(args, 'name')?.trim()
+  if (!name) throw new Error('name is required.')
+
+  const scheduleType = getOptionalTextArg(args, 'scheduleType')
+  if (
+    scheduleType !== 'once' &&
+    scheduleType !== 'cron' &&
+    scheduleType !== 'interval'
+  ) {
+    throw new Error('scheduleType must be one of "once", "cron", "interval".')
+  }
+
+  const agentPrompt = getOptionalTextArg(args, 'agentPrompt')?.trim()
+  if (!agentPrompt) throw new Error('agentPrompt is required.')
+
+  const assistantId = getOptionalTextArg(args, 'assistantId')?.trim()
+  const requestedToolNames = getOptionalStringArrayArg(
+    args,
+    'requestedToolNames',
+  )
+  const agentConfig: ScheduledTaskAgentConfig | null =
+    assistantId || requestedToolNames?.length
+      ? {
+          ...(assistantId ? { assistantId } : {}),
+          ...(requestedToolNames?.length
+            ? { temporaryApprovedToolNames: requestedToolNames }
+            : {}),
+        }
+      : null
+
+  const config: TaskConfig = {
+    name,
+    type: 'agent',
+    createdBy: 'agent',
+    scheduleType,
+    cronExpression: getOptionalTextArg(args, 'cronExpression') ?? null,
+    intervalSeconds:
+      getOptionalBoundedIntegerArg({
+        args,
+        key: 'intervalSeconds',
+        min: 1,
+        max: 31_536_000,
+      }) ?? null,
+    oneTimeDateTime:
+      getOptionalBoundedIntegerArg({
+        args,
+        key: 'oneTimeDateTime',
+        min: 0,
+        max: Number.MAX_SAFE_INTEGER,
+      }) ?? null,
+    nextRunTime: null,
+    scriptPath: null,
+    agentPrompt,
+    agentConfig,
+    queueGroup: null,
+    dependsOn: null,
+    continueOnDependencyFailure: false,
+    priority: getOptionalIntegerArg({
+      args,
+      key: 'priority',
+      defaultValue: 5,
+      min: 1,
+      max: 10,
+    }),
+    timeoutSeconds: getOptionalIntegerArg({
+      args,
+      key: 'timeoutSeconds',
+      defaultValue: 300,
+      min: 1,
+      max: 3600,
+    }),
+    maxRetries: getOptionalIntegerArg({
+      args,
+      key: 'maxRetries',
+      defaultValue: 3,
+      min: 0,
+      max: 10,
+    }),
+    enabled: getOptionalBooleanArg(args, 'enabled') ?? true,
+    notifyOn: getScheduledTaskNotifyOnArg(args),
+  }
+
+  const task = await service.createTask(config)
+  return {
+    status: ToolCallResponseStatus.Success,
+    text: formatJsonResult(withResultAction(action, { tool, task })),
+  }
+}
+
+const executeScheduledTaskUpdate = async ({
+  service,
+  args,
+  tool,
+  action,
+}: {
+  service: ScheduledTaskServiceLike
+  args: Record<string, unknown>
+  tool: string
+  action?: string
+}): Promise<LocalToolCallResult> => {
+  const id = getOptionalTextArg(args, 'id')?.trim()
+  if (!id) throw new Error('id is required.')
+
+  const patch: Partial<TaskConfig> = {}
+  const existingTask =
+    args.requestedToolNames !== undefined && args.assistantId === undefined
+      ? await service.getTask(id)
+      : null
+
+  if (args.name !== undefined) {
+    const name = getOptionalTextArg(args, 'name')?.trim()
+    if (!name) throw new Error('name cannot be empty.')
+    patch.name = name
+  }
+  if (args.scheduleType !== undefined) {
+    const scheduleType = getOptionalTextArg(args, 'scheduleType')
+    if (
+      scheduleType !== 'once' &&
+      scheduleType !== 'cron' &&
+      scheduleType !== 'interval'
+    ) {
+      throw new Error('scheduleType must be one of "once", "cron", "interval".')
+    }
+    patch.scheduleType = scheduleType
+  }
+  if (args.cronExpression !== undefined) {
+    patch.cronExpression = getOptionalTextArg(args, 'cronExpression') ?? null
+  }
+  if (args.intervalSeconds !== undefined) {
+    patch.intervalSeconds =
+      getOptionalBoundedIntegerArg({
+        args,
+        key: 'intervalSeconds',
+        min: 1,
+        max: 31_536_000,
+      }) ?? null
+  }
+  if (args.oneTimeDateTime !== undefined) {
+    patch.oneTimeDateTime =
+      getOptionalBoundedIntegerArg({
+        args,
+        key: 'oneTimeDateTime',
+        min: 0,
+        max: Number.MAX_SAFE_INTEGER,
+      }) ?? null
+  }
+  if (args.agentPrompt !== undefined) {
+    const agentPrompt = getOptionalTextArg(args, 'agentPrompt')?.trim()
+    if (!agentPrompt) throw new Error('agentPrompt cannot be empty.')
+    patch.agentPrompt = agentPrompt
+  }
+  if (args.assistantId !== undefined) {
+    const assistantId = getOptionalTextArg(args, 'assistantId')?.trim()
+    const requestedToolNames =
+      args.requestedToolNames === undefined
+        ? undefined
+        : getOptionalStringArrayArg(args, 'requestedToolNames')
+    patch.agentConfig =
+      assistantId || requestedToolNames?.length
+        ? {
+            ...(assistantId ? { assistantId } : {}),
+            ...(requestedToolNames?.length
+              ? { temporaryApprovedToolNames: requestedToolNames }
+              : {}),
+          }
+        : null
+  } else if (args.requestedToolNames !== undefined) {
+    const requestedToolNames = getOptionalStringArrayArg(
+      args,
+      'requestedToolNames',
+    )
+    patch.agentConfig = requestedToolNames?.length
+      ? {
+          ...(existingTask?.agentConfig?.assistantId
+            ? { assistantId: existingTask.agentConfig.assistantId }
+            : {}),
+          temporaryApprovedToolNames: requestedToolNames,
+        }
+      : null
+  }
+  if (args.priority !== undefined) {
+    patch.priority = getOptionalIntegerArg({
+      args,
+      key: 'priority',
+      defaultValue: 5,
+      min: 1,
+      max: 10,
+    })
+  }
+  if (args.timeoutSeconds !== undefined) {
+    patch.timeoutSeconds = getOptionalIntegerArg({
+      args,
+      key: 'timeoutSeconds',
+      defaultValue: 300,
+      min: 1,
+      max: 3600,
+    })
+  }
+  if (args.maxRetries !== undefined) {
+    patch.maxRetries = getOptionalIntegerArg({
+      args,
+      key: 'maxRetries',
+      defaultValue: 3,
+      min: 0,
+      max: 10,
+    })
+  }
+  if (args.notifyOn !== undefined) {
+    patch.notifyOn = getScheduledTaskNotifyOnArg(args)
+  }
+  if (args.enabled !== undefined) {
+    const enabled = getOptionalBooleanArg(args, 'enabled')
+    if (enabled !== undefined) patch.enabled = enabled
+  }
+
+  await service.updateTask(id, patch)
+  const task = await service.getTask(id)
+  return {
+    status: ToolCallResponseStatus.Success,
+    text: formatJsonResult(withResultAction(action, { tool, task })),
+  }
+}
+
+const executeScheduledTaskDelete = async ({
+  service,
+  args,
+  tool,
+  action,
+}: {
+  service: ScheduledTaskServiceLike
+  args: Record<string, unknown>
+  tool: string
+  action?: string
+}): Promise<LocalToolCallResult> => {
+  const id = getOptionalTextArg(args, 'id')?.trim()
+  if (!id) throw new Error('id is required.')
+
+  await service.deleteTask(id)
+  return {
+    status: ToolCallResponseStatus.Success,
+    text: formatJsonResult(
+      withResultAction(action, { tool, id, deleted: true }),
+    ),
+  }
+}
+
+const executeScheduledTaskList = async ({
+  service,
+  args,
+  tool,
+  action,
+}: {
+  service: ScheduledTaskServiceLike
+  args: Record<string, unknown>
+  tool: string
+  action?: string
+}): Promise<LocalToolCallResult> => {
+  const enabled = getOptionalBooleanArg(args, 'enabled')
+  const tasks = await service.listTasks(
+    enabled !== undefined ? { enabled } : undefined,
+  )
+  return {
+    status: ToolCallResponseStatus.Success,
+    text: formatJsonResult(
+      withResultAction(action, { tool, tasks, count: tasks.length }),
+    ),
+  }
+}
+
+const executeScheduledTaskGet = async ({
+  service,
+  args,
+  tool,
+  action,
+}: {
+  service: ScheduledTaskServiceLike
+  args: Record<string, unknown>
+  tool: string
+  action?: string
+}): Promise<LocalToolCallResult> => {
+  const id = getOptionalTextArg(args, 'id')?.trim()
+  if (!id) throw new Error('id is required.')
+
+  const task = await service.getTask(id)
+  return {
+    status: ToolCallResponseStatus.Success,
+    text: formatJsonResult(withResultAction(action, { tool, task })),
+  }
+}
+
+const executeScheduledTaskRunNow = async ({
+  service,
+  args,
+  tool,
+  action,
+}: {
+  service: ScheduledTaskServiceLike
+  args: Record<string, unknown>
+  tool: string
+  action?: string
+}): Promise<LocalToolCallResult> => {
+  const id = getOptionalTextArg(args, 'id')?.trim()
+  if (!id) throw new Error('id is required.')
+
+  const result = await service.executeTaskNow(id)
+  return {
+    status: ToolCallResponseStatus.Success,
+    text: formatJsonResult(withResultAction(action, { tool, result })),
   }
 }
 

@@ -11,6 +11,7 @@ export const FILE_EDIT_GROUP_TOOL_NAME = 'fs_edit_ops'
 export const FILE_OPS_GROUP_TOOL_NAME = 'fs_file_ops'
 export const MEMORY_OPS_GROUP_TOOL_NAME = 'memory_ops'
 export const WEB_OPS_GROUP_TOOL_NAME = 'web_ops'
+export const SCHEDULED_TASK_OPS_GROUP_TOOL_NAME = 'scheduled_task_ops'
 
 export type BuiltinToolOptionLike = {
   disabled?: boolean
@@ -149,6 +150,51 @@ export const BUILTIN_TOOL_UI_META: Record<string, BuiltinToolUiMeta> = {
     labelFallback: 'Delete Memory',
     descFallback: 'Delete an existing memory item by id.',
   },
+  [SCHEDULED_TASK_OPS_GROUP_TOOL_NAME]: {
+    labelKey: 'settings.agent.builtinScheduledTaskOpsLabel',
+    descKey: 'settings.agent.builtinScheduledTaskOpsDesc',
+    labelFallback: 'Scheduled Tasks Toolset',
+    descFallback:
+      'Grouped scheduled task operations: create, update, delete, list, get, and run tasks now.',
+  },
+  scheduled_task_create: {
+    labelKey: 'settings.agent.builtinScheduledTaskCreateLabel',
+    descKey: 'settings.agent.builtinScheduledTaskCreateDesc',
+    labelFallback: 'Create Scheduled Task',
+    descFallback:
+      'Create a new scheduled agent task with a cron, interval, or one-time schedule.',
+  },
+  scheduled_task_update: {
+    labelKey: 'settings.agent.builtinScheduledTaskUpdateLabel',
+    descKey: 'settings.agent.builtinScheduledTaskUpdateDesc',
+    labelFallback: 'Update Scheduled Task',
+    descFallback: 'Update an existing scheduled task by id.',
+  },
+  scheduled_task_delete: {
+    labelKey: 'settings.agent.builtinScheduledTaskDeleteLabel',
+    descKey: 'settings.agent.builtinScheduledTaskDeleteDesc',
+    labelFallback: 'Delete Scheduled Task',
+    descFallback: 'Delete an existing scheduled task by id.',
+  },
+  scheduled_task_list: {
+    labelKey: 'settings.agent.builtinScheduledTaskListLabel',
+    descKey: 'settings.agent.builtinScheduledTaskListDesc',
+    labelFallback: 'List Scheduled Tasks',
+    descFallback:
+      'List scheduled tasks, optionally filtered by enabled status.',
+  },
+  scheduled_task_get: {
+    labelKey: 'settings.agent.builtinScheduledTaskGetLabel',
+    descKey: 'settings.agent.builtinScheduledTaskGetDesc',
+    labelFallback: 'Get Scheduled Task',
+    descFallback: 'Get a single scheduled task by id.',
+  },
+  scheduled_task_run_now: {
+    labelKey: 'settings.agent.builtinScheduledTaskRunNowLabel',
+    descKey: 'settings.agent.builtinScheduledTaskRunNowDesc',
+    labelFallback: 'Run Scheduled Task Now',
+    descFallback: 'Immediately enqueue a scheduled task for execution.',
+  },
   [WEB_OPS_GROUP_TOOL_NAME]: {
     labelKey: 'settings.agent.builtinWebOpsLabel',
     descKey: 'settings.agent.builtinWebOpsDesc',
@@ -212,11 +258,16 @@ export const getBuiltinToolUiMeta = (
   return BUILTIN_TOOL_UI_META[toolName] ?? null
 }
 
-export type BuiltinToolCategory = 'vault' | 'context' | 'external'
+export type BuiltinToolCategory =
+  | 'vault'
+  | 'context'
+  | 'scheduling'
+  | 'external'
 
 export const BUILTIN_TOOL_CATEGORY_ORDER: BuiltinToolCategory[] = [
   'vault',
   'context',
+  'scheduling',
   'external',
 ]
 
@@ -235,6 +286,13 @@ const BUILTIN_TOOL_CATEGORY_MAP: Record<string, BuiltinToolCategory> = {
   todo_write: 'context',
   ask_user_question: 'context',
   [MEMORY_OPS_GROUP_TOOL_NAME]: 'context',
+  [SCHEDULED_TASK_OPS_GROUP_TOOL_NAME]: 'scheduling',
+  scheduled_task_create: 'scheduling',
+  scheduled_task_update: 'scheduling',
+  scheduled_task_delete: 'scheduling',
+  scheduled_task_list: 'scheduling',
+  scheduled_task_get: 'scheduling',
+  scheduled_task_run_now: 'scheduling',
   [WEB_OPS_GROUP_TOOL_NAME]: 'external',
   send_attachment: 'external',
   js_eval: 'external',
@@ -259,6 +317,7 @@ export const getBuiltinToolCategory = (
 const BUILTIN_TOOL_DISPLAY_ORDER: Record<BuiltinToolCategory, string[]> = {
   vault: [],
   context: [],
+  scheduling: [],
   external: [
     WEB_OPS_GROUP_TOOL_NAME,
     'js_eval',
@@ -286,6 +345,10 @@ export const BUILTIN_TOOL_CATEGORY_I18N: Record<
   context: {
     key: 'settings.agent.toolsGroupBuiltinContext',
     fallback: 'Context & Memory',
+  },
+  scheduling: {
+    key: 'settings.agent.toolsGroupBuiltinScheduling',
+    fallback: 'Scheduled Tasks',
   },
   external: {
     key: 'settings.agent.toolsGroupBuiltinExternal',

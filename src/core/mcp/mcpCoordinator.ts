@@ -9,6 +9,7 @@ import {
 } from '../modules/moduleChatModeRegistry'
 import type { RAGEngine } from '../rag/ragEngine'
 
+import type { ScheduledTaskServiceLike } from './localFileTools'
 import { McpManager } from './mcpManager'
 
 /** The subset of `ModuleChatModeRegistry` the coordinator needs to replay
@@ -33,6 +34,7 @@ type McpCoordinatorDeps = {
     listener: (settings: YoloSettings) => void,
   ) => () => void
   getRagEngine?: () => Promise<RAGEngine>
+  getScheduledTasksService?: () => ScheduledTaskServiceLike | null
   promptSourceWatcher?: PromptSourceWatcher
   /**
    * Source of module chat mode declarations to replay onto the MCP manager
@@ -51,6 +53,7 @@ export class McpCoordinator {
     listener: (settings: YoloSettings) => void,
   ) => () => void
   private readonly getRagEngine?: () => Promise<RAGEngine>
+  private readonly getScheduledTasksService?: () => ScheduledTaskServiceLike | null
   private readonly promptSourceWatcher?: PromptSourceWatcher
   private readonly moduleChatModeRegistry?: ModuleChatModeRegistrySource
 
@@ -72,6 +75,7 @@ export class McpCoordinator {
     this.openApplyReview = deps.openApplyReview
     this.registerSettingsListener = deps.registerSettingsListener
     this.getRagEngine = deps.getRagEngine
+    this.getScheduledTasksService = deps.getScheduledTasksService
     this.promptSourceWatcher = deps.promptSourceWatcher
     this.moduleChatModeRegistry = deps.moduleChatModeRegistry
   }
@@ -91,6 +95,7 @@ export class McpCoordinator {
             openApplyReview: this.openApplyReview,
             registerSettingsListener: this.registerSettingsListener,
             getRagEngine: this.getRagEngine,
+            getScheduledTasksService: this.getScheduledTasksService,
             promptSourceWatcher: this.promptSourceWatcher,
           })
           await manager.initialize()

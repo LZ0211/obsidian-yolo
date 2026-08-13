@@ -3237,6 +3237,245 @@ describe('project_ops', () => {
   })
 })
 
+describe('scheduled_task_ops', () => {
+  const app = {} as unknown as App
+
+  const makeService = () => ({
+    createTask: jest.fn(),
+    updateTask: jest.fn(),
+    deleteTask: jest.fn(),
+    listTasks: jest.fn(),
+    getTask: jest.fn(),
+    executeTaskNow: jest.fn(),
+  })
+
+  it('returns an Error when the scheduled tasks service is unavailable', async () => {
+    const result = await callLocalFileTool({
+      app,
+      toolName: 'scheduled_task_ops',
+      args: {
+        action: 'create',
+        name: 'x',
+        scheduleType: 'interval',
+        agentPrompt: 'do it',
+      },
+      getScheduledTasksService: () => null,
+    })
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+  })
+
+  it('creates an agent task with defaults and createdBy=agent', async () => {
+    const service = makeService()
+    service.createTask.mockResolvedValue({ id: 'task_1', name: 'My Task' })
+
+    const result = await callLocalFileTool({
+      app,
+      toolName: 'scheduled_task_ops',
+      args: {
+        action: 'create',
+        name: 'My Task',
+        scheduleType: 'interval',
+        intervalSeconds: 60,
+        agentPrompt: 'Summarize inbox',
+        requestedToolNames: [
+          'yolo_local__read_file',
+          'yolo_local__read_file',
+          ' yolo_local__fs_search ',
+        ],
+      },
+      getScheduledTasksService: () => service as never,
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    expect(service.createTask).toHaveBeenCalledTimes(1)
+    const config = service.createTask.mock.calls[0][0]
+    expect(config).toMatchObject({
+      name: 'My Task',
+      type: 'agent',
+      createdBy: 'agent',
+      scheduleType: 'interval',
+      intervalSeconds: 60,
+      agentPrompt: 'Summarize inbox',
+      agentConfig: {
+        temporaryApprovedToolNames: [
+          'yolo_local__read_file',
+          'yolo_local__fs_search',
+        ],
+      },
+      scriptPath: null,
+      queueGroup: null,
+      dependsOn: null,
+      continueOnDependencyFailure: false,
+      enabled: true,
+      notifyOn: [],
+    })
+    if (result.status !== ToolCallResponseStatus.Success) {
+      throw new Error('expected success')
+    }
+    expect(JSON.parse(result.text)).toMatchObject({
+      tool: 'scheduled_task_ops',
+      action: 'create',
+      task: { id: 'task_1', name: 'My Task' },
+    })
+  })
+
+  it('rejects scheduled_task_create when name is missing', async () => {
+    const service = makeService()
+    const result = await callLocalFileTool({
+      app,
+      toolName: 'scheduled_task_ops',
+      args: {
+        action: 'create',
+        scheduleType: 'interval',
+        agentPrompt: 'do it',
+      },
+      getScheduledTasksService: () => service as never,
+    })
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+    expect(service.createTask).not.toHaveBeenCalled()
+  })
+
+  it('rejects scheduled_task_create with an invalid scheduleType', async () => {
+    const service = makeService()
+    const result = await callLocalFileTool({
+      app,
+      toolName: 'scheduled_task_ops',
+      args: {
+        action: 'create',
+        name: 'x',
+        scheduleType: 'weekly',
+        agentPrompt: 'do it',
+      },
+      getScheduledTasksService: () => service as never,
+    })
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+    expect(service.createTask).not.toHaveBeenCalled()
+  })
+
+  it('only patches fields present in scheduled_task_update args', async () => {
+    const service = makeService()
+    service.updateTask.mockResolvedValue(undefined)
+    service.getTask.mockResolvedValue({ id: 'task_1', name: 'Renamed' })
+
+    const result = await callLocalFileTool({
+      app,
+      toolName: 'scheduled_task_ops',
+      args: { action: 'update', id: 'task_1', name: 'Renamed' },
+      getScheduledTasksService: () => service as never,
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    expect(service.updateTask).toHaveBeenCalledWith('task_1', {
+      name: 'Renamed',
+    })
+    expect(service.getTask).toHaveBeenCalledWith('task_1')
+  })
+
+  it('updates task-scoped tool permissions without dropping the assistant binding', async () => {
+    const service = makeService()
+    service.getTask
+      .mockResolvedValueOnce({
+        id: 'task_1',
+        agentConfig: { assistantId: 'assistant-1' },
+      })
+      .mockResolvedValueOnce({ id: 'task_1', name: 'Renamed' })
+    service.updateTask.mockResolvedValue(undefined)
+
+    const result = await callLocalFileTool({
+      app,
+      toolName: 'scheduled_task_ops',
+      args: {
+        action: 'update',
+        id: 'task_1',
+        requestedToolNames: ['yolo_local__read_file'],
+      },
+      getScheduledTasksService: () => service as never,
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    expect(service.updateTask).toHaveBeenCalledWith('task_1', {
+      agentConfig: {
+        assistantId: 'assistant-1',
+        temporaryApprovedToolNames: ['yolo_local__read_file'],
+      },
+    })
+  })
+
+  it('deletes a task by id', async () => {
+    const service = makeService()
+    service.deleteTask.mockResolvedValue(undefined)
+
+    const result = await callLocalFileTool({
+      app,
+      toolName: 'scheduled_task_ops',
+      args: { action: 'delete', id: 'task_1' },
+      getScheduledTasksService: () => service as never,
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    expect(service.deleteTask).toHaveBeenCalledWith('task_1')
+  })
+
+  it('lists tasks with an optional enabled filter', async () => {
+    const service = makeService()
+    service.listTasks.mockResolvedValue([{ id: 'task_1' }])
+
+    const result = await callLocalFileTool({
+      app,
+      toolName: 'scheduled_task_ops',
+      args: { action: 'list', enabled: true },
+      getScheduledTasksService: () => service as never,
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    expect(service.listTasks).toHaveBeenCalledWith({ enabled: true })
+  })
+
+  it('gets a single task by id', async () => {
+    const service = makeService()
+    service.getTask.mockResolvedValue({ id: 'task_1', name: 'My Task' })
+
+    const result = await callLocalFileTool({
+      app,
+      toolName: 'scheduled_task_ops',
+      args: { action: 'get', id: 'task_1' },
+      getScheduledTasksService: () => service as never,
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    expect(service.getTask).toHaveBeenCalledWith('task_1')
+  })
+
+  it('enqueues a task to run now', async () => {
+    const service = makeService()
+    service.executeTaskNow.mockResolvedValue({ outcome: 'enqueued' })
+
+    const result = await callLocalFileTool({
+      app,
+      toolName: 'scheduled_task_ops',
+      args: { action: 'run_now', id: 'task_1' },
+      getScheduledTasksService: () => service as never,
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    expect(service.executeTaskNow).toHaveBeenCalledWith('task_1')
+  })
+
+  it('propagates a not-found error from getTask as an Error status', async () => {
+    const service = makeService()
+    service.getTask.mockRejectedValue(new Error('任务不存在: missing'))
+
+    const result = await callLocalFileTool({
+      app,
+      toolName: 'scheduled_task_ops',
+      args: { action: 'get', id: 'missing' },
+      getScheduledTasksService: () => service as never,
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+  })
+})
+
 describe('send_attachment (Bot Platform Phase 6.5)', () => {
   const app = {} as unknown as App
 
