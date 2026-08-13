@@ -251,6 +251,20 @@ export type SubagentQueueRecoveryResult =
     }
   | SubagentControlRejected
 
+/**
+ * resumeAfterRecovery 结果（R14 UI 一键恢复）：recover 成功（session 回 IDLE）
+ * 后把所有 RECOVERY_REQUIRED 意图置回 PENDING 并投递续跑的组合动作。
+ * accepted=true 时 `recovered` 为本次置回 PENDING 的意图数（0 = 无待恢复意图，
+ * 仅投递既有 PENDING after_run 意图）；拒绝分支复用 SubagentControlRejected。
+ */
+export type SubagentResumeAfterRecoveryResult =
+  | {
+      accepted: true
+      recovered: number
+      sessionRevision: number
+    }
+  | SubagentControlRejected
+
 /** beginRun 输入（Task 7 审查 #2：IDLE 续跑前创建新 run 记录并推进 nextRunSequence）。 */
 export type SubagentBeginRunInput = {
   sessionId: string

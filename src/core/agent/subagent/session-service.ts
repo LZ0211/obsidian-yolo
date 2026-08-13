@@ -37,6 +37,7 @@ import {
   type SubagentRecoverInput,
   type SubagentRecoverResult,
   type SubagentResultSummary,
+  type SubagentResumeAfterRecoveryResult,
   type SubagentRun,
   type SubagentSendInput,
   type SubagentSendResult,
@@ -332,6 +333,92 @@ export class SubagentSessionService {
     return {
       accepted: true,
       status: SUBAGENT_SESSION_STATUS.IDLE,
+      sessionRevision: next.session.revision,
+    }
+  }
+
+  /**
+   * resumeAfterRecovery（R14 UI 一键恢复）：recover 成功（中断 run 已 aborted、
+   * session 回 IDLE）后由 UI 调用——把所有 RECOVERY_REQUIRED 意图一次置回
+   * PENDING（同一次 CAS 写、revision 推进，recoverInterruptedSessions 的逆
+   * 操作），随后 deliverQueuedIntents 把 PENDING after_run 意图投递成续跑
+   * （onIntentRunRequested → runner）。此前 UI 只调 deliverQueuedIntents，而
+   * 中断意图是 RECOVERY_REQUIRED 不是 PENDING，投递不命中 → 用户必须再手动
+   * resend 才续跑（两步操作）；本方法收敛为一步。
+   * 状态前置守卫：仅 IDLE 可一键恢复（recover 之后）；无 recovery_required
+   * 意图时不做状态写、直接投递（既有 PENDING after_run 意图可能已存在）。
+   */
+  async resumeAfterRecovery(
+    sessionId: string,
+  ): Promise<SubagentResumeAfterRecoveryResult> {
+    const stored = await this.store.readById(sessionId)
+    if (!stored) {
+      return {
+        accepted: false,
+        errorCode: 'session_not_found',
+        retryable: false,
+      }
+    }
+    if (stored.session.status !== SUBAGENT_SESSION_STATUS.IDLE) {
+      return {
+        accepted: false,
+        errorCode: 'session_not_sendable',
+        retryable: false,
+        current: this.toSnapshot(stored),
+      }
+    }
+    const recoveryIndexes: number[] = []
+    stored.intents.forEach((intent, index) => {
+      if (intent.state === SUBAGENT_MESSAGE_INTENT_STATE.RECOVERY_REQUIRED) {
+        recoveryIndexes.push(index)
+      }
+    })
+    if (recoveryIndexes.length === 0) {
+      await this.deliverQueuedIntents(sessionId)
+      return {
+        accepted: true,
+        recovered: 0,
+        sessionRevision: stored.session.revision,
+      }
+    }
+    const next: StoredSubagentSession = {
+      ...stored,
+      // RECOVERY_REQUIRED → PENDING 时清空 claim 归属（queueRecovery resend
+      // 同款语义：意图重新待投递，beginRun 按 FIFO 原子 claim）。
+      intents: stored.intents.map((intent, index) =>
+        recoveryIndexes.includes(index)
+          ? {
+              ...intent,
+              state: SUBAGENT_MESSAGE_INTENT_STATE.PENDING,
+              claimedByRunKey: undefined,
+            }
+          : intent,
+      ),
+      session: {
+        ...stored.session,
+        revision: stored.session.revision + 1,
+        lastActiveAt: Date.now(),
+      },
+    }
+    try {
+      await this.store.compareAndUpdate(stored, next)
+    } catch (error) {
+      if (error instanceof RevisionConflictError) {
+        return {
+          accepted: false,
+          errorCode: 'revision_conflict',
+          retryable: true,
+          current: this.toSnapshot(stored),
+        }
+      }
+      throw error
+    }
+    // 投递内部重新读 store，能看到刚置回 PENDING 的意图（deliverQueuedIntents
+    // 只投递不改写状态——claim 由续跑路径的 beginRun 原子执行）。
+    await this.deliverQueuedIntents(sessionId)
+    return {
+      accepted: true,
+      recovered: recoveryIndexes.length,
       sessionRevision: next.session.revision,
     }
   }
@@ -1028,8 +1115,9 @@ export function getSubagentSessionService(): SubagentSessionService | null {
  * Web 浏览器侧的会话服务挂载（Task 11 web 接线）：浏览器进程没有本地文件
  * 系统/会话 store，UI 消费面（SubagentCard 的 session 状态行/恢复/resend/drop
  * 与 runSubagentSessionAction 的续跑投递）只用到 query/recover/queueRecovery/
- * deliverQueuedIntents 四个方法——由 createWebSubagentSessionService 的 HTTP
- * facade 经 /api/subagent/* 转发到服务端真实 SubagentSessionService。
+ * deliverQueuedIntents/resumeAfterRecovery 五个方法——由
+ * createWebSubagentSessionService 的 HTTP facade 经 /api/subagent/* 转发到
+ * 服务端真实 SubagentSessionService。
  * 与桌面 initSubagentSessionService 互斥（同一模块级单例）：浏览器 bundle 只
  * 调用本入口；桌面进程只调用 initSubagentSessionService。cast 边界限定在此处：
  * facade 是 Pick 子集，运行时绝不触碰其余方法（桌面 UI 的会话 chat 输入面
@@ -1037,7 +1125,11 @@ export function getSubagentSessionService(): SubagentSessionService | null {
  */
 export type WebSubagentSessionServiceLike = Pick<
   SubagentSessionService,
-  'query' | 'recover' | 'queueRecovery' | 'deliverQueuedIntents'
+  | 'query'
+  | 'recover'
+  | 'queueRecovery'
+  | 'deliverQueuedIntents'
+  | 'resumeAfterRecovery'
 >
 
 export function initWebSubagentSessionService(

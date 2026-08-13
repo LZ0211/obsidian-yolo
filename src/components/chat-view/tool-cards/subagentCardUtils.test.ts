@@ -239,14 +239,17 @@ describe('runSubagentSessionAction', () => {
     expect(warnSpy).not.toHaveBeenCalled()
   })
 
-  it('delivers queued intents after an accepted recover', async () => {
+  it('does not deliver queued intents after an accepted recover (R14: resumeAfterRecovery delivers internally)', async () => {
+    // recover 的一键恢复走 service.resumeAfterRecovery——内部完成
+    // RECOVERY_REQUIRED → PENDING 的 CAS 写 + 投递；此处不再二次投递，
+    // 避免 onIntentRunRequested 在续跑 beginRun 前双触发
     await runSubagentSessionAction(
       'recover',
-      Promise.resolve({ accepted: true, status: 'idle', sessionRevision: 2 }),
+      Promise.resolve({ accepted: true, recovered: 1, sessionRevision: 2 }),
       jest.fn(),
       'sub_abc123',
     )
-    expect(mockedDeliverQueuedIntents).toHaveBeenCalledWith('sub_abc123')
+    expect(mockedDeliverQueuedIntents).not.toHaveBeenCalled()
   })
 
   it('delivers queued intents after an accepted resend', async () => {

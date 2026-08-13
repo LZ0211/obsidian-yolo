@@ -7,6 +7,7 @@
  * runSubagentSessionAction 的续跑投递）所需的方法，经 /api/subagent/* 转发：
  * - query → GET  /api/subagent/session
  * - recover → POST /api/subagent/recover
+ * - resumeAfterRecovery → POST /api/subagent/resume-recovery
  * - queueRecovery → POST /api/subagent/queue-recovery
  * - deliverQueuedIntents → POST /api/subagent/deliver-queued-intents
  *
@@ -20,6 +21,7 @@ import type {
   SubagentQueueRecoveryResult,
   SubagentRecoverInput,
   SubagentRecoverResult,
+  SubagentResumeAfterRecoveryResult,
   SubagentSessionSnapshot,
 } from '../../core/agent/subagent/session-types'
 
@@ -52,6 +54,15 @@ export class WebSubagentSessionService {
     return this.api.postJson<SubagentQueueRecoveryResult>(
       '/api/subagent/queue-recovery',
       input,
+    )
+  }
+
+  async resumeAfterRecovery(
+    sessionId: string,
+  ): Promise<SubagentResumeAfterRecoveryResult> {
+    return this.api.postJson<SubagentResumeAfterRecoveryResult>(
+      '/api/subagent/resume-recovery',
+      { sessionId },
     )
   }
 

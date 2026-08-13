@@ -129,6 +129,54 @@ export function registerSubagentRoutes(
     writeJson(res, 200, result)
   })
 
+  router.post('/api/subagent/resume-recovery', async (req, res) => {
+    const service = context.getSessionService()
+    if (!service) {
+      writeJson(
+        res,
+        503,
+        apiError(
+          'subagent_unavailable',
+          'The subagent session service is unavailable.',
+        ),
+      )
+      return
+    }
+    const body = await readJsonBody(req)
+    if (!body.ok) {
+      writeJson(res, body.statusCode, body.body)
+      return
+    }
+    const { sessionId } = body.value
+    if (typeof sessionId !== 'string') {
+      writeJson(
+        res,
+        400,
+        apiError('invalid_request', 'sessionId is required'),
+      )
+      return
+    }
+    const snapshot = await service.query(sessionId)
+    if (!snapshot) {
+      writeJson(
+        res,
+        404,
+        apiError('session_not_found', 'The subagent session was not found.'),
+      )
+      return
+    }
+    const access = await context.resolveSubagentAccess(
+      getSessionId(req.headers),
+      snapshot.session.parentConversationId,
+    )
+    if (!access.ok) {
+      writeJson(res, access.statusCode, access.body)
+      return
+    }
+    const result = await service.resumeAfterRecovery(sessionId)
+    writeJson(res, 200, result)
+  })
+
   router.post('/api/subagent/queue-recovery', async (req, res) => {
     const service = context.getSessionService()
     if (!service) {

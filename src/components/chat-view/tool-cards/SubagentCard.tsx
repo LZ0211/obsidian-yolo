@@ -220,14 +220,12 @@ export function SubagentCard({
     // settle 后主动重查快照：恢复条/queued 按钮随新状态刷新（revision_conflict
     // 时也重查——冲突结果带 current 快照，重拉拿到最新真相）；拒绝 warn 见
     // runSubagentSessionAction。
+    // R14 一键恢复：recover + 把全部 RECOVERY_REQUIRED 意图置 PENDING + 投递
+    // 续跑 收敛为服务端单次动作（此前 deliver 对 RECOVERY_REQUIRED 不投递，
+    // 用户必须再手动 resend 才续跑）。
     void runSubagentSessionAction(
       'recover',
-      service.recover({
-        sessionId,
-        expectedSessionRevision: sessionSnapshot.session.revision,
-        action: 'mark_interrupted_run_aborted',
-        requestId: `ui:recover:${crypto.randomUUID()}`,
-      }),
+      service.resumeAfterRecovery(sessionId),
       refreshSessionSnapshot,
       sessionId,
     )

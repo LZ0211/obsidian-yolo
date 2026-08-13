@@ -931,6 +931,145 @@ describe('SubagentSessionService', () => {
     })
   })
 
+  describe('resumeAfterRecovery (R14 UI 一键恢复)', () => {
+    const setupRecoveredSession = async (
+      app: App,
+      requested: string[],
+    ) => {
+      const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)
+      const service = new SubagentSessionService(store, {
+        isSessionActive: () => false,
+        onIntentRunRequested: (sessionId) => requested.push(sessionId),
+      })
+      const spawned = await service.spawn({
+        title: 't',
+        prompt: 'p',
+        mode: AGENT_SESSION_MODE.PERSISTENT,
+        requestId: 'r1',
+        parentConversationId: 'c',
+        originAssistantMessageId: 'm',
+        originToolCallId: 't',
+        memoryAssistantId: 'x',
+      })
+      if (!spawned.accepted) throw new Error('spawn failed')
+      // run 1 结算后投递 after_run 意图并 claim 进 run 2（崩溃遗留前置）
+      await service.settleRun({
+        sessionId: spawned.sessionId,
+        runKey: spawned.runKey,
+        status: 'completed',
+        result: {
+          status: 'completed',
+          content: 'ok',
+          durationMs: 1,
+          toolUseCount: 0,
+        },
+        completedAt: 2000,
+      })
+      const sent = await service.send({
+        sessionId: spawned.sessionId,
+        messageId: 'm2',
+        text: 'again',
+        delivery: 'after_run',
+        expectedSessionRevision: 2,
+        requestId: 'r2',
+      })
+      if (!sent.accepted) throw new Error('send failed')
+      const begin = await service.beginRun({
+        sessionId: spawned.sessionId,
+        expectedSessionRevision: 3,
+        prompt: 'fallback',
+      })
+      if (!begin.accepted) throw new Error('beginRun failed')
+      // 恢复扫描：run 2 置 INTERRUPTED、其 claim 的意图置 RECOVERY_REQUIRED、
+      // session 置 NEEDS_RESUME（revision 4 → 5）；随后显式 recover 把 run 置
+      // ABORTED、session 回 IDLE（revision 5 → 6）——resumeAfterRecovery 的
+      // 前置状态
+      await service.recoverInterruptedSessions()
+      const recovered = await service.recover({
+        sessionId: spawned.sessionId,
+        expectedSessionRevision: 5,
+        action: 'mark_interrupted_run_aborted',
+        requestId: 'r3',
+      })
+      if (!recovered.accepted) throw new Error('recover failed')
+      return { service, store, sessionId: spawned.sessionId }
+    }
+
+    it('turns recovery_required intents back to pending and delivers the continuation', async () => {
+      const requested: string[] = []
+      const { service, store, sessionId } = await setupRecoveredSession(
+        mockApp(),
+        requested,
+      )
+
+      const result = await service.resumeAfterRecovery(sessionId)
+
+      expect(result.accepted).toBe(true)
+      if (!result.accepted) throw new Error('expected acceptance')
+      // 唯一一条 recovery_required 意图被置回 PENDING，revision 推进
+      expect(result.recovered).toBe(1)
+      const stored = await store.readById(sessionId)
+      expect(stored?.intents[0]).toMatchObject({ state: 'pending' })
+      expect(stored?.intents[0]).not.toHaveProperty('claimedByRunKey')
+      // 投递续跑：PENDING after_run 意图 → onIntentRunRequested 触发
+      expect(requested).toContain(sessionId)
+    })
+
+    it('delivers without a state write when no recovery_required intents exist', async () => {
+      const requested: string[] = []
+      const { service, sessionId } = await setupRecoveredSession(
+        mockApp(),
+        requested,
+      )
+      // 第一次一键恢复把意图置回 PENDING（无 runner 时意图保持 PENDING）
+      const first = await service.resumeAfterRecovery(sessionId)
+      expect(first.accepted).toBe(true)
+      requested.length = 0
+
+      // 第二次无 RECOVERY_REQUIRED 可恢复（recovered 0），仍投递既有
+      // PENDING after_run 意图触发续跑
+      const second = await service.resumeAfterRecovery(sessionId)
+
+      expect(second.accepted).toBe(true)
+      if (!second.accepted) throw new Error('expected acceptance')
+      expect(second.recovered).toBe(0)
+      expect(requested).toContain(sessionId)
+    })
+
+    it('rejects when the session is not idle', async () => {
+      const requested: string[] = []
+      const app = mockApp()
+      const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)
+      const service = new SubagentSessionService(store, {
+        isSessionActive: () => false,
+        onIntentRunRequested: (sessionId) => requested.push(sessionId),
+      })
+      const spawned = await service.spawn({
+        title: 't',
+        prompt: 'p',
+        mode: AGENT_SESSION_MODE.PERSISTENT,
+        requestId: 'r1',
+        parentConversationId: 'c',
+        originAssistantMessageId: 'm',
+        originToolCallId: 't',
+        memoryAssistantId: 'x',
+      })
+      if (!spawned.accepted) throw new Error('spawn failed')
+      // RUNNING 会话（beginRun 后）不可一键恢复——recover 才能先回 IDLE
+      const begin = await service.beginRun({
+        sessionId: spawned.sessionId,
+        expectedSessionRevision: 1,
+        prompt: 'p2',
+      })
+      if (!begin.accepted) throw new Error('beginRun failed')
+      const rejected = await service.resumeAfterRecovery(spawned.sessionId)
+      expect(rejected.accepted).toBe(false)
+      if (rejected.accepted) throw new Error('expected rejection')
+      expect(rejected.errorCode).toBe('session_not_sendable')
+      expect(requested).toEqual([])
+    })
+  })
+
   it('claims pending next_boundary intents into a drain payload (Task 9, F1)', async () => {
     const app = mockApp()
     const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)

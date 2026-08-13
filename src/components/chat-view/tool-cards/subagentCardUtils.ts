@@ -1,6 +1,7 @@
 import {
   type SubagentQueueRecoveryResult,
   type SubagentRecoverResult,
+  type SubagentResumeAfterRecoveryResult,
   type SubagentSessionSnapshot,
   type SubagentSessionStatus,
 } from '../../../core/agent/subagent/session-types'
@@ -253,17 +254,24 @@ export function buildSubagentCardSessionProps(
  * - 调用本身抛错（store I/O 等）同样 warn，不产生 unhandled rejection；
  * - settle 后一律 onSettled（组件用它触发快照重查——恢复/resend/drop 只改
  *   store，registry 不感知，不重查 UI 不刷新）；
- * - recover/resend 成功（drop 不触发）后调用
+ * - resend 成功（drop 不触发）后调用
  *   `getSubagentSessionService()?.deliverQueuedIntents(sessionId)`——把
- *   PENDING after_run 意图投递成续跑（UI 续跑缺口修复）。session-service
- *   以动态 import 获取（与 main.ts 同款），避免本工具模块新增对
- *   session-service 的静态边；service 未初始化时静默跳过。
+ *   PENDING after_run 意图投递成续跑（UI 续跑缺口修复）。recover 的一键恢复
+ *   走 `service.resumeAfterRecovery`（R14：同一次 CAS 把 RECOVERY_REQUIRED 置
+ *   PENDING + 内部投递），不在此二次投递——否则 onIntentRunRequested 在续跑
+ *   beginRun 前的 IDLE 窗口会双触发，并发拉起两个续跑。session-service 以
+ *   动态 import 获取（与 main.ts 同款），避免本工具模块新增对 session-service
+ *   的静态边；service 未初始化时静默跳过。
  * 组件侧以 `void runSubagentSessionAction(...)` 包裹（React 异步 handler
  * 规范）。
  */
 export async function runSubagentSessionAction(
   action: 'recover' | 'resend' | 'drop',
-  request: Promise<SubagentRecoverResult | SubagentQueueRecoveryResult>,
+  request: Promise<
+    | SubagentRecoverResult
+    | SubagentQueueRecoveryResult
+    | SubagentResumeAfterRecoveryResult
+  >,
   onSettled: () => void,
   sessionId: string,
 ): Promise<void> {
@@ -275,7 +283,7 @@ export async function runSubagentSessionAction(
         errorCode: result.errorCode,
         retryable: result.retryable,
       })
-    } else if (action === 'recover' || action === 'resend') {
+    } else if (action === 'resend') {
       const { getSubagentSessionService } = await import(
         '../../../core/agent/subagent/session-service'
       )
