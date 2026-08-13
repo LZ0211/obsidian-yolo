@@ -91,10 +91,7 @@ class SubagentRuntimeRegistry {
       )
     }
     this.reservationsByRunKey.set(identity.runKey, identity)
-    this.reservationRunKeyBySessionId.set(
-      identity.sessionId,
-      identity.runKey,
-    )
+    this.reservationRunKeyBySessionId.set(identity.sessionId, identity.runKey)
   }
 
   /** Release a reservation by run key or session id. No-op when unknown. */

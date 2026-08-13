@@ -1,14 +1,14 @@
 import { App, normalizePath } from 'obsidian'
 import path from 'path-browserify'
 
-import { AbstractJsonRepository } from '../base'
 import {
   SUBAGENT_SESSION_SCHEMA_VERSION,
-  SubagentRun,
   SubagentMessageIntent,
+  SubagentRun,
   SubagentSession,
 } from '../../../core/agent/subagent/session-types'
 import { AgentFileChange, ChatMessage } from '../../../types/chat'
+import { AbstractJsonRepository } from '../base'
 
 export type StoredSubagentSession = {
   schemaVersion: typeof SUBAGENT_SESSION_SCHEMA_VERSION
@@ -44,7 +44,11 @@ export class SubagentSessionStore extends AbstractJsonRepository<
   StoredSubagentSession,
   SubagentSessionMeta
 > {
-  constructor(app: App, dataDir: string, options?: SubagentSessionStoreOptions) {
+  constructor(
+    app: App,
+    dataDir: string,
+    options?: SubagentSessionStoreOptions,
+  ) {
     super(app, dataDir, options)
   }
 
@@ -62,7 +66,9 @@ export class SubagentSessionStore extends AbstractJsonRepository<
     }
   }
 
-  public async readById(sessionId: string): Promise<StoredSubagentSession | null> {
+  public async readById(
+    sessionId: string,
+  ): Promise<StoredSubagentSession | null> {
     return this.read(`v${SUBAGENT_SESSION_SCHEMA_VERSION}_${sessionId}.json`)
   }
 

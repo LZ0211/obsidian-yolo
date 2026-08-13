@@ -35,7 +35,6 @@ import {
 import { resolveAssistantWorkspaceAccessPolicy } from '../workspaceScope'
 
 import { SUBAGENT_MAX_AUTO_ITERATIONS } from './constants'
-import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './tool-name-utils'
 import {
   type DelegatedAssistantProfile,
   resolveDelegatedAssistantProfile,
@@ -48,6 +47,7 @@ import type {
   SubagentSession,
 } from './session-types'
 import { filterAllowedToolsForSubagent } from './tool-filter'
+import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './tool-name-utils'
 
 /** Narrow owning-conversation binding the resolver consumes at run time.
  * Master has no `ConversationProjection` (src/core/conversation/projection/)

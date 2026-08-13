@@ -110,10 +110,9 @@ describe('subagentRuntimeRegistry', () => {
     const reserve = subagentRuntimeRegistry.reserve.bind(
       subagentRuntimeRegistry,
     )
-    const releaseReservation =
-      subagentRuntimeRegistry.releaseReservation.bind(
-        subagentRuntimeRegistry,
-      )
+    const releaseReservation = subagentRuntimeRegistry.releaseReservation.bind(
+      subagentRuntimeRegistry,
+    )
     reserve({
       sessionId: 'session_reserved',
       runSequence: 1,

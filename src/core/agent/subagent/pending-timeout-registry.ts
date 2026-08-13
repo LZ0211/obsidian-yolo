@@ -33,7 +33,6 @@ import {
   registerSubagentDeadline,
   renewSubagentDeadline,
 } from './pending-timeout'
-
 import {
   PARENT_SUBAGENT_DEFAULT_COOLDOWN_MS,
   PARENT_SUBAGENT_DEFAULT_MAX_CONSECUTIVE_TIMEOUTS,

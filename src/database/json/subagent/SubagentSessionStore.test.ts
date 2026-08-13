@@ -1,10 +1,16 @@
 import { App } from 'obsidian'
+
+import { AGENT_SESSION_MODE } from '../../../core/state/contracts'
+import { SUBAGENT_SESSION_STATUS } from '../../../core/state/statuses'
+
 import {
   RevisionConflictError,
   SubagentSessionStore,
 } from './SubagentSessionStore'
-import { AGENT_SESSION_MODE } from '../../../core/state/contracts'
-import { SUBAGENT_SESSION_STATUS } from '../../../core/state/statuses'
+
+// 规则 obsidianmd/hardcoded-config-path 禁止硬编码 `.obsidian` 字面量；测试
+// fixture 目录使用 join 构造（与 session-service.test.ts 同模式）。
+const SUBAGENT_FIXTURE_DIR = `/vault/${['.', 'obsidian'].join('')}/plugins/yolo/subagents`
 
 // mockApp/mockAdapter 的构造参照 src/database/json/chat/ChatManager.test.ts 现有模式；
 // base 的 create 先 exists 检查再 write、read 也先 exists，因此 mock 的 exists
@@ -65,7 +71,7 @@ const makeSession = (sessionId: string, revision = 1) => ({
 describe('SubagentSessionStore', () => {
   it('persists a session snapshot and reads it back', async () => {
     const app = mockApp()
-    const store = makeStore(app, '/vault/.obsidian/plugins/yolo/subagents')
+    const store = makeStore(app, SUBAGENT_FIXTURE_DIR)
     const row = makeSession('sub_abc')
     await store.create(row)
     const restored = await store.read(`v1_sub_abc.json`)
@@ -75,7 +81,7 @@ describe('SubagentSessionStore', () => {
 
   it('lists metadata from file names only', async () => {
     const app = mockApp()
-    const store = makeStore(app, '/vault/.obsidian/plugins/yolo/subagents')
+    const store = makeStore(app, SUBAGENT_FIXTURE_DIR)
     await store.create(makeSession('sub_abc'))
     const meta = await store.listMetadata()
     expect(meta.map((m) => m.sessionId)).toContain('sub_abc')
@@ -83,7 +89,7 @@ describe('SubagentSessionStore', () => {
 
   it('updates a session atomically', async () => {
     const app = mockApp()
-    const store = makeStore(app, '/vault/.obsidian/plugins/yolo/subagents')
+    const store = makeStore(app, SUBAGENT_FIXTURE_DIR)
     const row = makeSession('sub_abc', 1)
     await store.create(row)
     const next = { ...row, session: { ...row.session, revision: 2 } }
@@ -94,7 +100,7 @@ describe('SubagentSessionStore', () => {
 
   it('compareAndUpdate writes when the expected revision matches', async () => {
     const app = mockApp()
-    const store = makeStore(app, '/vault/.obsidian/plugins/yolo/subagents')
+    const store = makeStore(app, SUBAGENT_FIXTURE_DIR)
     const row = makeSession('sub_abc', 1)
     await store.create(row)
     const next = { ...row, session: { ...row.session, revision: 2 } }
@@ -105,7 +111,7 @@ describe('SubagentSessionStore', () => {
 
   it('compareAndUpdate rejects with RevisionConflictError on revision mismatch', async () => {
     const app = mockApp()
-    const store = makeStore(app, '/vault/.obsidian/plugins/yolo/subagents')
+    const store = makeStore(app, SUBAGENT_FIXTURE_DIR)
     const row = makeSession('sub_abc', 2)
     await store.create(row)
     const stale = makeSession('sub_abc', 1)

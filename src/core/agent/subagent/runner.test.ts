@@ -13,7 +13,6 @@ import {
   resolveCurrentSubagentParentAuthority,
 } from './authority-resolver'
 import { SUBAGENT_DEFAULT_SYSTEM_PROMPT } from './constants'
-import { SUBAGENT_BLOCKED_TOOL_NAMES } from './tool-name-utils'
 import type { DelegatedAssistantProfile } from './delegated-assistant-profile'
 import type { SubagentParentContext } from './parent-context'
 import {
@@ -32,6 +31,7 @@ import {
 import { getSubagentSessionService } from './session-service'
 import type { SubagentSessionSnapshot } from './session-types'
 import { subagentTaskRegistry } from './task-registry'
+import { SUBAGENT_BLOCKED_TOOL_NAMES } from './tool-name-utils'
 import type { SubagentTaskRecord } from './types'
 
 /**

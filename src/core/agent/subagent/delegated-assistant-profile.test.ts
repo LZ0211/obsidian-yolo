@@ -11,8 +11,8 @@ import { RequestContextBuilder } from '../../../utils/chat/requestContextBuilder
 import { resolveAssistantSkillPaths } from '../../skills/assistantSkillPaths'
 
 import { SUBAGENT_MAX_AUTO_ITERATIONS } from './constants'
-import { SUBAGENT_BLOCKED_TOOL_NAMES } from './tool-name-utils'
 import { resolveDelegatedAssistantProfile } from './delegated-assistant-profile'
+import { SUBAGENT_BLOCKED_TOOL_NAMES } from './tool-name-utils'
 
 jest.mock('../../skills/assistantSkillPaths', () => ({
   resolveAssistantSkillPaths: jest.fn(async () => ['skills/research/SKILL.md']),

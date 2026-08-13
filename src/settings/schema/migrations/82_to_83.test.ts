@@ -26,9 +26,7 @@ describe('migrateFrom82To83', () => {
   })
 
   it('preserves an existing forkContextTurns untouched', () => {
-    expect(
-      migrateFrom82To83({ version: 82, forkContextTurns: 20 }),
-    ).toEqual(
+    expect(migrateFrom82To83({ version: 82, forkContextTurns: 20 })).toEqual(
       expect.objectContaining({ version: 83, forkContextTurns: 20 }),
     )
   })

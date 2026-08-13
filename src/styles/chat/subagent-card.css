@@ -484,7 +484,6 @@ button.yolo-subagent-approval__bulk-btn--ghost:focus-visible {
 
 /* Restored from backup/pre-rollback-2026-08-10 (migration gap) */
 .yolo-subagent-card__metadata {
-
   display: flex;
   flex-wrap: wrap;
   gap: var(--size-2-2) var(--size-4-2);
@@ -494,7 +493,6 @@ button.yolo-subagent-approval__bulk-btn--ghost:focus-visible {
 }
 
 .yolo-subagent-card__actions {
-
   display: inline-flex;
   align-items: center;
   gap: var(--size-2-1);
@@ -502,7 +500,6 @@ button.yolo-subagent-approval__bulk-btn--ghost:focus-visible {
 }
 
 button.yolo-subagent-card__action {
-
   appearance: none;
   display: inline-flex;
   align-items: center;
@@ -519,14 +516,12 @@ button.yolo-subagent-card__action {
 
 button.yolo-subagent-card__action:hover,
 button.yolo-subagent-card__action:focus-visible {
-
   border-color: var(--background-modifier-border-hover);
   background: var(--background-modifier-hover);
   color: var(--text-normal);
 }
 
 .yolo-subagent-card__recovery {
-
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -539,7 +534,6 @@ button.yolo-subagent-card__action:focus-visible {
 /* ── 会话状态行（Task 10：session snapshot 补强） ── */
 
 .yolo-subagent-card__session {
-
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
@@ -548,19 +542,16 @@ button.yolo-subagent-card__action:focus-visible {
 }
 
 .yolo-subagent-card__session-status {
-
   color: var(--text-faint);
 }
 
 .yolo-subagent-card__session-queued {
-
   color: var(--text-warning);
 }
 
 /* ── 详情弹窗：needs_resume 恢复动作 ── */
 
 .yolo-subagent-detail-recover {
-
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -574,7 +565,6 @@ button.yolo-subagent-card__action:focus-visible {
 }
 
 .yolo-subagent-detail-recover-text {
-
   min-width: 0;
   flex: 1;
   color: var(--text-warning);
@@ -583,7 +573,6 @@ button.yolo-subagent-card__action:focus-visible {
 }
 
 button.yolo-subagent-detail-recover-btn {
-
   appearance: none;
   display: inline-flex;
   align-items: center;
@@ -600,7 +589,6 @@ button.yolo-subagent-detail-recover-btn {
 
 button.yolo-subagent-detail-recover-btn:hover,
 button.yolo-subagent-detail-recover-btn:focus-visible {
-
   border-color: var(--background-modifier-border-hover);
   background: var(--background-modifier-hover);
   color: var(--text-accent-hover);
@@ -609,7 +597,6 @@ button.yolo-subagent-detail-recover-btn:focus-visible {
 /* ── 详情弹窗：queued 消息块 ── */
 
 .yolo-subagent-detail-queued {
-
   display: flex;
   flex-direction: column;
   gap: var(--size-2-1);
@@ -621,7 +608,6 @@ button.yolo-subagent-detail-recover-btn:focus-visible {
 }
 
 .yolo-subagent-detail-queued-title {
-
   margin-bottom: var(--size-2-1);
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
@@ -629,7 +615,6 @@ button.yolo-subagent-detail-recover-btn:focus-visible {
 }
 
 .yolo-subagent-detail-queued-item {
-
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -638,7 +623,6 @@ button.yolo-subagent-detail-recover-btn:focus-visible {
 }
 
 .yolo-subagent-detail-queued-text {
-
   min-width: 0;
   flex: 1;
   color: var(--text-normal);
@@ -650,7 +634,6 @@ button.yolo-subagent-detail-recover-btn:focus-visible {
 }
 
 .yolo-subagent-detail-queued-actions {
-
   display: inline-flex;
   align-items: center;
   gap: var(--size-2-1);
@@ -658,7 +641,6 @@ button.yolo-subagent-detail-recover-btn:focus-visible {
 }
 
 button.yolo-subagent-detail-queued-btn {
-
   appearance: none;
   display: inline-flex;
   align-items: center;
@@ -675,32 +657,27 @@ button.yolo-subagent-detail-queued-btn {
 
 button.yolo-subagent-detail-queued-btn:hover,
 button.yolo-subagent-detail-queued-btn:focus-visible {
-
   border-color: var(--background-modifier-border-hover);
   background: var(--background-modifier-hover);
   color: var(--text-normal);
 }
 
 button.yolo-subagent-detail-queued-btn--resend {
-
   color: var(--text-accent);
 }
 
 button.yolo-subagent-detail-queued-btn--resend:hover,
 button.yolo-subagent-detail-queued-btn--resend:focus-visible {
-
   color: var(--text-accent-hover);
 }
 
 button.yolo-subagent-detail-queued-btn--drop {
-
   color: var(--color-red);
 }
 
 /* ── 详情弹窗 ── */
 
 .yolo-chat-conversation-layers {
-
   position: relative;
   display: flex;
   flex: 1 1 0%;
@@ -709,7 +686,6 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-chat-parent-pane {
-
   display: flex;
   flex: 1 1 0%;
   flex-direction: column;
@@ -717,7 +693,6 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-chat-parent-pane.is-inspecting-subagent {
-
   visibility: hidden;
   pointer-events: none;
   user-select: none;
@@ -727,7 +702,6 @@ button.yolo-subagent-detail-queued-btn--drop {
   .yolo-chat-conversation-layers
   > .yolo-chat-parent-pane
   > .yolo-chat-conversation-surface {
-
   margin-inline-end: calc(var(--yolo-chat-sidebar-inline-padding) * -1);
 }
 
@@ -735,7 +709,6 @@ button.yolo-subagent-detail-queued-btn--drop {
   .yolo-chat-conversation-layers
   > .yolo-chat-parent-pane
   > .yolo-chat-footer {
-
   box-sizing: border-box;
   padding-inline: var(--yolo-chat-sidebar-inline-padding);
 }
@@ -744,7 +717,6 @@ button.yolo-subagent-detail-queued-btn--drop {
   .yolo-chat-conversation-layers
   > .yolo-chat-parent-pane
   > .yolo-chat-conversation-surface {
-
   margin-inline: calc(var(--yolo-chat-host-inline-padding) * -1);
 }
 
@@ -752,7 +724,6 @@ button.yolo-subagent-detail-queued-btn--drop {
   .yolo-chat-conversation-layers
   > .yolo-chat-parent-pane
   > .yolo-chat-footer {
-
   width: min(100%, var(--yolo-chat-content-max-width));
   margin-right: auto;
   margin-left: auto;
@@ -760,14 +731,12 @@ button.yolo-subagent-detail-queued-btn--drop {
 
 .yolo-chat-container--centered.yolo-chat-container--empty-state
   .yolo-chat-conversation-layers {
-
   display: contents;
 }
 
 .yolo-chat-container--centered.yolo-chat-container--empty-state
   .yolo-chat-conversation-layers
   > .yolo-chat-parent-pane {
-
   display: contents;
 }
 
@@ -775,7 +744,6 @@ button.yolo-subagent-detail-queued-btn--drop {
   .yolo-chat-conversation-layers
   > .yolo-chat-parent-pane
   > .yolo-chat-conversation-surface {
-
   grid-row: 3;
 }
 
@@ -783,12 +751,10 @@ button.yolo-subagent-detail-queued-btn--drop {
   .yolo-chat-conversation-layers
   > .yolo-chat-parent-pane
   > .yolo-chat-footer {
-
   grid-row: 4;
 }
 
 .yolo-subagent-conversation-pane {
-
   position: absolute;
   inset: 0;
   z-index: 1;
@@ -800,7 +766,6 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-subagent-conversation-pane__header {
-
   display: flex;
   flex: 0 0 auto;
   align-items: flex-start;
@@ -811,12 +776,10 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-subagent-conversation-pane__back {
-
   flex: 0 0 auto;
 }
 
 .yolo-subagent-conversation-pane__heading {
-
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
@@ -825,13 +788,11 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-subagent-conversation-pane__eyebrow {
-
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
 }
 
 .yolo-subagent-conversation-pane__title {
-
   color: var(--text-normal);
   font-size: var(--font-ui-medium);
   font-weight: var(--font-semibold);
@@ -840,7 +801,6 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-subagent-conversation-pane__metadata {
-
   display: flex;
   flex-wrap: wrap;
   gap: var(--size-2-2) var(--size-4-2);
@@ -849,7 +809,6 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-subagent-conversation-pane__phase-history {
-
   flex: 0 0 auto;
   margin: var(--size-4-3) var(--size-4-4) 0;
   padding: var(--size-4-3);
@@ -859,7 +818,6 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-subagent-conversation-pane__phase-history-title {
-
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
   font-weight: var(--font-semibold);
@@ -867,14 +825,12 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-subagent-conversation-pane__phase-history-list {
-
   display: flex;
   flex-direction: column;
   gap: var(--size-2-1);
 }
 
 .yolo-subagent-conversation-pane__phase-history-row {
-
   align-items: center;
   color: var(--text-muted);
   display: flex;
@@ -884,7 +840,6 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-subagent-transcript-surface {
-
   display: flex;
   flex: 1 1 0%;
   flex-direction: column;
@@ -893,7 +848,6 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-subagent-conversation-pane__fallback {
-
   flex: 1 1 0%;
   min-height: 0;
   padding: var(--size-4-4);
@@ -901,7 +855,6 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-subagent-transcript-scroll {
-
   flex: 1 1 0%;
   min-height: 0;
   overflow-x: hidden;
@@ -909,14 +862,12 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-subagent-detail-body--transcript {
-
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
 .yolo-subagent-instruction-overlay {
-
   position: absolute;
   inset: 0;
   z-index: var(--layer-popover, 30);
@@ -929,7 +880,6 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-subagent-instruction-panel {
-
   display: flex;
   flex-direction: column;
   width: min(540px, calc(100% - var(--size-4-6) * 2));
@@ -942,7 +892,6 @@ button.yolo-subagent-detail-queued-btn--drop {
 
 .yolo-subagent-instruction-header,
 .yolo-subagent-instruction-footer {
-
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -952,28 +901,24 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-subagent-instruction-footer {
-
   justify-content: flex-end;
   border-top: 1px solid var(--background-modifier-border);
   border-bottom: 0;
 }
 
 .yolo-subagent-instruction-title {
-
   color: var(--text-normal);
   font-size: var(--font-ui-medium);
   font-weight: var(--font-semibold);
 }
 
 .yolo-subagent-instruction-meta {
-
   margin-top: var(--size-2-1);
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
 }
 
 .yolo-subagent-instruction-body {
-
   display: flex;
   flex-direction: column;
   gap: var(--size-4-3);
@@ -981,14 +926,12 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 .yolo-subagent-instruction-textarea {
-
   width: 100%;
   min-height: 110px;
   resize: vertical;
 }
 
 .yolo-subagent-instruction-delivery {
-
   display: inline-flex;
   align-self: flex-start;
   padding: 2px;
@@ -998,7 +941,6 @@ button.yolo-subagent-detail-queued-btn--drop {
 }
 
 button.yolo-subagent-instruction-delivery-option {
-
   appearance: none;
   padding: var(--size-2-1) var(--size-2-2);
   border: 0;
@@ -1010,14 +952,12 @@ button.yolo-subagent-instruction-delivery-option {
 }
 
 button.yolo-subagent-instruction-delivery-option.is-active {
-
   background: var(--background-primary);
   color: var(--text-normal);
   box-shadow: var(--shadow-s);
 }
 
 .yolo-subagent-instruction-send {
-
   display: inline-flex;
   align-items: center;
   gap: var(--size-2-1);

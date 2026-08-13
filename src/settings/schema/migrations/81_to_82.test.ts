@@ -16,7 +16,10 @@ describe('migrateFrom81To82', () => {
 
   it('seeds the default even when subagentResultMaxChars is malformed', () => {
     expect(
-      migrateFrom81To82({ version: 81, subagentResultMaxChars: 'not-a-number' }),
+      migrateFrom81To82({
+        version: 81,
+        subagentResultMaxChars: 'not-a-number',
+      }),
     ).toEqual(
       expect.objectContaining({
         version: 82,
