@@ -63,13 +63,17 @@ export const REVIEW_STATUSES = [
 ] as const
 export type ProjectReviewStatus = (typeof REVIEW_STATUSES)[number]
 
-/** `project.md` frontmatter — metadata only, no copied task index. */
+/**
+ * `project.md` frontmatter — metadata only, no copied task index. No
+ * project-level `status`/`revision`: the only writer is `initProject`, so any
+ * such fields would be frozen at `in_progress`/`1` forever and lie about the
+ * project state. Truthful project-level state is derived per-read by
+ * `ProjectStore.status()` from the task files.
+ */
 export type ProjectRecord = {
   schemaVersion: typeof PROJECT_SCHEMA_VERSION
   projectId: string
   projectName: string
-  status: ProjectTaskStatus
-  revision: number
   createdAt: string
   updatedAt: string
 }

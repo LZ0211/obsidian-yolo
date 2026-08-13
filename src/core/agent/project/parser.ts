@@ -229,8 +229,6 @@ export const parseProjectRecord = (
     schemaVersion: PROJECT_SCHEMA_VERSION,
     projectId: requireString(parsed.project_id, 'project_id', path),
     projectName: requireString(parsed.project_name, 'project_name', path),
-    status: requireTaskStatus(parsed.status, 'status', path),
-    revision: requireNumber(parsed.revision, 'revision', path),
     createdAt: requireTimestamp(parsed.created_at, 'created_at', path),
     updatedAt: requireTimestamp(parsed.updated_at, 'updated_at', path),
   }
@@ -289,8 +287,6 @@ const buildProjectFrontmatterObject = (record: ProjectRecord): Record<string, un
   schema_version: record.schemaVersion,
   project_id: record.projectId,
   project_name: record.projectName,
-  status: record.status,
-  revision: record.revision,
   created_at: record.createdAt,
   updated_at: record.updatedAt,
 })

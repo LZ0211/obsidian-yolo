@@ -1,7 +1,12 @@
 import type { ProjectStore } from './store'
 import type { ProjectRecord } from './types'
 
-/** Compact, live `<active_project>` identity block for request context. */
+/**
+ * Compact, live `<active_project>` identity block for request context. No
+ * project-level status/revision: the on-disk record no longer carries them
+ * (they were frozen at init and never truthful); live project state is
+ * derived per-read via `ProjectStore.status()`.
+ */
 export const buildActiveProjectContextBlock = (
   project: ProjectRecord,
 ): string =>
@@ -9,8 +14,6 @@ export const buildActiveProjectContextBlock = (
     '<active_project>',
     `  <project_id>${escapeXmlText(project.projectId)}</project_id>`,
     `  <name>${escapeXmlText(project.projectName)}</name>`,
-    `  <status>${escapeXmlText(project.status)}</status>`,
-    `  <revision>${project.revision}</revision>`,
     '</active_project>',
   ].join('\n')
 

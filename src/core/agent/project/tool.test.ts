@@ -17,10 +17,14 @@ describe('ProjectTool', () => {
     })
     expect(result.ok).toBe(true)
     if (result.ok) {
+      // Project-level status/revision were removed from project.md: they were
+      // frozen at init and never truthful.
       expect(result.project).toMatchObject({
         projectId: 'proj-x',
-        status: 'in_progress',
+        projectName: 'Project X',
       })
+      expect(result.project).not.toHaveProperty('status')
+      expect(result.project).not.toHaveProperty('revision')
     }
   })
 

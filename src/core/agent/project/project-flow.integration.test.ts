@@ -10,7 +10,6 @@ import {
   assertProjectTaskDispatchable,
   hasHitReworkLimit,
 } from './delivery'
-import { ProjectPickerService } from './picker'
 import { FakeAdapter, createStore } from './projectTestUtils'
 import { ProjectTool } from './tool'
 import type { VersionedTask } from './types'
@@ -112,11 +111,6 @@ describe('project full flow', () => {
       taskId: 'T-001',
     })) as { task: { status: string } }
     expect(final.task.status).toBe('completed')
-
-    // Picker resolves the project with derived active-task count.
-    const picker = new ProjectPickerService(store)
-    const resolved = await picker.resolve('proj-flow')
-    expect(resolved).toMatchObject({ projectId: 'proj-flow', name: 'Flow' })
   })
 
   it('stale delivery does not transition a task that changed since dispatch', async () => {

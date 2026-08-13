@@ -641,8 +641,6 @@ export class ProjectStore {
         schemaVersion: 2,
         projectId,
         projectName: input.projectName,
-        status: 'in_progress',
-        revision: 1,
         createdAt: now,
         updatedAt: now,
       }

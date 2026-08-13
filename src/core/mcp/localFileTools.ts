@@ -71,7 +71,11 @@ import {
 } from '../agent/bash/outputBudget'
 import { createVaultBashFileSystem } from '../agent/bash/vaultBashFileSystem'
 import { createVaultBashSearch } from '../agent/bash/vaultBashSearch'
-import { buildConsolidatedToolSchemas } from '../agent/consolidated-tools'
+import {
+  buildConsolidatedToolSchemas,
+  resolveConsolidatedAction,
+  validateConsolidatedAction,
+} from '../agent/consolidated-tools'
 import { assertProjectTaskDispatchable } from '../agent/project/delivery'
 import { buildReviewPrompt } from '../agent/project/review-prompt'
 import { ProjectStore } from '../agent/project/store'
@@ -4565,21 +4569,39 @@ export async function callLocalFileTool({
         })
         const tool = new ProjectTool(store)
         try {
-          const action = getTextArg(args, 'action')
-          const result =
-            action === 'init'
-              ? await tool.init(args as Parameters<typeof tool.init>[0])
-              : action === 'get'
-                ? await tool.get(args as Parameters<typeof tool.get>[0])
-                : action === 'status'
-                  ? await tool.status(getTextArg(args, 'projectId'))
-                  : action === 'update'
-                    ? await tool.update(
-                        args as Parameters<typeof tool.update>[0],
-                      )
-                    : await tool.review(
-                        args as Parameters<typeof tool.review>[0],
-                      )
+          // Fail fast on unknown/mis-shapen actions instead of letting the
+          // dispatch fall through to an arbitrary handler (previously an
+          // unknown action silently reached `review`).
+          const capability = resolveConsolidatedAction('project_ops', args)
+          validateConsolidatedAction(capability, args)
+          let result: unknown
+          switch (capability.action) {
+            case 'init':
+              result = await tool.init(args as Parameters<typeof tool.init>[0])
+              break
+            case 'get':
+              result = await tool.get(args as Parameters<typeof tool.get>[0])
+              break
+            case 'status':
+              result = await tool.status(getTextArg(args, 'projectId'))
+              break
+            case 'update':
+              result = await tool.update(
+                args as Parameters<typeof tool.update>[0],
+              )
+              break
+            case 'review':
+              result = await tool.review(
+                args as Parameters<typeof tool.review>[0],
+              )
+              break
+            default:
+              // Unreachable: resolve+validate reject unknown actions above.
+              // Kept for parity with scheduled_task_ops.
+              throw new Error(
+                `Unsupported project_ops action: ${capability.action}`,
+              )
+          }
           return {
             status: ToolCallResponseStatus.Success,
             text: JSON.stringify(result),

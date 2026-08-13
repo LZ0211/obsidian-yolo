@@ -3277,6 +3277,42 @@ describe('project_ops', () => {
       detail: 'blocked via tool',
     })
   })
+
+  it('rejects an unknown action up front instead of dispatching it', async () => {
+    const adapter = new FakeAdapter()
+    const result = await callLocalFileTool({
+      app: { vault: { adapter } } as unknown as App,
+      settings: projectSettings,
+      toolName: 'project_ops',
+      args: {
+        action: 'bogus',
+        projectId: 'proj-x',
+      },
+    })
+
+    // Validator runs before any handler: unknown actions error out instead of
+    // silently falling through to `review` (the pre-fix behavior).
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+    if (result.status === ToolCallResponseStatus.Error) {
+      expect(result.error).toMatch(/unknown action bogus/)
+    }
+    expect(await adapter.exists('Projects/proj-x')).toBe(false)
+  })
+
+  it('rejects a missing action up front', async () => {
+    const adapter = new FakeAdapter()
+    const result = await callLocalFileTool({
+      app: { vault: { adapter } } as unknown as App,
+      settings: projectSettings,
+      toolName: 'project_ops',
+      args: { projectId: 'proj-x' },
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+    if (result.status === ToolCallResponseStatus.Error) {
+      expect(result.error).toMatch(/requires a string action/)
+    }
+  })
 })
 
 describe('scheduled_task_ops', () => {

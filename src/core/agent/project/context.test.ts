@@ -7,16 +7,16 @@ describe('buildActiveProjectContextBlock', () => {
       schemaVersion: 2,
       projectId: 'proj-agent-loop',
       projectName: 'Agent Loop',
-      status: 'in_progress',
-      revision: 3,
       createdAt: '2026-07-31T09:00:00.000Z',
       updatedAt: '2026-07-31T14:00:00.000Z',
     })
     expect(block).toContain('<project_id>proj-agent-loop</project_id>')
     expect(block).toContain('<name>Agent Loop</name>')
-    expect(block).toContain('<status>in_progress</status>')
-    expect(block).toContain('<revision>3</revision>')
     expect(block).not.toContain('<task_id>')
+    // Project-level status/revision were removed from the record (they were
+    // frozen at init and never truthful).
+    expect(block).not.toContain('<status>')
+    expect(block).not.toContain('<revision>')
   })
 
   it('escapes display text in the XML block', () => {
@@ -24,8 +24,6 @@ describe('buildActiveProjectContextBlock', () => {
       schemaVersion: 2,
       projectId: 'proj-1',
       projectName: 'A <B> & "C"',
-      status: 'in_progress',
-      revision: 1,
       createdAt: '2026-07-31T09:00:00.000Z',
       updatedAt: '2026-07-31T14:00:00.000Z',
     })

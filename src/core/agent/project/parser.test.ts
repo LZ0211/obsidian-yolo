@@ -13,8 +13,6 @@ import {
 const projectFrontmatter = `schema_version: 2
 project_id: proj-agent-loop
 project_name: Agent Loop
-status: in_progress
-revision: 3
 created_at: 2026-07-31T09:00:00.000Z
 updated_at: 2026-07-31T14:00:00.000Z
 `
@@ -61,9 +59,25 @@ describe('parseProjectRecord', () => {
       schemaVersion: 2,
       projectId: 'proj-agent-loop',
       projectName: 'Agent Loop',
-      status: 'in_progress',
-      revision: 3,
     })
+    // Legacy files that still carry frozen status/revision parse fine; the
+    // fields are simply not part of the record anymore.
+    const legacy = parseProjectRecord(
+      projectFrontmatter + 'status: in_progress\nrevision: 3\n',
+    )
+    expect(legacy).toMatchObject({
+      schemaVersion: 2,
+      projectId: 'proj-agent-loop',
+      projectName: 'Agent Loop',
+    })
+  })
+
+  it('roundtrips project frontmatter without frozen status/revision', () => {
+    const record = parseProjectRecord(projectFrontmatter)
+    const serialized = buildProjectFileContent(record, '')
+    expect(serialized).not.toContain('status:')
+    expect(serialized).not.toContain('revision:')
+    expect(serialized).toContain('project_id: proj-agent-loop')
   })
 
   it('rejects an unsupported schema version', () => {
