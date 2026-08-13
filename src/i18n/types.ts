@@ -2581,6 +2581,8 @@ export type TranslationKeys = {
       statusDispatched?: string
       /** F10: breaker 拦截派发（delegate_subagent 返回 blocked 载荷）。 */
       statusBlocked?: string
+      /** U4: blocked 卡片无 title 时的语义回退（不落 toolCallId）。 */
+      blockedCardTitle?: string
       blockedCooldown?: string
       /** F2/F11: 委托角色显示名（子代理按角色运行时的摘要前缀）。 */
       delegatedRole?: string

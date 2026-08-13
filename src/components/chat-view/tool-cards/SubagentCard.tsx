@@ -83,9 +83,17 @@ export function SubagentCard({
     response,
   })
   const isRunning = effectiveStatus === ToolCallResponseStatus.Running
+  // F10: the breaker gate refused the dispatch — the blocked payload has no
+  // taskId/title, so the card title must not fall back to the raw toolCallId.
+  const isBlocked = accepted.blocked === true
 
   const title =
-    args?.title || subagentResult?.title || accepted.title || toolCallId
+    args?.title ||
+    subagentResult?.title ||
+    accepted.title ||
+    (isBlocked
+      ? t('chat.subagent.blockedCardTitle', 'Subagent task')
+      : toolCallId)
   const modelName = subagentResult?.modelName || accepted.modelName
   const taskId = subagentResult?.taskId || accepted.taskId
   const liveTask = useSubagentTask(taskId)
@@ -153,7 +161,6 @@ export function SubagentCard({
   const isAwaitingApproval = pendingApprovals.length > 0
   // F10: the breaker gate refused the dispatch — show a blocked card instead
   // of an empty success card (the blocked payload has no taskId/title).
-  const isBlocked = accepted.blocked === true
   const subtitle = isBlocked
     ? `${t('chat.subagent.statusBlocked', 'Delegation blocked')} · ${t(
         'chat.subagent.blockedCooldown',

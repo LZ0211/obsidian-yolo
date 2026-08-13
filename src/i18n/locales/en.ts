@@ -3022,6 +3022,8 @@ export const en: TranslationKeys = {
       statusFailed: 'Failed',
       statusDispatched: 'Dispatched',
       statusBlocked: 'Delegation blocked',
+      /** U4: semantic title fallback for a blocked card (no task identity). */
+      blockedCardTitle: 'Subagent task',
       blockedCooldown:
         'Too many consecutive timeouts — delegation is paused for a cooldown. Try again later.',
       delegatedRole: 'Delegated role: {name}',

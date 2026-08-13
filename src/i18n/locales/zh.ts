@@ -2831,6 +2831,8 @@ export const zh: TranslationKeys = {
       statusFailed: '失败',
       statusDispatched: '已派遣',
       statusBlocked: '委托被拦截',
+      /** U4: blocked 卡片无 title 时的语义回退。 */
+      blockedCardTitle: '子代理任务',
       blockedCooldown: '连续超时过多，委托已暂停；冷却期后请稍后重试。',
       delegatedRole: '委托角色：{name}',
       toolUseCount: '{count} 个工具',

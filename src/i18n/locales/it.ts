@@ -2774,6 +2774,8 @@ export const it: DeepPartial<TranslationKeys> = {
       statusFailed: 'Fallito',
       statusDispatched: 'Inviato',
       statusBlocked: 'Delega bloccata',
+      /** U4: fallback del titolo per la card bloccata. */
+      blockedCardTitle: 'Attività subagent',
       blockedCooldown:
         'Troppi timeout consecutivi: la delega è in pausa. Riprova più tardi.',
       delegatedRole: 'Ruolo delegato: {name}',

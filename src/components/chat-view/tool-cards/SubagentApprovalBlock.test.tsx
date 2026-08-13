@@ -21,6 +21,13 @@ jest.mock('../../modals/ConfirmModal', () => ({
   }),
 }))
 
+// SubagentDetailModal's render graph pulls in react-markdown (ESM) and the
+// whole assistant-message component tree, which jsdom cannot load; assert the
+// open-modal contract through the rendered props instead.
+jest.mock('./SubagentDetailModal', () => ({
+  SubagentDetailModal: jest.fn(() => null),
+}))
+
 // Shared per-test mocks: the component captures `actions` once at render, so
 // the fns must be stable module-scope objects (jest.mock factory allows
 // `mock*`-prefixed references).
@@ -44,6 +51,7 @@ import type { ToolCallRequest } from '../../../types/tool-call.types'
 import { ConfirmModal } from '../../modals/ConfirmModal'
 import type { SubagentPendingApproval } from './SubagentApprovalBlock'
 import { SubagentApprovalBlock } from './SubagentApprovalBlock'
+import { SubagentDetailModal } from './SubagentDetailModal'
 
 const reactGlobal = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
@@ -184,6 +192,33 @@ describe('SubagentApprovalBlock (F13)', () => {
       options.onConfirm()
     })
     expect(mockRejectTool).toHaveBeenCalledTimes(2)
+    await unmountRoot(root)
+  })
+
+  it('opens a detail modal with the full tool call parameters (viewDetails)', async () => {
+    const root = renderBlock([makeApproval('call-1', 'fs_edit')])
+    ;(SubagentDetailModal as unknown as jest.Mock).mockClear()
+
+    findButton('View parameters').click()
+    await act(async () => {})
+
+    // The detail modal is opened with the complete request payload — not
+    // just the 80-char truncated summary row.
+    const detailModalMock = SubagentDetailModal as unknown as jest.Mock
+    expect(detailModalMock).toHaveBeenCalledTimes(1)
+    const props = detailModalMock.mock.calls[0][0] as {
+      title: string
+      requestArgs: {
+        name: string
+        arguments: ToolCallRequest['arguments']
+      }
+    }
+    expect(props.title).toBe('fs_edit')
+    expect(props.requestArgs.name).toBe('fs_edit')
+    expect(props.requestArgs.arguments).toEqual({
+      kind: 'complete',
+      value: { path: '/vault/call-1.md' },
+    })
     await unmountRoot(root)
   })
 })

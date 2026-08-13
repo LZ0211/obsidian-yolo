@@ -4,6 +4,10 @@ import { createPortal } from 'react-dom'
 
 import { useLanguage } from '../../../contexts/language-context'
 import type { ChatMessage } from '../../../types/chat'
+import {
+  type ToolCallArguments,
+  getToolCallArgumentsObject,
+} from '../../../types/tool-call.types'
 import { groupAssistantAndToolMessages } from '../../../utils/chat/message-groups'
 import { formatTokenCount } from '../../../utils/llm/formatTokenCount'
 import AssistantToolMessageGroupItem from '../AssistantToolMessageGroupItem'
@@ -28,6 +32,11 @@ type SubagentDetailModalProps = {
   activityLines: string[]
   detailStats?: SubagentDetailStats
   isTranscriptLoading?: boolean
+  /**
+   * Full argument payload of a pending tool call (approval-time "view
+   * parameters" entry). Rendered as a JSON block above the transcript area.
+   */
+  requestArgs?: { name: string; arguments?: ToolCallArguments } | null
   onClose: () => void
 }
 
@@ -64,6 +73,7 @@ export function SubagentDetailModal({
   activityLines,
   detailStats,
   isTranscriptLoading = false,
+  requestArgs,
   onClose,
 }: SubagentDetailModalProps) {
   const { t } = useLanguage()
@@ -192,6 +202,21 @@ export function SubagentDetailModal({
         <div className="yolo-subagent-detail-body">
           {prompt && (
             <div className="yolo-subagent-detail-prompt">{prompt}</div>
+          )}
+
+          {requestArgs && (
+            <div className="yolo-subagent-detail-request">
+              <div className="yolo-subagent-detail-request-name">
+                {requestArgs.name}
+              </div>
+              <pre className="yolo-subagent-detail-request-json">
+                {JSON.stringify(
+                  getToolCallArgumentsObject(requestArgs.arguments) ?? {},
+                  null,
+                  2,
+                )}
+              </pre>
+            </div>
           )}
 
           {isTranscriptLoading ? (
