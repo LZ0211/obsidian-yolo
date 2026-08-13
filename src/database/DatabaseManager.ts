@@ -57,7 +57,7 @@ export class DatabaseManager {
     }
 
     if (normalizedPluginDir && baseDir) {
-      dbManager.vectorStore = createVectorStore({
+      dbManager.vectorStore = await createVectorStore({
         baseDir,
         pluginDir: normalizedPluginDir,
         settings: settings ?? {},

@@ -1,3 +1,4 @@
+/* eslint-disable import/no-nodejs-modules -- 测试文件运行在 Node 环境，允许直接引入 node 内置模块（临时 sqlite 文件/目录与 fixture 读写） */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -5,12 +6,14 @@ import * as path from 'node:path'
 import { FileSystemAdapter } from 'obsidian'
 
 import { setRuntimeComponentAcquirerForTests } from '../../../../../core/runtime-components/runtimeComponentAccess'
+import type { SqliteNativeRuntimeFacade } from '../../../../sqlite/sqliteNativeRuntime'
 import {
   type VectorChunkWrite,
   type VectorNamespace,
   VectorStoreError,
 } from '../../../rag/VectorStore'
 
+import { parseShardedManifest } from './shardedManifest'
 import {
   getShardedIndexRoot,
   getShardedManifestPath,
@@ -18,7 +21,6 @@ import {
   getShardedShardRoot,
   getShardedStagedManifestPath,
 } from './shardedPaths'
-import { parseShardedManifest } from './shardedManifest'
 import { openShardSqliteNode, openShardSqliteWasm } from './shardedSqlite'
 import {
   COARSE_DIMENSION,
@@ -418,6 +420,42 @@ const makeStoreWithTempSqlite = (
 
 const realPathFor = (tempRoot: string, virtualPath: string): string =>
   path.join(tempRoot, virtualPath.replace(/^[\\/]+/, ''))
+
+/**
+ * Opener that simulates the mobile sql.js close contract with real SQL: each
+ * open works on a fresh staging file seeded from the last published state,
+ * and the staged content is only published to the real shard path by
+ * `flush()`. A close without a preceding flush loses the session's writes —
+ * the exact read-after-write race the store's flush-before-close guards
+ * against (sql.js's close() queues the vault write; flush() settles it).
+ */
+const openDeferredCloseSqlite = async (
+  dbPath: string,
+): Promise<SqliteNativeRuntimeFacade> => {
+  const stagingPath = `${dbPath}.staging-${Math.random().toString(36).slice(2)}`
+  if (fs.existsSync(dbPath)) fs.copyFileSync(dbPath, stagingPath)
+  const runtime = await openShardSqliteNode(stagingPath)
+  let published = false
+  let closed = false
+  const closeInner = (): void => {
+    if (!closed) {
+      runtime.close()
+      closed = true
+    }
+  }
+  return Promise.resolve({
+    ...runtime,
+    close() {
+      // sql.js simulation: the vault write is queued, not yet landed.
+      if (published) closeInner()
+    },
+    async flush() {
+      closeInner()
+      fs.copyFileSync(stagingPath, dbPath)
+      published = true
+    },
+  })
+}
 
 const tempChunksDbPath = (
   tempRoot: string,
@@ -2578,13 +2616,6 @@ describe('shard sqlite openers', () => {
   })
 
   it('openShardSqliteWasm strips the vault root from an absolute dbPath on desktop-like adapters', async () => {
-    const adapter = {
-      exists: jest.fn(async () => false),
-      readBinary: jest.fn(async () => new ArrayBuffer(0)),
-      writeBinary: jest.fn(async () => undefined),
-      rename: jest.fn(async () => undefined),
-    }
-    const app = { vault: { adapter } }
     let openedRelativePath: string | null = null
     setRuntimeComponentAcquirerForTests(async () => {
       return {
@@ -2642,5 +2673,37 @@ describe('shard sqlite openers', () => {
       name: 'VectorStoreError',
       code: 'mobile_sqlite_unavailable',
     })
+  })
+})
+
+describe('shard sqlite close-flush', () => {
+  it('flushes a shard runtime before close so a reopen reads the persisted write', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-flush-'))
+    try {
+      const store = new ShardedVectorStore({
+        baseDir: BASE_DIR,
+        app: { vault: { adapter } },
+        openShardSqlite: (dbPath) =>
+          openDeferredCloseSqlite(realPathFor(tempRoot, dbPath)),
+      })
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 123456789,
+        contentHash: 'file-hash-1',
+        chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+      })
+
+      // The search reopens chunks.sqlite from the vault file; without
+      // flush-before-close the file would still hold pre-write bytes (the
+      // sql.js close() only queues the vault write).
+      const result = await store.search(writeNamespace, [1, 0, 0, 0], {
+        topK: 5,
+      })
+      expect(result.hits.map((hit) => hit.chunkId)).toContain('c1')
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
   })
 })

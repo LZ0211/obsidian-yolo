@@ -596,7 +596,7 @@ export class ShardedVectorStore implements VectorStore {
               }
             })
           } finally {
-            runtime.close()
+            await this.closeShardRuntime(runtime)
           }
         } catch (error) {
           // Keep tombstoning the remaining shards: partial tombstones are
@@ -866,7 +866,7 @@ export class ShardedVectorStore implements VectorStore {
           }
         }
       } finally {
-        runtime.close()
+        await this.closeShardRuntime(runtime)
       }
     }
 
@@ -919,7 +919,7 @@ export class ShardedVectorStore implements VectorStore {
         }
       })
     } finally {
-      runtime.close()
+      await this.closeShardRuntime(runtime)
     }
 
     const full = new Float32Array(rows.length * dimension)
@@ -1217,7 +1217,7 @@ export class ShardedVectorStore implements VectorStore {
       result.rerankMs = Date.now() - rerankStart
       return result
     } finally {
-      runtime.close()
+      await this.closeShardRuntime(runtime)
     }
   }
 
@@ -1314,7 +1314,7 @@ export class ShardedVectorStore implements VectorStore {
             }
           }
         } finally {
-          runtime.close()
+          await this.closeShardRuntime(runtime)
         }
       }
       return indexed
@@ -1358,7 +1358,7 @@ export class ShardedVectorStore implements VectorStore {
             })
           }
         } finally {
-          runtime.close()
+          await this.closeShardRuntime(runtime)
         }
       }
       return readiness
@@ -1596,7 +1596,7 @@ export class ShardedVectorStore implements VectorStore {
           for (const row of rows) found.set(row.chunk_id, shard)
         }
       } finally {
-        runtime.close()
+        await this.closeShardRuntime(runtime)
       }
     }
     return found
@@ -1640,7 +1640,7 @@ export class ShardedVectorStore implements VectorStore {
         ],
       )
     } finally {
-      runtime.close()
+      await this.closeShardRuntime(runtime)
     }
   }
 
@@ -1702,7 +1702,7 @@ export class ShardedVectorStore implements VectorStore {
       )
       await this.writeShardMeta(shardRoot, shard)
     } finally {
-      runtime.close()
+      await this.closeShardRuntime(runtime)
     }
   }
 
@@ -1751,7 +1751,7 @@ export class ShardedVectorStore implements VectorStore {
           filePath,
         ])
       } finally {
-        runtime.close()
+        await this.closeShardRuntime(runtime)
       }
     }
   }
@@ -1848,7 +1848,7 @@ export class ShardedVectorStore implements VectorStore {
         shard.vectorCount = kept.length
         await this.writeShardMeta(shardRoot, shard)
       } finally {
-        runtime.close()
+        await this.closeShardRuntime(runtime)
       }
     }
   }
@@ -1935,6 +1935,22 @@ export class ShardedVectorStore implements VectorStore {
     const runtime = await this.openShardSqlite(dbPath, { app: this.app })
     runtime.exec(CHUNKS_TABLE_SQL)
     return runtime
+  }
+
+  /**
+   * Releases a shard sqlite runtime. The mobile (sql.js) facade's `close()`
+   * only queues the vault file write; a subsequent open of the same shard
+   * could read stale bytes before that write lands (read-after-write race).
+   * Awaiting the facade's `flush()` first settles the write — mirroring
+   * memoryIndex.ts's close path. The desktop node:sqlite facade has no
+   * `flush()`, so this is a no-op there.
+   */
+  private async closeShardRuntime(
+    runtime: SqliteNativeRuntimeFacade,
+  ): Promise<void> {
+    const flushable = runtime as Partial<{ flush(): Promise<void> }>
+    await flushable.flush?.()
+    runtime.close()
   }
 
   private getNamespaceGateState(namespaceId: string): NamespaceGateState {
