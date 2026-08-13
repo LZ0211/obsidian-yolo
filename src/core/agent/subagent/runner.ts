@@ -193,89 +193,6 @@ export function autoRejectPendingApprovals(runtime: NativeAgentRuntime): void {
 /** Auto-reject window for paused subagent tool calls. */
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000
 
-export type SubagentRuntimeLoopController = {
-  run: () => Promise<ReturnType<NativeAgentRuntime['getSnapshot']>>
-  resumeRun: () => Promise<void>
-  dispose: () => void
-}
-
-/**
- * Runs a child runtime and waits for approval-gated tool batches to settle.
- * The child runner uses this controller so a resumed run cannot accidentally
- * grow a second approval/continuation loop.
- */
-export function createSubagentRuntimeLoopController({
-  runtime,
-  runInput,
-  abortController,
-}: {
-  runtime: NativeAgentRuntime
-  runInput: AgentRuntimeRunInput
-  abortController: AbortController
-}): SubagentRuntimeLoopController {
-  let approvalResolver: (() => void) | null = null
-  let disposed = false
-
-  const wakeApprovalGate = (): void => {
-    if (!approvalResolver) return
-    approvalResolver()
-    approvalResolver = null
-  }
-
-  const resumeRun = async (): Promise<void> => {
-    if (!hasUnsettledApprovalBatch(runtime.getSnapshot().messages)) {
-      wakeApprovalGate()
-    }
-  }
-
-  const abortListener = (): void => {
-    wakeApprovalGate()
-  }
-  abortController.signal.addEventListener('abort', abortListener, {
-    once: true,
-  })
-
-  const run = async (): Promise<
-    ReturnType<NativeAgentRuntime['getSnapshot']>
-  > => {
-    let nextRunInput: AgentRuntimeRunInput = runInput
-    while (!disposed) {
-      await runWithBackgroundExecution(() => runtime.run(nextRunInput))
-      const snapshotAfterRun = runtime.getSnapshot()
-      if (
-        abortController.signal.aborted ||
-        !hasUnresolvedApproval(snapshotAfterRun.messages)
-      ) {
-        return snapshotAfterRun
-      }
-
-      const timeoutHandle = setTimeout(() => {
-        autoRejectPendingApprovals(runtime)
-        void resumeRun()
-      }, APPROVAL_TIMEOUT_MS)
-      try {
-        await new Promise<void>((resolve) => {
-          approvalResolver = resolve
-        })
-      } finally {
-        clearTimeout(timeoutHandle)
-      }
-      if (abortController.signal.aborted) return runtime.getSnapshot()
-      nextRunInput = buildSubagentContinuationInput(runInput)
-    }
-    return runtime.getSnapshot()
-  }
-
-  const dispose = (): void => {
-    if (disposed) return
-    disposed = true
-    abortController.signal.removeEventListener('abort', abortListener)
-    wakeApprovalGate()
-  }
-
-  return { run, resumeRun, dispose }
-}
-
 function extractLastAssistantText(messages: ChatMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]
@@ -735,12 +652,21 @@ async function runChildAgent(
     // ensure the gate is resolved so we don't leak the promise on the
     // exception path either.
     wakeApprovalGate()
+    // Settlement must run unconditionally — the catch branch lands here too,
+    // instead of relying on "no return in catch → fall through to the code
+    // after try/catch/finally" (a future `return` in catch would silently
+    // break the parent-side settlement). A push failure is logged and does
+    // not change the run's terminal semantics.
+    unsubscribe()
+    try {
+      publishBackgroundSubagentCompletion(record)
+    } catch (settleError) {
+      console.error(
+        '[YOLO][Subagent] failed to publish completion',
+        settleError,
+      )
+    }
   }
-
-  unsubscribe()
-
-  // 每次结算都推送（subagent 为纯 ephemeral，单次结算）
-  publishBackgroundSubagentCompletion(record)
 }
 
 export async function runSubagent(

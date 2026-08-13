@@ -1,8 +1,6 @@
-import type { ChatMessage } from '../../../types/chat'
 import { ToolCallResponseStatus } from '../../../types/tool-call.types'
 import { backgroundTaskCompletionBus } from '../background-task/completion-bus'
 import type { NativeAgentRuntime } from '../native-runtime'
-import type { AgentRuntimeRunInput } from '../types'
 
 import { SUBAGENT_DEFAULT_SYSTEM_PROMPT } from './constants'
 import type { DelegatedAssistantProfile } from './delegated-assistant-profile'
@@ -12,7 +10,6 @@ import {
   autoRejectPendingApprovals,
   buildSubagentContinuationInput,
   buildSubagentInitialRunInput,
-  createSubagentRuntimeLoopController,
   hasUnsettledApprovalBatch,
   resolveSubagentRunPolicy,
   runSubagent,
@@ -230,219 +227,6 @@ describe('buildSubagentContinuationInput', () => {
     const continuation = buildSubagentContinuationInput(input)
 
     expect(continuation.requestMessages).toBe(messages)
-  })
-})
-
-describe('createSubagentRuntimeLoopController', () => {
-  const makeToolMessage = (statuses: ToolCallResponseStatus[]): ChatMessage =>
-    ({
-      role: 'tool',
-      id: 'tool-message',
-      toolCalls: statuses.map((status, index) => ({
-        request: { id: `call-${index}`, name: 'tool' },
-        response: { status },
-      })),
-    }) as unknown as ChatMessage
-
-  const makeAssistantMessage = (content: string): ChatMessage => ({
-    role: 'assistant',
-    id: 'assistant-1',
-    content,
-  })
-
-  /**
-   * Controlled runtime stub: each `run()` resolves when the test releases it,
-   * appending the released message to the transcript. Approvals are simulated
-   * by patching the last tool message to a terminal status before `resumeRun`.
-   * Releases issued before the runtime actually starts are queued and applied
-   * when the run begins (the background-execution wrapper defers `run`).
-   */
-  const makeLoopRuntime = (initialMessages: ChatMessage[] = []) => {
-    const messages: ChatMessage[] = [...initialMessages]
-    const queuedReleases: ChatMessage[] = []
-    let pendingRunResolve: (() => void) | undefined
-    const run = jest.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          pendingRunResolve = resolve
-          const next = queuedReleases.shift()
-          if (next) {
-            messages.push(next)
-            pendingRunResolve?.()
-            pendingRunResolve = undefined
-          }
-        }),
-    )
-    const runtime = {
-      getSnapshot: jest.fn(() => ({
-        messages: [...messages],
-        compaction: [],
-        pendingCompactionAnchorMessageId: null,
-      })),
-      run,
-      setToolCallResponse: jest.fn(),
-    } as unknown as NativeAgentRuntime
-    return {
-      runtime,
-      run,
-      releaseRun: (nextMessage: ChatMessage) => {
-        if (pendingRunResolve) {
-          messages.push(nextMessage)
-          pendingRunResolve()
-          pendingRunResolve = undefined
-        } else {
-          queuedReleases.push(nextMessage)
-        }
-      },
-      patchLastToolStatuses: (statuses: ToolCallResponseStatus[]) => {
-        const last = messages.at(-1)
-        if (!last || last.role !== 'tool') return
-        messages[messages.length - 1] = {
-          ...last,
-          toolCalls: last.toolCalls.map((toolCall, index) => ({
-            request: toolCall.request,
-            response: { status: statuses[index] },
-          })),
-        } as unknown as ChatMessage
-      },
-      messages,
-    }
-  }
-
-  const makeRunInput = (): AgentRuntimeRunInput =>
-    ({
-      conversationId: 'sub-test',
-      messages: [],
-    }) as unknown as AgentRuntimeRunInput
-
-  it('returns the snapshot when the run completes without pausing', async () => {
-    const { runtime, run, releaseRun } = makeLoopRuntime()
-    const abortController = new AbortController()
-    const controller = createSubagentRuntimeLoopController({
-      runtime,
-      runInput: makeRunInput(),
-      abortController,
-    })
-
-    const runPromise = controller.run()
-    releaseRun(makeAssistantMessage('done'))
-    const snapshot = await runPromise
-
-    expect(snapshot.messages.at(-1)?.role).toBe('assistant')
-    expect(run).toHaveBeenCalledTimes(1)
-    controller.dispose()
-  })
-
-  it('resumes after an approval pause and settles', async () => {
-    const { runtime, run, releaseRun, patchLastToolStatuses } =
-      makeLoopRuntime()
-    const abortController = new AbortController()
-    const controller = createSubagentRuntimeLoopController({
-      runtime,
-      runInput: makeRunInput(),
-      abortController,
-    })
-
-    const runPromise = controller.run()
-    // First run pauses on a PendingApproval tool call.
-    releaseRun(makeToolMessage([ToolCallResponseStatus.PendingApproval]))
-    await flushMicrotasks()
-    expect(run).toHaveBeenCalledTimes(1)
-
-    // The user approves: the batch becomes terminal, then the gate is released.
-    patchLastToolStatuses([ToolCallResponseStatus.Success])
-    await controller.resumeRun()
-
-    // Second run returns the completed snapshot.
-    releaseRun(makeAssistantMessage('finished'))
-    const snapshot = await runPromise
-
-    expect(snapshot.messages.at(-1)?.role).toBe('assistant')
-    expect(run).toHaveBeenCalledTimes(2)
-    controller.dispose()
-  })
-
-  it('keeps the gate closed while the batch is still unsettled', async () => {
-    const { runtime, run, releaseRun, patchLastToolStatuses } =
-      makeLoopRuntime()
-    const abortController = new AbortController()
-    const controller = createSubagentRuntimeLoopController({
-      runtime,
-      runInput: makeRunInput(),
-      abortController,
-    })
-
-    const runPromise = controller.run()
-    releaseRun(
-      makeToolMessage([
-        ToolCallResponseStatus.PendingApproval,
-        ToolCallResponseStatus.Running,
-      ]),
-    )
-    await flushMicrotasks()
-
-    // One decision alone must not release the mixed batch.
-    patchLastToolStatuses([
-      ToolCallResponseStatus.Success,
-      ToolCallResponseStatus.Running,
-    ])
-    await controller.resumeRun()
-    await flushMicrotasks()
-    expect(run).toHaveBeenCalledTimes(1)
-
-    patchLastToolStatuses([
-      ToolCallResponseStatus.Success,
-      ToolCallResponseStatus.Success,
-    ])
-    await controller.resumeRun()
-    releaseRun(makeAssistantMessage('finished'))
-    const snapshot = await runPromise
-
-    expect(snapshot.messages.at(-1)?.role).toBe('assistant')
-    expect(run).toHaveBeenCalledTimes(2)
-    controller.dispose()
-  })
-
-  it('settles on abort while paused on approval', async () => {
-    const { runtime, run, releaseRun } = makeLoopRuntime()
-    const abortController = new AbortController()
-    const controller = createSubagentRuntimeLoopController({
-      runtime,
-      runInput: makeRunInput(),
-      abortController,
-    })
-
-    const runPromise = controller.run()
-    releaseRun(makeToolMessage([ToolCallResponseStatus.PendingApproval]))
-    await flushMicrotasks()
-
-    abortController.abort()
-    const snapshot = await runPromise
-
-    // The paused transcript is returned as-is; no further runtime run occurs.
-    expect(snapshot.messages.at(-1)?.role).toBe('tool')
-    expect(run).toHaveBeenCalledTimes(1)
-    controller.dispose()
-  })
-
-  it('dispose wakes the gate without running again', async () => {
-    const { runtime, run, releaseRun } = makeLoopRuntime()
-    const abortController = new AbortController()
-    const controller = createSubagentRuntimeLoopController({
-      runtime,
-      runInput: makeRunInput(),
-      abortController,
-    })
-
-    const runPromise = controller.run()
-    releaseRun(makeToolMessage([ToolCallResponseStatus.PendingApproval]))
-    await flushMicrotasks()
-
-    controller.dispose()
-    const snapshot = await runPromise
-
-    expect(snapshot.messages.at(-1)?.role).toBe('tool')
-    expect(run).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -714,6 +498,42 @@ describe('runSubagent ephemeral dispatch', () => {
       }),
     )
     expect(subagentTaskRegistry.get(result.taskId)?.status).toBe('completed')
+  })
+
+  it('pushes a completion event with status failed when the child run throws', async () => {
+    const nativeRuntimeModule = jest.requireMock<{
+      NativeAgentRuntime: jest.Mock
+    }>('../native-runtime')
+    nativeRuntimeModule.NativeAgentRuntime.mockImplementationOnce(() => ({
+      subscribe: jest.fn(() => () => {}),
+      run: jest.fn(async () => {
+        throw new Error('provider down')
+      }),
+      getSnapshot: jest.fn().mockReturnValue({
+        messages: [],
+        compaction: [],
+        pendingCompactionAnchorMessageId: null,
+      }),
+      setToolCallResponse: jest.fn(),
+    }))
+
+    const result = await runSubagent(makeParams())
+    if (!result.accepted) return
+    await flushMicrotasks()
+    const pushCompleted = (
+      backgroundTaskCompletionBus as unknown as {
+        pushCompleted: jest.Mock
+      }
+    ).pushCompleted
+    expect(pushCompleted).toHaveBeenCalledTimes(1)
+    expect(pushCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'subagent',
+        taskId: result.taskId,
+        record: expect.objectContaining({ status: 'failed' }),
+      }),
+    )
+    expect(subagentTaskRegistry.get(result.taskId)?.status).toBe('failed')
   })
 
   it('reports cumulative input/output tokens on a multi-turn child completion', async () => {
