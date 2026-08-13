@@ -389,6 +389,15 @@ export const it: DeepPartial<TranslationKeys> = {
       chatTitleModel: 'Modello per titolo conversazione',
       chatTitleModelDesc:
         'Scegli il modello usato per assegnare automaticamente un nome alle conversazioni.',
+      memoryAgentModel: 'Modello agente memoria',
+      memoryAgentModelDesc:
+        'Scegli il modello leggero usato per estrarre, riassumere e aggiornare la memoria a lungo termine.',
+      advancedMemoryIndexEnabled: 'Indice memoria avanzato',
+      advancedMemoryIndexEnabledDesc:
+        'Crea un indice SQLite opzionale solo desktop per il recupero avanzato della memoria. Se disattivato o non disponibile, il recupero torna alla corrispondenza lessicale. L’indice è dato derivato e può essere ricostruito dalla memoria Markdown.',
+      memoryReflectionEnabled: 'Riflessione memoria',
+      memoryReflectionEnabledDesc:
+        'Genera memorie riflessive in background dall’indice avanzato. Questa funzione solo desktop richiede l’indice memoria avanzato; quando non disponibile, il recupero continua con la corrispondenza lessicale. Le riflessioni sono dati di indice derivati e possono essere ricostruite senza modificare la memoria Markdown.',
       streamFallbackRecovery: 'Abilita recupero automatico',
       streamFallbackRecoveryDesc:
         'Quando la richiesta primaria in streaming scade o fallisce, esegue un secondo tentativo in modalita non streaming.',
