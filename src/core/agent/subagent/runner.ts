@@ -622,6 +622,11 @@ async function runChildAgent(
       modelName: childModel.model.name ?? childModel.model.model,
       transcript: finalMessages,
       ...(delegatedRole ? { delegatedRole } : {}),
+      // F2/F11: role display name — write site (projected by the service onto
+      // the parent subagent_result message).
+      ...(delegatedProfile
+        ? { delegatedRoleName: delegatedProfile.delegatedRole.name }
+        : {}),
     }
 
     subagentTaskRegistry.update(record.taskId, {
@@ -654,6 +659,9 @@ async function runChildAgent(
       prompt: record.prompt,
       modelName: childModel.model.name ?? childModel.model.model,
       ...(delegatedRole ? { delegatedRole } : {}),
+      ...(delegatedProfile
+        ? { delegatedRoleName: delegatedProfile.delegatedRole.name }
+        : {}),
     }
     subagentTaskRegistry.update(record.taskId, {
       status,
@@ -771,6 +779,9 @@ export async function runSubagent(
           prompt: record.prompt,
           modelName: childModel.model.name ?? childModel.model.model,
           ...(delegatedRole ? { delegatedRole } : {}),
+          ...(delegatedProfile
+            ? { delegatedRoleName: delegatedProfile.delegatedRole.name }
+            : {}),
         }
         subagentTaskRegistry.update(record.taskId, {
           status,

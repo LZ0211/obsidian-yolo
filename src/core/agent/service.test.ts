@@ -1483,6 +1483,99 @@ describe('AgentService background subagent results', () => {
       service.stopBackgroundTaskResultListener()
     }
   })
+
+  it('projects the delegated role display name onto the parent subagent_result message (F2/F11)', () => {
+    const service = new AgentService()
+    const record: SubagentTaskCompletionRecord = {
+      taskId: 'sub_role_projection',
+      conversationId: 'conv-subagent-role',
+      source: {
+        type: 'llm_tool_call',
+        toolCallId: 'subagent-call-role',
+        assistantMessageId: 'assistant-1',
+      },
+      title: 'Review',
+      status: 'completed',
+      createdAt: 1,
+      completedAt: 2,
+      prompt: 'Review the diff',
+      result: {
+        taskId: 'sub_role_projection',
+        status: 'completed',
+        content: 'done',
+        durationMs: 1,
+        toolUseCount: 1,
+        // Write site: runner.ts runChildAgent / runSubagent (delegated runs).
+        delegatedRoleName: 'Code Reviewer',
+      },
+    }
+    service.startBackgroundTaskResultListener()
+
+    try {
+      backgroundTaskCompletionBus.pushCompleted({
+        kind: 'subagent',
+        taskId: record.taskId,
+        conversationId: record.conversationId,
+        record,
+      })
+
+      const subagentResult = service
+        .getState(record.conversationId)
+        .messages.find((message) => message.role === 'subagent_result')
+      expect(subagentResult).toMatchObject({
+        role: 'subagent_result',
+        taskId: record.taskId,
+        delegatedRoleName: 'Code Reviewer',
+      })
+    } finally {
+      service.stopBackgroundTaskResultListener()
+    }
+  })
+
+  it('omits the delegated role name for generic subagent completions', () => {
+    const service = new AgentService()
+    const record: SubagentTaskCompletionRecord = {
+      taskId: 'sub_generic_projection',
+      conversationId: 'conv-subagent-generic',
+      source: {
+        type: 'llm_tool_call',
+        toolCallId: 'subagent-call-generic',
+        assistantMessageId: 'assistant-1',
+      },
+      title: 'Scan',
+      status: 'completed',
+      createdAt: 1,
+      completedAt: 2,
+      prompt: 'Scan notes',
+      result: {
+        taskId: 'sub_generic_projection',
+        status: 'completed',
+        content: 'done',
+        durationMs: 1,
+        toolUseCount: 1,
+      },
+    }
+    service.startBackgroundTaskResultListener()
+
+    try {
+      backgroundTaskCompletionBus.pushCompleted({
+        kind: 'subagent',
+        taskId: record.taskId,
+        conversationId: record.conversationId,
+        record,
+      })
+
+      const subagentResult = service
+        .getState(record.conversationId)
+        .messages.find((message) => message.role === 'subagent_result')
+      expect(
+        (subagentResult as { delegatedRoleName?: string } | undefined)
+          ?.delegatedRoleName,
+      ).toBeUndefined()
+    } finally {
+      service.stopBackgroundTaskResultListener()
+    }
+  })
 })
 
 describe('AgentService subagent result truncation', () => {

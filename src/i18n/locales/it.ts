@@ -2826,6 +2826,10 @@ export const it: DeepPartial<TranslationKeys> = {
       statusAborted: 'Interrotto',
       statusFailed: 'Fallito',
       statusDispatched: 'Inviato',
+      statusBlocked: 'Delega bloccata',
+      blockedCooldown:
+        'Troppi timeout consecutivi: la delega è in pausa. Riprova più tardi.',
+      delegatedRole: 'Ruolo delegato: {name}',
       toolUseCount: '{count} strumenti',
       tokenCount: '{count} token',
       approval: {

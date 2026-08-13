@@ -1,5 +1,5 @@
 import cx from 'clsx'
-import { Bot, Check, Square, X } from 'lucide-react'
+import { Bot, Check, ShieldAlert, Square, X } from 'lucide-react'
 import type { CSSProperties, ReactNode } from 'react'
 import { useRef, useState } from 'react'
 
@@ -14,6 +14,11 @@ export type SubagentDisplayStatus =
   | 'error'
   | 'aborted'
   | 'dispatched'
+  /**
+   * F10: the dispatch was refused by the per-conversation timeout breaker
+   * (`delegate_subagent` returned a `blocked` payload instead of spawning).
+   */
+  | 'blocked'
 
 export type SubagentDetailStats = {
   durationMs?: number
@@ -82,6 +87,8 @@ function SubagentStatusIcon({ status }: { status: SubagentDisplayStatus }) {
     case 'aborted':
     case 'error':
       return <X size={14} />
+    case 'blocked':
+      return <ShieldAlert size={14} />
     default:
       return <Bot size={14} />
   }
@@ -125,6 +132,7 @@ export function SubagentCardView({
           status === 'success' && 'yolo-subagent-card--success',
           status === 'error' && 'yolo-subagent-card--error',
           status === 'aborted' && 'yolo-subagent-card--aborted',
+          status === 'blocked' && 'yolo-subagent-card--blocked',
         )}
       >
         <div className="yolo-subagent-card__row">

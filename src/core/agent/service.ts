@@ -310,6 +310,8 @@ function buildSubagentResultMessage(
     prompt: result?.prompt ?? record.prompt,
     modelName: result?.modelName,
     transcript: result?.transcript ?? record.liveTranscript,
+    // F2/F11: project the delegated role display name (write site: runner).
+    delegatedRoleName: result?.delegatedRoleName,
     delegateAssistantMessageId:
       record.source.type === 'llm_tool_call'
         ? record.source.assistantMessageId

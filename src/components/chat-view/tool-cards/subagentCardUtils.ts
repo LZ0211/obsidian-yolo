@@ -59,11 +59,18 @@ export function resolveSubagentPendingApprovals({
   return collectPendingSubagentApprovals(transcript)
 }
 
-export function parseAcceptedSubagentResponse(response: ToolCallResponse): {
+export type ParsedSubagentAcceptedResponse = {
   taskId?: string
   modelName?: string
   title?: string
-} {
+  /** F10: the delegate_subagent gate refused the dispatch (breaker open). */
+  blocked?: boolean
+  blockedReason?: string
+}
+
+export function parseAcceptedSubagentResponse(
+  response: ToolCallResponse,
+): ParsedSubagentAcceptedResponse {
   if (response.status !== ToolCallResponseStatus.Success) {
     return {}
   }
@@ -71,11 +78,23 @@ export function parseAcceptedSubagentResponse(response: ToolCallResponse): {
     const parsed = JSON.parse(response.data.text) as unknown
     if (!parsed || typeof parsed !== 'object') return {}
     const record = parsed as Record<string, unknown>
+    // F10: the breaker gate returns a Success payload shaped
+    // `{ accepted: false, status: 'blocked', blocked: true, reason }`
+    // (localFileTools.ts delegate_subagent case) — a normal dispatch parse
+    // would otherwise render an empty success card.
+    const isBlocked = record.status === 'blocked' || record.blocked === true
     return {
       taskId: typeof record.taskId === 'string' ? record.taskId : undefined,
       modelName:
         typeof record.modelName === 'string' ? record.modelName : undefined,
       title: typeof record.title === 'string' ? record.title : undefined,
+      ...(isBlocked
+        ? {
+            blocked: true,
+            blockedReason:
+              typeof record.reason === 'string' ? record.reason : undefined,
+          }
+        : {}),
     }
   } catch {
     return {}
@@ -200,6 +219,16 @@ export function buildSubagentCompletionSummary({
   t: (key: string, fallback?: string) => string
 }): string {
   const parts: string[] = []
+  // F2/F11: surface the delegated role name (projected from the runner's
+  // `delegatedRoleName`) so a role-driven child is identifiable at a glance.
+  if (subagentResult.delegatedRoleName) {
+    parts.push(
+      t('chat.subagent.delegatedRole', 'Delegated role: {name}').replace(
+        '{name}',
+        subagentResult.delegatedRoleName,
+      ),
+    )
+  }
   switch (subagentResult.status) {
     case 'completed':
       parts.push(t('chat.subagent.statusCompleted', 'Completed'))

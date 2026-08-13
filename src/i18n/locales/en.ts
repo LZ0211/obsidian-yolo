@@ -3083,6 +3083,10 @@ export const en: TranslationKeys = {
       statusAborted: 'Aborted',
       statusFailed: 'Failed',
       statusDispatched: 'Dispatched',
+      statusBlocked: 'Delegation blocked',
+      blockedCooldown:
+        'Too many consecutive timeouts — delegation is paused for a cooldown. Try again later.',
+      delegatedRole: 'Delegated role: {name}',
       toolUseCount: '{count} tools',
       tokenCount: '{count} tokens',
       approval: {

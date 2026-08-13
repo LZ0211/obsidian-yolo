@@ -151,21 +151,29 @@ export function SubagentCard({
     [liveTask?.status, liveTranscript],
   )
   const isAwaitingApproval = pendingApprovals.length > 0
-  const subtitle = isAwaitingApproval
-    ? pendingApprovals.length > 1
-      ? t(
-          'chat.subagent.approval.headingMulti',
-          'Awaiting approval · {count}',
-        ).replace('{count}', String(pendingApprovals.length))
-      : t('chat.subagent.approval.heading', 'Awaiting approval')
-    : activitySubtitle
+  // F10: the breaker gate refused the dispatch — show a blocked card instead
+  // of an empty success card (the blocked payload has no taskId/title).
+  const isBlocked = accepted.blocked === true
+  const subtitle = isBlocked
+    ? `${t('chat.subagent.statusBlocked', 'Delegation blocked')} · ${t(
+        'chat.subagent.blockedCooldown',
+        'Too many consecutive timeouts — delegation is paused for a cooldown. Try again later.',
+      )}`
+    : isAwaitingApproval
+      ? pendingApprovals.length > 1
+        ? t(
+            'chat.subagent.approval.headingMulti',
+            'Awaiting approval · {count}',
+          ).replace('{count}', String(pendingApprovals.length))
+        : t('chat.subagent.approval.heading', 'Awaiting approval')
+      : activitySubtitle
 
   return (
     <SubagentCardView
       title={title}
       modelName={modelName}
       subtitle={subtitle}
-      status={toDisplayStatus(effectiveStatus)}
+      status={isBlocked ? 'blocked' : toDisplayStatus(effectiveStatus)}
       prompt={prompt}
       taskId={taskId}
       transcript={subagentResult?.transcript ?? liveTranscript}

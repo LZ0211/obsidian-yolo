@@ -46,6 +46,8 @@ function getStatusLabel(
       return t('chat.liveTask.statusError', 'Error')
     case 'dispatched':
       return t('chat.subagent.statusDispatched', 'Dispatched')
+    case 'blocked':
+      return t('chat.subagent.statusBlocked', 'Delegation blocked')
     default:
       return status
   }

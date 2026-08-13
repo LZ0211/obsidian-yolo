@@ -1,5 +1,4 @@
 import type {
-  AgentFileChange,
   ChatMessage,
   DelegatedRoleMetadata,
   TaskSource,
@@ -40,8 +39,12 @@ export type SubagentResult = {
   prompt?: string
   modelName?: string
   transcript?: ChatMessage[]
-  changes?: AgentFileChange[]
   delegatedRole?: DelegatedRoleMetadata
+  /**
+   * F2/F11: display name of the delegated assistant role this child ran as
+   * (written from the delegated profile; omitted for generic subagents).
+   */
+  delegatedRoleName?: string
 }
 
 export type SubagentTaskRecord = {

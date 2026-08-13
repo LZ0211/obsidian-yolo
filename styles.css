@@ -22305,6 +22305,11 @@ button.yolo-subagent-card__main:focus-visible {
   color: var(--color-red);
 }
 
+/* F10: breaker-refused delegation (blocked payload, no child spawned). */
+.yolo-subagent-card--blocked .yolo-subagent-card__icon {
+  color: var(--color-red);
+}
+
 .yolo-subagent-card__content {
   display: flex;
   flex-direction: column;

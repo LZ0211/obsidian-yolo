@@ -220,6 +220,12 @@ export type ChatSubagentResultMessage = {
   prompt?: string
   modelName?: string
   transcript?: ChatMessage[]
+  /**
+   * F2/F11: display name of the delegated assistant role the child ran as
+   * (projected from `SubagentResult.delegatedRoleName`; absent for generic
+   * subagents).
+   */
+  delegatedRoleName?: string
   delegateAssistantMessageId: string
   delegateToolCallId: string
   metadata?: {

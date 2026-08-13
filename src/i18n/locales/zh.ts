@@ -2886,6 +2886,9 @@ export const zh: TranslationKeys = {
       statusAborted: '已中止',
       statusFailed: '失败',
       statusDispatched: '已派遣',
+      statusBlocked: '委托被拦截',
+      blockedCooldown: '连续超时过多，委托已暂停；冷却期后请稍后重试。',
+      delegatedRole: '委托角色：{name}',
       toolUseCount: '{count} 个工具',
       tokenCount: '{count} tokens',
       approval: {
