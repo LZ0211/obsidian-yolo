@@ -32,6 +32,7 @@ import {
   createAgentEventStore,
 } from './core/agent/agentEventStore'
 import { AgentFileChangeTracker } from './core/agent/agentFileChangeTracker'
+import { ProjectDeliveryBridge } from './core/agent/project/deliveryBridge'
 import type {
   AgentConversationRunSummary,
   AgentService,
@@ -376,6 +377,7 @@ export default class YoloPlugin extends Plugin {
   private injectionBridgeUninstall: (() => void) | null = null
   private liteSkillRegistryDispose: (() => void) | null = null
   private webviewSelectionBridge: WebviewSelectionBridge | null = null
+  private projectDeliveryBridge: ProjectDeliveryBridge | null = null
   private writeAssistController: WriteAssistController | null = null
   // Model list cache for provider model fetching
   private modelListCache: Map<string, { models: string[]; timestamp: number }> =
@@ -2257,6 +2259,11 @@ export default class YoloPlugin extends Plugin {
     addIcon(YOLO_ICON_ID, YOLO_ICON_SVG)
 
     await this.loadSettings()
+    this.projectDeliveryBridge = new ProjectDeliveryBridge({
+      getSettings: () => this.settings,
+      adapter: this.app.vault.adapter,
+    })
+    this.projectDeliveryBridge.start()
     // The parent subagent timeout + breaker read the CURRENT settings on every
     // deadline registration / breaker trip, so changing `subagentTimeout` in
     // settings takes effect without a restart (pre `main.ts:3440`).
@@ -2868,6 +2875,8 @@ export default class YoloPlugin extends Plugin {
     this.removeRagLogRibbonIcon()
     void closeMemoryIndexRuntime(this.app)
     clearAllChatGPTOAuthServices()
+    this.projectDeliveryBridge?.stop()
+    this.projectDeliveryBridge = null
     this.disposeCliRuntimeCoordinator()
     this.liteSkillRegistryDispose?.()
     this.liteSkillRegistryDispose = null
