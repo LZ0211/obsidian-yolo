@@ -3097,6 +3097,12 @@ export const en: TranslationKeys = {
         approveAll: 'Approve all',
         rejectAll: 'Reject all',
         viewDetails: 'View parameters',
+        confirmApproveAllTitle: 'Approve all pending tool calls?',
+        confirmApproveAllMessage:
+          'This approves every pending tool call at once and cannot be undone.',
+        confirmRejectAllTitle: 'Reject all pending tool calls?',
+        confirmRejectAllMessage:
+          'This rejects every pending tool call at once and cannot be undone.',
       },
       statusAwaitingApproval: 'Awaiting approval',
     },

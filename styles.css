@@ -22669,6 +22669,14 @@ button.yolo-subagent-approval__bulk-btn--ghost:focus-visible {
   color: var(--text-normal);
 }
 
+/* F13: in-flight decision (approve/reject dispatch in progress) — the button
+   is disabled to prevent duplicate clicks and dimmed to give feedback. */
+button.yolo-subagent-approval__btn:disabled,
+button.yolo-subagent-approval__bulk-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* Restored from backup/pre-rollback-2026-08-10 (migration gap) */
 .yolo-subagent-card__metadata {
   display: flex;

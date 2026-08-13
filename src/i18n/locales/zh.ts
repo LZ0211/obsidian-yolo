@@ -2899,6 +2899,12 @@ export const zh: TranslationKeys = {
         approveAll: '全部同意',
         rejectAll: '全部拒绝',
         viewDetails: '查看参数',
+        confirmApproveAllTitle: '同意全部待审批的工具调用？',
+        confirmApproveAllMessage:
+          '这将一次性同意所有待审批的工具调用，且无法撤销。',
+        confirmRejectAllTitle: '拒绝全部待审批的工具调用？',
+        confirmRejectAllMessage:
+          '这将一次性拒绝所有待审批的工具调用，且无法撤销。',
       },
       statusAwaitingApproval: '等待审批',
     },

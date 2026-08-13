@@ -2840,6 +2840,12 @@ export const it: DeepPartial<TranslationKeys> = {
         approveAll: 'Approva tutto',
         rejectAll: 'Rifiuta tutto',
         viewDetails: 'Vedi parametri',
+        confirmApproveAllTitle: 'Approva tutte le chiamate in attesa?',
+        confirmApproveAllMessage:
+          'Questo approva tutte le chiamate in attesa in una volta sola e non può essere annullato.',
+        confirmRejectAllTitle: 'Rifiuta tutte le chiamate in attesa?',
+        confirmRejectAllMessage:
+          'Questo rifiuta tutte le chiamate in attesa in una volta sola e non può essere annullato.',
       },
       statusAwaitingApproval: 'In attesa di approvazione',
     },

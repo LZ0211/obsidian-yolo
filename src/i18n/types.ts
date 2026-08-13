@@ -2637,6 +2637,11 @@ export type TranslationKeys = {
         approveAll?: string
         rejectAll?: string
         viewDetails?: string
+        /** F13: 批量决定前的 ConfirmModal 确认文案（不可逆操作）。 */
+        confirmApproveAllTitle?: string
+        confirmApproveAllMessage?: string
+        confirmRejectAllTitle?: string
+        confirmRejectAllMessage?: string
       }
       /** 卡片状态区"等待审批"标签（A3 最小实现）。 */
       statusAwaitingApproval?: string
