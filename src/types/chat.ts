@@ -1,7 +1,5 @@
 import { SerializedEditorState } from 'lexical'
 
-import { CitationSource } from '../core/agent/citationRegistry'
-
 import { ChatModel } from './chat-model.types'
 import { ContentPart } from './llm/request'
 import { Annotation, ProviderMetadata, ResponseUsage } from './llm/response'
@@ -10,6 +8,24 @@ import { ToolCallRequest, ToolCallResponse } from './tool-call.types'
 
 export type PromptSnapshotRef = {
   hash: string
+}
+
+/**
+ * Single source of truth for citation sources. Lives in the types layer
+ * (leaf) so `core/agent/citationRegistry.ts` can import it without creating
+ * a bidirectional edge back into the message types that consume it
+ * (previously the registry defined this type and `types/chat.ts` imported it,
+ * forming a two-node cycle `citationRegistry -> types/chat`).
+ */
+export type CitationSource = {
+  ordinal: number
+  path: string
+  startLine: number
+  endLine: number
+  page?: number
+  snippet: string
+  similarity?: number
+  source: 'rag' | 'keyword' | 'hybrid'
 }
 
 export type AgentFileChangeKind = 'created' | 'modified' | 'deleted' | 'renamed'

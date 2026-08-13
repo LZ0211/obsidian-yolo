@@ -1,15 +1,9 @@
-import type { ChatMessage } from '../../types/chat'
+import type { ChatMessage, CitationSource } from '../../types/chat'
 
-export type CitationSource = {
-  ordinal: number
-  path: string
-  startLine: number
-  endLine: number
-  page?: number
-  snippet: string
-  similarity?: number
-  source: 'rag' | 'keyword' | 'hybrid'
-}
+// Single source of truth moved to the types layer (`types/chat.ts`) to break
+// the bidirectional edge chat.ts <-> citationRegistry.ts (deps ratchet).
+// Re-exported for the existing consumers that imported the type from here.
+export type { CitationSource }
 
 export class CitationRegistry {
   private byKey = new Map<string, CitationSource>()
