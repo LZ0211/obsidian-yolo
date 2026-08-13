@@ -61,6 +61,7 @@ type TestPlugin = {
   getDatabaseMaintenanceController: YoloPlugin['getDatabaseMaintenanceController']
   runRagIndex: jest.Mock
   getRagIndexService: jest.Mock
+  getVectorBackendStatus: jest.Mock
 }
 
 const createPlugin = (): TestPlugin => {
