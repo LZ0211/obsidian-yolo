@@ -48,6 +48,7 @@ import {
   type PlatformMessageEvent,
   decodeSessionKey,
 } from './types'
+import { emitBotConversationUpdated } from './conversation-updated-event'
 
 /**
  * Builds a concrete `PlatformAdapter` for a platform config, or `null` if
@@ -585,12 +586,17 @@ export class BotService {
       BOT_TURN_MAX_DURATION_MS,
     )
     this.activeTurnAbortControllers.add(abortController)
+    // Set only when the agent turn actually ran (not when it was skipped by an
+    // abort/unload) — the open chat view reloads on this event, so a turn that
+    // changed nothing must not churn its message state.
+    let turnRan = false
     const current = previous
       .catch(() => undefined)
       .then(async () => {
         if (!this.acceptingEvents || abortController.signal.aborted) return
         const mcpManager = await this.deps.getMcpManager()
         if (!this.acceptingEvents || abortController.signal.aborted) return
+        turnRan = true
         await runBotAgentTurn({
           app: this.deps.app,
           settings: this.deps.getSettings(),
@@ -615,6 +621,9 @@ export class BotService {
       .finally(() => {
         clearTimeout(turnTimeoutHandle)
         this.activeTurnAbortControllers.delete(abortController)
+        if (turnRan) {
+          emitBotConversationUpdated(params.conversationId)
+        }
       })
     this.turnQueues.set(params.sessionKey, current)
     void current.then(() => {

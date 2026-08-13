@@ -58,6 +58,11 @@ import {
   resolveEffectiveChatMode,
 } from './chat-input/ChatModeSelect'
 import { editorStateToPlainText } from './chat-input/utils/editor-state-to-plain-text'
+import {
+  BOT_CONVERSATION_UPDATED_EVENT,
+  parseBotConversationUpdatedEvent,
+} from '../../core/bot/conversation-updated-event'
+import { deriveBotTurnConversationUpdate } from './botConversationSync'
 import type { ChatSessionController } from './ChatSessionController'
 import {
   beginChatRuntimeNavigation,
@@ -1387,6 +1392,45 @@ export function useYoloChatSession({
       unsubscribe()
     }
   }, [agentService, currentConversationId, submitChatMutation])
+
+  // Bot turns land through the shared AgentService, so the open view already
+  // live-streams them via ChatSessionController's subscription. This listener
+  // is the completion-time safety net (it also covers a view opened mid-turn):
+  // it re-applies the settled turn from AgentService's in-memory state — the
+  // authoritative source, since the disk write may still be coalesced — via
+  // the same controller setters, preserving message reference identity.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const conversationId = parseBotConversationUpdatedEvent(event)
+      if (!conversationId || conversationId !== currentConversationId) return
+      // Never clobber an in-flight UI run on the same conversation.
+      if (agentService.isRunning(conversationId)) return
+      const update = deriveBotTurnConversationUpdate({
+        state: agentService.getState(conversationId),
+        existingAssistantGroupBoundaryMessageIds:
+          assistantGroupBoundaryMessageIds,
+        normalizeAssistantGroupBoundaryMessageIds,
+      })
+      if (!update) return
+      setChatMessages(update.chatMessages)
+      setAssistantGroupBoundaryMessageIds(
+        update.assistantGroupBoundaryMessageIds,
+      )
+      setCompactionState(update.compactionState)
+    }
+    window.addEventListener(BOT_CONVERSATION_UPDATED_EVENT, handler)
+    return () => {
+      window.removeEventListener(BOT_CONVERSATION_UPDATED_EVENT, handler)
+    }
+  }, [
+    agentService,
+    currentConversationId,
+    assistantGroupBoundaryMessageIds,
+    normalizeAssistantGroupBoundaryMessageIds,
+    setChatMessages,
+    setAssistantGroupBoundaryMessageIds,
+    setCompactionState,
+  ])
 
   // Ensure the conversation is persisted once a run that was in-flight while
   // the persist call would have been skipped settles.
