@@ -1611,6 +1611,191 @@ describe('ShardedVectorStore tombstone deletes', () => {
       fs.rmSync(tempRoot, { recursive: true, force: true })
     }
   })
+
+  it('rewrite that keeps an unchanged chunk revives it in place: no duplicate vector, alignment kept', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'sharded-revive-id-'),
+    )
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        contentHash: 'hash-v1',
+        chunks: [
+          chunk('c1', 'alpha', [1, 0, 0, 0], 1),
+          chunk('c2', 'beta', [0.5, Math.sqrt(0.75), 0, 0], 2),
+        ],
+      })
+
+      // Rewrite keeps c1 UNCHANGED (same chunk_id — real chunk ids embed the
+      // content hash) and adds a new chunk c3. The revive must update c1's
+      // tombstoned row in place; appending a second vector for c1 would break
+      // rowid↔offset alignment and hard-corrupt the shard.
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 2,
+        contentHash: 'hash-v2',
+        chunks: [
+          chunk('c1', 'alpha', [1, 0, 0, 0], 1),
+          chunk('c3', 'gamma', [1 / 3, Math.sqrt(8 / 9), 0, 0], 3),
+        ],
+      })
+
+      // Search works (no database_corrupt) with correct ordering and scores:
+      // c1 keeps its original vector (offset 0, score 1.0), c3 reads offset 2.
+      const result = await store.search(writeNamespace, query, { topK: 10 })
+      expect(result.hits.map((hit) => hit.chunkId)).toEqual(['c1', 'c3'])
+      expect(result.hits[0]?.score).toBeCloseTo(1, 5)
+      expect(result.hits[1]?.score).toBeCloseTo(1 / 3, 5)
+      expect(result.totalCount).toBe(2)
+
+      // Rows == vectors: vectorCount equals the row count and the artifacts
+      // match byte-for-byte (3 rows, 3 vectors — not 4).
+      const manifest = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifest.shards[0]?.vectorCount).toBe(3)
+      const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
+      expect(
+        (await adapter.readBinary(`${shardRoot}/vectors.f32`)).byteLength,
+      ).toBe(3 * writeNamespace.dimension * 4)
+      expect(
+        (await adapter.readBinary(`${shardRoot}/index.bin`)).byteLength,
+      ).toBe(3 * COARSE_DIMENSION * 4)
+
+      // c1 revived at its original rowid 1; c2 stays tombstoned; c3 appended.
+      const runtime = openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+      )
+      try {
+        const rows = runtime.query<{ chunk_id: string; tombstone: number }>(
+          'select chunk_id, tombstone from chunks order by rowid',
+        )
+        expect(rows).toEqual([
+          { chunk_id: 'c1', tombstone: 0 },
+          { chunk_id: 'c2', tombstone: 1 },
+          { chunk_id: 'c3', tombstone: 0 },
+        ])
+      } finally {
+        runtime.close()
+      }
+
+      const indexed = await store.getIndexedFiles(writeNamespace)
+      expect(indexed.get('notes/a.md')).toMatchObject({
+        mtime: 2,
+        contentHash: 'hash-v2',
+      })
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('a revived chunk stays in its original shard even when new chunks append to a later shard', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-revive-x-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      // 1001 chunks: c0..c999 fill shard 1, c1000 rolls to shard 2.
+      // Embeddings are strictly decreasing in similarity to [1,0,0,0]:
+      // chunk i scores 1/(i+1), so write order == global sort order.
+      const chunks = Array.from({ length: 1001 }, (_, i) => {
+        const x = 1 / (i + 1)
+        return chunk(
+          `c${i}`,
+          `text-${i}`,
+          [x, Math.sqrt(1 - x * x), 0, 0],
+          i,
+          'notes/big.md',
+        )
+      })
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/big.md',
+        mtime: 1,
+        chunks,
+      })
+
+      // Rewrite keeps c0 unchanged (revived in shard 1) and adds c1001, which
+      // must append to shard 2 (shard 1 is full) — not collide with c0.
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/big.md',
+        mtime: 2,
+        contentHash: 'hash-v2',
+        chunks: [
+          chunk('c0', 'text-0', [1, 0, 0, 0], 0, 'notes/big.md'),
+          chunk(
+            'c1001',
+            'text-1001',
+            [1 / 1002, Math.sqrt(1 - 1 / 1002 ** 2), 0, 0],
+            1001,
+            'notes/big.md',
+          ),
+        ],
+      })
+
+      const manifest = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifest.shards.map((shard) => shard.id)).toEqual([
+        '000001',
+        '000002',
+      ])
+      expect(manifest.shards[0]?.vectorCount).toBe(1000)
+      expect(manifest.shards[1]?.vectorCount).toBe(2)
+
+      // c0 is live in shard 1 at rowid 1; the rest of shard 1 is tombstoned.
+      const shardOneRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
+      const runtimeOne = openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+      )
+      try {
+        const rows = runtimeOne.query<{ chunk_id: string; tombstone: number }>(
+          'select chunk_id, tombstone from chunks order by rowid limit 2',
+        )
+        expect(rows).toEqual([
+          { chunk_id: 'c0', tombstone: 0 },
+          { chunk_id: 'c1', tombstone: 1 },
+        ])
+        expect(
+          (await adapter.readBinary(`${shardOneRoot}/vectors.f32`)).byteLength,
+        ).toBe(1000 * writeNamespace.dimension * 4)
+      } finally {
+        runtimeOne.close()
+      }
+
+      // shard 2: old c1000 tombstoned, new c1001 live.
+      const shardTwoRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000002')
+      const runtimeTwo = openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000002'),
+      )
+      try {
+        const rows = runtimeTwo.query<{ chunk_id: string; tombstone: number }>(
+          'select chunk_id, tombstone from chunks order by rowid',
+        )
+        expect(rows).toEqual([
+          { chunk_id: 'c1000', tombstone: 1 },
+          { chunk_id: 'c1001', tombstone: 0 },
+        ])
+        expect(
+          (await adapter.readBinary(`${shardTwoRoot}/vectors.f32`)).byteLength,
+        ).toBe(2 * writeNamespace.dimension * 4)
+      } finally {
+        runtimeTwo.close()
+      }
+
+      // Search: exactly one hit per chunk_id, global order c0 then c1001.
+      const result = await store.search(writeNamespace, query, { topK: 10 })
+      expect(result.hits.map((hit) => hit.chunkId)).toEqual(['c0', 'c1001'])
+      expect(result.hits[0]?.score).toBeCloseTo(1, 5)
+      expect(result.hits[1]?.score).toBeCloseTo(1 / 1002, 5)
+      expect(result.totalCount).toBe(2)
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('ShardedVectorStore read-write locking', () => {

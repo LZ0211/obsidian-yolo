@@ -70,21 +70,16 @@ const INSERT_CHUNK_REBUILD_SQL = `insert into chunks_rebuild (
   start_line, end_line, page, text, metadata_json, tombstone
 ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-const UPSERT_CHUNK_SQL = `insert into chunks (
+/**
+ * Insert a fresh chunk row. A plain insert (not an upsert): rows whose
+ * chunk_id already exists are routed to `reviveChunkInShard` before this
+ * runs, so a duplicate primary key here is a bug that must fail loudly —
+ * an upsert would silently re-break the rowid↔vector alignment.
+ */
+const INSERT_CHUNK_SQL = `insert into chunks (
   chunk_id, file_path, file_mtime, file_content_hash, chunk_content_hash,
   start_line, end_line, page, text, metadata_json, tombstone
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-on conflict(chunk_id) do update set
-  file_path = excluded.file_path,
-  file_mtime = excluded.file_mtime,
-  file_content_hash = excluded.file_content_hash,
-  chunk_content_hash = excluded.chunk_content_hash,
-  start_line = excluded.start_line,
-  end_line = excluded.end_line,
-  page = excluded.page,
-  text = excluded.text,
-  metadata_json = excluded.metadata_json,
-  tombstone = 0`
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
 
 /** Same shape as CHUNKS_TABLE_SQL but under a staging name for rowid compaction. */
 const CHUNKS_REBUILD_TABLE_SQL = `create table chunks_rebuild (
@@ -573,21 +568,40 @@ export class ShardedVectorStore implements VectorStore {
       // Nothing indexed (or a manifest active for another namespace): the
       // delete is a no-op, mirroring the desktop store's empty delete.
       if (manifest == null || manifest.activeModel !== namespaceId) return
+      const failures: Array<{ shardId: string; error: unknown }> = []
       for (const shard of manifest.shards) {
         if (shard.state !== 'ready' || shard.vectorCount === 0) continue
-        const runtime = this.openShardRuntime(namespaceId, shard.id)
         try {
-          runtime.transaction(() => {
-            for (const filePath of paths) {
-              runtime.exec(
-                'update chunks set tombstone = 1 where file_path = ?',
-                [filePath],
-              )
-            }
-          })
-        } finally {
-          runtime.close()
+          const runtime = this.openShardRuntime(namespaceId, shard.id)
+          try {
+            runtime.transaction(() => {
+              for (const filePath of paths) {
+                runtime.exec(
+                  'update chunks set tombstone = 1 where file_path = ?',
+                  [filePath],
+                )
+              }
+            })
+          } finally {
+            runtime.close()
+          }
+        } catch (error) {
+          // Keep tombstoning the remaining shards: partial tombstones are
+          // recoverable (re-run the delete, or vacuum in Task 5), so the
+          // failure surfaces as one clear error instead of a silent state
+          // where early shards are marked and later ones are not.
+          failures.push({ shardId: shard.id, error })
         }
+      }
+      if (failures.length > 0) {
+        throw new VectorStoreError(
+          'transaction_failed',
+          'sqlite',
+          'none',
+          `deleteFiles partially tombstoned across shards: ${failures
+            .map(({ shardId, error }) => `${shardId} (${String(error)})`)
+            .join(', ')}`,
+        )
       }
     } finally {
       release()
@@ -777,7 +791,10 @@ export class ShardedVectorStore implements VectorStore {
    * Search therefore reads ALL rows and skips tombstoned ones by position:
    * a tombstone between two live rows must NOT shift the live vectors'
    * offsets, so candidate scoring uses the row's absolute position in the
-   * full rowid-ordered list, never a compacted live-only index.
+   * full rowid-ordered list, never a compacted live-only index. Rewritten
+   * files keep their unchanged chunks revived in place (`reviveChunkInShard`
+   * — no row moves, no vector duplicated), so this invariant also covers
+   * rewrites whose chunk ids collide with earlier tombstones.
    */
   private async queryShard(
     namespaceId: string,
@@ -1049,7 +1066,10 @@ export class ShardedVectorStore implements VectorStore {
   /**
    * Append-style write for one file: tombstone the file's old chunk rows
    * (`tombstoneFileRows` — no physical removal, Task 4; the old vectors stay
-   * as garbage until Task 5's vacuum), then append the new chunks into the
+   * as garbage until Task 5's vacuum), then write the new chunks. A chunk
+   * whose id already exists in some shard (unchanged content — ids embed the
+   * content hash) is revived in place (`reviveChunkInShard`) so its vector
+   * keeps its original position; a genuinely new chunk appends into the
    * current shard, rolling to `shards/<next>` when the current shard reaches
    * `MAX_VECTORS_PER_SHARD`. The manifest is published once per file via
    * `manifest.next.json` → atomic rename.
@@ -1088,13 +1108,25 @@ export class ShardedVectorStore implements VectorStore {
         await this.tombstoneFileRows(manifest, namespaceId, file.path)
       }
 
+      // Pre-tombstoned rows are still in the table, so an unchanged chunk
+      // (same chunk_id) must be revived in place — never appended again.
+      const existingChunkShards = await this.findChunkShards(
+        manifest,
+        namespaceId,
+        file.chunks.map((chunk) => chunk.chunkId),
+      )
       for (const chunk of file.chunks) {
-        const shard = await this.ensureModelShard(
-          manifest,
-          namespaceId,
-          dimension,
-        )
-        await this.insertChunkIntoShard(namespaceId, shard, file, chunk)
+        const revivedShard = existingChunkShards.get(chunk.chunkId)
+        if (revivedShard != null) {
+          await this.reviveChunkInShard(namespaceId, revivedShard, file, chunk)
+        } else {
+          const shard = await this.ensureModelShard(
+            manifest,
+            namespaceId,
+            dimension,
+          )
+          await this.insertChunkIntoShard(namespaceId, shard, file, chunk)
+        }
       }
 
       if (manifest.shards.length > 0) {
@@ -1205,7 +1237,89 @@ export class ShardedVectorStore implements VectorStore {
     return shard
   }
 
-  /** Upsert chunk row, append the full vector, rewrite the whole-shard coarse index. */
+  /**
+   * Locates which shard already holds each of `chunkIds` (tombstoned or
+   * live). A rewrite that keeps an unchanged chunk (same chunk_id — ids
+   * embed the content hash) must revive that row in place
+   * (`reviveChunkInShard`), so the vector stays at its original position and
+   * the rowid↔offset alignment holds. Batched in groups of 500 to stay under
+   * SQLite's variable limit for large files.
+   */
+  private async findChunkShards(
+    manifest: ShardedManifest,
+    namespaceId: string,
+    chunkIds: string[],
+  ): Promise<Map<string, ShardedManifestShard>> {
+    const found = new Map<string, ShardedManifestShard>()
+    if (chunkIds.length === 0) return found
+    for (const shard of manifest.shards) {
+      if (shard.state !== 'ready' || shard.vectorCount === 0) continue
+      const runtime = this.openShardRuntime(namespaceId, shard.id)
+      try {
+        for (let offset = 0; offset < chunkIds.length; offset += 500) {
+          const batch = chunkIds.slice(offset, offset + 500)
+          const placeholders = batch.map(() => '?').join(', ')
+          const rows = runtime.query<{ chunk_id: string }>(
+            `select chunk_id from chunks where chunk_id in (${placeholders})`,
+            batch,
+          )
+          for (const row of rows) found.set(row.chunk_id, shard)
+        }
+      } finally {
+        runtime.close()
+      }
+    }
+    return found
+  }
+
+  /**
+   * Revive path for a rewrite that keeps an unchanged chunk (same chunk_id —
+   * ids embed the content hash). The row already exists (tombstoned by this
+   * rewrite's `tombstoneFileRows`, or by an earlier delete), so it is
+   * updated in place with `tombstone = 0`; its stored vector stays at the
+   * row's original position — no vectors.f32 append, no index.bin rewrite,
+   * no vectorCount change. Without this branch the old upsert would update
+   * the row but still append a duplicate vector, breaking rowid↔offset
+   * alignment and tripping the byteLength check on the next search.
+   */
+  private async reviveChunkInShard(
+    namespaceId: string,
+    shard: ShardedManifestShard,
+    file: VectorFileWrite,
+    chunk: VectorChunkWrite,
+  ): Promise<void> {
+    const runtime = this.openShardRuntime(namespaceId, shard.id)
+    try {
+      runtime.exec(
+        `update chunks set
+           file_path = ?, file_mtime = ?, file_content_hash = ?,
+           chunk_content_hash = ?, start_line = ?, end_line = ?, page = ?,
+           text = ?, metadata_json = ?, tombstone = 0
+         where chunk_id = ?`,
+        [
+          file.path,
+          file.mtime,
+          file.contentHash ?? null,
+          chunk.contentHash,
+          chunk.location.lineStart ?? null,
+          chunk.location.lineEnd ?? null,
+          chunk.location.page ?? null,
+          chunk.text,
+          JSON.stringify(chunk.metadataJson),
+          chunk.chunkId,
+        ],
+      )
+    } finally {
+      runtime.close()
+    }
+  }
+
+  /**
+   * Insert the chunk row (fresh chunk_id — duplicates are routed to
+   * `reviveChunkInShard` by the caller, so a primary-key conflict here is a
+   * bug and fails loudly), append the full vector, rewrite the whole-shard
+   * coarse index.
+   */
   private async insertChunkIntoShard(
     namespaceId: string,
     shard: ShardedManifestShard,
@@ -1223,7 +1337,7 @@ export class ShardedVectorStore implements VectorStore {
     const shardRoot = getShardedShardRoot(this.baseDir, namespaceId, shard.id)
     const runtime = this.openShardRuntime(namespaceId, shard.id)
     try {
-      runtime.exec(UPSERT_CHUNK_SQL, [
+      runtime.exec(INSERT_CHUNK_SQL, [
         chunk.chunkId,
         file.path,
         file.mtime,
@@ -1287,10 +1401,12 @@ export class ShardedVectorStore implements VectorStore {
   /**
    * Rewrite path (Task 4): mark every existing chunk of `filePath` as
    * tombstoned instead of physically removing rows. vectors.f32/index.bin
-   * keep the old vectors as garbage (reclaimed by Task 5's vacuum), and the
-   * file's new chunks are appended right after — revived by the upsert's
-   * `tombstone = 0`. Rowid-order ↔ vector alignment is preserved because
-   * nothing is removed: rowid order stays equal to vector order.
+   * keep the old vectors as garbage (reclaimed by Task 5's vacuum). The
+   * file's new chunks then either revive their pre-existing rows in place
+   * (`reviveChunkInShard`, same chunk_id) or append as fresh rows
+   * (`insertChunkIntoShard`). Rowid-order ↔ vector alignment is preserved
+   * because nothing is removed and nothing is duplicated: rowid order stays
+   * equal to vector order.
    */
   private async tombstoneFileRows(
     manifest: ShardedManifest,
