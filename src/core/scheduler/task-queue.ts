@@ -166,6 +166,26 @@ export class TaskQueue {
     return true
   }
 
+  /**
+   * Transient "move to front" for a still-queued (not yet dequeued) item:
+   * re-sorts it ahead of everything for THIS dequeue only. Unlike
+   * updatePendingPriority it does not record the bump in latestPriority, so a
+   * retry of a failed run keeps the task's stored priority (the permanent
+   * priority lives in the task store and is edited there). Returns false if
+   * not found (already executing/finished).
+   */
+  promotePendingTask(taskId: string): boolean {
+    const item = this.items.find((i) => i.taskId === taskId)
+    if (!item) return false
+    item.priority = 10
+    this.items.sort((a, b) =>
+      a.priority !== b.priority
+        ? b.priority - a.priority
+        : a.enqueuedAt - b.enqueuedAt,
+    )
+    return true
+  }
+
   /** Removes pending work for a deleted task. Executing work is left intact and is
    * cleaned up by the scheduler when its current attempt settles. */
   removePendingTask(taskId: string): boolean {

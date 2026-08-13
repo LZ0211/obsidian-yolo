@@ -110,6 +110,8 @@ const isMissedTrigger = (task: ScheduledTask, now: number): boolean =>
 export class ScheduledTaskScheduler {
   private readonly queue: TaskQueue
   private readonly runAbortControllers = new Map<string, AbortController>()
+  /** In-flight `executeQueuedTask` promises, tracked so `settleInFlightRuns` can wait for them. */
+  private readonly inFlightRuns = new Set<Promise<void>>()
   private checkInterval?: ReturnType<typeof setInterval>
   private isChecking = false // mutex: prevents the 30s timer and a manual trigger from re-entering and double-enqueueing
   private stopped = true
@@ -153,7 +155,7 @@ export class ScheduledTaskScheduler {
       if (event.type === 'task-ready') {
         // run was already constructed synchronously by TaskQueue.tryProcessNext (see
         // task-queue.ts) — consumed directly here, not rebuilt.
-        void this.executeQueuedTask(event.item, event.run)
+        this.trackInFlightRun(this.executeQueuedTask(event.item, event.run))
       } else {
         this.handleUnresolvableDependency(
           event.item,
@@ -212,6 +214,43 @@ export class ScheduledTaskScheduler {
       controller.abort()
     }
     this.runAbortControllers.clear()
+  }
+
+  private trackInFlightRun(promise: Promise<void>): void {
+    this.inFlightRuns.add(promise)
+    // Both arms consume the promise, so a (hypothetical) rejection can't
+    // surface as an unhandled rejection on the derived chain.
+    promise.then(
+      () => this.inFlightRuns.delete(promise),
+      () => this.inFlightRuns.delete(promise),
+    )
+  }
+
+  /**
+   * Waits (bounded) for every in-flight run to settle — used by the service's
+   * `cleanup()` so a settings-toggle stop matches its documented contract
+   * ("wait for in-flight runs to settle then stop polling"). Runs are bounded
+   * by their `timeoutSeconds`, but a run can outlive that (e.g. an abort that
+   * is slow to honor), so the wait is capped at `timeoutMs` and returns
+   * regardless; any still-running run settles later on its own without
+   * touching the store in a way that could race the toggle (the store stays
+   * open on the cleanup path).
+   */
+  async settleInFlightRuns(timeoutMs: number): Promise<void> {
+    const inFlight = [...this.inFlightRuns]
+    if (inFlight.length === 0) return
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<void>((resolve) => {
+      timeoutHandle = setTimeout(resolve, timeoutMs)
+    })
+    try {
+      await Promise.race([
+        Promise.allSettled(inFlight).then(() => undefined),
+        timeout,
+      ])
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle)
+    }
   }
 
   private hasWebLocks(): boolean {
@@ -331,61 +370,19 @@ export class ScheduledTaskScheduler {
     this.deps.store.updateTask(id, { enabled }, Date.now())
   }
 
-  getTask(id: string): ScheduledTask | null {
-    return this.deps.store.getTask(id)
-  }
-
   listTasks(filters?: TaskFilters): ScheduledTask[] {
     return this.deps.store.listTasks({ enabledOnly: filters?.enabled })
   }
 
-  /** Copies config fields, not runtime state (id/lastRunAt/lastRunStatus/lastError); nextRunTime is recomputed from the (possibly overridden) schedule. */
-  duplicateTask(
-    id: string,
-    overrides?: Partial<Pick<TaskConfig, 'name'>>,
-  ): ScheduledTask {
-    const source = this.deps.store.getTask(id)
-    if (!source) {
-      throw new Error(
-        translate('scheduler.errors.taskNotFound', `任务不存在: ${id}`).replace(
-          '{id}',
-          id,
-        ),
-      )
-    }
-    const {
-      id: _id,
-      createdAt: _createdAt,
-      updatedAt: _updatedAt,
-      lastRunAt: _lastRunAt,
-      lastRunStatus: _lastRunStatus,
-      lastError: _lastError,
-      ...rest
-    } = source
-    return this.createTask({
-      ...rest,
-      name:
-        overrides?.name ??
-        translate('scheduler.duplicateNameSuffix', '{name} 副本').replace(
-          '{name}',
-          source.name,
-        ),
-    })
-  }
-
   /**
-   * Bulk enable/disable/delete: internally still calls the single-task methods one at a time
-   * (reusing the same validation/cleanup logic rather than duplicating it), but only emits one
-   * summary event once all of them are done — a UI subscriber selecting 20 tasks gets a single
-   * refresh, not 20 consecutive ones.
+   * Bulk enable/disable: internally still calls the single-task method one at
+   * a time (reusing the same validation/cleanup logic rather than duplicating
+   * it), but only emits one summary event once all of them are done — a UI
+   * subscriber selecting 20 tasks gets a single refresh, not 20 consecutive
+   * ones.
    */
   toggleTasks(ids: string[], enabled: boolean): void {
     for (const id of ids) this.toggleTask(id, enabled)
-    this.deps.eventBus.emit({ type: 'tasks_batch_updated', taskIds: ids })
-  }
-
-  deleteTasks(ids: string[]): void {
-    for (const id of ids) this.deleteTask(id)
     this.deps.eventBus.emit({ type: 'tasks_batch_updated', taskIds: ids })
   }
 
@@ -465,6 +462,19 @@ export class ScheduledTaskScheduler {
     this.deps.store.updateTask(taskId, { priority }, Date.now())
     this.queue.updatePendingPriority(taskId, priority)
     this.deps.eventBus.emit({ type: 'queue_changed' })
+  }
+
+  /**
+   * Transient "move to front" (see TaskQueue.promotePendingTask): the queued
+   * run jumps ahead of everything for THIS dequeue only — the task's stored
+   * priority is untouched, so future schedule ticks and retries keep the
+   * task's configured priority. Returns false when the task is no longer
+   * pending (already executing/finished), in which case nothing changes.
+   */
+  promoteTaskToFront(taskId: string): boolean {
+    const promoted = this.queue.promotePendingTask(taskId)
+    if (promoted) this.deps.eventBus.emit({ type: 'queue_changed' })
+    return promoted
   }
 
   pauseQueue(): void {

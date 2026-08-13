@@ -758,10 +758,10 @@ describe('ScheduledTaskScheduler', () => {
       const originalNextRunTime = task.nextRunTime
 
       scheduler.updateTask(task.id, { name: 'Renamed' })
-      expect(scheduler.getTask(task.id)?.nextRunTime).toBe(originalNextRunTime)
+      expect(store.getTask(task.id)?.nextRunTime).toBe(originalNextRunTime)
 
       scheduler.updateTask(task.id, { intervalSeconds: 3600 })
-      const afterIntervalChange = scheduler.getTask(task.id)?.nextRunTime
+      const afterIntervalChange = store.getTask(task.id)?.nextRunTime
       expect(afterIntervalChange).not.toBeNull()
       expect(afterIntervalChange as number).toBeGreaterThan(
         originalNextRunTime ?? 0,
@@ -773,7 +773,7 @@ describe('ScheduledTaskScheduler', () => {
         cronExpression,
         intervalSeconds: null,
       })
-      const updated = scheduler.getTask(task.id)
+      const updated = store.getTask(task.id)
       expect(updated?.scheduleType).toBe('cron')
       expect(updated?.nextRunTime).not.toBeNull()
 
@@ -2087,6 +2087,129 @@ describe('ScheduledTaskScheduler', () => {
         expect(events.filter((e) => e.type === 'task_completed')).toHaveLength(
           0,
         )
+
+        scheduler.stop()
+        store.close()
+      } finally {
+        jest.useRealTimers()
+        cleanup(dir)
+      }
+    })
+  })
+
+  describe('catch-up and retry boundary', () => {
+    it('a retry chain straddling the next trigger point defers it to the regular due-check (fires late with scheduledFor = fire time; no catch-up, no double run)', async () => {
+      jest.useFakeTimers()
+      const dir = makeTempDir()
+      try {
+        const store = createScheduledTasksStore(dir)
+        const resolvers: Array<(result: YoloAgentRunResult) => void> = []
+        const agentApi = makeAgentApi(
+          () =>
+            new Promise<YoloAgentRunResult>((resolve) => {
+              resolvers.push(resolve)
+            }),
+        )
+        const eventBus = new TaskEventBus()
+        const events: TaskEvent[] = []
+        eventBus.subscribeAll((e) => events.push(e))
+        const scheduler = new ScheduledTaskScheduler({
+          store,
+          executor: new TaskExecutor({ getAgentApi: () => agentApi }),
+          eventBus,
+        })
+
+        // Interval 60s, maxRetries 3 (attempts 1-3, then given up): the retry
+        // chain (2s, then 4s backoff) straddles the t0+60s trigger point.
+        const t0 = Date.now()
+        store.createTask(
+          'task-1',
+          makeTaskConfig({
+            scheduleType: 'interval',
+            intervalSeconds: 60,
+            maxRetries: 3,
+            nextRunTime: t0,
+          }),
+          t0 - 2000,
+        )
+
+        scheduler.start()
+        await jest.advanceTimersByTimeAsync(0) // first check enqueues attempt 1 and recomputes nextRunTime to t0+60s
+
+        // Attempt 1 fails at t0 → retry attempt 2 at t0+2s.
+        resolvers[0]?.({
+          conversationId: 'c',
+          text: '',
+          status: 'error',
+          errorMessage: 'boom',
+        })
+        await jest.advanceTimersByTimeAsync(0)
+
+        // t0+30s tick: the drain fires attempt 2; it fails → attempt 3 at t0+34s.
+        await jest.advanceTimersByTimeAsync(30_000)
+        resolvers[1]?.({
+          conversationId: 'c',
+          text: '',
+          status: 'error',
+          errorMessage: 'boom',
+        })
+        await jest.advanceTimersByTimeAsync(0)
+
+        // t0+60s tick: the trigger point (nextRunTime = t0+60s) is due, but
+        // the task is still queued (attempt 3 pending) → the due-check defers
+        // it WITHOUT recomputing nextRunTime; the drain then fires attempt 3,
+        // which fails and exhausts maxRetries (lastRunAt = t0+60s).
+        await jest.advanceTimersByTimeAsync(30_000)
+        expect(store.getTask('task-1')?.nextRunTime).toBe(t0 + 60_000)
+        resolvers[2]?.({
+          conversationId: 'c',
+          text: '',
+          status: 'error',
+          errorMessage: 'boom',
+        })
+        await jest.advanceTimersByTimeAsync(0)
+
+        // t0+90s tick: the straddled trigger is now overdue by 30s (below the
+        // 60s catch-up threshold) and the queue is clear → the REGULAR
+        // due-check fires it with scheduledFor = the actual fire time (the
+        // retried run's lastRunAt covers the trigger point, so the catch-up
+        // pass must NOT re-run it).
+        await jest.advanceTimersByTimeAsync(30_000)
+        resolvers[3]?.({
+          conversationId: 'c',
+          text: 'done',
+          status: 'completed',
+        })
+        await jest.advanceTimersByTimeAsync(0)
+
+        const runs = [...store.listRunsByTask('task-1').runs].sort(
+          (a, b) =>
+            a.attempt - b.attempt || (a.startedAt ?? 0) - (b.startedAt ?? 0),
+        )
+        expect(runs).toHaveLength(4)
+        expect(runs.map((r) => r.triggeredBy)).toEqual([
+          'schedule',
+          'schedule',
+          'retry',
+          'retry',
+        ])
+        expect(runs.map((r) => r.status)).toEqual([
+          TaskRunStatus.FAILED,
+          TaskRunStatus.COMPLETED,
+          TaskRunStatus.FAILED,
+          TaskRunStatus.FAILED,
+        ])
+        // The late due run records the ACTUAL fire time, not the missed
+        // trigger point (t0+60s) — and it is NOT a catch-up make-up run.
+        expect(runs[1]?.scheduledFor).toBe(t0 + 90_000)
+        expect(runs.every((r) => r.catchUpRunAt == null)).toBe(true)
+        expect(
+          runs.filter((r) => r.status === TaskRunStatus.COMPLETED),
+        ).toHaveLength(1)
+        expect(events.filter((e) => e.type === 'task_completed')).toHaveLength(
+          1,
+        )
+        expect(store.getTask('task-1')?.nextRunTime).toBe(t0 + 150_000)
 
         scheduler.stop()
         store.close()

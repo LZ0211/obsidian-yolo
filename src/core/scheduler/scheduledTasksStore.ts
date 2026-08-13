@@ -811,6 +811,31 @@ export class ScheduledTasksStore {
     }
   }
 
+  /** All runs across every task, newest first — the "All runs" history view. The status filter and its count query share one WHERE clause, mirroring listRunsByTask. */
+  listAllRuns(
+    options: { status?: TaskRunStatus; limit?: number; offset?: number } = {},
+  ): { runs: TaskRun[]; total: number } {
+    const limit = options.limit ?? 20
+    const offset = options.offset ?? 0
+    const where = options.status ? 'status = ?' : ''
+    const whereParams = options.status ? [options.status] : []
+
+    const rows = this.db.query<TaskRunDbRow>(
+      `
+        select * from task_runs
+        ${where ? `where ${where}` : ''}
+        order by started_at desc, scheduled_for desc
+        limit ? offset ?
+      `,
+      [...whereParams, limit, offset],
+    )
+    const totalRow = this.db.queryOne<{ count: number }>(
+      `select count(*) as count from task_runs ${where ? `where ${where}` : ''}`,
+      whereParams,
+    )
+    return { runs: rows.map(fromRunDbRow), total: totalRow?.count ?? 0 }
+  }
+
   listRunsByBatch(batchId: string): TaskRun[] {
     const rows = this.db.query<TaskRunDbRow>(
       'select * from task_runs where batch_id = ? order by started_at asc',

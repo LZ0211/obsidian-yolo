@@ -242,6 +242,27 @@ describe('TaskQueue', () => {
     expect(queue.updatePendingPriority('a', 1)).toBe(false)
   })
 
+  it('promotePendingTask jumps a still-queued item to the front without recording the bump for retries', () => {
+    const queue = new TaskQueue({ maxConcurrent: 1, defaultMode: 'concurrent' })
+    queue.enqueue(makeItem({ taskId: 'a', priority: 5 }))
+    queue.enqueue(makeItem({ taskId: 'b', priority: 5 }))
+    queue.enqueue(makeItem({ taskId: 'c', priority: 5 }))
+
+    // 'c' jumps ahead of 'b' (which is still queued behind the executing 'a').
+    expect(queue.promotePendingTask('c')).toBe(true)
+    expect(queue.getPendingTasks().map((i) => i.taskId)).toEqual(['c', 'b'])
+
+    // The transient bump is not recorded in latestPriority: when 'a' fails and
+    // its retry is scheduled, the retry keeps the item's stored priority (5)
+    // rather than inheriting a bump that was meant for one dequeue only.
+    queue.markFailed('a', 'batch-1', true)
+    const retryItem = queue.getPendingTasks().find((i) => i.taskId === 'a')
+    expect(retryItem?.priority).toBe(5)
+
+    // A task with no pending item (never enqueued) → false and no change.
+    expect(queue.promotePendingTask('never-enqueued')).toBe(false)
+  })
+
   it('labels the run from the explicit source, not the priority', () => {
     const queue = new TaskQueue({ maxConcurrent: 2, defaultMode: 'concurrent' })
     queue.enqueue(makeItem({ taskId: 'scheduled-high', priority: 10 }))

@@ -5101,7 +5101,7 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
         await service.initialize()
       } else {
         // 停：cleanup 等待在飞任务落定后停止轮询（shutdown 仅用于 onunload）。
-        service.cleanup()
+        await service.cleanup()
       }
     } catch (error) {
       console.error('[YOLO] Failed to reconcile Scheduled Tasks.', error)

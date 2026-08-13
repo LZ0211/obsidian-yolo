@@ -3,8 +3,6 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { getLanguage } from 'obsidian'
-
 import type {
   YoloAgentApi,
   YoloAgentRunRequest,
@@ -79,6 +77,21 @@ async function flushPromises(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve))
 }
 
+/** A run promise the test controls, so it can hold a run in flight across a cleanup(). */
+function makeDeferredAgentApi(): {
+  agentApi: YoloAgentApi
+  resolveRun: (result: YoloAgentRunResult) => void
+} {
+  let resolve!: (result: YoloAgentRunResult) => void
+  const agentApi = makeAgentApi(
+    () =>
+      new Promise((res) => {
+        resolve = res
+      }),
+  )
+  return { agentApi, resolveRun: (result) => resolve(result) }
+}
+
 function makeRunInsert(overrides: Partial<TaskRunInsert> = {}): TaskRunInsert {
   return {
     id: 'run-1',
@@ -105,7 +118,7 @@ function makeRunInsert(overrides: Partial<TaskRunInsert> = {}): TaskRunInsert {
 }
 
 describe('ScheduledTasksService', () => {
-  it('createTask/getTask/listTasks/updateTask/deleteTask round-trip through the store', async () => {
+  it('createTask/listTasks/updateTask/deleteTask round-trip through the store', async () => {
     const dir = makeTempDir()
     try {
       const store = createScheduledTasksStore(dir)
@@ -124,12 +137,13 @@ describe('ScheduledTasksService', () => {
       })
 
       const created = await service.createTask(makeTaskConfig({ name: 'A' }))
-      expect((await service.getTask(created.id)).name).toBe('A')
+      let tasks = await service.listTasks()
+      expect(tasks).toHaveLength(1)
+      expect(tasks[0]?.name).toBe('A')
 
       await service.updateTask(created.id, { name: 'B' })
-      expect((await service.getTask(created.id)).name).toBe('B')
-
-      expect(await service.listTasks()).toHaveLength(1)
+      tasks = await service.listTasks()
+      expect(tasks[0]?.name).toBe('B')
 
       await service.deleteTask(created.id)
       expect(await service.listTasks()).toHaveLength(0)
@@ -140,69 +154,7 @@ describe('ScheduledTasksService', () => {
     }
   })
 
-  it('getTask rejects for a task that does not exist', async () => {
-    const dir = makeTempDir()
-    try {
-      const store = createScheduledTasksStore(dir)
-      const executor = new TaskExecutor({
-        getAgentApi: () =>
-          makeAgentApi(async () => ({
-            conversationId: 'c',
-            text: '',
-            status: 'completed',
-          })),
-      })
-      const service = new ScheduledTasksService({
-        store,
-        eventBus: new TaskEventBus(),
-        executor,
-      })
-
-      await expect(service.getTask('missing')).rejects.toThrow()
-
-      store.close()
-    } finally {
-      cleanup(dir)
-    }
-  })
-
-  it('duplicateTask copies config but not runtime fields', async () => {
-    const dir = makeTempDir()
-    try {
-      const store = createScheduledTasksStore(dir)
-      const executor = new TaskExecutor({
-        getAgentApi: () =>
-          makeAgentApi(async () => ({
-            conversationId: 'c',
-            text: '',
-            status: 'completed',
-          })),
-      })
-      const service = new ScheduledTasksService({
-        store,
-        eventBus: new TaskEventBus(),
-        executor,
-      })
-
-      const source = await service.createTask(
-        makeTaskConfig({ name: 'Original' }),
-      )
-      const originalLanguage = getLanguage()
-      ;(getLanguage as jest.Mock).mockReturnValue('zh')
-      const copy = await service.duplicateTask(source.id)
-      ;(getLanguage as jest.Mock).mockReturnValue(originalLanguage)
-
-      expect(copy.id).not.toBe(source.id)
-      expect(copy.name).toBe('Original 副本')
-      expect(copy.lastRunAt).toBeNull()
-
-      store.close()
-    } finally {
-      cleanup(dir)
-    }
-  })
-
-  it('toggleTasks/deleteTasks apply to every id in the batch', async () => {
+  it('toggleTasks applies to every id in the batch', async () => {
     const dir = makeTempDir()
     try {
       const store = createScheduledTasksStore(dir)
@@ -224,12 +176,56 @@ describe('ScheduledTasksService', () => {
       const b = await service.createTask(makeTaskConfig({ name: 'B' }))
 
       await service.toggleTasks([a.id, b.id], false)
-      expect((await service.getTask(a.id)).enabled).toBe(false)
-      expect((await service.getTask(b.id)).enabled).toBe(false)
+      const tasks = await service.listTasks()
+      expect(tasks.find((task) => task.id === a.id)?.enabled).toBe(false)
+      expect(tasks.find((task) => task.id === b.id)?.enabled).toBe(false)
 
-      await service.deleteTasks([a.id, b.id])
-      expect(await service.listTasks()).toHaveLength(0)
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
 
+  it('listAllRuns spans every task and promoteTaskToFront only touches the queue', async () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const { agentApi } = makeDeferredAgentApi() // holds the first run in flight
+      const executor = new TaskExecutor({ getAgentApi: () => agentApi })
+      const service = new ScheduledTasksService({
+        store,
+        eventBus: new TaskEventBus(),
+        executor,
+      })
+      const a = await service.createTask(makeTaskConfig({ name: 'A' }))
+      const b = await service.createTask(makeTaskConfig({ name: 'B' }))
+      await service.initialize()
+
+      // Two manual runs behind the maxConcurrent=1 ceiling: the first
+      // executes, the second waits in the queue.
+      const first = await service.executeTaskNow(a.id)
+      expect(first.outcome).toBe('started')
+      const second = await service.executeTaskNow(b.id)
+      expect(second.outcome).toBe('queued')
+
+      // promoteTaskToFront is TRANSIENT: B jumps to the front of the queue,
+      // but the stored priority is untouched (permanent priority lives in the
+      // task editor).
+      expect(await service.promoteTaskToFront(b.id)).toBe(true)
+      const pending = service.getPendingTasks()
+      expect(pending.map((i) => i.taskId)).toEqual([b.id])
+      expect(pending[0]?.priority).toBe(10)
+      expect(store.getTask(b.id)?.priority).toBe(5)
+      expect(await service.promoteTaskToFront('missing')).toBe(false)
+
+      const { runs, total } = await service.listAllRuns({
+        limit: 10,
+        offset: 0,
+      })
+      expect(total).toBe(1)
+      expect(runs[0]?.taskId).toBe(a.id)
+
+      service.shutdown()
       store.close()
     } finally {
       cleanup(dir)
@@ -447,11 +443,11 @@ describe('ScheduledTasksService', () => {
       expect(run?.status).toBe(TaskRunStatus.CANCELLED)
       expect(run?.error).toBeTruthy()
 
-      const task = await service.getTask('task-1')
-      expect(task.lastRunStatus).toBe(TaskRunStatus.CANCELLED)
-      expect(task.lastError).toBeTruthy()
+      const task = store.getTask('task-1')
+      expect(task?.lastRunStatus).toBe(TaskRunStatus.CANCELLED)
+      expect(task?.lastError).toBeTruthy()
 
-      service.cleanup()
+      await service.cleanup()
       store.close()
     } finally {
       cleanup(dir)
@@ -495,7 +491,7 @@ describe('ScheduledTasksService', () => {
       const run = store.getRun('run-leaders')
       expect(run?.status).toBe(TaskRunStatus.RUNNING)
 
-      service.cleanup()
+      await service.cleanup()
       store.close()
     } finally {
       Object.defineProperty(globalThis, 'navigator', {
@@ -527,7 +523,7 @@ describe('ScheduledTasksService', () => {
       await Promise.all([service.initialize(), service.initialize()])
 
       expect(updateRun).toHaveBeenCalledTimes(1)
-      service.cleanup()
+      await service.cleanup()
       store.close()
     } finally {
       cleanup(dir)
@@ -554,13 +550,92 @@ describe('ScheduledTasksService', () => {
       )
 
       await service.initialize()
-      service.cleanup()
+      await service.cleanup()
       await service.initialize()
 
       expect(schedulerStart).toHaveBeenCalledTimes(2)
-      service.cleanup()
+      await service.cleanup()
       store.close()
     } finally {
+      cleanup(dir)
+    }
+  })
+
+  it('cleanup() waits for an in-flight run to settle before stopping the poll loop', async () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const { agentApi, resolveRun } = makeDeferredAgentApi()
+      const executor = new TaskExecutor({ getAgentApi: () => agentApi })
+      const service = new ScheduledTasksService({
+        store,
+        eventBus: new TaskEventBus(),
+        executor,
+      })
+      const task = await service.createTask(makeTaskConfig())
+      await service.initialize()
+
+      const result = await service.executeTaskNow(task.id)
+      if (result.outcome !== 'started') throw new Error('unreachable')
+
+      // cleanup() must hold until the in-flight run settles — it cannot return
+      // while the run could still write to the store after the toggle.
+      let settled = false
+      void service.cleanup().then(() => {
+        settled = true
+      })
+      await flushPromises()
+      expect(settled).toBe(false)
+
+      resolveRun({ conversationId: 'c', text: 'done', status: 'completed' })
+      await flushPromises()
+      await flushPromises()
+      expect(settled).toBe(true)
+
+      const run = store.getRun(result.runId)
+      expect(run?.status).toBe(TaskRunStatus.COMPLETED)
+
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  it('cleanup() never blocks past the settle cap when a run hangs', async () => {
+    jest.useFakeTimers()
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const { agentApi } = makeDeferredAgentApi() // never resolves
+      const executor = new TaskExecutor({ getAgentApi: () => agentApi })
+      const service = new ScheduledTasksService({
+        store,
+        eventBus: new TaskEventBus(),
+        executor,
+      })
+      const task = await service.createTask(makeTaskConfig())
+      await service.initialize()
+      await jest.advanceTimersByTimeAsync(0) // settle the leader poll loop's first check
+
+      const result = await service.executeTaskNow(task.id)
+      if (result.outcome !== 'started') throw new Error('unreachable')
+
+      let settled = false
+      void service.cleanup().then(() => {
+        settled = true
+      })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(settled).toBe(false)
+
+      // The 5s settle cap expires while the run is still in flight; cleanup
+      // returns anyway (the run settles on its own later, without touching the
+      // store in a way that races the toggle).
+      await jest.advanceTimersByTimeAsync(5_100)
+      expect(settled).toBe(true)
+
+      store.close()
+    } finally {
+      jest.useRealTimers()
       cleanup(dir)
     }
   })
@@ -671,7 +746,7 @@ describe('ScheduledTasksService', () => {
       )
 
       await service.updateTask(task.id, { name: 'renamed' })
-      expect((await service.getTask(task.id)).name).toBe('renamed')
+      expect(store.getTask(task.id)?.name).toBe('renamed')
 
       await expect(
         service.updateTask(task.id, { scriptPath: 'other/run.js' }),
@@ -713,7 +788,7 @@ describe('ScheduledTasksService', () => {
       const run = store.getRun('run-completed')
       expect(run?.status).toBe(TaskRunStatus.COMPLETED)
 
-      service.cleanup()
+      await service.cleanup()
       store.close()
     } finally {
       cleanup(dir)

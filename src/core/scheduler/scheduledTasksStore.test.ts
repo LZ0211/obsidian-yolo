@@ -254,6 +254,51 @@ describe('ScheduledTasksStore', () => {
     }
   })
 
+  it('lists runs across every task, newest first, with optional status filter', () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      store.createTask('task-1', makeTaskConfig(), 1000)
+      store.createTask('task-2', makeTaskConfig(), 1000)
+      store.insertRun(
+        makeRunInsert({
+          id: 'run-a',
+          taskId: 'task-1',
+          status: TaskRunStatus.COMPLETED,
+          startedAt: 3000,
+        }),
+      )
+      store.insertRun(
+        makeRunInsert({
+          id: 'run-b',
+          taskId: 'task-2',
+          status: TaskRunStatus.FAILED,
+          startedAt: 2000,
+        }),
+      )
+      store.insertRun(
+        makeRunInsert({
+          id: 'run-c',
+          taskId: 'task-1',
+          status: TaskRunStatus.FAILED,
+          startedAt: 1000,
+        }),
+      )
+
+      const all = store.listAllRuns({ limit: 10, offset: 0 })
+      expect(all.total).toBe(3)
+      expect(all.runs.map((r) => r.id)).toEqual(['run-a', 'run-b', 'run-c'])
+
+      const failed = store.listAllRuns({ status: TaskRunStatus.FAILED })
+      expect(failed.total).toBe(2)
+      expect(failed.runs.map((r) => r.id)).toEqual(['run-b', 'run-c'])
+
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
   it('updates run status and reads back JSON logs', () => {
     const dir = makeTempDir()
     try {

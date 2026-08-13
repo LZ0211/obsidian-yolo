@@ -218,10 +218,10 @@ describe('scheduled-tasks e2e smoke (real assembly)', () => {
 
       // The schedule advanced past the fired trigger and the run is persisted
       // on the real SQLite file.
-      const taskAfter = await service.getTask(task.id)
-      expect(taskAfter.nextRunTime).toBe(t0 + 60_000)
-      expect(taskAfter.lastRunStatus).toBe(TaskRunStatus.COMPLETED)
-      expect(taskAfter.lastError).toBeNull()
+      const taskAfter = store?.getTask(task.id)
+      expect(taskAfter?.nextRunTime).toBe(t0 + 60_000)
+      expect(taskAfter?.lastRunStatus).toBe(TaskRunStatus.COMPLETED)
+      expect(taskAfter?.lastError).toBeNull()
       expect(fs.existsSync(path.join(dir, 'scheduled-tasks.sqlite'))).toBe(true)
       expect(events.some((e) => e.type === 'task_completed')).toBe(true)
     } finally {
@@ -278,8 +278,9 @@ describe('scheduled-tasks e2e smoke (real assembly)', () => {
         ),
       ).toBe(true)
 
-      const taskAfter = await service.getTask(task.id)
-      expect(taskAfter.lastRunStatus).toBe(TaskRunStatus.COMPLETED)
+      expect(store?.getTask(task.id)?.lastRunStatus).toBe(
+        TaskRunStatus.COMPLETED,
+      )
       expect(events.map((e) => e.type)).toEqual([
         'task_started',
         'task_completed',
@@ -331,9 +332,8 @@ describe('scheduled-tasks e2e smoke (real assembly)', () => {
       expect(run?.exitCode).toBe(1)
       expect(run?.error).toContain('code 1')
 
-      const taskAfter = await service.getTask(task.id)
-      expect(taskAfter.lastRunStatus).toBe(TaskRunStatus.FAILED)
-      expect(taskAfter.lastError).toContain('code 1')
+      expect(store?.getTask(task.id)?.lastRunStatus).toBe(TaskRunStatus.FAILED)
+      expect(store?.getTask(task.id)?.lastError).toContain('code 1')
 
       // Exactly one run row; no retry_scheduled event.
       expect(store?.listRunsByTask(task.id).runs).toHaveLength(1)
@@ -426,9 +426,8 @@ describe('scheduled-tasks e2e smoke (real assembly)', () => {
       expect(runs[1]?.scheduledFor).toBe(t0 + 2_000)
       expect(events.filter((e) => e.type === 'retry_scheduled')).toHaveLength(1)
 
-      const taskAfter = await service.getTask(task.id)
-      expect(taskAfter.lastRunStatus).toBe(TaskRunStatus.FAILED)
-      expect(taskAfter.lastError).toContain('boom')
+      expect(store?.getTask(task.id)?.lastRunStatus).toBe(TaskRunStatus.FAILED)
+      expect(store?.getTask(task.id)?.lastError).toContain('boom')
     } finally {
       service?.shutdown()
       store?.close()

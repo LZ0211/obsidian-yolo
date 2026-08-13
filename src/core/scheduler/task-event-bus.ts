@@ -4,7 +4,6 @@ export type TaskEvent =
   | { type: 'task_failed'; runId: string; error: string }
   | { type: 'task_timed_out'; runId: string }
   | { type: 'task_cancelled'; runId: string }
-  | { type: 'scheduled'; taskId: string; nextRunTime: number }
   | {
       // pi-style retry progress: the failed run (runId) is being retried as the
       // given attempt, scheduled to run at nextAttemptAtMs (exponential backoff).
@@ -97,11 +96,7 @@ export class TaskEventBus {
     // retry_scheduled must route by its explicit taskId: it is emitted after
     // the failed run's terminal event, which already deleted the runToTaskId
     // mapping — relying on it would silently drop per-task subscribers.
-    if (
-      event.type === 'task_started' ||
-      event.type === 'scheduled' ||
-      event.type === 'retry_scheduled'
-    )
+    if (event.type === 'task_started' || event.type === 'retry_scheduled')
       return event.taskId
     if ('runId' in event) return this.runToTaskId.get(event.runId)
     return undefined
