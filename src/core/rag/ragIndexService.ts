@@ -159,6 +159,9 @@ export class RagIndexService {
   private initPromise: Promise<void> | null = null
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private retryOptions: RagIndexRunOptions | null = null
+  /** Coalesces per-progress persistSnapshot calls: at most one in-flight write
+   * per run, so chunk-level progress callbacks don't hammer localStorage. */
+  private progressPersistInFlight = false
 
   constructor(deps: RagIndexServiceDeps) {
     this.app = deps.app
@@ -359,7 +362,14 @@ export class RagIndexService {
             completedChunks: progress.completedChunks,
             waitingForRateLimit: progress.waitingForRateLimit,
           }
-          void this.persistSnapshot()
+          // Chunk-level progress callbacks fire far more often than a
+          // localStorage write is worth; coalesce to one in-flight write.
+          if (!this.progressPersistInFlight) {
+            this.progressPersistInFlight = true
+            void this.persistSnapshot().finally(() => {
+              this.progressPersistInFlight = false
+            })
+          }
           options.onProgress?.(progress)
         },
       )
@@ -404,9 +414,13 @@ export class RagIndexService {
               ? 'retry_scheduled'
               : 'failed',
         updatedAt: Date.now(),
-        failureKind,
-        failureMessage: failure.message,
-        failureHttpStatus: failure.httpStatus,
+        // A user-initiated cancel is not a failure: clear the stale failure
+        // fields so an idle snapshot doesn't keep showing the last error.
+        failureKind: failureKind === 'aborted' ? undefined : failureKind,
+        failureMessage:
+          failureKind === 'aborted' ? undefined : failure.message,
+        failureHttpStatus:
+          failureKind === 'aborted' ? undefined : failure.httpStatus,
         waitingForRateLimit: false,
         retryCount: nextRetry?.retryCount ?? this.snapshot.retryCount,
         retryAt: shouldScheduleRetry
