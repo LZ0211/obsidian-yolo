@@ -210,6 +210,40 @@ describe('memory index runtime adapter', () => {
     expect(plan.reconciles).toEqual([])
   })
 
+  it('runs periodic maintenance for every tracked partition', async () => {
+    const enqueueMaintenance = jest.fn()
+    const runtime = new MemoryIndexRuntime({ vault: {} } as never, () => ({
+      advancedMemoryIndexEnabled: true,
+    }))
+    const privateRuntime = runtime as unknown as {
+      queue: { enqueueMaintenance: jest.Mock; shutdown: () => Promise<boolean> } | null
+      knownPartitions: Map<string, MemoryPartition>
+    }
+    privateRuntime.knownPartitions.set(
+      'global',
+      buildMemoryPartition({ scope: 'global' }),
+    )
+    privateRuntime.knownPartitions.set(
+      'assistant:a',
+      buildMemoryPartition({ scope: 'assistant', assistantId: 'a' }),
+    )
+    privateRuntime.queue = {
+      enqueueMaintenance,
+      shutdown: async () => false,
+    }
+
+    await runtime.runPeriodicMaintenance()
+
+    expect(enqueueMaintenance).toHaveBeenCalledWith(
+      buildMemoryPartition({ scope: 'global' }),
+    )
+    expect(enqueueMaintenance).toHaveBeenCalledWith(
+      buildMemoryPartition({ scope: 'assistant', assistantId: 'a' }),
+    )
+    expect(enqueueMaintenance).toHaveBeenCalledTimes(2)
+    await runtime.close()
+  })
+
   it('shares one app-scoped store and disables it through current settings', async () => {
     const root = fs.mkdtempSync(
       path.join(os.tmpdir(), 'memory-index-registry-'),

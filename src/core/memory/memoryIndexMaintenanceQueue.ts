@@ -39,6 +39,7 @@ type MaintenanceLane = {
   active: boolean
   controller: AbortController | null
   pending: MaintenanceTask[]
+  running: MaintenanceTask['kind'] | null
 }
 
 export type MemoryIndexMaintenanceQueueOptions = {
@@ -110,6 +111,39 @@ export class MemoryIndexMaintenanceQueue {
     this.schedule()
   }
 
+  /**
+   * Periodic maintenance (decay + cold archive, plus reflection when
+   * configured) for a partition without a reconcile. The scheduler calls
+   * this on an interval so salience decay and cold archival run even when
+   * no source file changed.
+   */
+  enqueueMaintenance(partition: MemoryPartition): void {
+    if (!this.accepting) return
+    const lane = this.getOrCreateLane(partition)
+    if (!lane) {
+      void this.options.store
+        .markDirty({
+          partition,
+          reason: 'maintenance queue capacity exceeded',
+        })
+        .catch(() => undefined)
+      return
+    }
+    // A pending or in-flight decay already covers this partition (reconcile
+    // follow-ups enqueue one after every reconcile).
+    if (
+      lane.running === 'decay' ||
+      lane.pending.some((task) => task.kind === 'decay')
+    )
+      return
+    const tasks: MaintenanceTask[] = [{ kind: 'decay', partition }]
+    if (this.options.runReflectionModel && this.options.isReflectionEnabled?.()) {
+      tasks.push({ kind: 'reflection', partition })
+    }
+    lane.pending.push(...tasks)
+    this.schedule()
+  }
+
   async drain(): Promise<void> {
     while (this.hasWork()) {
       this.schedule()
@@ -166,6 +200,7 @@ export class MemoryIndexMaintenanceQueue {
       active: false,
       controller: null,
       pending: [],
+      running: null,
     }
     this.lanes.set(partition.partitionKey, lane)
     return lane
@@ -211,6 +246,7 @@ export class MemoryIndexMaintenanceQueue {
     while (lane.pending.length > 0) {
       const task = lane.pending.shift()
       if (!task) return
+      lane.running = task.kind
       try {
         await this.runTask(
           task,
@@ -219,6 +255,7 @@ export class MemoryIndexMaintenanceQueue {
       } catch (error) {
         console.warn('[YOLO][MemoryIndex] maintenance task failed', error)
       }
+      lane.running = null
       if (!this.lanes.has(partitionKey)) return
     }
   }
