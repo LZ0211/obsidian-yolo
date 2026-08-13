@@ -4427,11 +4427,26 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
           if (signal?.aborted) {
             throw new DOMException('Maintenance cancelled', 'AbortError')
           }
+          // The explorer inspects a node:sqlite runtime — desktop-only. On
+          // mobile the sharded backend has no equivalent read-only surface.
+          if (!Platform.isDesktop) {
+            throw new Error(
+              'RAG database maintenance is only available on desktop.',
+            )
+          }
           if (kind !== MAINTENANCE_BACKEND_KIND.RAG) {
             throw new Error('Database is unavailable.')
           }
           const status = await this.getVectorBackendStatus()
           if (!status.storagePath) {
+            throw new Error('RAG database is unavailable.')
+          }
+          // The explorer is read-only: never create the database file. Opening
+          // a missing namespace db here would create a garbage empty database
+          // and flip the store's existsSync-derived rebuildRequired to false,
+          // hiding the real "index is empty" state.
+          const { existsSync } = await import('node:fs')
+          if (!existsSync(status.storagePath)) {
             throw new Error('RAG database is unavailable.')
           }
           const runtime = openSqliteRuntime({ dbPath: status.storagePath })
