@@ -16,14 +16,12 @@ import {
   type RunSubagentParams,
   autoRejectPendingApprovals,
   buildSubagentContinuationInput,
-  buildSubagentInitialRunInput,
   hasUnsettledApprovalBatch,
   resolveSubagentRunPolicy,
   runSubagent,
 } from './runner'
 import { subagentTaskRegistry } from './task-registry'
 import { SUBAGENT_BLOCKED_TOOL_NAMES } from './tool-name-utils'
-import type { SubagentTaskRecord } from './types'
 
 /**
  * runSubagent 测试会真实执行 `new NativeAgentRuntime()` + `runtime.run()`
@@ -336,102 +334,11 @@ describe('resolveSubagentRunPolicy', () => {
   })
 })
 
-describe('buildSubagentInitialRunInput', () => {
-  const makeParent = (): SubagentParentContext =>
-    ({
-      conversationId: 'parent-test',
-      loopConfig: {
-        enableTools: true,
-        includeBuiltinTools: true,
-        maxAutoIterations: 5,
-      },
-      requestContextBuilder: {},
-      mcpManager: {},
-      assistantId: 'assistant-parent',
-      workspaceAccessPolicy: {
-        workspaceRoot: '/vault',
-        access: 'full_access',
-      },
-      allowedToolNames: ['parent__read'],
-      toolPreferences: {},
-      toolServerPreferences: {},
-      allowedSkillPaths: [],
-      bypassToolApproval: false,
-    }) as unknown as SubagentParentContext
-
-  const makeRecord = (): SubagentTaskRecord =>
-    ({
-      taskId: 'sub-test',
-      conversationId: 'parent-test',
-      prompt: 'Inspect the requested files and report findings.',
-      abortController: new AbortController(),
-    }) as unknown as SubagentTaskRecord
-
-  const makeChildModel = () =>
-    ({
-      providerClient: {},
-      model: { model: 'child-model' },
-    }) as unknown as Parameters<
-      typeof buildSubagentInitialRunInput
-    >[0]['childModel']
-
-  it('builds an isolated child request with the default system prompt', () => {
-    const { childUserMessage, runInput, loopConfig } =
-      buildSubagentInitialRunInput({
-        record: makeRecord(),
-        parent: makeParent(),
-        childModel: makeChildModel(),
-      })
-
-    expect(runInput.systemPromptOverride).toBe(SUBAGENT_DEFAULT_SYSTEM_PROMPT)
-    expect(runInput.systemPromptOverride).not.toContain(
-      '<assistant_instructions',
-    )
-    expect(childUserMessage.promptContent).toBe(
-      'Inspect the requested files and report findings.',
-    )
-    expect(childUserMessage).toMatchObject({
-      role: 'user',
-      content: null,
-      mentionables: [],
-    })
-    expect(childUserMessage.id).toEqual(expect.any(String))
-    expect(runInput.messages).toEqual([childUserMessage])
-    expect(runInput.requestMessages).toEqual([childUserMessage])
-    expect(runInput.conversationId).toBe('sub-test')
-    expect(runInput.toolApprovalConversationId).toBe('parent-test')
-    expect(loopConfig.enableTools).toBe(true)
-  })
-
-  it('uses the delegated profile policy when provided', () => {
-    const delegatedProfile = {
-      loopConfig: {
-        enableTools: true,
-        includeBuiltinTools: false,
-        maxAutoIterations: 7,
-      },
-      allowedToolNames: ['role__search'],
-      toolPreferences: { role: { enabled: true } },
-      toolServerPreferences: { role: { approvalMode: 'full_access' } },
-      allowedSkillPaths: ['role/SKILL.md'],
-      requestContextBuilder: {},
-    } as unknown as DelegatedAssistantProfile
-
-    const { runInput } = buildSubagentInitialRunInput({
-      record: makeRecord(),
-      parent: makeParent(),
-      childModel: makeChildModel(),
-      delegatedProfile,
-    })
-
-    expect(runInput.allowedToolNames).toEqual(['role__search'])
-    expect(runInput.allowedSkillPaths).toEqual(['role/SKILL.md'])
-    expect(runInput.systemPromptOverride).toBeUndefined()
-    expect(runInput.requestContextBuilder).toBe(
-      delegatedProfile.requestContextBuilder,
-    )
-  })
-})
+// F3: the former `buildSubagentInitialRunInput` export + its tests are gone —
+// it was not byte-identical to runChildAgent's inline construction (missing
+// `workspaceScope`, shared citationRegistry, delegatedRole metadata) and had
+// no production consumer. Policy mapping stays covered by
+// `resolveSubagentRunPolicy`; prompt composition by the parent-context tests.
 
 const makeRunSubagentParent = (): SubagentParentContext =>
   ({
