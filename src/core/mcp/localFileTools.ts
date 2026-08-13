@@ -4394,8 +4394,10 @@ export async function callLocalFileTool({
             existingStatus === SESSION_STATUS.RUNNING ||
             existingStatus === SESSION_STATUS.NEEDS_RESUME
           if (!continuable) {
+            // 文案带状态说明 + UI 恢复指引（B1）：closing 会在当前 run settle
+            // 后归档；archived/orphaned 不可再续跑，恢复走 UI 的 recover 决断。
             throw new Error(
-              `Subagent session "${requestedSessionId}" is in state ${existingStatus} and cannot be continued.`,
+              `Subagent session "${requestedSessionId}" is not continuable (status: ${existingStatus}). Recovery happens in the UI.`,
             )
           }
           const sent = await sessionService.send({

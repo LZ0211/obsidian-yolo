@@ -3228,8 +3228,9 @@ describe('delegate_subagent model selection', () => {
 
       expect(result.status).toBe(ToolCallResponseStatus.Error)
       if (result.status === ToolCallResponseStatus.Error) {
+        // B1：文案带状态说明 + UI 恢复指引
         expect(result.error).toContain(
-          'Subagent session "sub_durable01" is in state archived and cannot be continued.',
+          'Subagent session "sub_durable01" is not continuable (status: archived). Recovery happens in the UI.',
         )
       }
       expect(send).not.toHaveBeenCalled()
