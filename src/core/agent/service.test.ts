@@ -14,6 +14,7 @@ import {
   resetParentSubagentDeadlines,
   resetParentSubagentTimeoutConfig,
   resetParentSubagentTimeoutSettingsGetter,
+  setParentSubagentTimeoutSettingsGetter,
 } from './subagent/pending-timeout-registry'
 import {
   SUBAGENT_RESULT_MAX_CHARS,
@@ -1577,6 +1578,10 @@ describe('AgentService subagent result truncation', () => {
 })
 
 describe('AgentService parent subagent deadline settlement', () => {
+  beforeEach(() => {
+    runtimeInstances.length = 0
+  })
+
   afterEach(() => {
     resetParentSubagentDeadlines()
     resetParentSubagentBreakers()
@@ -1729,6 +1734,74 @@ describe('AgentService parent subagent deadline settlement', () => {
     expect(await approvePromise).toBe(true)
     firstRuntime.resolveRun()
     await runPromise
+  })
+
+  it('clears an approval-path deadline when the parent run is aborted (no synthetic timeout or breaker trip)', async () => {
+    jest.useFakeTimers().setSystemTime(0)
+    setParentSubagentTimeoutSettingsGetter(() => ({ timeoutMs: 4_000 }))
+    const service = new AgentService()
+    const userMessage = makeUserMessage('u1', 'dispatch once')
+    const callTool = jest.fn().mockResolvedValue({
+      status: ToolCallResponseStatus.Success,
+      data: {
+        type: 'text',
+        text: 'accepted',
+      },
+    })
+
+    const runPromise = service.run({
+      conversationId: 'conv-approve-abort',
+      loopConfig: {
+        enableTools: true,
+        maxAutoIterations: 100,
+        includeBuiltinTools: true,
+      },
+      input: {
+        conversationId: 'conv-approve-abort',
+        messages: [userMessage],
+        model: { id: 'model-1' },
+        mcpManager: { callTool },
+      } as unknown as AgentRuntimeRunInput,
+    })
+    const firstRuntime = runtimeInstances[0]
+    firstRuntime.emitSnapshot(
+      makeAssistantToolMessages({
+        userMessage,
+        responseStatus: ToolCallResponseStatus.PendingApproval,
+        toolName: 'yolo_local__delegate_subagent',
+      }),
+    )
+
+    const approvePromise = service.approveToolCall({
+      conversationId: 'conv-approve-abort',
+      toolCallId: 'call-1',
+    })
+    try {
+      // The approve flow is microtask-driven (no timers), so flush microtasks
+      // instead of `waitForRuntimeCount` (whose `setTimeout(0)` is faked away).
+      for (let i = 0; i < 50; i += 1) {
+        await Promise.resolve()
+      }
+      expect(runtimeInstances).toHaveLength(2)
+      expect(hasParentSubagentDeadline('call-1')).toBe(true)
+
+      // The user stops the parent session while the approved child is still
+      // in flight. The approval-path deadline must be torn down like the
+      // auto-approved path's `teardownSubagentDeadlines` does on abort.
+      service.abortConversation('conv-approve-abort')
+      expect(hasParentSubagentDeadline('call-1')).toBe(false)
+
+      // Advance past the deadline: nothing fires into the abandoned
+      // conversation — no synthetic timeout record, no breaker increment.
+      jest.advanceTimersByTime(4_001)
+      expect(getParentSubagentBreakerState('conv-approve-abort')).toBeUndefined()
+    } finally {
+      runtimeInstances[1]?.resolveRun()
+      firstRuntime.resolveRun()
+      await runPromise
+      await approvePromise
+      jest.useRealTimers()
+    }
   })
 })
 

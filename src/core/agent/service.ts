@@ -50,7 +50,6 @@ import type { AgentFileChangeTracker } from './agentFileChangeTracker'
 import { CitationRegistry } from './citationRegistry'
 import { NativeAgentRuntime } from './native-runtime'
 import { PromptSourceWatcher } from './promptSourceWatcher'
-import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './subagent/tool-name-utils'
 import {
   type SubagentParentContext,
   buildSubagentParentContext,
@@ -76,6 +75,7 @@ import {
   subagentRuntimeRegistry,
 } from './subagent/runtime-registry'
 import { subagentTaskRegistry } from './subagent/task-registry'
+import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './subagent/tool-name-utils'
 import type {
   SubagentTaskCompletionRecord,
   SubagentTaskSummary,
@@ -995,6 +995,18 @@ export class AgentService {
    * while the microtask spawning the next `run()` is still pending.
    */
   private continuationScheduledByKey = new Set<string>()
+  /**
+   * Tool-call ids whose parent-side deadline was registered through the
+   * approval path (`registerApprovedSubagentDeadline`), keyed by conversation.
+   * Unlike the auto-approved path (whose deadlines are run-scoped in
+   * `NativeAgentRuntime.teardownSubagentDeadlines`), these are registered
+   * outside any `run()` call, so they need a conversation-scoped teardown of
+   * their own: when the parent conversation is aborted or dropped, every
+   * entry is cleared so a stale `setTimeout` cannot fire later and inject a
+   * synthetic timeout record into the abandoned conversation while also
+   * incrementing the breaker (pre `native-runtime.ts` teardown semantics).
+   */
+  private approvedSubagentDeadlineToolCallIds = new Map<string, Set<string>>()
   private abortedQueuedMessagesSubscribers =
     new Set<AbortedQueuedMessagesSubscriber>()
   /**
@@ -1055,6 +1067,10 @@ export class AgentService {
       runEntry.runtime?.abort()
       this.runEntriesByKey.delete(getRunKey(conversationId, runEntry.branchId))
     }
+    // The dropped conversation is abandoned: clear approval-path subagent
+    // deadlines so a stale timer cannot resurrect the conversation entry with
+    // a synthetic timeout record (and pollute the breaker) after deletion.
+    this.teardownApprovedSubagentDeadlines(conversationId)
 
     const runKeyPrefix = `${conversationId}::`
     for (const key of [...this.pendingUserMessagesByKey.keys()]) {
@@ -1220,6 +1236,11 @@ export class AgentService {
     if (event.kind === 'subagent' && event.record.source.type === 'llm_tool_call') {
       const toolCallId = event.record.source.toolCallId
       clearParentSubagentDeadline(toolCallId)
+      // Keep the approval-path teardown set bounded: the result landed, so no
+      // abort-time cleanup is needed for this call anymore.
+      this.approvedSubagentDeadlineToolCallIds
+        .get(conversationId)
+        ?.delete(toolCallId)
       if (
         event.record.error !== PARENT_SUBAGENT_TIMEOUT_ERROR &&
         isParentSubagentToolCallTimedOut(toolCallId)
@@ -1712,6 +1733,21 @@ export class AgentService {
     mcpManager: McpManager
   }): void {
     if (hasParentSubagentDeadline(toolCallId)) return
+    // Track the call in the conversation-scoped teardown set so an aborted or
+    // dropped parent conversation clears the deadline (see
+    // `teardownApprovedSubagentDeadlines`). The completion path also removes
+    // the id here (`handleBackgroundTaskCompleted`), keeping the set bounded
+    // to live deadlines.
+    const registered = this.approvedSubagentDeadlineToolCallIds.get(
+      conversationId,
+    )
+    if (registered) {
+      registered.add(toolCallId)
+    } else {
+      this.approvedSubagentDeadlineToolCallIds.set(conversationId, new Set([
+        toolCallId,
+      ]))
+    }
     registerParentSubagentDeadline({
       toolCallId,
       runKey,
@@ -1727,6 +1763,27 @@ export class AgentService {
         })
       },
     })
+  }
+
+  /**
+   * Conversation-scoped teardown of approval-path deadlines, mirroring
+   * `NativeAgentRuntime.teardownSubagentDeadlines(aborted)` for the auto path:
+   * when the parent run is aborted or the conversation dropped, every
+   * registered deadline and settled marker is cleared so a stale timer cannot
+   * fire later into the abandoned conversation (synthetic timeout injection +
+   * breaker increment). On an aborted conversation the child's own run is
+   * aborted too, so no live deadline is being discarded.
+   */
+  private teardownApprovedSubagentDeadlines(conversationId: string): void {
+    const toolCallIds = this.approvedSubagentDeadlineToolCallIds.get(
+      conversationId,
+    )
+    if (!toolCallIds) return
+    for (const toolCallId of toolCallIds) {
+      clearParentSubagentDeadline(toolCallId)
+      clearParentSubagentTimeoutSettled(toolCallId)
+    }
+    this.approvedSubagentDeadlineToolCallIds.delete(conversationId)
   }
 
   private handleParentSubagentDeadlineExpiry({
@@ -2600,6 +2657,12 @@ export class AgentService {
         }
       }
       this.finalizeSettledConversationRuns(conversationId)
+      // An aborted parent run abandons the conversation: clear approval-path
+      // subagent deadlines (the auto path tears its own down inside
+      // `NativeAgentRuntime`, the approval path registers outside any run).
+      if (input.abortSignal?.aborted) {
+        this.teardownApprovedSubagentDeadlines(conversationId)
+      }
       this.maybeScheduleAfterRunContinuation({
         conversationId,
         branchId,
@@ -2756,6 +2819,11 @@ export class AgentService {
         subscriber(conversationId, droppedQueuedByConversation)
       }
     }
+    // An aborted parent conversation must not keep approval-path subagent
+    // deadlines alive: a stale timer would inject a synthetic timeout record
+    // into the abandoned conversation and increment the breaker (pre
+    // `native-runtime.ts` teardown semantics).
+    this.teardownApprovedSubagentDeadlines(conversationId)
     return didAbort
   }
 
