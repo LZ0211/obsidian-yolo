@@ -44,7 +44,7 @@ const createTraceStore = () => {
 }
 
 describe('RAGEngine', () => {
-  it('dedupes duplicate query rows by path and line range', () => {
+  it('dedupes duplicate query rows by path, line range, and content hash', () => {
     const rows = [
       {
         id: 1,
@@ -69,6 +69,19 @@ describe('RAGEngine', () => {
         similarity: 0.8,
       },
       {
+        // Same range AND same content hash as row 1: a true duplicate (the
+        // same chunk surfaced twice) — must collapse to the higher similarity.
+        id: 4,
+        path: 'a.md',
+        mtime: 1,
+        content: 'foo',
+        content_hash: 'hash-1',
+        model: 'test-embedding-model',
+        dimension: 3,
+        metadata: { startLine: 10, endLine: 20 },
+        similarity: 0.9,
+      },
+      {
         id: 3,
         path: 'b.md',
         mtime: 1,
@@ -81,7 +94,10 @@ describe('RAGEngine', () => {
       },
     ]
 
-    expect(dedupeRagQueryResults(rows)).toEqual([rows[1], rows[2]])
+    // rows 1 and 2 share a line range but differ in content (sub-chunks of an
+    // oversized block) — both must survive; row 4 is a true duplicate of
+    // row 1 and collapses to the higher similarity (keeping row 1's position).
+    expect(dedupeRagQueryResults(rows)).toEqual([rows[2], rows[1], rows[3]])
   })
 
   it('skips the configured rerank model when reranking is disabled', async () => {
