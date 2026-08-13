@@ -834,6 +834,19 @@ export class SqliteVectorStore
       const maxCandidates = await this.countSearchCandidates(state, options)
       throwIfVectorSearchAborted(options.signal)
       if (maxCandidates === 0) {
+        // An empty namespace still needs a rebuild, but an empty *scope*
+        // inside a populated namespace is a legitimate empty result — a query
+        // scoped to a folder that has no indexed chunks must return nothing,
+        // not fail with "rebuild the index".
+        if (options.scope != null) {
+          const totalChunks =
+            state.runtime.queryOne<CountRow>(
+              'select count(*) as count from rag_chunks',
+            )?.count ?? 0
+          if (totalChunks > 0) {
+            return { hits: [], timingsMs: undefined }
+          }
+        }
         throw new VectorStoreError(
           'rebuild_required',
           'sqlite',

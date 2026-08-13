@@ -239,6 +239,28 @@ describe('SqliteVectorStore persistence', () => {
     fs.rmSync(rootDir, { recursive: true, force: true })
   })
 
+  test('search scoped to a folder with no indexed chunks returns an empty result, not rebuild_required', async () => {
+    const { rootDir, baseDir } = createTempStoreRoot()
+    const store = createStore(baseDir)
+    await store.open()
+
+    await store.replaceFile(
+      namespace,
+      fileWrite([chunk('chunk-1', 'alpha paragraph', [1, 0, 0, 0], 1)]),
+    )
+
+    // The namespace has data, but the query scope excludes every indexed
+    // file — that is a legitimate empty result, not a missing index.
+    const result = await store.searchDetailed(namespace, [1, 0, 0, 0], {
+      topK: 3,
+      scope: { files: [], folders: ['unindexed-folder'] },
+    })
+    expect(result.hits).toEqual([])
+
+    await store.close()
+    fs.rmSync(rootDir, { recursive: true, force: true })
+  })
+
   test('isolates identical path and chunk ids across Vault and conversation corpora', async () => {
     const { rootDir, baseDir } = createTempStoreRoot()
     const store = createStore(baseDir)
