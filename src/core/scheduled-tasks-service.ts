@@ -36,6 +36,7 @@ const CLEANUP_SETTLE_TIMEOUT_MS = 5000
 /** Per design doc §7 — the UI (and later, agent tools) only ever depend on this interface, never on `ScheduledTaskScheduler` directly. */
 export type IScheduledTasksService = {
   createTask(config: TaskConfig): Promise<ScheduledTask>
+  getTask(id: string): Promise<ScheduledTask>
   updateTask(id: string, config: Partial<TaskConfig>): Promise<void>
   deleteTask(id: string): Promise<void>
   listTasks(filters?: TaskFilters): Promise<ScheduledTask[]>
@@ -230,6 +231,19 @@ export class ScheduledTasksService implements IScheduledTasksService {
       this.assertValidScriptPath(config.scriptPath)
     }
     return this.scheduler.createTask(config)
+  }
+
+  async getTask(id: string): Promise<ScheduledTask> {
+    const task = this.store.getTask(id)
+    if (!task) {
+      throw new Error(
+        translate('scheduler.errors.taskNotFound', `任务不存在: ${id}`).replace(
+          '{id}',
+          id,
+        ),
+      )
+    }
+    return task
   }
 
   async updateTask(id: string, config: Partial<TaskConfig>): Promise<void> {

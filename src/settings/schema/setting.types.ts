@@ -748,6 +748,9 @@ export const yoloSettingsSchema = z.object({
   yolo: z
     .object({
       baseDir: z.string().catch('YOLO'),
+      // Vault-relative project/task directory, separate from `baseDir` so user
+      // content stays visible and portable. Defaults to a top-level Projects.
+      projectsDir: z.string().optional(),
     })
     .catch({
       baseDir: 'YOLO',

@@ -1787,6 +1787,9 @@ export type TranslationKeys = {
       yoloBaseDir?: string
       yoloBaseDirDesc?: string
       yoloBaseDirPlaceholder?: string
+      yoloProjectsDir?: string
+      yoloProjectsDirDesc?: string
+      yoloProjectsDirPlaceholder?: string
       yoloBaseDirHiddenPath?: string
       yoloBaseDirInvalidPath?: string
       yoloBaseDirMigrated?: string

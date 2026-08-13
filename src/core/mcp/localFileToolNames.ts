@@ -37,6 +37,8 @@ export const LOCAL_FILE_TOOL_SHORT_NAMES = [
   JS_SANDBOX_TOOL_NAME,
   TERMINAL_COMMAND_TOOL_NAME,
   'delegate_subagent',
+  'project_ops',
+  'scheduled_task_ops',
   'load_tool_schemas',
   'todo_write',
   'ask_user_question',

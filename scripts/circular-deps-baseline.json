@@ -1,5 +1,5 @@
 {
-  "cycles": 291,
+  "cycles": 292,
   "cycleKeys": [
     "ChatView.tsx -> components/chat-view/Chat.tsx -> components/chat-view/ChatHeader.tsx -> components/chat-view/AssistantSelector.tsx -> components/settings/modals/AssistantsModal.tsx -> components/common/ReactModal.tsx -> contexts/plugin-context.tsx -> main.ts",
     "ChatView.tsx -> components/chat-view/Chat.tsx -> components/chat-view/ChatHeader.tsx -> components/chat-view/AssistantSelector.tsx -> components/settings/modals/AssistantsModal.tsx -> components/common/ReactModal.tsx -> contexts/plugin-context.tsx -> main.ts -> features/chat/chatViewNavigator.ts",
@@ -185,6 +185,7 @@
     "core/agent/compaction.ts -> core/agent/tool-disclosure.ts -> core/agent/tool-selection.ts -> core/mcp/localFileTools.ts -> core/agent/subagent/runner.ts -> core/agent/native-runtime.ts",
     "core/agent/compaction.ts -> core/agent/tool-disclosure.ts -> core/agent/tool-selection.ts -> core/mcp/localFileTools.ts -> core/agent/subagent/runner.ts -> core/agent/service.ts -> core/agent/native-runtime.ts",
     "core/agent/compaction.ts -> core/agent/tool-disclosure.ts -> core/agent/tool-selection.ts -> core/mcp/localFileTools.ts -> core/agent/subagent/runner.ts -> core/agent/subagent/runtime-registry.ts -> core/agent/native-runtime.ts",
+    "core/agent/project/delivery.ts -> core/agent/project/store.ts",
     "core/agent/subagent/delegated-assistant-profile.ts -> utils/chat/requestContextBuilder.ts -> core/ai/single-turn.ts -> core/mcp/localFileTools.ts",
     "core/agent/systemPromptSnapshotStore.ts -> utils/chat/requestContextBuilder.ts",
     "core/agent/tool-preferences.ts -> core/mcp/mcpManager.ts -> settings/schema/setting.types.ts -> settings/schema/migrations/index.ts -> settings/schema/migrations/35_to_36.ts",

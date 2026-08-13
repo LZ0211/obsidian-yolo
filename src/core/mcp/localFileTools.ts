@@ -12,12 +12,6 @@ import { v4 as uuidv4 } from 'uuid'
 
 import { upsertEditReviewSnapshot } from '../../database/json/chat/editReviewSnapshotStore'
 import { buildPdfPageImageCacheKey } from '../../database/json/chat/imageCacheStore'
-import {
-  callInjectedBridgeTool,
-  getInjectedBridgeTools,
-  isInjectedBridgeToolName,
-} from './injectionBridge'
-import { validateAttachmentPath } from '../bot/attachment-security'
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import type {
   ApplyViewResult,
@@ -77,6 +71,12 @@ import {
 } from '../agent/bash/outputBudget'
 import { createVaultBashFileSystem } from '../agent/bash/vaultBashFileSystem'
 import { createVaultBashSearch } from '../agent/bash/vaultBashSearch'
+import { buildConsolidatedToolSchemas } from '../agent/consolidated-tools'
+import { assertProjectTaskDispatchable } from '../agent/project/delivery'
+import { buildReviewPrompt } from '../agent/project/review-prompt'
+import { ProjectStore } from '../agent/project/store'
+import { ProjectTool } from '../agent/project/tool'
+import type { ProjectTaskBinding, TaskRecord } from '../agent/project/types'
 import type { PromptSourceWatcher } from '../agent/promptSourceWatcher'
 import type { TodoItem } from '../agent/todos-from-messages'
 import type { AgentRunContext } from '../agent/types'
@@ -84,8 +84,8 @@ import {
   BROWSER_READ_PATH_PREFIX,
   BUILTIN_SKILL_PATH_PREFIX,
   buildAllowedSkillPathSet,
-  findPathOutsideScope,
   collectToolCallPaths,
+  findPathOutsideScope,
   findPathWithinExcludedRoot,
   isCoveredBySkillPathExemption,
   isPathAllowedByScope,
@@ -94,6 +94,7 @@ import {
   resolveReadablePath,
   resolveWritablePath,
 } from '../agent/workspaceScope'
+import { validateAttachmentPath } from '../bot/attachment-security'
 import {
   BROWSER_PAGE_ID_PATTERN,
   findWebviewHandleByPageId,
@@ -120,16 +121,21 @@ import {
 import { isWithinYoloUserDataRoot } from '../paths/yoloPaths'
 import type { RAGEngine } from '../rag/ragEngine'
 import { publishQueryProgress } from '../rag/queryProgressBus'
+import {
+  acquireRuntimeComponent,
+  isRuntimeComponentEnabled,
+} from '../runtime-components/runtimeComponentAccess'
+import type {
+  ScheduledTask,
+  ScheduledTaskAgentConfig,
+  TaskConfig,
+} from '../scheduler/scheduledTasksStore'
 import { MetadataFilterDslError } from '../search/metadataFilterDsl'
 import {
   type MetadataFileSearchHit,
   type MetadataSearchHit,
   searchFilesByMetadataDsl,
 } from '../search/metadataSearch'
-import {
-  acquireRuntimeComponent,
-  isRuntimeComponentEnabled,
-} from '../runtime-components/runtimeComponentAccess'
 import { getLiteSkillDocumentByPath } from '../skills/liteSkills'
 import {
   WEB_SCRAPE_TOOL_NAME,
@@ -138,6 +144,11 @@ import {
   runWebSearch,
 } from '../web-search'
 
+import {
+  callInjectedBridgeTool,
+  getInjectedBridgeTools,
+  isInjectedBridgeToolName,
+} from './injectionBridge'
 import {
   type JsSandboxSettings,
   getJsSandboxSettings,
@@ -178,6 +189,22 @@ import {
 } from './localFileToolNames'
 import { parseToolName } from './tool-name-utils'
 import { ensureParentFolderExists, validateVaultPath } from './vaultFileOps'
+
+/**
+ * localFileTools 可消费的调度服务结构子集。就地声明避免
+ * localFileTools → scheduled-tasks-service → scheduler → task-executor 的
+ * 静态/type 导入边（madge 对 type-only 导入计边；task-executor 依赖 agent
+ * runtime，会经 tool-selection 与 localFileTools 回流成环）。完整形态见
+ * `IScheduledTasksService`（src/core/scheduled-tasks-service.ts）。
+ */
+export type ScheduledTaskServiceLike = {
+  createTask(config: TaskConfig): Promise<ScheduledTask>
+  getTask(id: string): Promise<ScheduledTask>
+  updateTask(id: string, config: Partial<TaskConfig>): Promise<void>
+  deleteTask(id: string): Promise<void>
+  listTasks(filters?: { enabled?: boolean }): Promise<ScheduledTask[]>
+  executeTaskNow(taskId: string): Promise<unknown>
+}
 
 export { recoverLikelyEscapedBackslashSequences }
 const MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024
@@ -1148,9 +1175,43 @@ export function getLocalFileTools(options?: {
               "Optional read-only parent-context fork for the sub-agent. Defaults to none (the child sees only the prompt, exactly as today). last_turns appends a read-only snapshot of the parent conversation's most recent turns to the child prompt; full appends a size-capped read-only snapshot of the whole parent history. The snapshot reflects the parent conversation as of the current parent run's start: the child cannot write to parent state.",
             default: 'none',
           },
+          projectTask: {
+            type: 'object',
+            description:
+              'Optional binding to a project task. Provide the projectId/taskId plus the expectedRevision/expectedContentHash from a prior project get_task/query_tasks read. The parent resolves the task, composes its body + acceptance criteria into the child prompt, and binds the delivery back to the task.',
+            properties: {
+              projectId: { type: 'string' },
+              taskId: { type: 'string' },
+              expectedRevision: { type: 'number' },
+              expectedContentHash: { type: 'string' },
+              review: {
+                type: 'boolean',
+                description:
+                  'Set true to dispatch an independent reviewer for an awaiting_review task instead of an implementer; the reviewer returns a structured verdict the parent records.',
+              },
+            },
+            required: [
+              'projectId',
+              'taskId',
+              'expectedRevision',
+              'expectedContentHash',
+            ],
+          },
         },
         required: ['description', 'prompt'],
       },
+    },
+    {
+      name: 'project_ops',
+      description:
+        'Manage durable project and task files under the host-managed Projects directory (parent-only; this is the sole way to read/write project/task state — those files are excluded from the normal fs tools). Pass action plus the action-specific fields: action="init" creates a project, "get" reads one task (taskId present) or lists tasks (status filter), "status" returns the project summary + signals (reclaimed, concurrent_running, all_terminal), "update" applies a patch or claims a task for a run (requires expectedRevision/expectedContentHash from a prior get), "review" records an approved/rework/escalated decision with evidence.',
+      inputSchema: buildConsolidatedToolSchemas().project_ops,
+    },
+    {
+      name: 'scheduled_task_ops',
+      description:
+        'Manage scheduled agent tasks: a prompt that runs automatically once, on an interval, or on a cron schedule. Pass action plus the action-specific fields: action="create" registers a new task, "update" patches a task by id, "delete" removes a task and its run history, "list" lists tasks (optionally filtered by enabled), "get" fetches one task, "run_now" triggers an immediate run subject to queue/concurrency limits.',
+      inputSchema: buildConsolidatedToolSchemas().scheduled_task_ops,
     },
     {
       name: 'ask_user_question',
@@ -2475,11 +2536,13 @@ export async function callLocalFileTool({
   promptSourceWatcher,
   bashApprovalMode,
   bashReadOnly,
+  getScheduledTasksService,
 }: {
   app: App
   settings?: YoloSettings
   openApplyReview?: (state: ApplyViewState) => Promise<boolean>
   getRagEngine?: () => Promise<RAGEngine>
+  getScheduledTasksService?: () => ScheduledTaskServiceLike | null
   conversationId?: string
   conversationMessages?: ChatMessage[]
   roundId?: string
@@ -4228,6 +4291,86 @@ export async function callLocalFileTool({
         if (!settings) {
           throw new Error('settings are required for delegate_subagent.')
         }
+        let composedPrompt = taskPrompt
+        let projectTask: ProjectTaskBinding | undefined
+        if (args.projectTask !== undefined) {
+          projectTask = parseProjectTaskBinding(args.projectTask)
+          const store = new ProjectStore({
+            getSettings: () => settings,
+            adapter: app.vault.adapter,
+          })
+          const versioned = await store.readTask(
+            projectTask.projectId,
+            projectTask.taskId,
+          )
+          if (!versioned) {
+            throw new Error(
+              `Project task not found: ${projectTask.projectId}/${projectTask.taskId}`,
+            )
+          }
+          if (
+            versioned.revision !== projectTask.expectedRevision ||
+            versioned.contentHash !== projectTask.expectedContentHash
+          ) {
+            throw new Error(
+              `Project task ${projectTask.taskId} changed since it was read; re-read it via the project tool.`,
+            )
+          }
+          const review =
+            (args.projectTask as { review?: boolean } | undefined)?.review ===
+            true
+          if (review) {
+            if (versioned.task.status !== 'awaiting_review') {
+              throw new Error(
+                `Project task ${projectTask.taskId} is not awaiting_review; it cannot be reviewed.`,
+              )
+            }
+            const taskBody = (
+              await store.readTaskBody(
+                projectTask.projectId,
+                projectTask.taskId,
+              )
+            ).trim()
+            const deliveries: string[] = []
+            for (const ref of versioned.task.deliveryRefs) {
+              // deliveryRefs carry a trailing `.md`; the store appends its own
+              // `.md` when resolving the artifact path, so strip the suffix to
+              // avoid looking for a double-extension file (`run.md.md`).
+              const runKey = (ref.split('/').pop() ?? '').replace(/\.md$/, '')
+              const artifact = await store.readDeliveryArtifact(
+                projectTask.projectId,
+                projectTask.taskId,
+                runKey,
+              )
+              if (artifact) deliveries.push(artifact)
+            }
+            const history = (versioned.task.reviewHistory ?? [])
+              .map((r) => `${r.decision} (${r.at}): ${r.comments.join('; ')}`)
+              .join('\n')
+            composedPrompt = buildReviewPrompt({
+              task: versioned.task,
+              body: taskBody,
+              delivery: deliveries.join('\n\n---\n\n'),
+              history,
+            })
+            // A review run does not claim/bind the task: the parent records the
+            // verdict itself via the project tool.
+            projectTask = undefined
+          } else {
+            assertProjectTaskDispatchable(versioned.task)
+            const taskBody = (
+              await store.readTaskBody(
+                projectTask.projectId,
+                projectTask.taskId,
+              )
+            ).trim()
+            composedPrompt = buildProjectTaskPrompt(
+              versioned.task,
+              taskBody,
+              taskPrompt,
+            )
+          }
+        }
         const delegatedRoleId =
           getOptionalTextArg(args, 'delegatedRoleId')?.trim() ?? ''
         const modelPreferenceId =
@@ -4349,7 +4492,7 @@ export async function callLocalFileTool({
         // 仍把父上下文只读快照并入 child 初始 prompt）。
         const accepted = await runSubagent({
           description,
-          prompt: taskPrompt,
+          prompt: composedPrompt,
           conversationId,
           source: {
             type: 'llm_tool_call',
@@ -4371,11 +4514,106 @@ export async function callLocalFileTool({
           },
           signal,
           ...(delegatedProfile ? { delegatedProfile } : {}),
+          ...(projectTask ? { projectTask } : {}),
         })
 
         return {
           status: ToolCallResponseStatus.Success,
           text: JSON.stringify(accepted),
+        }
+      }
+
+      case 'project_ops': {
+        if (!settings) {
+          return {
+            status: ToolCallResponseStatus.Error,
+            error: 'Settings are not available.',
+          }
+        }
+        const store = new ProjectStore({
+          getSettings: () => settings,
+          adapter: app.vault.adapter,
+        })
+        const tool = new ProjectTool(store)
+        try {
+          const action = getTextArg(args, 'action')
+          const result =
+            action === 'init'
+              ? await tool.init(args as Parameters<typeof tool.init>[0])
+              : action === 'get'
+                ? await tool.get(args as Parameters<typeof tool.get>[0])
+                : action === 'status'
+                  ? await tool.status(getTextArg(args, 'projectId'))
+                  : action === 'update'
+                    ? await tool.update(
+                        args as Parameters<typeof tool.update>[0],
+                      )
+                    : await tool.review(
+                        args as Parameters<typeof tool.review>[0],
+                      )
+          return {
+            status: ToolCallResponseStatus.Success,
+            text: JSON.stringify(result),
+          }
+        } catch (error) {
+          return {
+            status: ToolCallResponseStatus.Error,
+            error: error instanceof Error ? error.message : String(error),
+          }
+        }
+      }
+
+      case 'scheduled_task_ops': {
+        const service = getScheduledTasksService?.()
+        if (!service) {
+          throw new Error('Scheduled tasks service is not available.')
+        }
+        const action = getTextArg(args, 'action')
+        switch (action) {
+          case 'create':
+            return await executeScheduledTaskCreate({
+              service,
+              args,
+              tool: 'scheduled_task_ops',
+              action: 'create',
+            })
+          case 'update':
+            return await executeScheduledTaskUpdate({
+              service,
+              args,
+              tool: 'scheduled_task_ops',
+              action: 'update',
+            })
+          case 'delete':
+            return await executeScheduledTaskDelete({
+              service,
+              args,
+              tool: 'scheduled_task_ops',
+              action: 'delete',
+            })
+          case 'list':
+            return await executeScheduledTaskList({
+              service,
+              args,
+              tool: 'scheduled_task_ops',
+              action: 'list',
+            })
+          case 'get':
+            return await executeScheduledTaskGet({
+              service,
+              args,
+              tool: 'scheduled_task_ops',
+              action: 'get',
+            })
+          case 'run_now':
+            return await executeScheduledTaskRunNow({
+              service,
+              args,
+              tool: 'scheduled_task_ops',
+              action: 'run_now',
+            })
+          default:
+            throw new Error(`Unsupported scheduled_task_ops action: ${action}`)
         }
       }
 
@@ -4539,6 +4777,369 @@ export async function callLocalFileTool({
   }
 }
 
+const getOptionalStringArrayArg = (
+  args: Record<string, unknown>,
+  key: string,
+): string[] | undefined => {
+  const value = args[key]
+  if (value === undefined) {
+    return undefined
+  }
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+    throw new Error(`${key} must be an array of strings.`)
+  }
+  const normalized = [
+    ...new Set(value.map((item) => item.trim()).filter(Boolean)),
+  ]
+  if (normalized.length > 64) {
+    throw new Error(`${key} cannot contain more than 64 tools.`)
+  }
+  return normalized
+}
+
+const withResultAction = <T extends Record<string, unknown>>(
+  action: string | undefined,
+  payload: T,
+): Record<string, unknown> =>
+  action === undefined ? payload : { ...payload, action }
+
+const getScheduledTaskNotifyOnArg = (
+  args: Record<string, unknown>,
+): ('success' | 'failure')[] => {
+  if (args.notifyOn === undefined) {
+    return []
+  }
+  const values = getStringArrayArg(args, 'notifyOn')
+  for (const value of values) {
+    if (value !== 'success' && value !== 'failure') {
+      throw new Error('notifyOn entries must be "success" or "failure".')
+    }
+  }
+  return values as ('success' | 'failure')[]
+}
+
+const executeScheduledTaskCreate = async ({
+  service,
+  args,
+  tool,
+  action,
+}: {
+  service: ScheduledTaskServiceLike
+  args: Record<string, unknown>
+  tool: string
+  action?: string
+}): Promise<LocalToolCallResult> => {
+  const name = getOptionalTextArg(args, 'name')?.trim()
+  if (!name) throw new Error('name is required.')
+
+  const scheduleType = getOptionalTextArg(args, 'scheduleType')
+  if (
+    scheduleType !== 'once' &&
+    scheduleType !== 'cron' &&
+    scheduleType !== 'interval'
+  ) {
+    throw new Error('scheduleType must be one of "once", "cron", "interval".')
+  }
+
+  const agentPrompt = getOptionalTextArg(args, 'agentPrompt')?.trim()
+  if (!agentPrompt) throw new Error('agentPrompt is required.')
+
+  const assistantId = getOptionalTextArg(args, 'assistantId')?.trim()
+  const requestedToolNames = getOptionalStringArrayArg(
+    args,
+    'requestedToolNames',
+  )
+  const agentConfig: ScheduledTaskAgentConfig | null =
+    assistantId || requestedToolNames?.length
+      ? {
+          ...(assistantId ? { assistantId } : {}),
+          ...(requestedToolNames?.length
+            ? { temporaryApprovedToolNames: requestedToolNames }
+            : {}),
+        }
+      : null
+
+  const config: TaskConfig = {
+    name,
+    type: 'agent',
+    createdBy: 'agent',
+    scheduleType,
+    cronExpression: getOptionalTextArg(args, 'cronExpression') ?? null,
+    intervalSeconds:
+      getOptionalBoundedIntegerArg({
+        args,
+        key: 'intervalSeconds',
+        min: 1,
+        max: 31_536_000,
+      }) ?? null,
+    oneTimeDateTime:
+      getOptionalBoundedIntegerArg({
+        args,
+        key: 'oneTimeDateTime',
+        min: 0,
+        max: Number.MAX_SAFE_INTEGER,
+      }) ?? null,
+    nextRunTime: null,
+    scriptPath: null,
+    agentPrompt,
+    agentConfig,
+    queueGroup: null,
+    dependsOn: null,
+    continueOnDependencyFailure: false,
+    priority: getOptionalIntegerArg({
+      args,
+      key: 'priority',
+      defaultValue: 5,
+      min: 1,
+      max: 10,
+    }),
+    timeoutSeconds: getOptionalIntegerArg({
+      args,
+      key: 'timeoutSeconds',
+      defaultValue: 300,
+      min: 1,
+      max: 3600,
+    }),
+    maxRetries: getOptionalIntegerArg({
+      args,
+      key: 'maxRetries',
+      defaultValue: 3,
+      min: 0,
+      max: 10,
+    }),
+    enabled: getOptionalBooleanArg(args, 'enabled') ?? true,
+    notifyOn: getScheduledTaskNotifyOnArg(args),
+  }
+
+  const task = await service.createTask(config)
+  return {
+    status: ToolCallResponseStatus.Success,
+    text: formatJsonResult(withResultAction(action, { tool, task })),
+  }
+}
+
+const executeScheduledTaskUpdate = async ({
+  service,
+  args,
+  tool,
+  action,
+}: {
+  service: ScheduledTaskServiceLike
+  args: Record<string, unknown>
+  tool: string
+  action?: string
+}): Promise<LocalToolCallResult> => {
+  const id = getOptionalTextArg(args, 'id')?.trim()
+  if (!id) throw new Error('id is required.')
+
+  const patch: Partial<TaskConfig> = {}
+  const existingTask =
+    args.requestedToolNames !== undefined && args.assistantId === undefined
+      ? await service.getTask(id)
+      : null
+
+  if (args.name !== undefined) {
+    const name = getOptionalTextArg(args, 'name')?.trim()
+    if (!name) throw new Error('name cannot be empty.')
+    patch.name = name
+  }
+  if (args.scheduleType !== undefined) {
+    const scheduleType = getOptionalTextArg(args, 'scheduleType')
+    if (
+      scheduleType !== 'once' &&
+      scheduleType !== 'cron' &&
+      scheduleType !== 'interval'
+    ) {
+      throw new Error('scheduleType must be one of "once", "cron", "interval".')
+    }
+    patch.scheduleType = scheduleType
+  }
+  if (args.cronExpression !== undefined) {
+    patch.cronExpression = getOptionalTextArg(args, 'cronExpression') ?? null
+  }
+  if (args.intervalSeconds !== undefined) {
+    patch.intervalSeconds =
+      getOptionalBoundedIntegerArg({
+        args,
+        key: 'intervalSeconds',
+        min: 1,
+        max: 31_536_000,
+      }) ?? null
+  }
+  if (args.oneTimeDateTime !== undefined) {
+    patch.oneTimeDateTime =
+      getOptionalBoundedIntegerArg({
+        args,
+        key: 'oneTimeDateTime',
+        min: 0,
+        max: Number.MAX_SAFE_INTEGER,
+      }) ?? null
+  }
+  if (args.agentPrompt !== undefined) {
+    const agentPrompt = getOptionalTextArg(args, 'agentPrompt')?.trim()
+    if (!agentPrompt) throw new Error('agentPrompt cannot be empty.')
+    patch.agentPrompt = agentPrompt
+  }
+  if (args.assistantId !== undefined) {
+    const assistantId = getOptionalTextArg(args, 'assistantId')?.trim()
+    const requestedToolNames =
+      args.requestedToolNames === undefined
+        ? undefined
+        : getOptionalStringArrayArg(args, 'requestedToolNames')
+    patch.agentConfig =
+      assistantId || requestedToolNames?.length
+        ? {
+            ...(assistantId ? { assistantId } : {}),
+            ...(requestedToolNames?.length
+              ? { temporaryApprovedToolNames: requestedToolNames }
+              : {}),
+          }
+        : null
+  } else if (args.requestedToolNames !== undefined) {
+    const requestedToolNames = getOptionalStringArrayArg(
+      args,
+      'requestedToolNames',
+    )
+    patch.agentConfig = requestedToolNames?.length
+      ? {
+          ...(existingTask?.agentConfig?.assistantId
+            ? { assistantId: existingTask.agentConfig.assistantId }
+            : {}),
+          temporaryApprovedToolNames: requestedToolNames,
+        }
+      : null
+  }
+  if (args.priority !== undefined) {
+    patch.priority = getOptionalIntegerArg({
+      args,
+      key: 'priority',
+      defaultValue: 5,
+      min: 1,
+      max: 10,
+    })
+  }
+  if (args.timeoutSeconds !== undefined) {
+    patch.timeoutSeconds = getOptionalIntegerArg({
+      args,
+      key: 'timeoutSeconds',
+      defaultValue: 300,
+      min: 1,
+      max: 3600,
+    })
+  }
+  if (args.maxRetries !== undefined) {
+    patch.maxRetries = getOptionalIntegerArg({
+      args,
+      key: 'maxRetries',
+      defaultValue: 3,
+      min: 0,
+      max: 10,
+    })
+  }
+  if (args.notifyOn !== undefined) {
+    patch.notifyOn = getScheduledTaskNotifyOnArg(args)
+  }
+  if (args.enabled !== undefined) {
+    const enabled = getOptionalBooleanArg(args, 'enabled')
+    if (enabled !== undefined) patch.enabled = enabled
+  }
+
+  await service.updateTask(id, patch)
+  const task = await service.getTask(id)
+  return {
+    status: ToolCallResponseStatus.Success,
+    text: formatJsonResult(withResultAction(action, { tool, task })),
+  }
+}
+
+const executeScheduledTaskDelete = async ({
+  service,
+  args,
+  tool,
+  action,
+}: {
+  service: ScheduledTaskServiceLike
+  args: Record<string, unknown>
+  tool: string
+  action?: string
+}): Promise<LocalToolCallResult> => {
+  const id = getOptionalTextArg(args, 'id')?.trim()
+  if (!id) throw new Error('id is required.')
+
+  await service.deleteTask(id)
+  return {
+    status: ToolCallResponseStatus.Success,
+    text: formatJsonResult(
+      withResultAction(action, { tool, id, deleted: true }),
+    ),
+  }
+}
+
+const executeScheduledTaskList = async ({
+  service,
+  args,
+  tool,
+  action,
+}: {
+  service: ScheduledTaskServiceLike
+  args: Record<string, unknown>
+  tool: string
+  action?: string
+}): Promise<LocalToolCallResult> => {
+  const enabled = getOptionalBooleanArg(args, 'enabled')
+  const tasks = await service.listTasks(
+    enabled !== undefined ? { enabled } : undefined,
+  )
+  return {
+    status: ToolCallResponseStatus.Success,
+    text: formatJsonResult(
+      withResultAction(action, { tool, tasks, count: tasks.length }),
+    ),
+  }
+}
+
+const executeScheduledTaskGet = async ({
+  service,
+  args,
+  tool,
+  action,
+}: {
+  service: ScheduledTaskServiceLike
+  args: Record<string, unknown>
+  tool: string
+  action?: string
+}): Promise<LocalToolCallResult> => {
+  const id = getOptionalTextArg(args, 'id')?.trim()
+  if (!id) throw new Error('id is required.')
+
+  const task = await service.getTask(id)
+  return {
+    status: ToolCallResponseStatus.Success,
+    text: formatJsonResult(withResultAction(action, { tool, task })),
+  }
+}
+
+const executeScheduledTaskRunNow = async ({
+  service,
+  args,
+  tool,
+  action,
+}: {
+  service: ScheduledTaskServiceLike
+  args: Record<string, unknown>
+  tool: string
+  action?: string
+}): Promise<LocalToolCallResult> => {
+  const id = getOptionalTextArg(args, 'id')?.trim()
+  if (!id) throw new Error('id is required.')
+
+  const result = await service.executeTaskNow(id)
+  return {
+    status: ToolCallResponseStatus.Success,
+    text: formatJsonResult(withResultAction(action, { tool, result })),
+  }
+}
+
 function executeTodoWrite({
   args,
 }: {
@@ -4593,6 +5194,55 @@ function executeTodoWrite({
     status: ToolCallResponseStatus.Success,
     text: 'Todos updated. Continue tracking your progress with the todo list.',
   }
+}
+
+const parseProjectTaskBinding = (value: unknown): ProjectTaskBinding => {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('projectTask must be an object.')
+  }
+  const { projectId, taskId, expectedRevision, expectedContentHash } =
+    value as Record<string, unknown>
+  if (
+    typeof projectId !== 'string' ||
+    projectId.length === 0 ||
+    typeof taskId !== 'string' ||
+    taskId.length === 0 ||
+    typeof expectedRevision !== 'number' ||
+    typeof expectedContentHash !== 'string'
+  ) {
+    throw new Error(
+      'projectTask requires projectId, taskId, expectedRevision, and expectedContentHash.',
+    )
+  }
+  return { projectId, taskId, expectedRevision, expectedContentHash }
+}
+
+const buildProjectTaskPrompt = (
+  task: TaskRecord,
+  taskBody: string,
+  userPrompt: string,
+): string => {
+  const lines: Array<string | null> = [
+    `# Project task: ${task.taskId} — ${task.title}`,
+    `Status: ${task.status}`,
+    task.dependencies.length > 0
+      ? `Dependencies: ${task.dependencies.join(', ')}`
+      : null,
+    task.acceptanceCriteria.length > 0
+      ? `Acceptance criteria:\n${task.acceptanceCriteria
+          .map((criteria) => `- ${criteria}`)
+          .join('\n')}`
+      : null,
+    taskBody ? `## Task background\n\n${taskBody}` : null,
+    `## Assignment\n\n${userPrompt}`,
+    `## Reporting`,
+    `When you finish, end with a short report covering:`,
+    `- what you completed and how you verified it (tests run, evidence);`,
+    `- the files you created or modified;`,
+    `- anything you could not finish or that needs human review.`,
+    `This report is recorded as the delivery for this task, so keep it accurate and self-contained.`,
+  ]
+  return lines.filter((line): line is string => line !== null).join('\n\n')
 }
 
 const MIME_TYPES_BY_EXT: Record<string, string> = {
