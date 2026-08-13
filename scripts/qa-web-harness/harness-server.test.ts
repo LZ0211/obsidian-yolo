@@ -41,8 +41,7 @@ import {
 } from '../../src/core/web-server/shareTokenCrypto'
 import { loadOrCreateShareTokenPepper } from '../../src/core/web-server/shareTokenPepperStore'
 import { registerWebServerRoutes } from '../../src/core/web-server/registerWebServerRoutes'
-import { apiError, readJsonBody } from '../../src/core/web-server/routes/routeUtils'
-import { WebHttpServer, writeJson } from '../../src/core/web-server/WebHttpServer'
+import { WebHttpServer } from '../../src/core/web-server/WebHttpServer'
 import { WebServerLifecycle } from '../../src/core/web-server/WebServerLifecycle'
 import { WebSseHub } from '../../src/core/web-server/WebSseHub'
 import { ChatManager } from '../../src/database/json/chat/ChatManager'
@@ -60,9 +59,8 @@ jest.mock('../../src/core/llm/manager', () => {
       providerClient: getHarnessMockProvider(),
       model: TEST_MODEL,
     })),
-    // durable 续跑路径（authority-resolver → deps.createProviderClient →
-    // getProviderClient）也走 mock provider——缺了续跑 authority 解析直接崩
-    // （"getProviderClient is not a function"）。
+    // 全量 mock：任何经 llm/manager 解析 provider 的路径（chat / embedding /
+    // rerank）都落到 mock provider，不触真实网络。
     getProviderClient: jest.fn(() => getHarnessMockProvider()),
   }
 })
@@ -119,8 +117,9 @@ const DELEGATE_SUBAGENT_TOOL_NAME = getToolName(
  * （yolo_local__*，含 delegate_subagent）转发到真实 callLocalFileTool——
  * 与生产 mcpManager.callTool 的本地分支同构（app/settings/conversationId/
  * conversationMessages/subagentParentContext 等参数全部来自真实 tool-gateway
- * 的透传），durable spawn 全链（spawn → runSubagent → settle → 恢复扫描）
- * 由此在 harness 里走真实代码。
+ * 的透传），ephemeral 派发全链（callLocalFileTool → runSubagent → 子 run →
+ * pushCompleted → AgentService 注入父会话 subagent_result）由此在 harness
+ * 里走真实代码。
  */
 function createMockMcpManager({
   app,
@@ -132,31 +131,33 @@ function createMockMcpManager({
   const allowedByConversation = new Set<string>()
   return {
     TOOL_NAME_DELIMITER: '__',
-    listAvailableTools: jest.fn(async (): Promise<McpTool[]> => [
-      {
-        name: HARNESS_TOOL_NAME,
-        description: 'Harness echo tool: echoes the provided text.',
-        inputSchema: {
-          type: 'object',
-          properties: { text: { type: 'string' } },
-          additionalProperties: false,
-        },
-      },
-      {
-        name: DELEGATE_SUBAGENT_TOOL_NAME,
-        description:
-          'Delegate a task to a subagent (durable session when delegatedRoleId is provided).',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            description: { type: 'string' },
-            prompt: { type: 'string' },
-            delegatedRoleId: { type: 'string' },
+    listAvailableTools: jest.fn(
+      async (): Promise<McpTool[]> => [
+        {
+          name: HARNESS_TOOL_NAME,
+          description: 'Harness echo tool: echoes the provided text.',
+          inputSchema: {
+            type: 'object',
+            properties: { text: { type: 'string' } },
+            additionalProperties: false,
           },
-          additionalProperties: false,
         },
-      },
-    ]),
+        {
+          name: DELEGATE_SUBAGENT_TOOL_NAME,
+          description:
+            'Delegate a task to a subagent (ephemeral child run; delegatedRoleId selects the assistant role).',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              description: { type: 'string' },
+              prompt: { type: 'string' },
+              delegatedRoleId: { type: 'string' },
+            },
+            additionalProperties: false,
+          },
+        },
+      ],
+    ),
     getJsSandboxSettings: jest.fn(() => ({})),
     // 真实 settings 快照：selectAllowedTools → applyDynamicToolDescriptions 对
     // delegate_subagent 工具调 resolveSubagentModelConfig（读 settings.chatModels），
@@ -269,13 +270,14 @@ function createMockMcpManager({
 
 function loadOrCreateHarnessInfo(baseDir: string): {
   info: HarnessInfo
-  isReuse: boolean
 } {
   const infoPath = path.join(baseDir, HARNESS_INFO_FILE)
   if (fs.existsSync(infoPath)) {
-    const previous = JSON.parse(fs.readFileSync(infoPath, 'utf8')) as HarnessInfo
+    const previous = JSON.parse(
+      fs.readFileSync(infoPath, 'utf8'),
+    ) as HarnessInfo
     if (previous.baseDir === baseDir && previous.shareToken) {
-      return { info: previous, isReuse: true }
+      return { info: previous }
     }
   }
   const info: HarnessInfo = {
@@ -284,7 +286,7 @@ function loadOrCreateHarnessInfo(baseDir: string): {
     shareToken: '',
     vaultIdentity: '',
   }
-  return { info, isReuse: false }
+  return { info }
 }
 
 async function startHarnessServer(): Promise<{
@@ -300,7 +302,7 @@ async function startHarnessServer(): Promise<{
       : fs.mkdtempSync(path.join(os.tmpdir(), 'yolo-web-e2e-'))
   fs.mkdirSync(baseDir, { recursive: true })
 
-  const { info, isReuse } = loadOrCreateHarnessInfo(baseDir)
+  const { info } = loadOrCreateHarnessInfo(baseDir)
   const app = createAppMock(baseDir)
   const vaultIdentity = app.vault.getName()
 
@@ -331,10 +333,8 @@ async function startHarnessServer(): Promise<{
   // - 含 'hello harness' → 文本流（三段增量，用于流式过程断言）
   // - 含 'use tool:echo' → 先 tool_call 流，随后一段文本流（审批通过后的续答）
   // - 含 'delegate a subagent please' → 父回合 delegate_subagent 工具调用
-  //   （durable：delegatedRoleId 命中 settings 的 delegatable assistant）→
+  //   （ephemeral：delegatedRoleId 命中 settings 的 delegatable assistant）→
   //   续答文本；子代理回合按 delegate prompt 文本匹配
-  // - after_run 意图文本 → 续跑 run 的回合（场景 f 快 / 场景 g 首进程慢、
-  //   重启进程快——慢速制造"运行中被杀"窗口，isReuse 区分进程代次）
   mockProvider.chunkDelayMs = 60
   mockProvider.script(/hello harness/i, [
     textTurn(['Hello from ', 'the mock LLM', '!']),
@@ -346,32 +346,13 @@ async function startHarnessServer(): Promise<{
   mockProvider.script(/delegate a subagent please/i, [
     toolCallTurn(DELEGATE_SUBAGENT_TOOL_NAME, {
       description: 'Summarize the quarterly report',
-      prompt: 'Summarize the quarterly report and return a concise bullet list.',
+      prompt:
+        'Summarize the quarterly report and return a concise bullet list.',
       delegatedRoleId: 'delegated-1',
     }),
     textTurn(['Delegation accepted', ', task delegated!']),
   ])
-  // after_run 意图（场景 f）：续跑 run 快速完成。⚠️ 注册顺序有讲究：
-  // 续跑 run 的 user 消息 = 上个 run 的 transcriptPage（含 run 1 的 delegate
-  // prompt）+ 意图文本，pickTurn 按注册序取首个命中——意图规则必须排在
-  // run 1 prompt 规则之前，否则续跑请求会命中 run 1 的（快）回合。
-  mockProvider.script(/Follow up with the risk section/i, [
-    textTurn(['Follow-up: ', 'risk section added']),
-  ])
-  // after_run 意图（场景 g）：首进程慢速（长 chunk 序列 × 60ms ≈ 10s 窗口，
-  // spec 在 session 置 RUNNING 后 kill），重启进程（isReuse）快速完成
-  mockProvider.script(/Follow up with the compliance review/i, [
-    isReuse
-      ? textTurn(['Compliance follow-up ', 'completed'])
-      : textTurn(
-          Array.from(
-            { length: 160 },
-            (_, index) => `compliance chunk ${index}; `,
-          ),
-        ),
-  ])
-  // 子代理 run 1（delegate prompt 即子会话首条 user 消息）；排在意图规则
-  // 之后——续跑请求若未命中意图规则（异常路径）才会落到这里
+  // 子代理回合：delegate prompt 即子 run 首条 user 消息，命中即完成
   mockProvider.script(
     /Summarize the quarterly report and return a concise bullet list/i,
     [textTurn(['Delegated result: ', 'quarterly summary done'])],
@@ -392,9 +373,9 @@ async function startHarnessServer(): Promise<{
   const persistWithBindingGuard: typeof basePersist = async (payload) => {
     await basePersist(payload)
     await ChatManager.withConversationLock(payload.conversationId, async () => {
-      const chat = (await chatManager.findById(
-        payload.conversationId,
-      )) as (ChatManager extends never ? never : { webBinding?: unknown }) | null
+      const chat = (await chatManager.findById(payload.conversationId)) as
+        | (ChatManager extends never ? never : { webBinding?: unknown })
+        | null
       if (chat && !chat.webBinding) {
         await chatManager.updateChat(
           payload.conversationId,
@@ -415,10 +396,12 @@ async function startHarnessServer(): Promise<{
     getSettings: () => settings,
     persistConversationMessages: persistWithBindingGuard as never,
   })
+  // 镜像 main.ts 的主机接线：ephemeral subagent 完成经
+  // backgroundTaskCompletionBus → AgentService 结算 → 父会话注入
+  // subagent_result 消息（场景 f 的结算路径，缺了它结果永远不会落会话）。
+  agentService.startBackgroundTaskResultListener()
   const sseHub = new WebSseHub()
-  const agentEventStore = createAgentEventStore(
-    path.join(baseDir, yoloBaseDir),
-  )
+  const agentEventStore = createAgentEventStore(path.join(baseDir, yoloBaseDir))
   const mcpManager = createMockMcpManager({
     app,
     getSettings: () => settings,
@@ -435,7 +418,6 @@ async function startHarnessServer(): Promise<{
   }
 
   let boundServer: WebHttpServer | null = null
-  let subagentSessionReady: Promise<void> | undefined
   const lifecycle = new WebServerLifecycle<YoloSettings>({
     getSettings: () => settings,
     saveSettings: async (next) => {
@@ -447,7 +429,7 @@ async function startHarnessServer(): Promise<{
         port: runtime.port,
         token: runtime.token,
       })
-      const registered = registerWebServerRoutes({
+      registerWebServerRoutes({
         server,
         app: app as never,
         plugin,
@@ -460,71 +442,6 @@ async function startHarnessServer(): Promise<{
         getAgentService: () => agentService,
         getMcpManager: async () => mcpManager,
       })
-      subagentSessionReady = registered.subagentSessionReady
-
-      // harness 专用测试入口（仅本测试进程；生产面不暴露 send——web 无
-      // subagent chat UI，after_run 意图由 e2e spec 经此触发真实
-      // SubagentSessionService.send + deliverQueuedIntents，检验 Part 1 的
-      // onIntentRunRequested → runSubagentSessionContinuation 接线）。
-      server.router.post(
-        '/api/harness/subagent/send-and-deliver',
-        async (req, res) => {
-          const { getSubagentSessionService } = await import(
-            '../../src/core/agent/subagent/session-service'
-          )
-          const service = getSubagentSessionService()
-          if (!service) {
-            writeJson(
-              res,
-              503,
-              apiError(
-                'subagent_unavailable',
-                'The subagent session service is unavailable.',
-              ),
-            )
-            return
-          }
-          const body = await readJsonBody(req)
-          if (!body.ok) {
-            writeJson(res, body.statusCode, body.body)
-            return
-          }
-          const { sessionId, text } = body.value
-          if (typeof sessionId !== 'string' || typeof text !== 'string') {
-            writeJson(
-              res,
-              400,
-              apiError('invalid_request', 'sessionId and text are required'),
-            )
-            return
-          }
-          const snapshot = await service.query(sessionId)
-          if (!snapshot) {
-            writeJson(
-              res,
-              404,
-              apiError('session_not_found', 'The subagent session was not found.'),
-            )
-            return
-          }
-          const sent = await service.send({
-            sessionId,
-            messageId: `e2e-after-run-${Date.now()}`,
-            text,
-            delivery: 'after_run',
-            expectedSessionRevision: snapshot.session.revision,
-            requestId: `e2e-send-${Date.now()}`,
-          })
-          if (!sent.accepted) {
-            writeJson(res, 409, {
-              error: { code: sent.errorCode, message: 'send rejected' },
-            })
-            return
-          }
-          await service.deliverQueuedIntents(sessionId)
-          writeJson(res, 200, { ok: true, sessionRevision: sent.sessionRevision })
-        },
-      )
 
       boundServer = server
       return server
@@ -535,13 +452,7 @@ async function startHarnessServer(): Promise<{
   if (!boundServer) {
     throw new Error('harness: web server did not start')
   }
-  // 生产接线的 subagent 运行时初始化（会话服务 + 恢复扫描）必须在 READY
-  // 握手前完成：场景 g 的重启进程依赖扫描先把 RUNNING 会话置 NEEDS_RESUME，
-  // 浏览器 UI 才能断言 needs_resume 状态行。
-  await subagentSessionReady
-  const httpServer = (
-    boundServer as unknown as { server: HttpServer }
-  ).server
+  const httpServer = (boundServer as unknown as { server: HttpServer }).server
   const address = httpServer.address()
   if (!address || typeof address === 'string') {
     throw new Error('harness: no listening address')
@@ -597,7 +508,7 @@ function buildSettings(input: {
         agentModeAllowed: true,
         toolPreferences: {
           [HARNESS_TOOL_NAME]: { enabled: true },
-          // durable delegate：full_access 免审批自动执行（mock 侧预允许），
+          // delegate_subagent：full_access 免审批自动执行（mock 侧预允许），
           // enabled 使父 run 的 allowedToolNames 含该工具（gateway isToolAllowed）
           [DELEGATE_SUBAGENT_TOOL_NAME]: {
             enabled: true,
@@ -662,24 +573,20 @@ function buildSettings(input: {
 }
 
 describe('web e2e harness server', () => {
-  it(
-    'assembles the real web runtime and serves until SIGTERM',
-    async () => {
-      const { lifecycle, info } = await startHarnessServer()
+  it('assembles the real web runtime and serves until SIGTERM', async () => {
+    const { lifecycle, info } = await startHarnessServer()
 
-      const readyPayload = JSON.stringify(info)
-      process.stdout.write(`E2E_HARNESS_READY ${readyPayload}\n`)
+    const readyPayload = JSON.stringify(info)
+    process.stdout.write(`E2E_HARNESS_READY ${readyPayload}\n`)
 
-      await new Promise<void>((resolve) => {
-        const shutdown = (): void => {
-          process.off('SIGTERM', shutdown)
-          process.off('SIGINT', shutdown)
-          void lifecycle.stop().then(resolve)
-        }
-        process.on('SIGTERM', shutdown)
-        process.on('SIGINT', shutdown)
-      })
-    },
-    900_000,
-  )
+    await new Promise<void>((resolve) => {
+      const shutdown = (): void => {
+        process.off('SIGTERM', shutdown)
+        process.off('SIGINT', shutdown)
+        void lifecycle.stop().then(resolve)
+      }
+      process.on('SIGTERM', shutdown)
+      process.on('SIGINT', shutdown)
+    })
+  }, 900_000)
 })
