@@ -11,9 +11,16 @@ import {
   getShardedIndexRoot,
   getShardedManifestPath,
   getShardedModelRoot,
+  getShardedShardRoot,
+  getShardedStagedManifestPath,
 } from './shardedPaths'
+import { parseShardedManifest } from './shardedManifest'
 import { openShardSqliteNode, openShardSqliteWasm } from './shardedSqlite'
-import { ShardedVectorStore } from './ShardedVectorStore'
+import {
+  COARSE_DIMENSION,
+  MAX_VECTORS_PER_SHARD,
+  ShardedVectorStore,
+} from './ShardedVectorStore'
 
 type InMemoryNode = { kind: 'file'; content: ArrayBuffer } | { kind: 'dir' }
 
@@ -171,6 +178,64 @@ const makeStore = (
     app: { vault: { adapter } },
   })
 
+/**
+ * Write-path stores route chunks.sqlite through the injected opener to a
+ * real temp dir (node:sqlite needs a real file), while manifest/vectors/
+ * index stay in the in-memory adapter. Mirrors the mobile wiring where the
+ * opener maps vault paths to sqlite storage.
+ */
+const makeStoreWithTempSqlite = (
+  adapter: InMemoryVaultAdapter,
+  tempRoot: string,
+) =>
+  new ShardedVectorStore({
+    baseDir: BASE_DIR,
+    app: { vault: { adapter } },
+    openShardSqlite: (dbPath) =>
+      openShardSqliteNode(realPathFor(tempRoot, dbPath)),
+  })
+
+const realPathFor = (tempRoot: string, virtualPath: string): string =>
+  path.join(tempRoot, virtualPath.replace(/^[\\/]+/, ''))
+
+const tempChunksDbPath = (
+  tempRoot: string,
+  namespaceId: string,
+  shardId: string,
+): string =>
+  realPathFor(
+    tempRoot,
+    `${getShardedShardRoot(BASE_DIR, namespaceId, shardId)}/chunks.sqlite`,
+  )
+
+const chunk = (
+  chunkId: string,
+  text: string,
+  embedding: number[],
+  line: number,
+  filePath = 'notes/a.md',
+) => ({
+  chunkId,
+  path: filePath,
+  text,
+  contentHash: `hash-${chunkId}`,
+  embedding,
+  location: { lineStart: line, lineEnd: line },
+  metadataJson: {},
+})
+
+/**
+ * Write-path namespace: dimension 4 so the brief's `[1,0,0,0]` embeddings
+ * match `dim × 4` byte assertions (coarse dims still pad to COARSE_DIMENSION).
+ */
+const writeNamespace: VectorNamespace = {
+  provider: 'test',
+  model: 'm1',
+  dimension: 4,
+  distanceMetric: 'cosine',
+}
+const WRITE_NS_ID = 'm1-d4'
+
 describe('ShardedVectorStore skeleton', () => {
   it('open then listNamespaces returns empty when no models dir exists', async () => {
     const store = makeStore()
@@ -286,12 +351,6 @@ describe('ShardedVectorStore skeleton', () => {
     const store = makeStore()
     await store.open()
     const unimplemented: Array<Promise<unknown>> = [
-      store.replaceFile(testNamespace, {
-        path: 'a.md',
-        mtime: 1,
-        chunks: [],
-      }),
-      store.replaceFiles?.(testNamespace, []),
       store.deleteFile(testNamespace, 'a.md'),
       store.deleteFiles?.(testNamespace, ['a.md']),
       store.clearNamespace(testNamespace),
@@ -299,8 +358,6 @@ describe('ShardedVectorStore skeleton', () => {
       store.search(testNamespace, [1, 0, 0, 0], { topK: 1 }),
       store.searchDetailed?.(testNamespace, [1, 0, 0, 0], { topK: 1 }),
       store.getStats(testNamespace),
-      store.getIndexedFiles?.(testNamespace),
-      store.getFileReadiness?.(testNamespace, ['a.md']),
       store.getStatusByNamespaceId?.('m1-d256'),
       store.getQueryEmbedding?.(testNamespace, 'hash'),
       store.putQueryEmbedding?.(testNamespace, 'hash', [1, 0, 0, 0]),
@@ -313,6 +370,344 @@ describe('ShardedVectorStore skeleton', () => {
     ]
     for (const pending of unimplemented) {
       await expect(pending).rejects.toThrow('not implemented yet')
+    }
+  })
+})
+
+describe('ShardedVectorStore write path', () => {
+  jest.setTimeout(30_000)
+
+  it('replaceFile appends vectors.f32, upserts chunks.sqlite, and publishes the manifest', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-write-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 123456789,
+        contentHash: 'file-hash-1',
+        chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+      })
+
+      // Manifest published atomically (staged file consumed by the rename).
+      const manifest = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifest.activeModel).toBe(WRITE_NS_ID)
+      expect(manifest.shards).toHaveLength(1)
+      expect(manifest.shards[0]).toMatchObject({
+        id: '000001',
+        relativePath: `models/${WRITE_NS_ID}/shards/000001`,
+        state: 'ready',
+        dimension: 4,
+        vectorCount: 1,
+      })
+      expect(await adapter.exists(getShardedStagedManifestPath(BASE_DIR))).toBe(
+        false,
+      )
+
+      // vectors.f32: exactly dim × 4 bytes (dim = 4).
+      const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
+      const vectorsBytes = await adapter.readBinary(`${shardRoot}/vectors.f32`)
+      expect(vectorsBytes.byteLength).toBe(writeNamespace.dimension * 4)
+
+      // index.bin: COARSE_DIMENSION × 4 bytes; [1,0,0,0] → first coarse dim 1.
+      const indexBytes = await adapter.readBinary(`${shardRoot}/index.bin`)
+      expect(indexBytes.byteLength).toBe(COARSE_DIMENSION * 4)
+      expect(new Float32Array(indexBytes)[0]).toBeCloseTo(1, 5)
+
+      // shard.meta.json carries the same counts as the manifest.
+      const shardMeta = JSON.parse(
+        await adapter.read(`${shardRoot}/shard.meta.json`),
+      )
+      expect(shardMeta).toEqual({
+        shardId: '000001',
+        dimension: 4,
+        vectorCount: 1,
+      })
+
+      // chunks.sqlite readback via node:sqlite (tombstone === 0).
+      const runtime = openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+      )
+      try {
+        const row = runtime.queryOne<{
+          chunk_id: string
+          file_path: string
+          file_mtime: number
+          file_content_hash: string
+          chunk_content_hash: string
+          start_line: number
+          end_line: number
+          page: number | null
+          text: string
+          metadata_json: string
+          tombstone: number
+        }>('select * from chunks where chunk_id = ?', ['c1'])
+        expect(row).toMatchObject({
+          chunk_id: 'c1',
+          file_path: 'notes/a.md',
+          file_mtime: 123456789,
+          file_content_hash: 'file-hash-1',
+          chunk_content_hash: 'hash-c1',
+          start_line: 1,
+          end_line: 1,
+          page: null,
+          text: 'alpha',
+          metadata_json: '{}',
+          tombstone: 0,
+        })
+      } finally {
+        runtime.close()
+      }
+
+      // getIndexedFiles sees the file with the recorded mtime.
+      const indexed = await store.getIndexedFiles(writeNamespace)
+      expect(indexed.get('notes/a.md')).toMatchObject({
+        mtime: 123456789,
+        contentHash: 'file-hash-1',
+      })
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('replaceFiles writes multiple files into the current shard', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-write-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFiles(writeNamespace, [
+        {
+          path: 'notes/a.md',
+          mtime: 1,
+          contentHash: 'ha',
+          chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+        },
+        {
+          path: 'notes/b.md',
+          mtime: 2,
+          contentHash: 'hb',
+          chunks: [chunk('c2', 'beta', [0, 1, 0, 0], 1, 'notes/b.md')],
+        },
+      ])
+
+      const manifest = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifest.shards).toHaveLength(1)
+      expect(manifest.shards[0]?.vectorCount).toBe(2)
+
+      const indexed = await store.getIndexedFiles(writeNamespace)
+      expect(indexed.get('notes/a.md')?.mtime).toBe(1)
+      expect(indexed.get('notes/b.md')?.mtime).toBe(2)
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('rolls to shards/000002 when the current shard reaches MAX_VECTORS_PER_SHARD', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-write-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      const chunks = Array.from({ length: MAX_VECTORS_PER_SHARD + 1 }, (_, i) =>
+        chunk(`c${i}`, `text-${i}`, [1, 0, 0, 0], i),
+      )
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/big.md',
+        mtime: 7,
+        chunks,
+      })
+
+      const manifest = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifest.shards.map((shard) => shard.id)).toEqual([
+        '000001',
+        '000002',
+      ])
+      expect(manifest.shards[0]?.vectorCount).toBe(MAX_VECTORS_PER_SHARD)
+      expect(manifest.shards[1]?.vectorCount).toBe(1)
+
+      const secondRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000002')
+      expect(
+        (await adapter.readBinary(`${secondRoot}/vectors.f32`)).byteLength,
+      ).toBe(writeNamespace.dimension * 4)
+      expect(
+        (await adapter.readBinary(`${secondRoot}/index.bin`)).byteLength,
+      ).toBe(COARSE_DIMENSION * 4)
+
+      const runtime = openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000002'),
+      )
+      try {
+        expect(
+          runtime.queryOne<{ n: number }>('select count(*) as n from chunks')
+            ?.n,
+        ).toBe(1)
+      } finally {
+        runtime.close()
+      }
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('replaceFile of an existing path drops old chunk rows and compacts the shard', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-write-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 100,
+        contentHash: 'hash-v1',
+        chunks: [
+          chunk('c1', 'old', [1, 0, 0, 0], 1),
+          chunk('c2', 'old2', [0, 1, 0, 0], 2),
+        ],
+      })
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 200,
+        contentHash: 'hash-v2',
+        chunks: [chunk('c3', 'new', [0, 0, 1, 0], 1)],
+      })
+
+      const manifest = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifest.shards).toHaveLength(1)
+      expect(manifest.shards[0]?.vectorCount).toBe(1)
+
+      // Vectors/index compacted back to a single chunk.
+      const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
+      expect(
+        (await adapter.readBinary(`${shardRoot}/vectors.f32`)).byteLength,
+      ).toBe(writeNamespace.dimension * 4)
+      expect(
+        (await adapter.readBinary(`${shardRoot}/index.bin`)).byteLength,
+      ).toBe(COARSE_DIMENSION * 4)
+
+      // Only c3 survives; rowids restart at 1, aligned with the compacted file.
+      const runtime = openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+      )
+      try {
+        const rows = runtime.query<{ chunk_id: string; tombstone: number }>(
+          'select chunk_id, tombstone from chunks order by rowid',
+        )
+        expect(rows.map((row) => row.chunk_id)).toEqual(['c3'])
+        expect(
+          runtime.queryOne<{ rowid: number }>('select rowid from chunks')
+            ?.rowid,
+        ).toBe(1)
+      } finally {
+        runtime.close()
+      }
+
+      const indexed = await store.getIndexedFiles(writeNamespace)
+      expect(indexed.get('notes/a.md')).toMatchObject({
+        mtime: 200,
+        contentHash: 'hash-v2',
+      })
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('getFileReadiness reports vectorReady only for indexed paths', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-write-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+      })
+
+      const readiness = await store.getFileReadiness(writeNamespace, [
+        'notes/a.md',
+        'notes/missing.md',
+        'notes/a.md',
+      ])
+      expect([...readiness.entries()]).toEqual([
+        ['notes/a.md', { path: 'notes/a.md', vectorReady: true }],
+        ['notes/missing.md', { path: 'notes/missing.md', vectorReady: false }],
+      ])
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects an embedding whose length does not match the shard dimension', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-write-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await expect(
+        store.replaceFile(writeNamespace, {
+          path: 'notes/a.md',
+          mtime: 1,
+          chunks: [
+            {
+              ...chunk('c1', 'alpha', [1, 0, 0, 0], 1),
+              embedding: [1, 0, 0, 0, 0, 0],
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({ code: 'dimension_mismatch' })
+      expect(await adapter.exists(getShardedManifestPath(BASE_DIR))).toBe(false)
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('getIndexedFiles/getFileReadiness return empty results before any write', async () => {
+    const store = makeStore()
+    await store.open()
+    expect(await store.getIndexedFiles(writeNamespace)).toEqual(new Map())
+    expect(
+      await store.getFileReadiness(writeNamespace, ['notes/a.md']),
+    ).toEqual(
+      new Map([['notes/a.md', { path: 'notes/a.md', vectorReady: false }]]),
+    )
+  })
+
+  it('replaceFile rejects a different namespace once a manifest exists', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-write-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+      })
+      const otherNamespace: VectorNamespace = {
+        provider: 'test',
+        model: 'other',
+        dimension: 4,
+        distanceMetric: 'cosine',
+      }
+      await expect(
+        store.replaceFile(otherNamespace, {
+          path: 'notes/b.md',
+          mtime: 1,
+          chunks: [chunk('c9', 'beta', [1, 0, 0, 0], 1, 'notes/b.md')],
+        }),
+      ).rejects.toMatchObject({ code: 'namespace_mismatch' })
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
     }
   })
 })
