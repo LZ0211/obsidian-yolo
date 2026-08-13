@@ -7,6 +7,7 @@ import {
   type VectorChunkWrite,
   type VectorFileReadiness,
   type VectorFileWrite,
+  type VectorHit,
   type VectorNamespace,
   type VectorSearchOptions,
   type VectorSearchResult,
@@ -30,6 +31,16 @@ export const MAX_VECTORS_PER_SHARD = 1000
 
 /** Coarse-index dimension: first `min(dim, COARSE_DIMENSION)` dims, L2-normalized. */
 export const COARSE_DIMENSION = 256
+
+/** Max shards queried in parallel during a search. */
+export const MAX_CONCURRENT_SHARD_QUERIES = 4
+
+/**
+ * Per-shard rerank budget after the coarse pass:
+ * `max(topK, min(COARSE_MIN_CANDIDATES, topK × COARSE_CANDIDATE_MULTIPLIER))`.
+ */
+const COARSE_MIN_CANDIDATES = 500
+const COARSE_CANDIDATE_MULTIPLIER = 50
 
 /**
  * Zod requires checksums even for freshly created/building shards (upstream
@@ -110,6 +121,27 @@ type ShardMeta = {
   vectorCount: number
 }
 
+/** Parameterized `chunks` predicate built from `VectorSearchOptions.scope`. */
+type ShardScopeSql = {
+  clause: string
+  params: string[]
+}
+
+type ShardSearchHit = {
+  row: ChunkRow
+  score: number
+}
+
+/** Per-shard outcome of a search, aggregated by the caller. */
+type ShardQueryResult = {
+  hits: ShardSearchHit[]
+  /** Rows considered in this shard (scope-filtered, or all rows when unscoped). */
+  scopedCount: number
+  coarseMs: number
+  loadMs: number
+  rerankMs: number
+}
+
 /**
  * Coarse vectors for a whole shard: for each chunk, the first
  * `min(dim, COARSE_DIMENSION)` dims of its full vector, L2-normalized.
@@ -139,6 +171,194 @@ function buildCoarseIndex(
     }
   }
   return coarse
+}
+
+/**
+ * Runs `fn` over `items` with at most `concurrency` promises in flight and
+ * results in input order. A worker-shared index counter keeps the fan-in
+ * race-free without a scheduler.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let nextIndex = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = nextIndex
+      nextIndex += 1
+      if (index >= items.length) return
+      results[index] = await fn(items[index], index)
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker()),
+  )
+  return results
+}
+
+/**
+ * Length check + L2 normalization of a query embedding. Mirrors the desktop
+ * `SqliteVectorStore` helper; kept local (not imported) because this module
+ * must stay free of static `node:*` imports for mobile bundling.
+ */
+function normalizeVector(
+  embedding: number[],
+  dimension: number,
+  code: 'dimension_mismatch' | 'transaction_failed',
+): number[] {
+  if (embedding.length !== dimension) {
+    throw new VectorStoreError(
+      code,
+      'sqlite',
+      code === 'dimension_mismatch' ? 'rebuild_index' : 'none',
+      `Expected embedding dimension ${dimension} but received ${embedding.length}`,
+    )
+  }
+
+  let magnitude = 0
+  for (const value of embedding) {
+    if (!Number.isFinite(value)) {
+      throw new VectorStoreError(
+        code,
+        'sqlite',
+        'none',
+        'Embedding contains a non-finite value',
+      )
+    }
+    magnitude += value * value
+  }
+
+  if (magnitude === 0) {
+    throw new VectorStoreError(
+      code,
+      'sqlite',
+      'none',
+      'Embedding magnitude must be greater than zero',
+    )
+  }
+
+  const length = Math.sqrt(magnitude)
+  return embedding.map((value) => value / length)
+}
+
+/** Query-side coarse vector: first `min(dim, COARSE_DIMENSION)` dims, re-normalized to match `index.bin`. */
+function coarseVector(embedding: number[]): number[] {
+  return normalizeVector(
+    embedding.slice(0, Math.min(COARSE_DIMENSION, embedding.length)),
+    Math.min(COARSE_DIMENSION, embedding.length),
+    'transaction_failed',
+  )
+}
+
+function cosineScore(
+  left: ArrayLike<number>,
+  right: ArrayLike<number>,
+): number {
+  let dot = 0
+  for (let index = 0; index < left.length; index += 1) {
+    dot += left[index] * right[index]
+  }
+  return dot
+}
+
+/**
+ * Full-dimension cosine similarity between the normalized query and a stored
+ * full vector. Task 2 stores raw (non-normalized) embeddings in vectors.f32,
+ * so the stored vector is normalized here — equivalent to the desktop store,
+ * which normalizes at write time and scores with a plain dot product.
+ */
+function storedCosineScore(query: number[], stored: Float32Array): number {
+  let dot = 0
+  let magnitude = 0
+  for (let index = 0; index < stored.length; index += 1) {
+    const value = stored[index]
+    dot += query[index] * value
+    magnitude += value * value
+  }
+  return magnitude === 0 ? 0 : dot / Math.sqrt(magnitude)
+}
+
+/** Trims/dedupes scope path values; mirrors the desktop store's normalization. */
+function uniqueNormalized(values: string[]): string[] {
+  const seen = new Set<string>()
+  const normalized: string[] = []
+  for (const value of values) {
+    const trimmed = value.trim().replace(/^\/+|\/+$/g, '')
+    if (!trimmed || seen.has(trimmed)) continue
+    seen.add(trimmed)
+    normalized.push(trimmed)
+  }
+  return normalized
+}
+
+/** Escapes LIKE wildcards so folder prefixes match literal paths. */
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&')
+}
+
+function parseShardedMetadataJson(
+  value: string | null,
+): Record<string, unknown> {
+  if (value == null) return {}
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value) as unknown
+  } catch (error) {
+    throw new VectorStoreError(
+      'database_corrupt',
+      'sqlite',
+      'rebuild_index',
+      error instanceof Error
+        ? `metadata_json is not valid JSON: ${error.message}`
+        : 'metadata_json is not valid JSON',
+    )
+  }
+
+  if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new VectorStoreError(
+      'database_corrupt',
+      'sqlite',
+      'rebuild_index',
+      'metadata_json must contain a JSON object',
+    )
+  }
+
+  return parsed as Record<string, unknown>
+}
+
+/**
+ * Sharded-row variant of the desktop `mapSqliteRowToVectorHit`: same
+ * `VectorHit` shape minus columns the sharded `chunks` table does not carry
+ * (`block_id`, `heading_path_json`).
+ */
+function mapShardedChunkRowToHit(row: ChunkRow, score: number): VectorHit {
+  const metadataJson = parseShardedMetadataJson(row.metadata_json)
+  return {
+    id: row.chunk_id,
+    chunkId: row.chunk_id,
+    path: row.file_path,
+    title:
+      typeof metadataJson.title === 'string' ? metadataJson.title : undefined,
+    excerpt: row.text ?? '',
+    score,
+    source: 'vector',
+    location: {
+      lineStart: row.start_line ?? undefined,
+      lineEnd: row.end_line ?? undefined,
+      page: row.page ?? undefined,
+    },
+    metadataJson,
+  }
+}
+
+function throwIfVectorSearchAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return
+  const error = new Error('Vector search cancelled')
+  error.name = 'AbortError'
+  throw error
 }
 
 /**
@@ -173,8 +393,9 @@ export type ShardedVectorStoreOptions = {
  * Vault-resident sharded vector backend (mobile 分页存储模式). Layout mirrors
  * upstream `feat/sharded-vector-backend`: `<baseDir>/rag-index/v1/manifest.json`
  * plus `models/<ns>/shards/<shardId>/`. Task 1 ships the skeleton (open/close/
- * listNamespaces/dropNamespace/getStatus); write/search/delete/vacuum land in
- * Tasks 2-5 and currently throw.
+ * listNamespaces/dropNamespace/getStatus); Task 2 the write path; Task 3 the
+ * search path (parallel coarse + full rerank + scope prefilter); delete/
+ * vacuum land in Tasks 4-5 and currently throw.
  */
 export class ShardedVectorStore implements VectorStore {
   private readonly baseDir: string
@@ -330,19 +551,272 @@ export class ShardedVectorStore implements VectorStore {
   }
 
   async search(
-    _namespace: VectorNamespace,
-    _embedding: number[],
-    _options: VectorSearchOptions,
+    namespace: VectorNamespace,
+    embedding: number[],
+    options: VectorSearchOptions,
   ): Promise<VectorSearchResult> {
-    throw new Error('not implemented yet')
+    return this.searchDetailed(namespace, embedding, options)
   }
 
+  /**
+   * Sharded search: manifest → ready shards (ns/dimension match) → parallel
+   * per-shard coarse pass (`index.bin`) with scope prefilter (`chunks.sqlite`)
+   * → full-dimension cosine rerank of the survivors (`vectors.f32`) → global
+   * sort, `minSimilarity` filter, `topK` slice.
+   *
+   * Empty semantics mirror the desktop store: no manifest / no ready shard →
+   * `rebuild_required`; scope matching nothing inside a populated namespace →
+   * `{ hits: [] }`.
+   */
   async searchDetailed(
-    _namespace: VectorNamespace,
-    _embedding: number[],
-    _options: VectorSearchOptions,
+    namespace: VectorNamespace,
+    embedding: number[],
+    options: VectorSearchOptions,
   ): Promise<VectorSearchResult> {
-    throw new Error('not implemented yet')
+    this.assertOpen()
+    this.assertNotClosing()
+    throwIfVectorSearchAborted(options.signal)
+    const namespaceId = validateShardedNamespaceId(vectorNamespaceId(namespace))
+    const manifest = await this.readManifest()
+    if (manifest == null || manifest.activeModel !== namespaceId) {
+      throw new VectorStoreError(
+        'rebuild_required',
+        'sqlite',
+        'rebuild_index',
+        'The active RAG namespace does not have an index manifest yet.',
+      )
+    }
+    const readyShards = manifest.shards.filter(
+      (shard) =>
+        shard.state === 'ready' &&
+        shard.dimension === namespace.dimension &&
+        shard.vectorCount > 0,
+    )
+    if (readyShards.length === 0) {
+      throw new VectorStoreError(
+        'rebuild_required',
+        'sqlite',
+        'rebuild_index',
+        'The active RAG namespace does not contain any indexed chunks yet.',
+      )
+    }
+    throwIfVectorSearchAborted(options.signal)
+    const queryFull = normalizeVector(
+      embedding,
+      namespace.dimension,
+      'dimension_mismatch',
+    )
+    if (options.topK <= 0) return { hits: [] }
+    const queryCoarse = coarseVector(queryFull)
+    const scopeSql = this.buildShardScopeSql(options)
+    const candidateK = Math.max(
+      options.topK,
+      Math.min(
+        COARSE_MIN_CANDIDATES,
+        options.topK * COARSE_CANDIDATE_MULTIPLIER,
+      ),
+    )
+
+    const perShard = await mapWithConcurrency(
+      readyShards,
+      MAX_CONCURRENT_SHARD_QUERIES,
+      async (shard) =>
+        this.queryShard(
+          namespaceId,
+          shard,
+          queryFull,
+          queryCoarse,
+          candidateK,
+          scopeSql,
+        ),
+    )
+    throwIfVectorSearchAborted(options.signal)
+    const coarseSearch = Math.max(
+      0,
+      ...perShard.map((result) => result.coarseMs),
+    )
+    const loadFullVectors = Math.max(
+      0,
+      ...perShard.map((result) => result.loadMs),
+    )
+    const totalCount = perShard.reduce(
+      (sum, result) => sum + result.scopedCount,
+      0,
+    )
+    const merged = perShard.flatMap((result) => result.hits)
+    if (merged.length === 0) {
+      // The scope prefilter matched nothing inside a populated namespace: a
+      // legitimate empty result — never a rebuild error (desktop parity).
+      return { hits: [], timingsMs: undefined }
+    }
+    const rerankStart = Date.now()
+    const reranked = [...merged]
+      .sort(
+        (left, right) =>
+          right.score - left.score ||
+          left.row.chunk_id.localeCompare(right.row.chunk_id),
+      )
+      .filter(
+        (hit) =>
+          options.minSimilarity == null || hit.score >= options.minSimilarity,
+      )
+      .slice(0, options.topK)
+    const rerankSimilarity =
+      Date.now() -
+      rerankStart +
+      Math.max(0, ...perShard.map((result) => result.rerankMs))
+
+    return {
+      hits: reranked.map((hit) => mapShardedChunkRowToHit(hit.row, hit.score)),
+      recallCount: reranked.length,
+      recallLimit: candidateK,
+      totalCount,
+      filteredCount: merged.length - reranked.length,
+      durationMs: coarseSearch + loadFullVectors + rerankSimilarity,
+      timingsMs: {
+        coarseSearch,
+        loadFullVectors,
+        rerankSimilarity,
+      },
+    }
+  }
+
+  /**
+   * One shard's contribution to a search: scope prefilter against
+   * `chunks.sqlite`, coarse dot ranking against `index.bin` (take the top
+   * `candidateK`), then full-dimension cosine rerank of those survivors read
+   * from `vectors.f32`. Vector offsets are the rows' position in
+   * `select * from chunks order by rowid` — Task 2's compaction rebuilds the
+   * table (rowids restart at 1) together with both files, so the k-th row's
+   * vector sits at offset k in `index.bin`/`vectors.f32`. Rowid values are
+   * used directly as 1-based offsets, which holds while no tombstone rows
+   * exist (Task 4's tombstone path will need a compaction-aware mapping).
+   */
+  private async queryShard(
+    namespaceId: string,
+    shard: ShardedManifestShard,
+    queryFull: number[],
+    queryCoarse: number[],
+    candidateK: number,
+    scopeSql: ShardScopeSql | null,
+  ): Promise<ShardQueryResult> {
+    const result: ShardQueryResult = {
+      hits: [],
+      scopedCount: 0,
+      coarseMs: 0,
+      loadMs: 0,
+      rerankMs: 0,
+    }
+    const coarseStart = Date.now()
+    const shardRoot = getShardedShardRoot(this.baseDir, namespaceId, shard.id)
+    const runtime = this.openShardRuntime(namespaceId, shard.id)
+    try {
+      const rows = runtime.query<ChunkRow>(
+        'select * from chunks where tombstone = 0 order by rowid',
+      )
+      if (rows.length === 0) return result
+      let scopedRowids: Set<number> | null = null
+      if (scopeSql != null) {
+        scopedRowids = new Set(
+          runtime
+            .query<{
+              rowid: number
+            }>(`select rowid from chunks where tombstone = 0 and (${scopeSql.clause})`, scopeSql.params)
+            .map((row) => Number(row.rowid)),
+        )
+      }
+      result.scopedCount =
+        scopedRowids == null ? rows.length : scopedRowids.size
+      if (result.scopedCount === 0) return result
+
+      const coarse = await this.readShardCoarseVectors(shardRoot, rows.length)
+      const candidates: Array<{ index: number; score: number }> = []
+      for (let i = 0; i < rows.length; i += 1) {
+        if (scopedRowids != null && !scopedRowids.has(i + 1)) continue
+        candidates.push({
+          index: i,
+          score: cosineScore(
+            queryCoarse,
+            coarse.subarray(i * COARSE_DIMENSION, (i + 1) * COARSE_DIMENSION),
+          ),
+        })
+      }
+      candidates.sort((a, b) => b.score - a.score || a.index - b.index)
+      const selected = candidates.slice(0, candidateK)
+      result.coarseMs = Date.now() - coarseStart
+      if (selected.length === 0) return result
+
+      const loadStart = Date.now()
+      const fullVectors = await this.readShardVectors(
+        shardRoot,
+        shard.dimension,
+        rows.length,
+      )
+      result.loadMs = Date.now() - loadStart
+
+      const rerankStart = Date.now()
+      for (const candidate of selected) {
+        result.hits.push({
+          row: rows[candidate.index],
+          score: storedCosineScore(
+            queryFull,
+            fullVectors.subarray(
+              candidate.index * shard.dimension,
+              (candidate.index + 1) * shard.dimension,
+            ),
+          ),
+        })
+      }
+      result.rerankMs = Date.now() - rerankStart
+      return result
+    } finally {
+      runtime.close()
+    }
+  }
+
+  private async readShardCoarseVectors(
+    shardRoot: string,
+    count: number,
+  ): Promise<Float32Array> {
+    const data = await this.adapter.readBinary(`${shardRoot}/index.bin`)
+    const expected = count * COARSE_DIMENSION * 4
+    if (data.byteLength !== expected) {
+      throw new VectorStoreError(
+        'database_corrupt',
+        'sqlite',
+        'rebuild_index',
+        `index.bin size ${data.byteLength} does not match ${count} vectors × ${COARSE_DIMENSION} coarse dims`,
+      )
+    }
+    return new Float32Array(data)
+  }
+
+  /**
+   * Scope predicate for per-shard `chunks` queries, parameterized and LIKE-
+   * escaped so scope values can never inject SQL.
+   */
+  private buildShardScopeSql(
+    options: VectorSearchOptions,
+  ): ShardScopeSql | null {
+    if (options.scope == null) return null
+    const files = uniqueNormalized(options.scope.files ?? [])
+    const folders = uniqueNormalized(options.scope.folders ?? []).map(
+      (folder) => folder.replace(/\/+$/g, ''),
+    )
+    if (files.length === 0 && folders.length === 0) return null
+    const clauses: string[] = []
+    const params: string[] = []
+    if (files.length > 0) {
+      clauses.push(`file_path in (${files.map(() => '?').join(', ')})`)
+      params.push(...files)
+    }
+    if (folders.length > 0) {
+      clauses.push(
+        folders.map(() => "file_path like ? escape '\\'").join(' or '),
+      )
+      params.push(...folders.map((folder) => `${escapeLikePattern(folder)}/%`))
+    }
+    return { clause: clauses.join(' or '), params }
   }
 
   async getStoredFileVectors(

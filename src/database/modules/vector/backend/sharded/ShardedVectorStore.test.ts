@@ -3,6 +3,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import {
+  type VectorChunkWrite,
   type VectorNamespace,
   VectorStoreError,
 } from '../../../rag/VectorStore'
@@ -383,8 +384,6 @@ describe('ShardedVectorStore skeleton', () => {
       store.deleteFiles?.(testNamespace, ['a.md']),
       store.clearNamespace(testNamespace),
       store.vacuum(testNamespace),
-      store.search(testNamespace, [1, 0, 0, 0], { topK: 1 }),
-      store.searchDetailed?.(testNamespace, [1, 0, 0, 0], { topK: 1 }),
       store.getStats(testNamespace),
       store.getStatusByNamespaceId?.('m1-d256'),
       store.getQueryEmbedding?.(testNamespace, 'hash'),
@@ -952,6 +951,287 @@ describe('ShardedVectorStore write path', () => {
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true })
     }
+  })
+})
+
+describe('ShardedVectorStore search', () => {
+  jest.setTimeout(60_000)
+
+  const query = [1, 0, 0, 0]
+
+  /**
+   * Strictly decreasing full-vector similarity in write order: chunk i is
+   * unit-norm with cosine `1/(i+1)` against [1,0,0,0], so chunk 0 (write
+   * order 0) is the most similar and the global sort is exactly the write
+   * order. With dim 4 the coarse vector equals the full one, so coarse
+   * ranking matches full ranking.
+   */
+  const monotoneChunks = (count: number, filePath = 'notes/big.md') =>
+    Array.from({ length: count }, (_, i) => {
+      const x = 1 / (i + 1)
+      return chunk(
+        `c${i}`,
+        `text-${i}`,
+        [x, Math.sqrt(1 - x * x), 0, 0],
+        i,
+        filePath,
+      )
+    })
+
+  it('spans shards, reranks with full vectors, filters by minSimilarity, and scopes to empty hits', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-search-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/big.md',
+        mtime: 7,
+        chunks: monotoneChunks(1100),
+      })
+
+      const manifest = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifest.shards.map((shard) => shard.id)).toEqual([
+        '000001',
+        '000002',
+      ])
+      expect(manifest.shards[0]?.vectorCount).toBe(1000)
+      expect(manifest.shards[1]?.vectorCount).toBe(100)
+
+      // Cross-shard retrieval: hits come from a global sort, c0 first.
+      const top = await store.search(writeNamespace, query, { topK: 10 })
+      expect(top.hits).toHaveLength(10)
+      expect(top.hits.map((hit) => hit.chunkId)).toEqual(
+        Array.from({ length: 10 }, (_, i) => `c${i}`),
+      )
+      expect(top.hits[0]?.score).toBeGreaterThan(top.hits[1]?.score ?? 0)
+      expect(top.hits[0]).toMatchObject({
+        id: 'c0',
+        chunkId: 'c0',
+        path: 'notes/big.md',
+        excerpt: 'text-0',
+        source: 'vector',
+        metadataJson: {},
+      })
+      expect(top.hits[0]?.location).toEqual({ lineStart: 0, lineEnd: 0 })
+      expect(top.recallCount).toBe(10)
+      expect(top.totalCount).toBe(1100)
+      expect(top.recallLimit).toBe(500)
+
+      // searchDetailed mirrors search and reports timing breakdowns.
+      const detailed = await store.searchDetailed(writeNamespace, query, {
+        topK: 10,
+      })
+      expect(detailed.hits.map((hit) => hit.chunkId)).toEqual(
+        top.hits.map((hit) => hit.chunkId),
+      )
+      expect(typeof detailed.durationMs).toBe('number')
+      for (const timing of [
+        detailed.timingsMs?.coarseSearch,
+        detailed.timingsMs?.loadFullVectors,
+        detailed.timingsMs?.rerankSimilarity,
+      ]) {
+        expect(typeof timing).toBe('number')
+      }
+
+      // minSimilarity: scores are 1/(i+1); only c0 and c1 clear 0.4.
+      const filtered = await store.search(writeNamespace, query, {
+        topK: 1100,
+        minSimilarity: 0.4,
+      })
+      expect(filtered.hits.map((hit) => hit.chunkId)).toEqual(['c0', 'c1'])
+      expect(filtered.hits.every((hit) => hit.score >= 0.4)).toBe(true)
+      expect(filtered.recallCount).toBe(2)
+      expect(filtered.filteredCount).toBe(1098)
+
+      // Scope prefilter: empty folder → empty hits, never rebuild_required.
+      const scopedEmpty = await store.search(writeNamespace, query, {
+        topK: 10,
+        scope: { folders: ['empty-folder'] },
+      })
+      expect(scopedEmpty.hits).toEqual([])
+      const scopedMiss = await store.search(writeNamespace, query, {
+        topK: 10,
+        scope: { files: ['notes/other.md'] },
+      })
+      expect(scopedMiss.hits).toEqual([])
+
+      // Scope prefilter: matching folder / file still ranks globally.
+      const scopedFolder = await store.search(writeNamespace, query, {
+        topK: 5,
+        scope: { folders: ['notes'] },
+      })
+      expect(scopedFolder.hits.map((hit) => hit.chunkId)).toEqual([
+        'c0',
+        'c1',
+        'c2',
+        'c3',
+        'c4',
+      ])
+      const scopedFiles = await store.search(writeNamespace, query, {
+        topK: 3,
+        scope: { files: ['notes/big.md'] },
+      })
+      expect(scopedFiles.hits.map((hit) => hit.chunkId)).toEqual([
+        'c0',
+        'c1',
+        'c2',
+      ])
+
+      // topK <= 0 is an empty result, not an error.
+      expect(await store.search(writeNamespace, query, { topK: 0 })).toEqual({
+        hits: [],
+      })
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('reranks by full-vector similarity so a coarse winner can lose to signal beyond the coarse window', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-rerank-'))
+    try {
+      const rerankNamespace: VectorNamespace = {
+        provider: 'test',
+        model: 'm1',
+        dimension: 300,
+        distanceMetric: 'cosine',
+      }
+      const make = (
+        chunkId: string,
+        embedding: number[],
+      ): VectorChunkWrite => ({
+        chunkId,
+        path: 'notes/rerank.md',
+        text: chunkId,
+        contentHash: `hash-${chunkId}`,
+        embedding,
+        location: { lineStart: 1, lineEnd: 1 },
+        metadataJson: {},
+      })
+      // cA: strong only inside the 256-dim coarse window; cB: strong only
+      // beyond it; cC: moderate everywhere. Coarse ranks cA/cC first, but
+      // the full rerank must put cB on top for a query weighted outside the
+      // coarse window.
+      const strongInWindow = [...Array(256).fill(1), ...Array(44).fill(0)]
+      const strongBeyondWindow = [...Array(256).fill(0), ...Array(44).fill(10)]
+      const moderateEverywhere = [...Array(256).fill(1), ...Array(44).fill(1)]
+
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(rerankNamespace, {
+        path: 'notes/rerank.md',
+        mtime: 1,
+        chunks: [
+          make('cA', strongInWindow),
+          make('cB', strongBeyondWindow),
+          make('cC', moderateEverywhere),
+        ],
+      })
+
+      const rerankQuery = [...Array(256).fill(1), ...Array(44).fill(100)]
+      const result = await store.search(rerankNamespace, rerankQuery, {
+        topK: 3,
+      })
+      expect(result.hits.map((hit) => hit.chunkId)).toEqual(['cB', 'cC', 'cA'])
+      expect(result.hits[0]?.score).toBeGreaterThan(0.99)
+      expect(result.hits[1]?.score).toBeGreaterThan(0.3)
+      expect(result.hits[1]?.score).toBeLessThan(0.5)
+      expect(result.hits[2]?.score).toBeLessThan(0.05)
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('merges results from many shards in parallel into one global ordering', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-parallel-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/big.md',
+        mtime: 7,
+        chunks: monotoneChunks(2505),
+      })
+
+      const manifest = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifest.shards.map((shard) => shard.id)).toEqual([
+        '000001',
+        '000002',
+        '000003',
+      ])
+
+      const result = await store.search(writeNamespace, query, {
+        topK: 2505,
+      })
+      expect(result.hits).toHaveLength(2505)
+      expect(result.hits[0]?.chunkId).toBe('c0')
+      expect(result.hits[1000]?.chunkId).toBe('c1000')
+      expect(result.hits[2504]?.chunkId).toBe('c2504')
+      expect(result.hits.every((hit, i) => hit.chunkId === `c${i}`)).toBe(true)
+      expect(result.totalCount).toBe(2505)
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('throws rebuild_required when no manifest, all shards empty, or a different active model', async () => {
+    const emptyStore = makeStore()
+    await emptyStore.open()
+    await expect(
+      emptyStore.search(writeNamespace, query, { topK: 5 }),
+    ).rejects.toMatchObject({
+      code: 'rebuild_required',
+      recoveryAction: 'rebuild_index',
+    })
+
+    // Manifest exists but carries no ready shards with data.
+    const adapter = new InMemoryVaultAdapter()
+    await adapter.write(
+      getShardedManifestPath(BASE_DIR),
+      JSON.stringify({
+        schemaVersion: 1,
+        formatVersion: 1,
+        activeModel: WRITE_NS_ID,
+        updatedAt: 1,
+        shards: [],
+      }),
+    )
+    const emptyShardsStore = makeStore(adapter)
+    await emptyShardsStore.open()
+    await expect(
+      emptyShardsStore.search(writeNamespace, query, { topK: 5 }),
+    ).rejects.toMatchObject({ code: 'rebuild_required' })
+
+    // Manifest is active for a different namespace.
+    const otherAdapter = new InMemoryVaultAdapter()
+    await otherAdapter.write(
+      getShardedManifestPath(BASE_DIR),
+      JSON.stringify({
+        schemaVersion: 1,
+        formatVersion: 1,
+        activeModel: 'other-d4',
+        updatedAt: 1,
+        shards: [],
+      }),
+    )
+    const otherModelStore = makeStore(otherAdapter)
+    await otherModelStore.open()
+    await expect(
+      otherModelStore.search(writeNamespace, query, { topK: 5 }),
+    ).rejects.toMatchObject({ code: 'rebuild_required' })
+  })
+
+  it('search before open throws not_open', async () => {
+    const store = makeStore()
+    await expect(
+      store.search(writeNamespace, query, { topK: 5 }),
+    ).rejects.toMatchObject({ code: 'not_open' })
   })
 })
 
