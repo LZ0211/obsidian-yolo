@@ -49,8 +49,6 @@ import {
   selectMemoryReflectionSources,
   shouldRunMemoryReflection,
 } from './reflection'
-import { computeSimhash } from './simhash'
-
 type MemoryPartitionInput = {
   scope: MemoryPartition['scope']
   assistantId?: string | null
@@ -186,10 +184,6 @@ type MemoryIndexRow = {
   content: string
   keywords_json: string
   content_hash: string
-  hash_band_0: number
-  hash_band_1: number
-  hash_band_2: number
-  hash_band_3: number
   salience: number
   last_recalled_at: number | null
   created_at: number
@@ -240,13 +234,6 @@ const throwIfMemoryIndexAborted = (signal?: AbortSignal): void => {
   error.name = 'AbortError'
   throw error
 }
-
-const hashBands = (hash: string): [number, number, number, number] => [
-  Number.parseInt(hash.slice(0, 4), 16),
-  Number.parseInt(hash.slice(4, 8), 16),
-  Number.parseInt(hash.slice(8, 12), 16),
-  Number.parseInt(hash.slice(12, 16), 16),
-]
 
 const rowToEntry = (row: MemoryIndexRow): IndexedMemoryEntry => ({
   id: row.local_id,
@@ -522,7 +509,6 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
       const preparedEntries: Array<{
         entry: MemorySourceEntry
         contentHash: string
-        hashBands: [number, number, number, number]
       }> = []
       for (
         let start = 0;
@@ -539,7 +525,6 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
             batch.map(async (entry) => ({
               entry,
               contentHash: await sha256Hex(entry.content.normalize('NFC')),
-              hashBands: hashBands(computeSimhash(entry.content)),
             })),
           )),
         )
@@ -651,7 +636,6 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
             const entry = prepared.entry
             const old = priorRowsById.get(entry.localId)
             const contentHash = prepared.contentHash
-            const [band0, band1, band2, band3] = prepared.hashBands
             const unchanged =
               old?.entry_fingerprint === entry.entryFingerprint &&
               priorState?.parser_version === snapshot.parserVersion
@@ -675,9 +659,9 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
             runtime.exec(
               `insert into memory_index
                (partition_key, memory_key, scope, assistant_id, local_id, category, sector, content, keywords_json,
-                content_hash, hash_band_0, hash_band_1, hash_band_2, hash_band_3, salience, last_recalled_at,
-                created_at, updated_at, source_path, source_file_fingerprint, entry_fingerprint, parser_version, consolidated)
-               values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                content_hash, salience, last_recalled_at,
+                created_at, updated_at, source_path, source_file_fingerprint, entry_fingerprint, parser_version)
+               values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                on conflict(partition_key, local_id) do update set
                  memory_key = excluded.memory_key,
                  scope = excluded.scope,
@@ -687,18 +671,13 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
                  content = excluded.content,
                  keywords_json = excluded.keywords_json,
                  content_hash = excluded.content_hash,
-                 hash_band_0 = excluded.hash_band_0,
-                 hash_band_1 = excluded.hash_band_1,
-                 hash_band_2 = excluded.hash_band_2,
-                 hash_band_3 = excluded.hash_band_3,
                  salience = excluded.salience,
                  last_recalled_at = excluded.last_recalled_at,
                  updated_at = excluded.updated_at,
                  source_path = excluded.source_path,
                  source_file_fingerprint = excluded.source_file_fingerprint,
                  entry_fingerprint = excluded.entry_fingerprint,
-                 parser_version = excluded.parser_version,
-                 consolidated = excluded.consolidated`,
+                 parser_version = excluded.parser_version`,
               [
                 input.partition.partitionKey,
                 memoryKey,
@@ -716,10 +695,6 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
                   ].sort(),
                 ),
                 contentHash,
-                band0,
-                band1,
-                band2,
-                band3,
                 salience,
                 lastRecalledAt,
                 old?.created_at ?? timestamp,

@@ -29,10 +29,6 @@ export const buildMemoryIndexSchemaSql = (): readonly string[] => [
     content text not null,
     keywords_json text not null,
     content_hash text not null,
-    hash_band_0 integer not null,
-    hash_band_1 integer not null,
-    hash_band_2 integer not null,
-    hash_band_3 integer not null,
     salience real not null default 0.5 check (salience >= 0 and salience <= 1),
     last_recalled_at integer,
     created_at integer not null,
@@ -41,15 +37,12 @@ export const buildMemoryIndexSchemaSql = (): readonly string[] => [
     source_file_fingerprint text not null,
     entry_fingerprint text not null,
     parser_version text not null,
-    consolidated integer not null default 0 check (consolidated in (0, 1)),
     primary key (partition_key, local_id),
     check ((scope = 'global' and assistant_id is null) or
            (scope = 'assistant' and assistant_id is not null))
   );`,
   `create index if not exists idx_memory_partition_score
     on memory_index(partition_key, category, salience, updated_at);`,
-  `create index if not exists idx_memory_partition_hash
-    on memory_index(partition_key, hash_band_0, hash_band_1, hash_band_2, hash_band_3);`,
   `create table if not exists memory_keywords (
     partition_key text not null,
     local_id text not null,
@@ -101,7 +94,7 @@ export const buildMemoryIndexSchemaSql = (): readonly string[] => [
     id integer primary key,
     partition_key text,
     operation text not null,
-    status text not null check (status in ('started', 'completed', 'failed')),
+    status text not null check (status in ('completed', 'failed')),
     source_file_fingerprint text,
     created_at integer not null
   );`,
