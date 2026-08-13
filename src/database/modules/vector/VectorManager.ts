@@ -633,18 +633,41 @@ export class VectorManager {
           return readiness?.vectorReady === true
         }).length
 
+    // Chunk progress is only knowable after each file is chunkified, so
+    // `totalChunks` accumulates the discovered chunk counts as files enter
+    // the pipeline. At the end totalChunks === completedChunks; during the
+    // run both grow monotonically and the ratio is the true progress of the
+    // work discovered so far.
+    let totalChunksDiscovered = 0
+    let completedChunksCount = 0
+    // Live count of embedding workers waiting out a transient provider
+    // failure (rate limit / 5xx). >0 surfaces `waitingForRateLimit` to the
+    // UI progress chain, which was previously a dead branch.
+    let rateLimitWaiters = 0
+
+    const emitProgress = (progress: Partial<IndexProgress> = {}): void => {
+      onProgress?.({
+        completedChunks: completedChunksCount,
+        totalChunks: totalChunksDiscovered,
+        totalFiles: totalFilesCount,
+        completedFiles: completedFilesCount,
+        ...(rateLimitWaiters > 0 ? { waitingForRateLimit: true } : {}),
+        ...progress,
+      })
+    }
+
+    const notifyRateLimitWaiting = (waiting: boolean): void => {
+      rateLimitWaiters = Math.max(0, rateLimitWaiters + (waiting ? 1 : -1))
+      emitProgress()
+    }
+
     // 没有待处理文件时直接完成：不报中间进度（否则无变更的"更新索引"也会
     // 显示一次 99% 的伪进度，看起来像重新处理了一遍）。
     if (filesToChunkify.length === 0 && !truncate) {
       return { permanentFailedPaths: [], chunkifyFailedPaths: [] }
     }
 
-    onProgress?.({
-      completedChunks: 0,
-      totalChunks: 0,
-      totalFiles: totalFilesCount,
-      completedFiles: completedFilesCount,
-    })
+    emitProgress()
 
     if (filesToChunkify.length === 0) {
       return { permanentFailedPaths: [], chunkifyFailedPaths: [] }
@@ -701,13 +724,7 @@ export class VectorManager {
         )
       }
       activeFilePaths.add(file.path)
-      onProgress?.({
-        completedChunks: 0,
-        totalChunks: 0,
-        totalFiles: totalFilesCount,
-        completedFiles: completedFilesCount,
-        currentFile: file.path,
-      })
+      emitProgress({ currentFile: file.path })
 
       try {
         const chunks = await this.chunkifyFile(
@@ -718,6 +735,9 @@ export class VectorManager {
           config.settings ?? null,
           options.onPdfTextExtracted,
         )
+        // The chunk count is only known after chunkifying: fold it into the
+        // discovered total so the progress ratio reflects real chunks.
+        totalChunksDiscovered += chunks.length
         const { fileWrite, permanentFailed } =
           await this.buildVectorStoreFileWrite(
             file,
@@ -726,7 +746,9 @@ export class VectorManager {
             embeddingModel,
             signal,
             config.embeddingConcurrency,
+            notifyRateLimitWaiting,
           )
+        completedChunksCount += fileWrite.chunks.length
 
         if (permanentFailed) {
           permanentFailedPaths.push(file.path)
@@ -750,13 +772,7 @@ export class VectorManager {
       } finally {
         activeFilePaths.delete(file.path)
         completedFilesCount += 1
-        onProgress?.({
-          completedChunks: 0,
-          totalChunks: 0,
-          totalFiles: totalFilesCount,
-          completedFiles: completedFilesCount,
-          currentFile: file.path,
-        })
+        emitProgress({ currentFile: file.path })
       }
     }
 
@@ -843,11 +859,13 @@ export class VectorManager {
     embeddingModel: EmbeddingModelClient,
     signal?: AbortSignal,
     maxConcurrency?: number,
+    onRateLimitWaiting?: (waiting: boolean) => void,
   ): Promise<{ fileWrite: VectorFileWrite; permanentFailed: boolean }> {
     const { chunks: embeddedChunks, permanentFailed } =
       await this.embedVectorStoreChunks(chunks, embeddingModel, {
         signal,
         maxConcurrency,
+        onRateLimitWaiting,
       })
 
     this.assertUniqueChunkIds(file.path, embeddedChunks)
@@ -868,6 +886,7 @@ export class VectorManager {
     options: {
       signal?: AbortSignal
       maxConcurrency?: number
+      onRateLimitWaiting?: (waiting: boolean) => void
     },
   ): Promise<{ chunks: VectorChunkWrite[]; permanentFailed: boolean }> {
     const { signal } = options
@@ -888,6 +907,15 @@ export class VectorManager {
       chunk: DesiredChunk,
     ): Promise<VectorChunkWrite | null> => {
       if (signal?.aborted) return null
+      // Per-call wait state: each embedOne reports at most one transition
+      // into and out of "waiting for retry", so concurrent workers'
+      // notifications never double-count in the reconcile-level counter.
+      let waitingForRetry = false
+      const notifyWaiting = (waiting: boolean): void => {
+        if (waiting === waitingForRetry) return
+        waitingForRetry = waiting
+        options.onRateLimitWaiting?.(waiting)
+      }
       try {
         const embedding = await backOff(
           async () => {
@@ -911,10 +939,16 @@ export class VectorManager {
             maxDelay: 30000,
             retry: (error) => {
               if (signal?.aborted) return false
-              return isTransientRagIndexError(error)
+              const shouldRetry = isTransientRagIndexError(error)
+              // A transient retry (429 / 5xx / network) parks this worker in
+              // the backoff wait: surface it so the UI can say "waiting for
+              // rate limit to reset" instead of sitting silently at 0%.
+              notifyWaiting(shouldRetry)
+              return shouldRetry
             },
           },
         )
+        notifyWaiting(false)
 
         return {
           chunkId: `${chunk.path}#${chunk.metadata.page ?? ''}:${chunk.metadata.startLine}:${chunk.metadata.endLine}:${chunk.contentHash}`,
@@ -938,6 +972,7 @@ export class VectorManager {
         if (error instanceof DOMException && error.name === 'AbortError') {
           throw error
         }
+        notifyWaiting(false)
         failedChunks.push({
           error: error instanceof Error ? error.message : 'Unknown error',
           kind: classifyRagIndexError(error),
