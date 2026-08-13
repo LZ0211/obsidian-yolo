@@ -412,6 +412,129 @@ describe('McpManager self-heal', () => {
     expect(after.status).toBe(McpServerStatus.Connected)
   })
 
+  it('keeps a user-edited URL when settings change during the reconnect window', async () => {
+    const manager = buildManager()
+    const getHttpUrl = (config: McpServerConfig): string =>
+      config.parameters.transport === 'http' ? config.parameters.url : ''
+    const originalUrl = getHttpUrl(httpServerConfig())
+    const editedUrl = 'https://example.com/edited-mcp'
+
+    await manager.handleSettingsUpdate({
+      mcp: { servers: [httpServerConfig()], builtinToolOptions: {} },
+      webSearch: {
+        providers: [],
+        defaultProviderId: undefined,
+        common: {
+          resultSize: 8,
+          searchTimeoutMs: 15000,
+          scrapeTimeoutMs: 20000,
+        },
+      },
+    } as never)
+
+    const firstClient = fakeClientInstances[0]
+    // Server-side close kicks off the auto-reconnect with the OLD config.
+    firstClient.emitServerClose()
+
+    // While the reconnect is in flight, the user edits the server URL.
+    await manager.handleSettingsUpdate({
+      mcp: {
+        servers: [
+          {
+            ...httpServerConfig(),
+            parameters: { transport: 'http', url: editedUrl },
+          },
+        ],
+        builtinToolOptions: {},
+      },
+      webSearch: {
+        providers: [],
+        defaultProviderId: undefined,
+        common: {
+          resultSize: 8,
+          searchTimeoutMs: 15000,
+          scrapeTimeoutMs: 20000,
+        },
+      },
+    } as never)
+
+    await flush()
+    await flush()
+    await flush()
+    await flush()
+
+    // The reconnected state must reflect the user's NEW config — the stale
+    // snapshot captured at close time must never be written back.
+    const state = connectedServer(manager, 'demo')
+    expect(
+      state.config.parameters.transport === 'http'
+        ? state.config.parameters.url
+        : '',
+    ).toBe(editedUrl)
+    expect(
+      state.config.parameters.transport === 'http'
+        ? state.config.parameters.url
+        : '',
+    ).not.toBe(originalUrl)
+  })
+
+  it('discards the reconnect result when settings were changed without the settings-update path', async () => {
+    const manager = buildManager()
+    const editedUrl = 'https://example.com/edited-mcp'
+
+    await manager.handleSettingsUpdate({
+      mcp: { servers: [httpServerConfig()], builtinToolOptions: {} },
+      webSearch: {
+        providers: [],
+        defaultProviderId: undefined,
+        common: {
+          resultSize: 8,
+          searchTimeoutMs: 15000,
+          scrapeTimeoutMs: 20000,
+        },
+      },
+    } as never)
+
+    const firstClient = fakeClientInstances[0]
+    firstClient.emitServerClose()
+
+    // Simulate the settings reference changing mid-reconnect (e.g. a
+    // getSettingsSnapshot consumer mutated it) without handleSettingsUpdate
+    // running — the abort path never fires, so only the write-back diff can
+    // stop the stale config from being persisted.
+    ;(manager as unknown as { settings: unknown }).settings = {
+      mcp: {
+        servers: [
+          {
+            ...httpServerConfig(),
+            parameters: { transport: 'http', url: editedUrl },
+          },
+        ],
+        builtinToolOptions: {},
+      },
+      webSearch: {
+        providers: [],
+        defaultProviderId: undefined,
+        common: {
+          resultSize: 8,
+          searchTimeoutMs: 15000,
+          scrapeTimeoutMs: 20000,
+        },
+      },
+    }
+
+    await flush()
+    await flush()
+    await flush()
+
+    // The reconnect result (old URL) must not be written back; without the
+    // diff guard the manager would land on Connected with the stale URL.
+    const state = manager
+      .getServers()
+      .find((s: McpServerState) => s.name === 'demo')
+    expect(state?.status).not.toBe(McpServerStatus.Connected)
+  })
+
   it('skips reconnect when a plain JSON-RPC -32000 arrives but the transport is still live', async () => {
     const manager = buildManager()
 

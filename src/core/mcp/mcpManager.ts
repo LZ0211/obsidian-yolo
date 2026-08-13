@@ -1502,7 +1502,27 @@ export class McpManager {
 
         // Settings may have toggled this server off mid-reconnect.
         const latest = this.servers.find((s) => s.name === name)
-        if (!latest || !latest.config.enabled) {
+        // ...or the user may have edited the server config (URL/command/args/
+        // auth) while the reconnect was in flight. handleSettingsUpdate aborts
+        // this attempt in that flow, but the settings reference can change
+        // through other paths, so re-verify the captured snapshot is still
+        // what the current settings describe. If it is not, `reconnected` was
+        // computed against a stale config — writing it back would clobber the
+        // user's edit, so discard it and let the settings-update path own the
+        // probe of the new config.
+        const settingsConfig = this.settings.mcp.servers.find(
+          (s) => s.id === name,
+        )
+        const configStillCurrent =
+          settingsConfig !== undefined &&
+          settingsConfig.enabled === current.config.enabled &&
+          settingsConfig.auth === current.config.auth &&
+          isEqual(settingsConfig.parameters, current.config.parameters)
+        if (
+          !latest ||
+          !latest.config.enabled ||
+          !configStillCurrent
+        ) {
           if (reconnected.status === McpServerStatus.Connected) {
             void this.closeClient(reconnected.client).catch(() => {
               /* best-effort teardown of orphan client */
