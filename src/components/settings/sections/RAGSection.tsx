@@ -1,4 +1,4 @@
-import { App, Notice, Platform } from 'obsidian'
+import { App, Notice } from 'obsidian'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { RECOMMENDED_MODELS_FOR_EMBEDDING } from '../../../constants'
@@ -34,6 +34,7 @@ import { ExcludedFilesModal } from '../modals/ExcludedFilesModal'
 import { IncludedFilesModal } from '../modals/IncludedFilesModal'
 
 const RAG_UPDATE_ERROR = 'Failed to update RAG settings.'
+
 
 type RAGSectionProps = {
   app: App
@@ -684,41 +685,6 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
     return true
   }, [ragBackendStatus, refreshRagBackendStatus])
 
-  /**
-   * 碎片整理（仅移动端分片后端）: `Platform.isMobile` 是 sharded store 的
-   * 门控——VectorManager 不暴露 store 种类，且 VectorStoreFactory 要到
-   * 移动端分发接线（Task 6）才会真正选择分片后端，因此目前没有更干净的
-   * kind 检查可用（Task 5 决策，见计划）。
-   */
-  const runShardedVacuum = useCallback(() => {
-    setIsVacuumingRagBackend(true)
-    void (async () => {
-      try {
-        const manager = await plugin.tryGetVectorManager()
-        if (!manager) {
-          throw new Error(t('settings.rag.vacuumFailed', '索引 Vacuum 失败。'))
-        }
-        const result = await manager.vacuum()
-        new Notice(
-          t(
-            'settings.rag.vacuumDone',
-            '碎片整理完成：清理 {files} 个文件',
-          ).replace('{files}', String(result.removedFiles)),
-        )
-        await refreshRagBackendStatus()
-      } catch (error: unknown) {
-        console.error('Failed to compact sharded RAG backend', error)
-        new Notice(
-          error instanceof Error
-            ? error.message
-            : t('settings.rag.vacuumFailed', '索引 Vacuum 失败。'),
-        )
-      } finally {
-        setIsVacuumingRagBackend(false)
-      }
-    })()
-  }, [plugin, refreshRagBackendStatus, t])
-
   const runRagVacuum = useCallback(() => {
     setIsVacuumingRagBackend(true)
     void (async () => {
@@ -1196,21 +1162,6 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                       void ensureBackendChecked().then(() => runRagVacuum())
                     }}
                   />
-                  {Platform.isMobile && (
-                    <ObsidianButton
-                      text={t('settings.rag.vacuumButton', '碎片整理')}
-                      disabled={
-                        isIndexing ||
-                        !canRunIndexMaintenance ||
-                        isVacuumingRagBackend
-                      }
-                      onClick={() => {
-                        void ensureBackendChecked().then(() =>
-                          runShardedVacuum(),
-                        )
-                      }}
-                    />
-                  )}
                   {isIndexing && (
                     <ObsidianButton
                       text={t('settings.rag.cancelIndex', '暂停')}
@@ -1621,10 +1572,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                   </ObsidianSetting>
 
                   <ObsidianSetting
-                    name={t(
-                      'settings.rag.autoUpdateInterval',
-                      '最小间隔(小时)',
-                    )}
+                    name={t('settings.rag.autoUpdateInterval', '最小间隔(小时)')}
                     desc={t(
                       'settings.rag.autoUpdateIntervalDesc',
                       '到达该间隔才会触发自动更新；用于避免频繁重建。',

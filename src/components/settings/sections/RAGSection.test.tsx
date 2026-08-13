@@ -10,7 +10,6 @@ const mockObsidianButton = jest.fn()
 
 jest.mock('obsidian', () => ({
   Notice: jest.fn(),
-  Platform: { isMobile: true },
 }))
 
 jest.mock('../../../contexts/settings-context', () => ({
@@ -99,8 +98,6 @@ jest.mock('../modals/ExcludedFilesModal', () => ({
 jest.mock('../modals/IncludedFilesModal', () => ({
   IncludedFilesModal: class {},
 }))
-
-import { Notice, Platform } from 'obsidian'
 
 import type { RetrievalInspectStatus } from '../../../core/rag/retrievalTraceTypes'
 
@@ -345,8 +342,6 @@ describe('RAG log settings entry points', () => {
     mockObsidianDropdown.mockClear()
     mockObsidianToggle.mockClear()
     mockObsidianButton.mockClear()
-    ;(Notice as unknown as jest.Mock).mockClear()
-    Platform.isMobile = true
   })
 
   it('treats the ribbon icon as visible by default and respects saved off state', () => {
@@ -489,50 +484,6 @@ describe('RAG log settings entry points', () => {
         operationKey: 'rag:update_changed_sources',
       }),
     )
-  })
-
-  it('runs the sharded compact action through VectorManager.vacuum and notifies with the result', async () => {
-    const vacuum = jest
-      .fn()
-      .mockResolvedValue({ removedFiles: 3, removedChunks: 7 })
-    const shardedPlugin = {
-      ...plugin,
-      getVectorBackendStatus: jest.fn().mockResolvedValue({
-        backend: 'sqlite',
-        readiness: 'ready',
-        rebuildRequired: false,
-      }),
-      tryGetVectorManager: jest.fn().mockResolvedValue({ vacuum }),
-    }
-
-    renderToStaticMarkup(
-      <RAGSection app={{} as never} plugin={shardedPlugin as never} />,
-    )
-
-    const compactButton = mockObsidianButton.mock.calls
-      .map(([props]) => props as { text?: string; onClick?: () => void })
-      .find((props) => props.text === '碎片整理')
-    expect(compactButton).toBeDefined()
-    compactButton?.onClick?.()
-    await new Promise<void>((resolve) => setImmediate(resolve))
-    await new Promise<void>((resolve) => setImmediate(resolve))
-
-    expect(shardedPlugin.tryGetVectorManager).toHaveBeenCalled()
-    expect(vacuum).toHaveBeenCalled()
-    expect(Notice).toHaveBeenCalledWith('碎片整理完成：清理 3 个文件')
-  })
-
-  it('hides the sharded compact button on desktop (Platform.isMobile false)', () => {
-    Platform.isMobile = false
-    const markup = renderToStaticMarkup(
-      <RAGSection app={{} as never} plugin={plugin as never} />,
-    )
-    expect(markup).not.toContain('碎片整理')
-    expect(
-      mockObsidianButton.mock.calls.some(
-        ([props]) => (props as { text?: string }).text === '碎片整理',
-      ),
-    ).toBe(false)
   })
 
   it('does not render legacy retrieval strategy toggles', () => {

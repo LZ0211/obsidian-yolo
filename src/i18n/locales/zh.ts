@@ -1525,8 +1525,6 @@ export const zh: TranslationKeys = {
       manageEmbeddingDatabase: '管理嵌入数据库',
       manage: '管理',
       rebuildIndex: '重建索引',
-      vacuumButton: '碎片整理',
-      vacuumDone: '碎片整理完成：清理 {files} 个文件',
       rebuildFromScratch: '从头重建',
       rebuildFromScratchConfirm:
         '将清空当前嵌入模型已有的全部向量并重新索引整个知识库，可能产生大量 embedding 调用。继续？',

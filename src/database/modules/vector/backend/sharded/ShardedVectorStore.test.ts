@@ -362,6 +362,23 @@ class FailVacuumSecondBatchAdapter extends SqliteSyncVaultAdapter {
   }
 }
 
+/**
+ * Adapter double that rejects a DIRECTORY rename whose target already
+ * exists — mirroring strict mobile adapters (rename onto an existing dir is
+ * unreliable). File renames (e.g. the staged manifest publish, which
+ * legitimately overwrites manifest.json) pass through. Without the vacuum
+ * fix that clears stale dirs before renaming, a leftover dir from a crashed
+ * run at a fresh shard id would fail the commit.
+ */
+class StrictRenameVaultAdapter extends SqliteSyncVaultAdapter {
+  override rename(oldValue: string, newValue: string): Promise<void> {
+    return this.list(newValue).then(
+      () => Promise.reject(new Error('rename target exists')),
+      () => super.rename(oldValue, newValue),
+    )
+  }
+}
+
 const BASE_DIR = '/vault/.yolo'
 
 const testNamespace: VectorNamespace = {
@@ -2248,6 +2265,46 @@ describe('ShardedVectorStore vacuum', () => {
         `${getShardedModelRoot(BASE_DIR, WRITE_NS_ID)}/shards`,
       )
       expect(shardsFinal.folders).toEqual(['000003', '000004'])
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('clears a stale dir left by a crashed vacuum before renaming a fresh shard id onto it', async () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'sharded-vacuum-stale-'),
+    )
+    try {
+      const adapter = new StrictRenameVaultAdapter(tempRoot)
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+      })
+
+      // Simulate a crashed earlier vacuum: a stale dir at the id the next
+      // vacuum will reuse (old max 000001 → fresh id 000002). A strict
+      // adapter rejects the commit's rename onto it unless vacuum clears it.
+      const staleRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000002')
+      await adapter.writeBinary(`${staleRoot}/vectors.f32`, new ArrayBuffer(4))
+      expect(await adapter.exists(staleRoot)).toBe(true)
+
+      expect(await store.vacuum(writeNamespace)).toEqual({
+        removedFiles: 0,
+        removedChunks: 0,
+      })
+      const manifest = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifest.shards.map((shard) => shard.id)).toEqual(['000002'])
+      // The rebuilt artifacts replaced the stale junk byte-for-byte.
+      expect(
+        (await adapter.readBinary(`${staleRoot}/vectors.f32`)).byteLength,
+      ).toBe(writeNamespace.dimension * 4)
+      const search = await store.search(writeNamespace, query, { topK: 10 })
+      expect(search.hits.map((hit) => hit.chunkId)).toEqual(['c1'])
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true })
     }

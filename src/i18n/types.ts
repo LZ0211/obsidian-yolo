@@ -1307,8 +1307,6 @@ export type TranslationKeys = {
       manageEmbeddingDatabase: string
       manage: string
       rebuildIndex: string
-      vacuumButton?: string
-      vacuumDone?: string
       rebuildFromScratch?: string
       rebuildFromScratchConfirm?: string
       continueIndex?: string

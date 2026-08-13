@@ -730,10 +730,19 @@ export class ShardedVectorStore implements VectorStore {
         // ids and publish the staged manifest. Any failure up to here leaves
         // the old manifest + old dirs fully intact and searchable.
         for (let i = 0; i < builtShards.length; i += 1) {
-          await this.adapter.rename(
-            tempRoots[i],
-            getShardedShardRoot(this.baseDir, namespaceId, builtShards[i].id),
+          const finalRoot = getShardedShardRoot(
+            this.baseDir,
+            namespaceId,
+            builtShards[i].id,
           )
+          // A dir with a fresh id can only be stale garbage from a crashed
+          // earlier vacuum (ids continue past the old manifest's max, so the
+          // old manifest never references it). Remove it before renaming —
+          // rename onto an existing dir is unreliable on mobile adapters.
+          if (await this.adapter.exists(finalRoot)) {
+            await this.adapter.remove(finalRoot, { recursive: true })
+          }
+          await this.adapter.rename(tempRoots[i], finalRoot)
         }
         const nextManifest: ShardedManifest = {
           schemaVersion: manifest.schemaVersion,
