@@ -200,6 +200,108 @@ describe('RagIndexService', () => {
     })
   })
 
+  describe('cross-window index lock', () => {
+    const vaultName = 'Test Vault'
+    const makeService = (updateVaultIndex: jest.Mock) =>
+      new RagIndexService({
+        app: {
+          vault: { getName: () => vaultName },
+          loadLocalStorage: jest.fn().mockReturnValue(null),
+          saveLocalStorage: jest.fn(),
+        } as never,
+        getRagEngine: jest.fn().mockResolvedValue({ updateVaultIndex }),
+        activityRegistry: new BackgroundActivityRegistry(),
+        isRagEnabled: () => true,
+        t: (_key, fallback) => fallback ?? '',
+      })
+    const runOptions = {
+      mode: 'sync' as const,
+      scope: { kind: 'all' as const },
+      trigger: 'manual' as const,
+      retryPolicy: 'none' as const,
+    }
+
+    afterEach(() => {
+      delete (globalThis as { navigator?: unknown }).navigator
+    })
+
+    it('acquires the vault-scoped web lock and runs the reconcile inside it', async () => {
+      const updateVaultIndex = jest
+        .fn()
+        .mockResolvedValue({ permanentFailedPaths: [], chunkifyFailedPaths: [] })
+      const request = jest.fn(
+        (
+          _name: string,
+          _options: unknown,
+          callback: () => Promise<unknown>,
+        ) => callback(),
+      )
+      ;(globalThis as { navigator?: unknown }).navigator = {
+        locks: {
+          request,
+          query: jest
+            .fn()
+            .mockResolvedValue({ held: [], pending: [] }),
+        },
+      }
+      const service = makeService(updateVaultIndex)
+      await service.initialize()
+
+      const result = await service.runIndex(runOptions)
+
+      expect(request).toHaveBeenCalledWith(
+        `yolo-rag-index:${vaultName}`,
+        { mode: 'exclusive' },
+        expect.any(Function),
+      )
+      expect(updateVaultIndex).toHaveBeenCalledTimes(1)
+      expect(result).toEqual({
+        permanentFailedPaths: [],
+        chunkifyFailedPaths: [],
+      })
+      expect(service.getSnapshot()).toMatchObject({ status: 'completed' })
+    })
+
+    it('rejects with the busy error when another window holds the index lock', async () => {
+      const request = jest.fn()
+      ;(globalThis as { navigator?: unknown }).navigator = {
+        locks: {
+          request,
+          query: jest.fn().mockResolvedValue({
+            held: [{ name: `yolo-rag-index:${vaultName}` }],
+            pending: [],
+          }),
+        },
+      }
+      const updateVaultIndex = jest
+        .fn()
+        .mockResolvedValue({ permanentFailedPaths: [], chunkifyFailedPaths: [] })
+      const service = makeService(updateVaultIndex)
+      await service.initialize()
+
+      await expect(service.runIndex(runOptions)).rejects.toBeInstanceOf(
+        RagIndexBusyError,
+      )
+      expect(request).not.toHaveBeenCalled()
+      expect(updateVaultIndex).not.toHaveBeenCalled()
+    })
+
+    it('falls back to unguarded runs when navigator.locks is unavailable', async () => {
+      const updateVaultIndex = jest
+        .fn()
+        .mockResolvedValue({ permanentFailedPaths: [], chunkifyFailedPaths: [] })
+      const service = makeService(updateVaultIndex)
+      await service.initialize()
+
+      await expect(service.runIndex(runOptions)).resolves.toEqual({
+        permanentFailedPaths: [],
+        chunkifyFailedPaths: [],
+      })
+      expect(updateVaultIndex).toHaveBeenCalledTimes(1)
+      expect(service.getSnapshot()).toMatchObject({ status: 'completed' })
+    })
+  })
+
   it('schedules retry for transient manual rebuild failures', async () => {
     jest.useFakeTimers()
     const updateVaultIndex = jest

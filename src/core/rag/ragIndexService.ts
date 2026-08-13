@@ -146,6 +146,13 @@ export class RagIndexBusyError extends Error {
   }
 }
 
+/**
+ * Cross-window index lock name. Scoped by vault identity so two different
+ * vaults never contend; mirrors the scheduler's
+ * `yolo-scheduled-tasks-leader:<rootDir>` pattern.
+ */
+const INDEX_LOCK_PREFIX = 'yolo-rag-index:'
+
 export class RagIndexService {
   private readonly app: App
   private readonly getRagEngine: () => Promise<RAGEngine>
@@ -297,6 +304,37 @@ export class RagIndexService {
     attempt: 'new' | 'automatic-retry' = 'new',
   ): Promise<ReconcileResult> {
     await this.initialize()
+    if (this.currentAbortController) {
+      throw new RagIndexBusyError()
+    }
+    if (this.hasWebLocks()) {
+      // Cross-window single-writer: another Obsidian window may already be
+      // indexing this vault (SQLite namespace is shared). Reject fast with the
+      // existing busy error — callers already handle RagIndexBusyError.
+      const lockName = this.getIndexLockName()
+      if (await this.isIndexLockHeld(lockName)) {
+        throw new RagIndexBusyError()
+      }
+      return navigator.locks.request(
+        lockName,
+        { mode: 'exclusive' },
+        () => this.runIndexLocked(options, attempt),
+      )
+    }
+    // No Web Locks (older runtimes, Jest node env): instance-scoped mutual
+    // exclusion via `currentAbortController` is the only guard.
+    return this.runIndexLocked(options, attempt)
+  }
+
+  /**
+   * Runs the index reconcile while holding the caller's exclusive lock (or
+   * unguarded when Web Locks are unavailable). Re-checks the instance-scoped
+   * guard because a local run can start while lock acquisition is in flight.
+   */
+  private async runIndexLocked(
+    options: RagIndexRunOptions,
+    attempt: 'new' | 'automatic-retry',
+  ): Promise<ReconcileResult> {
     if (this.currentAbortController) {
       throw new RagIndexBusyError()
     }
@@ -511,6 +549,24 @@ export class RagIndexService {
     this.currentAbortController = null
     this.subscribers.clear()
     this.activityRegistry.remove(RETRY_ACTIVITY_ID)
+  }
+
+  private hasWebLocks(): boolean {
+    return typeof navigator !== 'undefined' && 'locks' in navigator
+  }
+
+  private getIndexLockName(): string {
+    const vaultName = this.app.vault?.getName?.()
+    return `${INDEX_LOCK_PREFIX}${vaultName || 'default'}`
+  }
+
+  private async isIndexLockHeld(lockName: string): Promise<boolean> {
+    const locks = navigator.locks
+    if (typeof locks.query !== 'function') {
+      return false
+    }
+    const state = await locks.query()
+    return (state.held ?? []).some((lock) => lock.name === lockName)
   }
 
   private async persistSnapshot(): Promise<void> {
