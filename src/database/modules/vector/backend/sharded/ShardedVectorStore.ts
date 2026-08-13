@@ -621,12 +621,53 @@ export class ShardedVectorStore implements VectorStore {
     }
   }
 
-  async clearNamespace(_namespace: VectorNamespace): Promise<void> {
-    throw new Error('not implemented yet')
+  /**
+   * Rebuild semantics ("truncate"): wipe the namespace's shard dirs and its
+   * manifest entry so the next reconcile re-indexes from scratch. Runs under
+   * the namespace write lease so a concurrent search never observes a
+   * half-cleared namespace; a search in between fails with
+   * `rebuild_required` instead of reading shard dirs that no longer exist.
+   */
+  async clearNamespace(namespace: VectorNamespace): Promise<void> {
+    await this.clearNamespaceById(
+      validateShardedNamespaceId(vectorNamespaceId(namespace)),
+    )
   }
 
+  /**
+   * Body of `clearNamespace` for a concrete namespace id (same lease rules as
+   * `dropNamespaceById`, plus the manifest reset the rebuild path needs).
+   */
+  private async clearNamespaceById(namespaceId: string): Promise<void> {
+    this.assertOpen()
+    this.assertNotClosing()
+    const release = await this.acquireNamespaceWriteLease(namespaceId)
+    try {
+      const modelRoot = getShardedModelRoot(this.baseDir, namespaceId)
+      if (await this.adapter.exists(modelRoot)) {
+        await this.adapter.remove(modelRoot, { recursive: true })
+      }
+      const manifest = await this.readManifest()
+      if (manifest != null && manifest.activeModel === namespaceId) {
+        // Drop the manifest too: the rebuild re-creates it on the first
+        // write, and leaving a manifest that references removed shards would
+        // make search read empty/missing shard dirs instead of failing
+        // cleanly with rebuild_required.
+        await this.adapter.remove(getShardedManifestPath(this.baseDir))
+      }
+    } finally {
+      release()
+    }
+  }
+
+  /**
+   * No-op: the sharded backend persists every write to the vault immediately
+   * (manifest publish + shard artifacts are durable by construction), so
+   * there is no in-memory state to flush — unlike the desktop store, which
+   * keeps open sqlite state and is asked to save on base-dir changes.
+   */
   async save(_namespace?: VectorNamespace): Promise<void> {
-    throw new Error('not implemented yet')
+    return
   }
 
   /**
@@ -950,10 +991,35 @@ export class ShardedVectorStore implements VectorStore {
     return shard
   }
 
+  /**
+   * Status for a concrete namespace id (as listed by `listNamespaces()` —
+   * callers holding only the id cannot construct a `VectorNamespace`).
+   * Derives from the manifest: the namespace is ready when it is the
+   * manifest's active model and has at least one ready shard with vectors;
+   * otherwise the index is missing and a rebuild is required.
+   */
   async getStatusByNamespaceId(
-    _namespaceId: string,
+    namespaceId: string,
   ): Promise<VectorBackendStatus> {
-    throw new Error('not implemented yet')
+    this.assertOpen()
+    this.assertNotClosing()
+    validateShardedNamespaceId(namespaceId)
+    const manifest = await this.readManifest()
+    const hasVectors =
+      manifest != null &&
+      manifest.activeModel === namespaceId &&
+      manifest.shards.some(
+        (shard) => shard.state === 'ready' && shard.vectorCount > 0,
+      )
+    return {
+      backend: 'sqlite',
+      readiness: 'ready',
+      rebuildRequired: !hasVectors,
+      storagePath: getShardedModelRoot(this.baseDir, namespaceId),
+      executionMode: 'plugin-host',
+      persistenceMode: 'native-sqlite-file',
+      recoveryAction: hasVectors ? 'none' : 'rebuild_index',
+    }
   }
 
   async search(
@@ -1367,23 +1433,111 @@ export class ShardedVectorStore implements VectorStore {
     }
   }
 
+  /**
+   * No persistent query-embedding cache on mobile: always reports a miss so
+   * the caller embeds the query (correctness first — the cache is an
+   * optimization, and ragEngine awaits this unguarded on every query).
+   * Session-level dedup still happens via ragEngine's in-memory
+   * QueryEmbeddingMemoryCache.
+   */
   async getQueryEmbedding(
     _namespace: VectorNamespace,
     _queryHash: string,
   ): Promise<number[] | null> {
-    throw new Error('not implemented yet')
+    return null
   }
 
+  /**
+   * No-op, mirroring `getQueryEmbedding`: query embeddings are not persisted
+   * by the sharded backend. Dropped silently — never throw, because ragEngine
+   * awaits this unguarded after every embedded query.
+   */
   async putQueryEmbedding(
     _namespace: VectorNamespace,
     _queryHash: string,
     _embedding: number[],
   ): Promise<void> {
-    throw new Error('not implemented yet')
+    return
   }
 
-  async getStats(_namespace?: VectorNamespace): Promise<VectorBackendStats> {
-    throw new Error('not implemented yet')
+  /**
+   * Backend stats for the DB-management surfaces. Without a namespace the
+   * aggregate placeholder mirrors the desktop store (real namespace count,
+   * zeroed file/chunk counters); per-namespace counts are real: live
+   * (tombstone = 0) chunks and distinct files across the manifest's ready
+   * shards, with `namespaceCount` = ready shard count and the model root as
+   * storage path.
+   */
+  async getStats(namespace?: VectorNamespace): Promise<VectorBackendStats> {
+    this.assertOpen()
+    this.assertNotClosing()
+    if (namespace == null) {
+      const namespaces = await this.listNamespaces()
+      return {
+        backend: 'sqlite',
+        storagePath: getShardedIndexRoot(this.baseDir),
+        namespaceCount: namespaces.length,
+        fileCount: 0,
+        chunkCount: 0,
+        executionMode: 'plugin-host',
+        persistenceMode: 'native-sqlite-file',
+        usesWholeDatabaseSnapshot: false,
+        ready: true,
+      }
+    }
+    const namespaceId = validateShardedNamespaceId(vectorNamespaceId(namespace))
+    const release = await this.acquireNamespaceReadLease(namespaceId)
+    try {
+      const manifest = await this.readManifest()
+      if (manifest == null || manifest.activeModel !== namespaceId) {
+        return {
+          backend: 'sqlite',
+          storagePath: getShardedModelRoot(this.baseDir, namespaceId),
+          namespaceCount: 0,
+          fileCount: 0,
+          chunkCount: 0,
+          executionMode: 'plugin-host',
+          persistenceMode: 'native-sqlite-file',
+          usesWholeDatabaseSnapshot: false,
+          ready: false,
+          errorCode: 'rebuild_required',
+        }
+      }
+      const readyShards = manifest.shards.filter(
+        (shard) => shard.state === 'ready' && shard.vectorCount > 0,
+      )
+      let chunkCount = 0
+      const files = new Set<string>()
+      for (const shard of readyShards) {
+        const runtime = await this.openShardRuntime(namespaceId, shard.id)
+        try {
+          chunkCount +=
+            runtime.queryOne<{ n: number }>(
+              'select count(*) as n from chunks where tombstone = 0',
+            )?.n ?? 0
+          for (const row of runtime.query<{ file_path: string }>(
+            'select distinct file_path from chunks where tombstone = 0',
+          )) {
+            files.add(row.file_path)
+          }
+        } finally {
+          await this.closeShardRuntime(runtime)
+        }
+      }
+      return {
+        backend: 'sqlite',
+        storagePath: getShardedModelRoot(this.baseDir, namespaceId),
+        namespaceCount: readyShards.length,
+        fileCount: files.size,
+        chunkCount,
+        executionMode: 'plugin-host',
+        persistenceMode: 'native-sqlite-file',
+        usesWholeDatabaseSnapshot: false,
+        ready: true,
+      }
+    } finally {
+      release()
+    }
   }
 
   async purgeNamespacesByPrefixForPrivacy(_input: {

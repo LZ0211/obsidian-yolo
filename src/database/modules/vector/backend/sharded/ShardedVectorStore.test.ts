@@ -330,8 +330,14 @@ class SqliteSyncVaultAdapter extends InMemoryVaultAdapter {
     value: string,
     options?: { recursive?: boolean },
   ): Promise<void> {
-    const dbPath = path.join(this.realPath(value), 'chunks.sqlite')
-    if (fs.existsSync(dbPath)) fs.rmSync(dbPath)
+    if (options?.recursive) {
+      // Whole-tree removal (e.g. clearNamespace drops the model root, or
+      // vacuum drops an old shard dir): every real artifact under it goes.
+      fs.rmSync(this.realPath(value), { recursive: true, force: true })
+    } else {
+      const dbPath = path.join(this.realPath(value), 'chunks.sqlite')
+      if (fs.existsSync(dbPath)) fs.rmSync(dbPath)
+    }
     return super.remove(value, options)
   }
 }
@@ -606,16 +612,10 @@ describe('ShardedVectorStore skeleton', () => {
     await expect(store.close()).resolves.toBeUndefined()
   })
 
-  it('skeleton methods not yet implemented throw "not implemented yet"', async () => {
+  it('methods without a production caller yet throw "not implemented yet"', async () => {
     const store = makeStore()
     await store.open()
     const unimplemented: Array<Promise<unknown>> = [
-      store.clearNamespace(testNamespace),
-      store.getStats(testNamespace),
-      store.getStatusByNamespaceId?.('m1-d256'),
-      store.getQueryEmbedding?.(testNamespace, 'hash'),
-      store.putQueryEmbedding?.(testNamespace, 'hash', [1, 0, 0, 0]),
-      store.save?.(testNamespace),
       store.getStoredFileVectors?.(testNamespace, ['a.md']),
       store.purgeNamespacesByPrefixForPrivacy?.({
         namespaceIdPrefix: 'm1',
@@ -1189,6 +1189,173 @@ describe('ShardedVectorStore write path', () => {
           chunks: [chunk('c9', 'beta', [1, 0, 0, 0], 1, 'notes/b.md')],
         }),
       ).rejects.toMatchObject({ code: 'namespace_mismatch' })
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('ShardedVectorStore production-surface methods', () => {
+  jest.setTimeout(30_000)
+
+  it('query-embedding cache is a persistent miss and a silent no-op write', async () => {
+    const store = makeStore()
+    await store.open()
+    await expect(
+      store.getQueryEmbedding(testNamespace, 'hash-1'),
+    ).resolves.toBeNull()
+    await expect(
+      store.putQueryEmbedding(testNamespace, 'hash-1', [1, 0, 0, 0]),
+    ).resolves.toBeUndefined()
+    // Second read is still a miss: nothing was persisted.
+    await expect(
+      store.getQueryEmbedding(testNamespace, 'hash-1'),
+    ).resolves.toBeNull()
+  })
+
+  it('save is a no-op (the backend persists continuously)', async () => {
+    const store = makeStore()
+    await store.open()
+    await expect(store.save(testNamespace)).resolves.toBeUndefined()
+    await expect(store.save()).resolves.toBeUndefined()
+  })
+
+  it('getStatusByNamespaceId derives readiness from the manifest', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-status-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+
+      const before = await store.getStatusByNamespaceId(WRITE_NS_ID)
+      expect(before).toMatchObject({
+        backend: 'sqlite',
+        readiness: 'ready',
+        rebuildRequired: true,
+        storagePath: getShardedModelRoot(BASE_DIR, WRITE_NS_ID),
+        recoveryAction: 'rebuild_index',
+      })
+
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+      })
+
+      const after = await store.getStatusByNamespaceId(WRITE_NS_ID)
+      expect(after).toMatchObject({
+        backend: 'sqlite',
+        readiness: 'ready',
+        rebuildRequired: false,
+        storagePath: getShardedModelRoot(BASE_DIR, WRITE_NS_ID),
+        recoveryAction: 'none',
+      })
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('clearNamespace wipes shards and the manifest; a rewrite re-indexes from scratch', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-clear-'))
+    // Real-FS-synced adapter: clearNamespace recursively removes the model
+    // root, and its node:sqlite chunks.sqlite must go with it — production
+    // sql.js writes through the vault adapter, so the real file moves with
+    // the virtual tree.
+    const adapter = new SqliteSyncVaultAdapter(tempRoot)
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+      })
+      expect(await adapter.exists(getShardedManifestPath(BASE_DIR))).toBe(true)
+
+      await store.clearNamespace(writeNamespace)
+
+      // Manifest and shard dirs are gone; search fails with rebuild_required
+      // instead of reading shard dirs that no longer exist.
+      expect(await adapter.exists(getShardedManifestPath(BASE_DIR))).toBe(false)
+      expect(
+        await adapter.exists(getShardedModelRoot(BASE_DIR, WRITE_NS_ID)),
+      ).toBe(false)
+      await expect(
+        store.searchDetailed(writeNamespace, [1, 0, 0, 0], { topK: 5 }),
+      ).rejects.toMatchObject({ code: 'rebuild_required' })
+
+      // A fresh write re-creates the index from scratch.
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/b.md',
+        mtime: 2,
+        chunks: [chunk('c2', 'beta', [1, 0, 0, 0], 1, 'notes/b.md')],
+      })
+      const hits = await store.searchDetailed(writeNamespace, [1, 0, 0, 0], {
+        topK: 5,
+      })
+      expect(hits.hits.map((hit) => hit.path)).toEqual(['notes/b.md'])
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('getStats reports live per-namespace counts and an aggregate placeholder', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-stats-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+
+      const empty = await store.getStats(writeNamespace)
+      expect(empty).toMatchObject({
+        backend: 'sqlite',
+        ready: false,
+        errorCode: 'rebuild_required',
+        fileCount: 0,
+        chunkCount: 0,
+      })
+
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        chunks: [
+          chunk('c1', 'alpha', [1, 0, 0, 0], 1),
+          chunk('c2', 'beta', [0, 1, 0, 0], 2),
+        ],
+      })
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/b.md',
+        mtime: 1,
+        chunks: [chunk('c3', 'gamma', [0, 0, 1, 0], 1, 'notes/b.md')],
+      })
+
+      const stats = await store.getStats(writeNamespace)
+      expect(stats).toMatchObject({
+        backend: 'sqlite',
+        storagePath: getShardedModelRoot(BASE_DIR, WRITE_NS_ID),
+        namespaceCount: 1,
+        fileCount: 2,
+        chunkCount: 3,
+        ready: true,
+      })
+
+      // Rewriting a.md tombstones its old rows: counts track live rows only.
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 2,
+        chunks: [chunk('c4', 'alpha-new', [1, 0, 0, 0], 1)],
+      })
+      const afterRewrite = await store.getStats(writeNamespace)
+      expect(afterRewrite).toMatchObject({ fileCount: 2, chunkCount: 2 })
+
+      const aggregate = await store.getStats()
+      expect(aggregate).toMatchObject({
+        backend: 'sqlite',
+        namespaceCount: 1,
+        fileCount: 0,
+        chunkCount: 0,
+        ready: true,
+      })
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true })
     }
