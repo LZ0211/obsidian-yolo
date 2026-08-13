@@ -412,8 +412,10 @@ export type ShardedVectorStoreOptions = {
  * upstream `feat/sharded-vector-backend`: `<baseDir>/rag-index/v1/manifest.json`
  * plus `models/<ns>/shards/<shardId>/`. Task 1 ships the skeleton (open/close/
  * listNamespaces/dropNamespace/getStatus); Task 2 the write path; Task 3 the
- * search path (parallel coarse + full rerank + scope prefilter); delete/
- * vacuum land in Tasks 4-5 and currently throw.
+ * search path (parallel coarse + full rerank + scope prefilter); Task 4
+ * tombstone deletes (`UPDATE ... SET tombstone = 1`, full read-path
+ * `tombstone = 0` filtering, rewrite-revive); vacuum lands in Task 5 and
+ * currently throws.
  */
 export class ShardedVectorStore implements VectorStore {
   private readonly baseDir: string
@@ -531,10 +533,9 @@ export class ShardedVectorStore implements VectorStore {
     const namespaceId = validateShardedNamespaceId(vectorNamespaceId(namespace))
     // Validate every chunk's embedding dimension before any mutation. A
     // mismatched embedding would otherwise poison the namespace mid-write:
-    // `removeFileRowsFromShards` (compaction) runs first, so the error would
-    // surface after old rows were already dropped and vector counts
-    // decremented, leaving every later write dead in the vectors.f32
-    // byteLength check until manual cleanup.
+    // `tombstoneFileRows` runs first, so the error would surface after old
+    // rows were already tombstoned and vector counts incremented, leaving the
+    // file unsearchable until a later rewrite.
     for (const file of files) {
       for (const chunk of file.chunks) {
         if (chunk.embedding.length !== namespace.dimension) {
@@ -552,15 +553,45 @@ export class ShardedVectorStore implements VectorStore {
     }
   }
 
-  async deleteFile(_namespace: VectorNamespace, _path: string): Promise<void> {
-    throw new Error('not implemented yet')
+  async deleteFile(namespace: VectorNamespace, path: string): Promise<void> {
+    await this.deleteFiles(namespace, [path])
   }
 
   async deleteFiles(
-    _namespace: VectorNamespace,
-    _paths: string[],
+    namespace: VectorNamespace,
+    paths: string[],
   ): Promise<void> {
-    throw new Error('not implemented yet')
+    this.assertOpen()
+    this.assertNotClosing()
+    const namespaceId = validateShardedNamespaceId(vectorNamespaceId(namespace))
+    // Exclusive lease: a search concurrent with the per-shard tombstone
+    // UPDATEs must never observe a file half-tombstoned (rows in one shard
+    // marked, rows in another still live).
+    const release = await this.acquireNamespaceWriteLease(namespaceId)
+    try {
+      const manifest = await this.readManifest()
+      // Nothing indexed (or a manifest active for another namespace): the
+      // delete is a no-op, mirroring the desktop store's empty delete.
+      if (manifest == null || manifest.activeModel !== namespaceId) return
+      for (const shard of manifest.shards) {
+        if (shard.state !== 'ready' || shard.vectorCount === 0) continue
+        const runtime = this.openShardRuntime(namespaceId, shard.id)
+        try {
+          runtime.transaction(() => {
+            for (const filePath of paths) {
+              runtime.exec(
+                'update chunks set tombstone = 1 where file_path = ?',
+                [filePath],
+              )
+            }
+          })
+        } finally {
+          runtime.close()
+        }
+      }
+    } finally {
+      release()
+    }
   }
 
   async clearNamespace(_namespace: VectorNamespace): Promise<void> {
@@ -735,12 +766,18 @@ export class ShardedVectorStore implements VectorStore {
    * One shard's contribution to a search: scope prefilter against
    * `chunks.sqlite`, coarse dot ranking against `index.bin` (take the top
    * `candidateK`), then full-dimension cosine rerank of those survivors read
-   * from `vectors.f32`. Vector offsets are the rows' position in
-   * `select * from chunks order by rowid` — Task 2's compaction rebuilds the
-   * table (rowids restart at 1) together with both files, so the k-th row's
-   * vector sits at offset k in `index.bin`/`vectors.f32`. Rowid values are
-   * used directly as 1-based offsets, which holds while no tombstone rows
-   * exist (Task 4's tombstone path will need a compaction-aware mapping).
+   * from `vectors.f32`.
+   *
+   * Alignment design (Task 4, option a): a chunk's vector sits at its chunk
+   * row's position in `select * from chunks order by rowid` — the k-th row's
+   * vector is at offset k in both `index.bin` and `vectors.f32`. Tombstones
+   * never remove rows (only `UPDATE ... SET tombstone = 1`; Task 5's vacuum
+   * is the sole physical remover), so rowids stay contiguous 1..N and rowid
+   * order == vectors.f32 order even with tombstoned rows interleaved.
+   * Search therefore reads ALL rows and skips tombstoned ones by position:
+   * a tombstone between two live rows must NOT shift the live vectors'
+   * offsets, so candidate scoring uses the row's absolute position in the
+   * full rowid-ordered list, never a compacted live-only index.
    */
   private async queryShard(
     namespaceId: string,
@@ -762,9 +799,14 @@ export class ShardedVectorStore implements VectorStore {
     const runtime = this.openShardRuntime(namespaceId, shard.id)
     try {
       const rows = runtime.query<ChunkRow>(
-        'select * from chunks where tombstone = 0 order by rowid',
+        'select * from chunks order by rowid',
       )
-      if (rows.length === 0) return result
+      // Live rows keep their absolute position in `rows` (== vector offset).
+      const liveRows: Array<{ index: number; row: ChunkRow }> = []
+      for (let i = 0; i < rows.length; i += 1) {
+        if (rows[i].tombstone === 0) liveRows.push({ index: i, row: rows[i] })
+      }
+      if (liveRows.length === 0) return result
       let scopedRowids: Set<number> | null = null
       if (scopeSql != null) {
         scopedRowids = new Set(
@@ -779,18 +821,23 @@ export class ShardedVectorStore implements VectorStore {
         )
       }
       result.scopedCount =
-        scopedRowids == null ? rows.length : scopedRowids.size
+        scopedRowids == null
+          ? liveRows.length
+          : liveRows.filter(({ index }) => scopedRowids.has(index + 1)).length
       if (result.scopedCount === 0) return result
 
       const coarse = await this.readShardCoarseVectors(shardRoot, rows.length)
       const candidates: Array<{ index: number; score: number }> = []
-      for (let i = 0; i < rows.length; i += 1) {
-        if (scopedRowids != null && !scopedRowids.has(i + 1)) continue
+      for (const { index } of liveRows) {
+        if (scopedRowids != null && !scopedRowids.has(index + 1)) continue
         candidates.push({
-          index: i,
+          index,
           score: cosineScore(
             queryCoarse,
-            coarse.subarray(i * COARSE_DIMENSION, (i + 1) * COARSE_DIMENSION),
+            coarse.subarray(
+              index * COARSE_DIMENSION,
+              (index + 1) * COARSE_DIMENSION,
+            ),
           ),
         })
       }
@@ -1000,11 +1047,12 @@ export class ShardedVectorStore implements VectorStore {
   }
 
   /**
-   * Append-style write for one file: physically drop the file's old chunk
-   * rows (Task 4 replaces this with tombstone UPDATEs), then append the new
-   * chunks into the current shard, rolling to `shards/<next>` when the
-   * current shard reaches `MAX_VECTORS_PER_SHARD`. The manifest is published
-   * once per file via `manifest.next.json` → atomic rename.
+   * Append-style write for one file: tombstone the file's old chunk rows
+   * (`tombstoneFileRows` — no physical removal, Task 4; the old vectors stay
+   * as garbage until Task 5's vacuum), then append the new chunks into the
+   * current shard, rolling to `shards/<next>` when the current shard reaches
+   * `MAX_VECTORS_PER_SHARD`. The manifest is published once per file via
+   * `manifest.next.json` → atomic rename.
    *
    * Any IO failure after the first mutation triggers a rollback (see
    * `rollbackFileWrite`) so a rejected replaceFile never leaves the file
@@ -1037,7 +1085,7 @@ export class ShardedVectorStore implements VectorStore {
 
     try {
       if (manifest.shards.length > 0) {
-        await this.removeFileRowsFromShards(manifest, namespaceId, file.path)
+        await this.tombstoneFileRows(manifest, namespaceId, file.path)
       }
 
       for (const chunk of file.chunks) {
@@ -1060,12 +1108,16 @@ export class ShardedVectorStore implements VectorStore {
   }
 
   /**
-   * Best-effort rollback of a partially written file: re-run the physical
-   * delete (which removes both the partially inserted rows and any old rows
-   * the compaction may have dropped) and publish the corrected manifest
-   * counts, so no half-indexed file state remains observable. If the
-   * rollback itself fails the previous state cannot be restored — surface a
-   * clear `transaction_failed` error instead.
+   * Best-effort rollback of a partially written file: compact the file's rows
+   * out of the shard (both the old tombstoned rows and any partially inserted
+   * ones), rewriting vectors.f32/index.bin to match the survivors, and publish
+   * the corrected manifest counts. Tombstone marking alone cannot roll back a
+   * write that failed between the vectors.f32 and index.bin writes — the two
+   * files would disagree on count, surfacing as a `database_corrupt`
+   * byteLength mismatch. Compaction restores full artifact/table consistency
+   * (and with it rowid↔offset alignment). If the rollback itself fails the
+   * previous state cannot be restored — surface a clear `transaction_failed`
+   * error instead.
    */
   private async rollbackFileWrite(
     manifest: ShardedManifest,
@@ -1233,11 +1285,43 @@ export class ShardedVectorStore implements VectorStore {
   }
 
   /**
-   * Temporary physical-delete path (plan: "先物理删旧行"). Task 4 replaces it
-   * with tombstone UPDATEs. To keep the rowid-order ↔ vectors.f32 alignment
-   * that Task 3's search depends on, the affected shard is compacted: old
-   * rows are dropped, the chunks table is rebuilt with fresh rowids, and
-   * vectors.f32/index.bin are rewritten to match the surviving rows.
+   * Rewrite path (Task 4): mark every existing chunk of `filePath` as
+   * tombstoned instead of physically removing rows. vectors.f32/index.bin
+   * keep the old vectors as garbage (reclaimed by Task 5's vacuum), and the
+   * file's new chunks are appended right after — revived by the upsert's
+   * `tombstone = 0`. Rowid-order ↔ vector alignment is preserved because
+   * nothing is removed: rowid order stays equal to vector order.
+   */
+  private async tombstoneFileRows(
+    manifest: ShardedManifest,
+    namespaceId: string,
+    filePath: string,
+  ): Promise<void> {
+    for (const shard of manifest.shards) {
+      if (shard.state !== 'ready' || shard.vectorCount === 0) continue
+      const runtime = this.openShardRuntime(namespaceId, shard.id)
+      try {
+        runtime.exec('update chunks set tombstone = 1 where file_path = ?', [
+          filePath,
+        ])
+      } finally {
+        runtime.close()
+      }
+    }
+  }
+
+  /**
+   * Compaction path, used only by `rollbackFileWrite`: drops every row of
+   * `filePath` (tombstoned or not) and rewrites the shard's artifacts from
+   * the survivors. Task 4 replaced the normal rewrite's physical delete with
+   * tombstone UPDATEs (`tombstoneFileRows`); this stays for the failure path
+   * because a failed insert can leave vectors.f32 and index.bin disagreeing
+   * on count, which tombstone marking cannot reconcile.
+   *
+   * To keep the rowid-order ↔ vectors.f32 alignment that search depends on,
+   * the affected shard is compacted: old rows are dropped, the chunks table
+   * is rebuilt with fresh rowids, and vectors.f32/index.bin are rewritten to
+   * match the surviving rows.
    *
    * Mutation order is deliberate so a mid-compaction adapter failure leaves
    * a state that a rollback re-run can recover from: index.bin/vectors.f32

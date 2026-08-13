@@ -480,8 +480,6 @@ describe('ShardedVectorStore skeleton', () => {
     const store = makeStore()
     await store.open()
     const unimplemented: Array<Promise<unknown>> = [
-      store.deleteFile(testNamespace, 'a.md'),
-      store.deleteFiles?.(testNamespace, ['a.md']),
       store.clearNamespace(testNamespace),
       store.vacuum(testNamespace),
       store.getStats(testNamespace),
@@ -684,7 +682,7 @@ describe('ShardedVectorStore write path', () => {
     }
   })
 
-  it('replaceFile of an existing path drops old chunk rows and compacts the shard', async () => {
+  it('replaceFile of an existing path tombstones old rows and appends the new ones', async () => {
     const adapter = new InMemoryVaultAdapter()
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-write-'))
     try {
@@ -710,18 +708,20 @@ describe('ShardedVectorStore write path', () => {
         JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
       )
       expect(manifest.shards).toHaveLength(1)
-      expect(manifest.shards[0]?.vectorCount).toBe(1)
+      // Tombstoned rows keep counting toward vectorCount: the artifacts
+      // retain their vectors until Task 5's vacuum drops them.
+      expect(manifest.shards[0]?.vectorCount).toBe(3)
 
-      // Vectors/index compacted back to a single chunk.
+      // No physical removal: all 3 vectors (old ones as garbage) survive.
       const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
       expect(
         (await adapter.readBinary(`${shardRoot}/vectors.f32`)).byteLength,
-      ).toBe(writeNamespace.dimension * 4)
+      ).toBe(3 * writeNamespace.dimension * 4)
       expect(
         (await adapter.readBinary(`${shardRoot}/index.bin`)).byteLength,
-      ).toBe(COARSE_DIMENSION * 4)
+      ).toBe(3 * COARSE_DIMENSION * 4)
 
-      // Only c3 survives; rowids restart at 1, aligned with the compacted file.
+      // Old rows remain tombstoned; the new chunk appends at rowid 3.
       const runtime = openShardSqliteNode(
         tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
       )
@@ -729,7 +729,11 @@ describe('ShardedVectorStore write path', () => {
         const rows = runtime.query<{ chunk_id: string; tombstone: number }>(
           'select chunk_id, tombstone from chunks order by rowid',
         )
-        expect(rows.map((row) => row.chunk_id)).toEqual(['c3'])
+        expect(rows).toEqual([
+          { chunk_id: 'c1', tombstone: 1 },
+          { chunk_id: 'c2', tombstone: 1 },
+          { chunk_id: 'c3', tombstone: 0 },
+        ])
         expect(
           runtime.queryOne<{ rowid: number }>('select rowid from chunks')
             ?.rowid,
@@ -738,6 +742,11 @@ describe('ShardedVectorStore write path', () => {
         runtime.close()
       }
 
+      // Search sees only the new chunk; the file reports the new write.
+      const result = await store.search(writeNamespace, [1, 0, 0, 0], {
+        topK: 10,
+      })
+      expect(result.hits.map((hit) => hit.chunkId)).toEqual(['c3'])
       const indexed = await store.getIndexedFiles(writeNamespace)
       expect(indexed.get('notes/a.md')).toMatchObject({
         mtime: 200,
@@ -899,11 +908,12 @@ describe('ShardedVectorStore write path', () => {
         },
       ])
 
-      // Fail the insert-phase vectors.f32 append: the 1st vectors.f32 write
-      // of this replaceFile is the compaction rewrite, the 2nd is the new
-      // chunk's append — after the upsert but before the count increment.
+      // Fail the new chunk's vectors.f32 append — the only vectors.f32 write
+      // of this replaceFile: the upsert (c3) already landed while vectors.f32/
+      // index.bin still describe c1+c2. The rollback compacts a.md's rows
+      // (tombstoned c1 + partial c3) out of the shard.
       const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
-      adapter.armWriteBinaryFailure(`${shardRoot}/vectors.f32`, 2)
+      adapter.armWriteBinaryFailure(`${shardRoot}/vectors.f32`, 1)
       await expect(
         store.replaceFile(writeNamespace, {
           path: 'notes/a.md',
@@ -952,7 +962,7 @@ describe('ShardedVectorStore write path', () => {
     }
   })
 
-  it('an adapter write failure during the compaction phase is rolled back into a consistent shard', async () => {
+  it('an adapter write failure during the insert phase is rolled back into a consistent shard', async () => {
     const adapter = new WriteFailVaultAdapter()
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-write-'))
     try {
@@ -971,7 +981,9 @@ describe('ShardedVectorStore write path', () => {
         },
       ])
 
-      // Fail the compaction's first write (index.bin rewrite).
+      // Fail the new chunk's coarse-index rewrite: the vectors.f32 append
+      // already succeeded, so the shard's two files disagree on count
+      // mid-write. The rollback compaction rewrites both from the survivors.
       const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
       adapter.armWriteBinaryFailure(`${shardRoot}/index.bin`, 1)
       await expect(
@@ -982,7 +994,7 @@ describe('ShardedVectorStore write path', () => {
         }),
       ).rejects.toThrow('injected write failure')
 
-      // Rollback re-runs the compaction: the file is unindexed, never
+      // Rollback compacts a.md's rows out: the file is unindexed, never
       // half-indexed, and the manifest counts match the artifacts.
       const indexed = await store.getIndexedFiles(writeNamespace)
       expect(indexed.has('notes/a.md')).toBe(false)
@@ -1332,6 +1344,272 @@ describe('ShardedVectorStore search', () => {
     await expect(
       store.search(writeNamespace, query, { topK: 5 }),
     ).rejects.toMatchObject({ code: 'not_open' })
+  })
+})
+
+describe('ShardedVectorStore tombstone deletes', () => {
+  jest.setTimeout(60_000)
+
+  const query = [1, 0, 0, 0]
+
+  it('deleteFile tombstones the path: search/getIndexedFiles/getFileReadiness exclude it, artifacts untouched', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-delete-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        contentHash: 'ha',
+        chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+      })
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/b.md',
+        mtime: 2,
+        contentHash: 'hb',
+        chunks: [
+          chunk('c2', 'beta', [0.5, Math.sqrt(0.75), 0, 0], 1, 'notes/b.md'),
+        ],
+      })
+      const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
+      const vectorsBefore = await adapter.readBinary(`${shardRoot}/vectors.f32`)
+      const indexBefore = await adapter.readBinary(`${shardRoot}/index.bin`)
+
+      await store.deleteFile(writeNamespace, 'notes/a.md')
+
+      // All read paths exclude the tombstoned path.
+      const result = await store.search(writeNamespace, query, { topK: 10 })
+      expect(result.hits.map((hit) => hit.chunkId)).toEqual(['c2'])
+      expect(result.totalCount).toBe(1)
+      const indexed = await store.getIndexedFiles(writeNamespace)
+      expect(indexed.has('notes/a.md')).toBe(false)
+      expect(indexed.get('notes/b.md')).toMatchObject({ mtime: 2 })
+      const readiness = await store.getFileReadiness(writeNamespace, [
+        'notes/a.md',
+        'notes/b.md',
+      ])
+      expect(readiness.get('notes/a.md')?.vectorReady).toBe(false)
+      expect(readiness.get('notes/b.md')?.vectorReady).toBe(true)
+
+      // Physical artifacts untouched: byte lengths unchanged.
+      expect(
+        (await adapter.readBinary(`${shardRoot}/vectors.f32`)).byteLength,
+      ).toBe(vectorsBefore.byteLength)
+      expect(
+        (await adapter.readBinary(`${shardRoot}/index.bin`)).byteLength,
+      ).toBe(indexBefore.byteLength)
+
+      // The chunk row remains, marked tombstone.
+      const runtime = openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+      )
+      try {
+        const rows = runtime.query<{ chunk_id: string; tombstone: number }>(
+          'select chunk_id, tombstone from chunks order by rowid',
+        )
+        expect(rows).toEqual([
+          { chunk_id: 'c1', tombstone: 1 },
+          { chunk_id: 'c2', tombstone: 0 },
+        ])
+      } finally {
+        runtime.close()
+      }
+
+      // deleteFiles removes several paths at once; the manifest counts (which
+      // include tombstoned rows) stay unchanged.
+      const manifestBefore = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      await store.deleteFiles(writeNamespace, ['notes/a.md', 'notes/b.md'])
+      expect(
+        (await store.search(writeNamespace, query, { topK: 10 })).hits,
+      ).toEqual([])
+      expect((await store.getIndexedFiles(writeNamespace)).size).toBe(0)
+      expect(
+        (await adapter.readBinary(`${shardRoot}/vectors.f32`)).byteLength,
+      ).toBe(vectorsBefore.byteLength)
+      const manifestAfter = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifestAfter.shards[0]?.vectorCount).toBe(
+        manifestBefore.shards[0]?.vectorCount,
+      )
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('replaceFile revives a tombstoned path: new chunks searchable, old rows stay as tombstoned garbage', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-revive-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        contentHash: 'ha',
+        chunks: [chunk('c1', 'old', [1, 0, 0, 0], 1)],
+      })
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/b.md',
+        mtime: 2,
+        contentHash: 'hb',
+        chunks: [
+          chunk('c2', 'beta', [0.5, Math.sqrt(0.75), 0, 0], 1, 'notes/b.md'),
+        ],
+      })
+      await store.deleteFile(writeNamespace, 'notes/a.md')
+
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 3,
+        contentHash: 'ha2',
+        chunks: [chunk('c3', 'revived', [1 / 3, Math.sqrt(8 / 9), 0, 0], 1)],
+      })
+
+      // No physical removal: the old row stays tombstoned and the new chunk
+      // appends after it (rowid 3), preserving rowid↔vector alignment.
+      const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
+      expect(
+        (await adapter.readBinary(`${shardRoot}/vectors.f32`)).byteLength,
+      ).toBe(3 * writeNamespace.dimension * 4)
+      const runtime = openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+      )
+      try {
+        const rows = runtime.query<{ chunk_id: string; tombstone: number }>(
+          'select chunk_id, tombstone from chunks order by rowid',
+        )
+        expect(rows).toEqual([
+          { chunk_id: 'c1', tombstone: 1 },
+          { chunk_id: 'c2', tombstone: 0 },
+          { chunk_id: 'c3', tombstone: 0 },
+        ])
+      } finally {
+        runtime.close()
+      }
+
+      // a.md is searchable again. c3's score (1/3, not c1's 1.0) proves it is
+      // read from its real vector at offset 2, not from a shifted live-only
+      // list that would map it onto c1's tombstoned vector.
+      const result = await store.search(writeNamespace, query, { topK: 10 })
+      expect(result.hits.map((hit) => hit.chunkId)).toEqual(['c2', 'c3'])
+      expect(result.hits[1]?.score).toBeCloseTo(1 / 3, 5)
+
+      const indexed = await store.getIndexedFiles(writeNamespace)
+      expect(indexed.get('notes/a.md')).toMatchObject({
+        mtime: 3,
+        contentHash: 'ha2',
+      })
+      const readiness = await store.getFileReadiness(writeNamespace, [
+        'notes/a.md',
+      ])
+      expect(readiness.get('notes/a.md')?.vectorReady).toBe(true)
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('search across mixed tombstoned/live chunks keeps insertion-order alignment', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-mixed-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      // c1 (score 1.0) and c2 (score 0.5) get tombstoned; c3 (1/3) survives;
+      // c4 (0.7) appends after the tombstones. Live order is c3, c4 — a
+      // compacted live-only index would read c4 from offset 0 (c1's vector)
+      // and score it 1.0 instead of 0.7.
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        chunks: [chunk('c1', 'gone-strong', [1, 0, 0, 0], 1)],
+      })
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 2,
+        chunks: [chunk('c2', 'gone-mid', [0.5, Math.sqrt(0.75), 0, 0], 1)],
+      })
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/b.md',
+        mtime: 3,
+        chunks: [
+          chunk('c3', 'kept', [1 / 3, Math.sqrt(8 / 9), 0, 0], 1, 'notes/b.md'),
+        ],
+      })
+      await store.deleteFile(writeNamespace, 'notes/a.md')
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 4,
+        chunks: [chunk('c4', 'new', [0.7, Math.sqrt(0.51), 0, 0], 1)],
+      })
+
+      const result = await store.search(writeNamespace, query, { topK: 10 })
+      expect(result.hits.map((hit) => hit.chunkId)).toEqual(['c4', 'c3'])
+      expect(result.hits[0]?.score).toBeCloseTo(0.7, 5)
+      expect(result.hits[1]?.score).toBeCloseTo(1 / 3, 5)
+      expect(result.totalCount).toBe(2)
+
+      // Scope prefilter over a file with tombstoned + live chunks considers
+      // only the live chunk.
+      const scoped = await store.search(writeNamespace, query, {
+        topK: 10,
+        scope: { files: ['notes/a.md'] },
+      })
+      expect(scoped.hits.map((hit) => hit.chunkId)).toEqual(['c4'])
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('deleteFile on a non-existent path (or a namespace with nothing indexed) is a no-op', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-noop-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+
+      // No manifest at all: resolves without error and creates nothing.
+      await expect(
+        store.deleteFile(writeNamespace, 'notes/nope.md'),
+      ).resolves.toBeUndefined()
+      await expect(
+        store.deleteFiles(writeNamespace, []),
+      ).resolves.toBeUndefined()
+      expect(await adapter.exists(getShardedManifestPath(BASE_DIR))).toBe(false)
+
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+      })
+
+      // Non-existent path inside a populated namespace: no-op.
+      await expect(
+        store.deleteFile(writeNamespace, 'notes/nope.md'),
+      ).resolves.toBeUndefined()
+      const result = await store.search(writeNamespace, query, { topK: 10 })
+      expect(result.hits.map((hit) => hit.chunkId)).toEqual(['c1'])
+      expect(
+        (await store.getIndexedFiles(writeNamespace)).has('notes/a.md'),
+      ).toBe(true)
+      const runtime = openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+      )
+      try {
+        expect(
+          runtime.queryOne<{ n: number }>(
+            'select count(*) as n from chunks where tombstone = 1',
+          )?.n,
+        ).toBe(0)
+      } finally {
+        runtime.close()
+      }
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
   })
 })
 
