@@ -226,6 +226,54 @@ describe('ingest outcomes', () => {
     expect(after?.task.deliveryRefs).toContain('deliverables/t1/run-1.md')
   })
 
+  it('production shape: placeholder claim re-keyed to the real run id delivers exactly one attempt', async () => {
+    // The parent claims with a placeholder runKey invented before dispatch
+    // (the `sub_*` id only materializes inside runSubagent), then the
+    // dispatch backfills the claim to the real run id. Without the backfill
+    // the ingest runKey matches no running attempt, so a second attempt is
+    // appended while normalizeTaskWrite terminalizes the placeholder one —
+    // every delivery used to leave two attempts behind.
+    const { store, ingester } = makeIngester()
+    await initSimpleProject(store)
+    const pending = (await store.readTask('proj-1', 'T-001'))!
+    await store.claimTask(
+      'proj-1',
+      'T-001',
+      preconditionOf(pending),
+      { runKey: 'placeholder-1' },
+    )
+    const claimed = (await store.readTask('proj-1', 'T-001'))!
+    await store.backfillClaimRunKey(
+      'proj-1',
+      'T-001',
+      preconditionOf(claimed),
+      'sub_123',
+    )
+    const bound = (await store.readTask('proj-1', 'T-001'))!
+
+    const result = await ingester.ingest({
+      binding: {
+        projectId: 'proj-1',
+        taskId: 'T-001',
+        expectedRevision: bound.revision,
+        expectedContentHash: bound.contentHash,
+      },
+      runKey: 'sub_123',
+      sessionId: 'sub_123',
+      runSequence: 1,
+      completedAt: '2026-08-02T09:00:00.000Z',
+      result: { status: 'completed', content: 'done' },
+    })
+    expect(result.kind).toBe('fresh')
+    const after = await store.readTask('proj-1', 'T-001')
+    expect(after?.task.status).toBe('awaiting_review')
+    expect(after?.task.claim).toBeUndefined()
+    expect(after?.task.attempts).toHaveLength(1)
+    expect(after?.task.attempts[0].runKey).toBe('sub_123')
+    expect(after?.task.attempts[0].status).toBe('done')
+    expect(after?.task.deliveryRefs).toContain('deliverables/T-001/sub_123.md')
+  })
+
   it('completed ingest on a claimed running task clears the claim and terminalizes the single attempt', async () => {
     const store = createStore()
     const ingester = new ProjectDeliveryIngester(store)

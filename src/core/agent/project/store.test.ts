@@ -440,6 +440,58 @@ describe('claim and renew', () => {
     expect(renewedExpires).toBeGreaterThan(priorExpires)
   })
 
+  it('backfill re-keys the claim and the running attempt to the real run id', async () => {
+    const store = createStore()
+    await makeProjectWithTask(store)
+    const read = await store.readTask('p1', 't1')
+    await store.claimTask('p1', 't1', preconditionOf(read), { runKey: 'placeholder-1' })
+    const claimed = await store.readTask('p1', 't1')
+    const result = await store.backfillClaimRunKey('p1', 't1', preconditionOf(claimed), 'sub_abc')
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.revision).toBe(claimed!.revision + 1)
+    const after = await store.readTask('p1', 't1')
+    expect(after?.task.claim?.runKey).toBe('sub_abc')
+    expect(after?.task.attempts).toHaveLength(1)
+    expect(after?.task.attempts[0].runKey).toBe('sub_abc')
+    expect(after?.task.attempts[0].status).toBe('running')
+    // The expiry lease is untouched by the rename.
+    expect(after?.task.claim?.expiresAt).toBe(claimed?.task.claim?.expiresAt)
+  })
+
+  it('backfill no-ops when the runKey already matches', async () => {
+    const store = createStore()
+    await makeProjectWithTask(store)
+    const read = await store.readTask('p1', 't1')
+    await store.claimTask('p1', 't1', preconditionOf(read), { runKey: 'sub_abc' })
+    const claimed = await store.readTask('p1', 't1')
+    const result = await store.backfillClaimRunKey('p1', 't1', preconditionOf(claimed), 'sub_abc')
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.noop).toBe(true)
+    expect(result.revision).toBe(claimed!.revision)
+  })
+
+  it('backfill no-ops on an unclaimed task (unclaimed dispatch)', async () => {
+    const store = createStore()
+    await makeProjectWithTask(store)
+    const read = await store.readTask('p1', 't1')
+    const result = await store.backfillClaimRunKey('p1', 't1', preconditionOf(read), 'sub_abc')
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.noop).toBe(true)
+    expect(result.record.status).toBe('pending')
+  })
+
+  it('backfill conflicts on a stale precondition', async () => {
+    const store = createStore()
+    await makeProjectWithTask(store)
+    const read = await store.readTask('p1', 't1')
+    const result = await store.backfillClaimRunKey('p1', 't1', { expectedRevision: 99, expectedContentHash: 'x' }, 'sub_abc')
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.kind).toBe('conflict')
+  })
+
   it('leaving running clears claim and terminalizes the open attempt', async () => {
     const store = createStore()
     await makeProjectWithTask(store)

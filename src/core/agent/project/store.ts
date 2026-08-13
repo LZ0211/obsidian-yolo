@@ -512,6 +512,61 @@ export class ProjectStore {
     })
   }
 
+  /**
+   * Re-keys a live claim to the actual subagent run id. The parent claims with
+   * a placeholder runKey invented before dispatch; the real run id (`sub_*`)
+   * only materializes inside `runSubagent`. Renaming both the claim and the
+   * running attempt lets delivery ingestion and the liveness probe match by
+   * the real run id — otherwise every delivery appends a second attempt (the
+   * placeholder attempt never matches the ingest runKey). No-op when the task
+   * is not running/claimed (unclaimed dispatch, or already released) or the
+   * runKey already matches. Conflicts on a stale precondition.
+   */
+  async backfillClaimRunKey(
+    projectId: string,
+    taskId: string,
+    precondition: TaskWritePrecondition,
+    runKey: string,
+  ): Promise<StoreTaskWriteResult> {
+    const path = this.taskFilePath(projectId, taskId)
+    return await this.serialize(path, async () => {
+      const versioned = await this.readVersionedLocked(path)
+      if (!versioned) {
+        return { ok: false, kind: 'not_found', message: `Task file not found: ${path}` }
+      }
+      if (
+        versioned.revision !== precondition.expectedRevision ||
+        versioned.contentHash !== precondition.expectedContentHash
+      ) {
+        return {
+          ok: false,
+          kind: 'conflict',
+          message: 'Task changed since it was read (revision/hash mismatch). Re-read and retry.',
+          current: versioned,
+        }
+      }
+      const current = versioned.task
+      if (current.status !== 'running' || !current.claim) {
+        return { ok: true, record: current, revision: versioned.revision, contentHash: versioned.contentHash, path, noop: true }
+      }
+      if (current.claim.runKey === runKey) {
+        return { ok: true, record: current, revision: versioned.revision, contentHash: versioned.contentHash, path, noop: true }
+      }
+      const backfilled: TaskRecord = {
+        ...current,
+        claim: { ...current.claim, runKey },
+        attempts: current.attempts.map((attempt) =>
+          attempt.runKey === current.claim!.runKey && attempt.status === 'running'
+            ? { ...attempt, runKey }
+            : attempt,
+        ),
+        updatedAt: new Date().toISOString(),
+        revision: versioned.revision + 1,
+      }
+      return await this.writeRecord(path, backfilled)
+    })
+  }
+
   /** Validates draft IDs, self-references, unknown deps, and dependency cycles. */
   validateTaskDrafts(
     projectId: string,

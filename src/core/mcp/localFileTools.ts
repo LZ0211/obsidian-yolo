@@ -4517,6 +4517,35 @@ export async function callLocalFileTool({
           ...(projectTask ? { projectTask } : {}),
         })
 
+        if (projectTask) {
+          // Backfill the claim's runKey with the real subagent run id. The
+          // claim is made before dispatch with a placeholder runKey (the
+          // `sub_*` id only materializes inside runSubagent); re-keying it
+          // keeps delivery ingestion and the liveness probe matched by the
+          // real run id — otherwise every delivery appends a duplicate
+          // attempt. Never fail the dispatch over a failed backfill (the run
+          // already started); the ingester's append fallback still records
+          // the outcome.
+          const backfillStore = new ProjectStore({
+            getSettings: () => settings,
+            adapter: app.vault.adapter,
+          })
+          const backfill = await backfillStore.backfillClaimRunKey(
+            projectTask.projectId,
+            projectTask.taskId,
+            {
+              expectedRevision: projectTask.expectedRevision,
+              expectedContentHash: projectTask.expectedContentHash,
+            },
+            accepted.taskId,
+          )
+          if (!backfill.ok) {
+            console.warn(
+              `[YOLO] claim runKey backfill failed for ${projectTask.taskId}: ${backfill.message}`,
+            )
+          }
+        }
+
         return {
           status: ToolCallResponseStatus.Success,
           text: JSON.stringify(accepted),
