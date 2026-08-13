@@ -276,6 +276,104 @@ describe('RagIndexService', () => {
     })
   })
 
+  it('recovers from a failed progress write: terminal snapshot still lands completed and later progress writes still execute', async () => {
+    // A failed progress persist (localStorage error) must not poison the
+    // serialization tail: a rejected tail would (a) block every later
+    // progress write while progressPersistInFlight stays stuck true, and
+    // (b) make persistTerminalSnapshot throw so the catch path overwrites
+    // the already-successful run with failed/retry_scheduled.
+    const saved: Record<string, string> = {}
+    const writtenValues: string[] = []
+    let writeCount = 0
+    const updateVaultIndex = jest.fn().mockImplementation(
+      async (
+        _options: unknown,
+        onProgress?: (progress: {
+          type: 'indexing'
+          indexProgress: {
+            completedChunks: number
+            totalChunks: number
+            totalFiles: number
+            completedFiles: number
+            currentFile: string
+          }
+        }) => void,
+      ) => {
+        onProgress?.({
+          type: 'indexing',
+          indexProgress: {
+            completedChunks: 1,
+            totalChunks: 10,
+            totalFiles: 1,
+            completedFiles: 0,
+            currentFile: 'a.md',
+          },
+        })
+        // Let the first (failing) progress write settle so the second
+        // callback enqueues a fresh coalesced write.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0))
+        onProgress?.({
+          type: 'indexing',
+          indexProgress: {
+            completedChunks: 2,
+            totalChunks: 10,
+            totalFiles: 1,
+            completedFiles: 0,
+            currentFile: 'b.md',
+          },
+        })
+        return { permanentFailedPaths: [], chunkifyFailedPaths: [] }
+      },
+    )
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const service = new RagIndexService({
+        app: {
+          loadLocalStorage: jest.fn().mockReturnValue(null),
+          saveLocalStorage: jest.fn((_key: string, value: string) => {
+            writeCount += 1
+            // Write 1 is the run-start snapshot; write 2 is the first
+            // progress write and fails like a localStorage error.
+            if (writeCount === 2) {
+              throw new Error('localStorage write failed')
+            }
+            writtenValues.push(value)
+            saved.yolo_rag_index_run = value
+            return undefined
+          }),
+        } as never,
+        getRagEngine: jest.fn().mockResolvedValue({ updateVaultIndex }),
+        activityRegistry: new BackgroundActivityRegistry(),
+        isRagEnabled: () => true,
+        t: (_key, fallback) => fallback ?? '',
+      })
+
+      await service.initialize()
+      await service.runIndex({
+        mode: 'sync',
+        scope: { kind: 'all' },
+        trigger: 'manual',
+        retryPolicy: 'none',
+      })
+
+      // The terminal snapshot still lands as completed...
+      expect(JSON.parse(saved.yolo_rag_index_run)).toMatchObject({
+        status: 'completed',
+      })
+      // ...and the progress write after the failed one still executed
+      // (run-start + later progress + terminal = 3 successful writes). The
+      // later write's snapshot is stringified when its microtask runs, which
+      // may be after the run marked itself completed — the progress content
+      // (completedChunks from the second callback) is what proves it ran.
+      expect(writtenValues).toHaveLength(3)
+      expect(JSON.parse(writtenValues[1])).toMatchObject({
+        completedChunks: 2,
+      })
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
   it('invokes onIndexCompleted only after a successful run', async () => {
     const onIndexCompleted = jest.fn()
     const updateVaultIndex = jest
@@ -364,12 +462,10 @@ describe('RagIndexService', () => {
     })
 
     it('acquires the vault-scoped web lock and runs the reconcile inside it', async () => {
-      const updateVaultIndex = jest
-        .fn()
-        .mockResolvedValue({
-          permanentFailedPaths: [],
-          chunkifyFailedPaths: [],
-        })
+      const updateVaultIndex = jest.fn().mockResolvedValue({
+        permanentFailedPaths: [],
+        chunkifyFailedPaths: [],
+      })
       const request = jest.fn(
         (_name: string, _options: unknown, callback: () => Promise<unknown>) =>
           callback(),
@@ -409,12 +505,10 @@ describe('RagIndexService', () => {
           }),
         },
       }
-      const updateVaultIndex = jest
-        .fn()
-        .mockResolvedValue({
-          permanentFailedPaths: [],
-          chunkifyFailedPaths: [],
-        })
+      const updateVaultIndex = jest.fn().mockResolvedValue({
+        permanentFailedPaths: [],
+        chunkifyFailedPaths: [],
+      })
       const service = makeService(updateVaultIndex)
       await service.initialize()
 
@@ -426,12 +520,10 @@ describe('RagIndexService', () => {
     })
 
     it('falls back to unguarded runs when navigator.locks is unavailable', async () => {
-      const updateVaultIndex = jest
-        .fn()
-        .mockResolvedValue({
-          permanentFailedPaths: [],
-          chunkifyFailedPaths: [],
-        })
+      const updateVaultIndex = jest.fn().mockResolvedValue({
+        permanentFailedPaths: [],
+        chunkifyFailedPaths: [],
+      })
       const service = makeService(updateVaultIndex)
       await service.initialize()
 
