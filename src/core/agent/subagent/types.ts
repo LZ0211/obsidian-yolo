@@ -5,7 +5,6 @@ import type {
   TaskSource,
 } from '../../../types/chat'
 import type { ResponseUsage } from '../../../types/llm/response'
-import type { AgentSessionMode } from '../../state/contracts'
 
 export type SubagentTaskStatus = 'running' | 'completed' | 'failed' | 'aborted'
 
@@ -23,17 +22,10 @@ export type ForkContext = 'none' | 'last_turns' | 'full'
 export type SubagentAcceptedResult = {
   accepted: true
   taskId: string
-  /** Durable session identity (aligned with backup types.ts). */
-  sessionId?: string
-  runKey?: string
-  sessionRevision?: number
-  mode?: AgentSessionMode
   title: string
   status: 'running'
   note: string
   modelName?: string
-  /** Delegated role identity (C3: backup types.ts 有，Task 6 只补了 4 字段). */
-  delegatedRole?: DelegatedRoleMetadata
 }
 
 export type SubagentResult = {
@@ -64,13 +56,7 @@ export type SubagentTaskRecord = {
   liveTranscript?: ChatMessage[]
   activityLog?: string
   error?: string
-  delegatedRole?: DelegatedRoleMetadata
   abortController: AbortController
-  /** Durable session identity (aligned with backup types.ts). */
-  sessionId?: string
-  runSequence?: number
-  runKey?: string
-  mode?: AgentSessionMode
 }
 
 /** Registry-facing projection without streaming transcripts or abort owners. */
