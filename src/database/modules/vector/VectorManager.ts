@@ -161,10 +161,6 @@ export class VectorManager {
     this.settings = resolvedOptions?.settings ?? null
   }
 
-  setSaveCallback(_callback: () => Promise<void>) {}
-
-  setVacuumCallback(_callback: () => Promise<void>) {}
-
   /**
    * 碎片整理入口：转发到底层向量存储。移动端分片后端按命名空间重建压缩并
    * 清理墓碑行；桌面后端跑 SQLite VACUUM（无墓碑计数，返回 0/0）。

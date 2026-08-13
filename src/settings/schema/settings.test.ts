@@ -31,7 +31,6 @@ describe('parseYoloSettings', () => {
     expect(result.ragOptions).toMatchObject({
       enabled: true,
       chunkSize: 1000,
-      thresholdTokens: 20000,
       minSimilarity: 0.0,
       limit: 10,
       indexPdf: true,

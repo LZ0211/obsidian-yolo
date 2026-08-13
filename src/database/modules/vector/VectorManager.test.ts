@@ -127,9 +127,6 @@ function createVectorStoreManager(
       ],
     } as never,
   })
-  manager.setSaveCallback(async () => undefined)
-  manager.setVacuumCallback(async () => undefined)
-
   return { manager, app }
 }
 
@@ -311,37 +308,18 @@ describe('VectorManager.reconcile', () => {
     )
   })
 
-  it('with VectorStore, changed files do not call the save callback', async () => {
-    const ragStore = fakeVectorStore()
-    ragStore.getIndexedFiles.mockResolvedValue(new Map())
-    const { manager } = createVectorStoreManager(ragStore, [
-      { path: 'notes/a.md', mtime: 100, content: 'alpha' },
-    ])
-    const saveCallback = jest.fn().mockResolvedValue(undefined)
-    manager.setSaveCallback(saveCallback)
-
-    await manager.reconcile(embeddingModel, baseConfig, {
-      scope: { kind: 'all' },
-    })
-
-    expect(saveCallback).not.toHaveBeenCalled()
-  })
-
   it('with VectorStore, starts sync progress from files with vector ready', async () => {
     const ragStore = fakeVectorStore()
     ragStore.getIndexedFiles.mockResolvedValue(
       new Map([
-        [
-          'ready.md',
-          { mtime: 100, contentHash: 'ready-hash', updatedAt: 1 },
-        ],
+        ['ready.md', { mtime: 100, contentHash: 'ready-hash', updatedAt: 1 }],
         [
           'vector-only.md',
           { mtime: 100, contentHash: 'vector-only-hash', updatedAt: 1 },
         ],
       ]),
     )
-    ;ragStore.getFileReadiness.mockResolvedValue(
+    ragStore.getFileReadiness.mockResolvedValue(
       new Map([
         ['ready.md', { path: 'ready.md', vectorReady: true }],
         ['vector-only.md', { path: 'vector-only.md', vectorReady: true }],
@@ -375,17 +353,14 @@ describe('VectorManager.reconcile', () => {
     const ragStore = fakeVectorStore()
     ragStore.getIndexedFiles.mockResolvedValue(
       new Map([
-        [
-          'ready.md',
-          { mtime: 100, contentHash: 'ready-hash', updatedAt: 1 },
-        ],
+        ['ready.md', { mtime: 100, contentHash: 'ready-hash', updatedAt: 1 }],
         [
           'vector-only.md',
           { mtime: 100, contentHash: 'vector-only-hash', updatedAt: 1 },
         ],
       ]),
     )
-    ;ragStore.getFileReadiness.mockResolvedValue(
+    ragStore.getFileReadiness.mockResolvedValue(
       new Map([
         ['ready.md', { path: 'ready.md', vectorReady: true }],
         ['vector-only.md', { path: 'vector-only.md', vectorReady: true }],
@@ -802,10 +777,17 @@ describe('VectorManager.clearAllVectors / clearVectorsByModelIds / getEmbeddingS
     // getStats() without a namespace returns zeroed aggregate stats; the fix
     // derives the namespace from the id so counters are real.
     expect(vectorStore.getStats).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'text-embedding-3-large', dimension: 3 }),
+      expect.objectContaining({
+        model: 'text-embedding-3-large',
+        dimension: 3,
+      }),
     )
     expect(stats).toEqual([
-      { model: 'text-embedding-3-large-d3', rowCount: 42, totalDataBytes: 12345 },
+      {
+        model: 'text-embedding-3-large-d3',
+        rowCount: 42,
+        totalDataBytes: 12345,
+      },
     ])
   })
 })
@@ -823,7 +805,9 @@ describe('VectorManager incremental mtime and empty-file handling', () => {
     // later (updatedAt = 200s): comparing against updated_at would judge the
     // file (now mtime 150) as "unchanged" and skip it forever.
     ragStore.getIndexedFiles.mockResolvedValue(
-      new Map([['notes/a.md', { mtime: 100, contentHash: 'old-hash', updatedAt: 200 }]]),
+      new Map([
+        ['notes/a.md', { mtime: 100, contentHash: 'old-hash', updatedAt: 200 }],
+      ]),
     )
     ragStore.getFileReadiness.mockResolvedValue(
       new Map([['notes/a.md', { path: 'notes/a.md', vectorReady: true }]]),

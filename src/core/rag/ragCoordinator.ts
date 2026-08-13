@@ -5,12 +5,6 @@ import { YoloSettings } from '../../settings/schema/setting.types'
 
 import { RAGEngine } from './ragEngine'
 
-export type RagWarmupState =
-  | 'not_started'
-  | 'initializing'
-  | 'ready'
-  | 'unavailable'
-
 type RagCoordinatorDeps = {
   app: App
   getSettings: () => YoloSettings
@@ -63,21 +57,6 @@ export class RagCoordinator {
     }
 
     return this.ragEngineInitPromise
-  }
-
-  getReadyRagEngine(): RAGEngine | null {
-    return this.closed ? null : this.ragEngine
-  }
-
-  getWarmupState(): RagWarmupState {
-    if (this.closed) return 'unavailable'
-    if (this.ragEngine) return 'ready'
-    if (this.ragEngineInitPromise) return 'initializing'
-    return 'not_started'
-  }
-
-  async warmRagEngine(): Promise<RAGEngine> {
-    return await this.getRagEngine()
   }
 
   updateSettings(settings: YoloSettings) {

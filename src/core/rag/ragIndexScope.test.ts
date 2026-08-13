@@ -6,7 +6,6 @@ const baseRagOptions = (): YoloSettings['ragOptions'] => ({
   enabled: true,
   chunkSize: 1000,
   chunkOverlap: 50,
-  thresholdTokens: 20000,
   minSimilarity: 0,
   limit: 10,
   rerankEnabled: true,
