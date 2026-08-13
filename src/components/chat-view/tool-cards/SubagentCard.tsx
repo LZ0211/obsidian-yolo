@@ -6,19 +6,13 @@ import {
   useSubagentLiveTranscript,
   useSubagentTask,
 } from '../../../hooks/useSubagentTask'
-import type {
-  ChatMessage,
-  ChatSubagentResultMessage,
-} from '../../../types/chat'
+import type { ChatSubagentResultMessage } from '../../../types/chat'
 import {
   type ToolCallResponse,
   ToolCallResponseStatus,
 } from '../../../types/tool-call.types'
 
-import {
-  SubagentApprovalBlock,
-  type SubagentPendingApproval,
-} from './SubagentApprovalBlock'
+import { SubagentApprovalBlock } from './SubagentApprovalBlock'
 import {
   type SubagentCardArgs,
   buildSubagentCompletionSummary,
@@ -27,6 +21,7 @@ import {
   normalizeActivityLines,
   parseAcceptedSubagentResponse,
   resolveSubagentEffectiveStatus,
+  resolveSubagentPendingApprovals,
 } from './subagentCardUtils'
 import {
   SubagentCardView,
@@ -63,25 +58,6 @@ function toDisplayStatus(
     default:
       return 'dispatched'
   }
-}
-
-export function collectPendingSubagentApprovals(
-  transcript: readonly ChatMessage[] | undefined,
-): SubagentPendingApproval[] {
-  const result: SubagentPendingApproval[] = []
-  for (const message of transcript ?? []) {
-    if (message.role !== 'tool') continue
-    for (const toolCall of message.toolCalls) {
-      if (toolCall.response.status !== ToolCallResponseStatus.PendingApproval) {
-        continue
-      }
-      result.push({
-        toolCallId: toolCall.request.id,
-        request: toolCall.request,
-      })
-    }
-  }
-  return result
 }
 
 export function SubagentCard({
@@ -163,9 +139,16 @@ export function SubagentCard({
   // pauses at PendingApproval (loop-worker emits done; runChildAgent waits
   // on a gate), and `liveTranscript` mirrors the runtime messages — so the
   // card can render approval buttons next to the running thinking output.
+  // F6: the guard is on the live task record status — an aborted child keeps
+  // its final transcript (which may still hold PendingApproval calls) but the
+  // approval gate is gone, so a dead child never renders an active block.
   const pendingApprovals = useMemo(
-    () => collectPendingSubagentApprovals(liveTranscript),
-    [liveTranscript],
+    () =>
+      resolveSubagentPendingApprovals({
+        recordStatus: liveTask?.status,
+        transcript: liveTranscript,
+      }),
+    [liveTask?.status, liveTranscript],
   )
   const isAwaitingApproval = pendingApprovals.length > 0
   const subtitle = isAwaitingApproval

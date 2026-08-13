@@ -1,5 +1,6 @@
 import type { LiveTaskViewSnapshot } from '../../../hooks/useLiveTaskStream'
 import type {
+  ChatMessage,
   ChatSubagentResultMessage,
   SubagentResultStatus,
 } from '../../../types/chat'
@@ -9,8 +10,53 @@ import {
 } from '../../../types/tool-call.types'
 import { formatTokenCount } from '../../../utils/llm/formatTokenCount'
 
+import type { SubagentPendingApproval } from './SubagentApprovalBlock'
+
 export type SubagentCardArgs = {
   title?: string
+}
+
+/**
+ * Collect tool calls whose response is still `PendingApproval` from a
+ * transcript (the live registry-side mirror of the child runtime messages).
+ * Moved here from SubagentCard so the F6 status guard below is testable as a
+ * pure function.
+ */
+export function collectPendingSubagentApprovals(
+  transcript: readonly ChatMessage[] | undefined,
+): SubagentPendingApproval[] {
+  const result: SubagentPendingApproval[] = []
+  for (const message of transcript ?? []) {
+    if (message.role !== 'tool') continue
+    for (const toolCall of message.toolCalls) {
+      if (toolCall.response.status !== ToolCallResponseStatus.PendingApproval) {
+        continue
+      }
+      result.push({
+        toolCallId: toolCall.request.id,
+        request: toolCall.request,
+      })
+    }
+  }
+  return result
+}
+
+/**
+ * F6: pending-approval collection guarded by the live task record status. A
+ * subagent that was aborted (parent deadline expiry / CLI abort / abortAll)
+ * keeps its final transcript — which can still hold `PendingApproval` calls —
+ * but its approval gate is gone, so the card must not render an active
+ * approval block (or "Awaiting approval" label) for a dead child.
+ */
+export function resolveSubagentPendingApprovals({
+  recordStatus,
+  transcript,
+}: {
+  recordStatus: 'running' | 'completed' | 'failed' | 'aborted' | undefined
+  transcript: readonly ChatMessage[] | undefined
+}): SubagentPendingApproval[] {
+  if (recordStatus !== 'running') return []
+  return collectPendingSubagentApprovals(transcript)
 }
 
 export function parseAcceptedSubagentResponse(response: ToolCallResponse): {
