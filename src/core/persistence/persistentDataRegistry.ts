@@ -149,6 +149,7 @@ export const HOST_SETTINGS_CLASSIFICATIONS = [
   hostSetting('forkContextTurns', '子代理上下文轮数'),
   hostSetting('subagentResultMaxChars', '子代理结果上限'),
   hostSetting('subagentTimeout', '子代理超时设置'),
+  hostSetting('scheduledTasks', '定时任务'),
 ] as const satisfies readonly HostSettingsClassification[]
 
 export const MODULE_CONFIG_TRANSFER_KEY = 'moduleConfigs'
