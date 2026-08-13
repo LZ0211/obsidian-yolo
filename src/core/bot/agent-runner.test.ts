@@ -46,7 +46,10 @@ import type { AgentConversationState, AgentService } from '../agent/service'
 import type { ChatMessage } from '../../types/chat'
 import type { McpManager } from '../mcp/mcpManager'
 
-import { runBotAgentTurn } from './agent-runner'
+import {
+  BOT_TURN_TIMEOUT_REASON,
+  runBotAgentTurn,
+} from './agent-runner'
 import { BotSentMessageRegistry } from './bot-sent-registry'
 import type {
   PlatformAdapter,
@@ -823,6 +826,44 @@ describe('runBotAgentTurn', () => {
     })
 
     expect(adapter.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('sends a timeout notice when the run is aborted with the turn-timeout reason', async () => {
+    const { agentService } = makeFakeAgentService(() => undefined)
+    agentService.run = jest
+      .fn()
+      .mockRejectedValue(new Error('aborted')) as AgentService['run']
+    const adapter = makeFakeAdapter()
+    adapter.sendMessage.mockResolvedValue([])
+    const abortController = new AbortController()
+    abortController.abort(BOT_TURN_TIMEOUT_REASON)
+
+    await runBotAgentTurn({
+      app,
+      settings: makeSettings(),
+      agentService,
+      mcpManager,
+      loadConversation: makeConversationLoader(null),
+      abortSignal: abortController.signal,
+      adapter,
+      sentMessageRegistry: new BotSentMessageRegistry(),
+      conversationId: 'conv-1',
+      sessionKey: 'telegram:private:u1',
+      chatType: 'private',
+      platformConfig: { id: 'bot-1' } as unknown as Parameters<
+        typeof runBotAgentTurn
+      >[0]['platformConfig'],
+      promptContent: 'hello bot',
+      mentionables: [],
+    })
+
+    expect(adapter.sendMessage).toHaveBeenCalledTimes(1)
+    expect(adapter.sendMessage).toHaveBeenCalledWith(
+      'telegram:private:u1',
+      expect.objectContaining({
+        text: expect.stringContaining('too long'),
+      }),
+    )
   })
 
   it("does not bleed a previous turn's send_attachment call into this turn's reply (sourceUserMessageId-scoped)", async () => {

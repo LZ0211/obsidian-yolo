@@ -160,11 +160,21 @@ export class TelegramAdapter implements PlatformAdapter {
     bot.on('polling_error', (error) => this.handlePollingError(toError(error)))
     bot.on('error', (error) => this.handleFatalError(toError(error)))
 
+    // Fail fast instead of degrading silently: without the bot username the
+    // group-chat "@bot" wake check can never fire, and the operator would have
+    // no idea why mentions are ignored.
     try {
       const me = await bot.getMe()
       this.botUsername = me.username
     } catch (error) {
-      this.emitError(toError(error), { operation: 'start', raw: error })
+      const err = toError(error)
+      this.emitError(err, { operation: 'start', raw: error })
+      try {
+        await bot.stopPolling()
+      } catch (stopError) {
+        this.emitError(toError(stopError), { operation: 'stop', raw: stopError })
+      }
+      throw err
     }
 
     this.bot = bot

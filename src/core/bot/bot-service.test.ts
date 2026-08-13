@@ -438,10 +438,17 @@ describe('BotService.handleIncoming', () => {
       makeTelegramConfig(),
     )
 
-    expect(h.vault.createBinary).toHaveBeenCalledWith(
-      expect.stringMatching(/m-image-0-received\.png$/),
-      Buffer.from('x'),
-    )
+    // Compare the vault path and the actual bytes: jest 29 on Node 24 does not
+    // deep-equal an ArrayBuffer against the expected Buffer, so asserting the
+    // content directly keeps the test environment-agnostic.
+    const createBinaryCalls = h.vault.createBinary.mock.calls as unknown as Array<
+      [string, ArrayBuffer]
+    >
+    expect(createBinaryCalls).toHaveLength(1)
+    expect(createBinaryCalls[0][0]).toMatch(/m-image-0-received\.png$/)
+    const writtenBytes = new Uint8Array(createBinaryCalls[0][1])
+    expect(writtenBytes.byteLength).toBe(1)
+    expect(writtenBytes[0]).toBe(0x78) // 'x'
     await expect(fs.stat(tempPath)).rejects.toThrow()
     await fs.rm(tempDir, { recursive: true, force: true })
   })

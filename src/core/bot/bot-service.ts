@@ -31,8 +31,11 @@ import type { ChatMessage } from '../../types/chat'
 import type { McpManager } from '../mcp/mcpManager'
 import { getYoloBaseDir } from '../paths/yoloPaths'
 
-import { runBotAgentTurn } from './agent-runner'
-import { BotOutbox } from './bot-outbox'
+import {
+  BOT_TURN_MAX_DURATION_MS,
+  BOT_TURN_TIMEOUT_REASON,
+  runBotAgentTurn,
+} from './agent-runner'
 import { BotSentMessageRegistry } from './bot-sent-registry'
 import { DedupeStore, buildDedupeKey } from './dedupe-store'
 import {
@@ -100,7 +103,6 @@ export class BotService {
   private readonly sessionMapper: SessionMapper
   private readonly dedupeStore = new DedupeStore()
   private readonly sentRegistry = new BotSentMessageRegistry()
-  private readonly outbox = new BotOutbox()
   private readonly sessionTouchAt = new Map<string, number>()
   private readonly sessionResolutionQueues = new Map<
     string,
@@ -183,7 +185,6 @@ export class BotService {
       this.sessionResolutionQueues.clear()
       this.dedupeStore.clear()
       this.sentRegistry.clear()
-      this.outbox.clear()
     })()
     return this.cleanupPromise
   }
@@ -252,10 +253,6 @@ export class BotService {
 
   getSentMessageRegistry(): BotSentMessageRegistry {
     return this.sentRegistry
-  }
-
-  getOutbox(): BotOutbox {
-    return this.outbox
   }
 
   /**
@@ -442,13 +439,14 @@ export class BotService {
         const folder = `${getYoloBaseDir(this.deps.getSettings())}/${BOT_ATTACHMENT_SUBDIR}/${this.safePathSegment(platformConfig.name || platformConfig.id)}`
         await this.ensureVaultFolder(folder)
         const vaultPath = `${folder}/${fileName}`
-        await this.deps.app.vault.createBinary(
-          vaultPath,
-          bytes.buffer.slice(
-            bytes.byteOffset,
-            bytes.byteOffset + bytes.byteLength,
-          ) as ArrayBuffer,
-        )
+        // Copy into a fresh, exact-size ArrayBuffer: `bytes.buffer` on Node's
+        // pooled Buffers is the whole shared pool (a 1-byte read can carry a
+        // 4KB pool as `.buffer`), and `bytes.buffer.slice(byteOffset, ...)`
+        // can come back empty near the pool boundary — either way the bytes
+        // Obsidian writes would be wrong.
+        const exactBytes = new ArrayBuffer(bytes.byteLength)
+        new Uint8Array(exactBytes).set(bytes)
+        await this.deps.app.vault.createBinary(vaultPath, exactBytes)
         totalBytes += bytes.byteLength
         results.push({ component, vaultPath, size: bytes.byteLength })
       } catch (error) {
@@ -479,8 +477,16 @@ export class BotService {
       current = current ? `${current}/${part}` : part
       try {
         await this.deps.app.vault.createFolder(current)
-      } catch {
-        // Obsidian throws when the folder already exists.
+      } catch (error) {
+        // Obsidian throws when the folder already exists; anything else (e.g.
+        // a vault permission error) is a real failure and must not be hidden.
+        if (
+          error instanceof Error &&
+          error.message.toLowerCase().includes('already exists')
+        ) {
+          continue
+        }
+        throw error
       }
     }
   }
@@ -556,6 +562,13 @@ export class BotService {
     if (!this.acceptingEvents) return
     const previous = this.turnQueues.get(params.sessionKey) ?? Promise.resolve()
     const abortController = new AbortController()
+    // Whole-turn duration budget: a stuck agent loop must not occupy the
+    // per-session serial queue forever (see agent-runner.ts). The abort
+    // reason lets the runner tell a timeout apart from a user/plugin cancel.
+    const turnTimeoutHandle = setTimeout(
+      () => abortController.abort(BOT_TURN_TIMEOUT_REASON),
+      BOT_TURN_MAX_DURATION_MS,
+    )
     this.activeTurnAbortControllers.add(abortController)
     const current = previous
       .catch(() => undefined)
@@ -585,6 +598,7 @@ export class BotService {
         console.error('[YOLO Bot] Failed to run agent turn:', error)
       })
       .finally(() => {
+        clearTimeout(turnTimeoutHandle)
         this.activeTurnAbortControllers.delete(abortController)
       })
     this.turnQueues.set(params.sessionKey, current)

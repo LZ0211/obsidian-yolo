@@ -85,6 +85,24 @@ import {
 } from './message-converter'
 import type { PlatformAdapter, ReplyContent, SentMessageRef } from './types'
 
+/**
+ * Upper bound on one bot turn (the whole agent loop, not a single request).
+ * A stuck turn would otherwise occupy the per-session serial queue forever and
+ * block every later message from the same chat. The abort is signalled with
+ * {@link BOT_TURN_TIMEOUT_REASON} so callers can distinguish a timeout from a
+ * user/plugin cancel.
+ */
+export const BOT_TURN_MAX_DURATION_MS = 10 * 60 * 1000
+export const BOT_TURN_TIMEOUT_REASON = new Error(
+  'Bot turn exceeded the maximum duration',
+)
+
+const BOT_TURN_TIMEOUT_REPLY =
+  'Sorry, this request took too long and was cancelled. Please try again.'
+
+const isTurnTimeoutAbort = (signal: AbortSignal): boolean =>
+  signal.aborted && signal.reason === BOT_TURN_TIMEOUT_REASON
+
 export type RunBotAgentTurnParams = {
   app: App
   settings: YoloSettings
@@ -314,7 +332,19 @@ export async function runBotAgentTurn(
         }
 
         case 'error': {
-          if (runAbortSignal.aborted) break
+          if (runAbortSignal.aborted) {
+            // A user/plugin cancel stays silent; a duration timeout has left
+            // the user waiting for minutes — tell them. An aborted agent run
+            // surfaces here as an error event (see agent-api.ts), not via the
+            // outer catch.
+            if (isTurnTimeoutAbort(runAbortSignal)) {
+              const refs = await adapter.sendMessage(sessionKey, {
+                text: BOT_TURN_TIMEOUT_REPLY,
+              })
+              registerSent(refs)
+            }
+            break
+          }
           console.error('[YOLO Bot] Agent run error:', event.message)
           const refs = await adapter.sendMessage(sessionKey, {
             text: `Sorry, something went wrong: ${event.message.split('\n')[0]}`,
@@ -331,7 +361,21 @@ export async function runBotAgentTurn(
       }
     }
   } catch (error) {
-    if (runAbortSignal.aborted) return
+    if (runAbortSignal.aborted) {
+      // Same timeout notice as the error-event branch (covers a run that
+      // rejects/throws instead of settling into an error event).
+      if (isTurnTimeoutAbort(runAbortSignal)) {
+        try {
+          const refs = await adapter.sendMessage(sessionKey, {
+            text: BOT_TURN_TIMEOUT_REPLY,
+          })
+          registerSent(refs)
+        } catch (sendError) {
+          console.error('[YOLO Bot] Failed to send timeout reply:', sendError)
+        }
+      }
+      return
+    }
     const message = error instanceof Error ? error.message : String(error)
     console.error('[YOLO Bot] Agent turn failed before completion:', error)
     if (streamHandle) {
