@@ -1,4 +1,4 @@
-import { SUBAGENT_BLOCKED_TOOL_NAMES } from './constants'
+import { SUBAGENT_BLOCKED_TOOL_NAMES } from './tool-name-utils'
 
 const blockedSet = new Set(SUBAGENT_BLOCKED_TOOL_NAMES)
 

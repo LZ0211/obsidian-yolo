@@ -12,10 +12,8 @@ import {
   type SubagentAuthorityResolverDependencies,
   resolveCurrentSubagentParentAuthority,
 } from './authority-resolver'
-import {
-  SUBAGENT_BLOCKED_TOOL_NAMES,
-  SUBAGENT_DEFAULT_SYSTEM_PROMPT,
-} from './constants'
+import { SUBAGENT_DEFAULT_SYSTEM_PROMPT } from './constants'
+import { SUBAGENT_BLOCKED_TOOL_NAMES } from './tool-name-utils'
 import type { DelegatedAssistantProfile } from './delegated-assistant-profile'
 import type { SubagentParentContext } from './parent-context'
 import {

@@ -158,7 +158,6 @@ import {
   JS_SANDBOX_FETCH_HARD_MAX_RESPONSE_KB,
   JS_SANDBOX_FETCH_MIN_CONCURRENT,
   JS_SANDBOX_FETCH_MIN_RESPONSE_KB,
-  JS_SANDBOX_TOOL_NAME,
   JS_SANDBOX_VAULT_LIST_MAX_ENTRIES,
   JS_SANDBOX_VAULT_READ_DEFAULT_MAX_KB,
   JS_SANDBOX_VAULT_READ_HARD_MAX_KB,
@@ -169,16 +168,21 @@ import {
   callJsSandboxTool,
   getJsSandboxTool,
 } from './jsSandboxTool'
-import { LOCAL_FILE_TOOL_SERVER } from './localFileToolNames'
+import {
+  ASK_USER_QUESTION_TOOL_NAME,
+  BASH_TOOL_NAME,
+  JS_SANDBOX_TOOL_NAME,
+  LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME,
+  LOCAL_FILE_TOOL_SERVER,
+  LOCAL_FILE_TOOL_SHORT_NAMES,
+  LOCAL_FS_SPLIT_ACTION_TOOL_NAMES,
+  LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION,
+  TERMINAL_COMMAND_TOOL_NAME,
+} from './localFileToolNames'
 import { parseToolName } from './tool-name-utils'
 import { ensureParentFolderExists, validateVaultPath } from './vaultFileOps'
 
-export { getLocalFileToolServerName } from './localFileToolNames'
-
 export { recoverLikelyEscapedBackslashSequences }
-
-export const TERMINAL_COMMAND_TOOL_NAME = 'terminal_command'
-export const BASH_TOOL_NAME = 'bash'
 const MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024
 // fs_edit 读全文做替换的绝对内存防御上限。MAX_FILE_SIZE_BYTES 是"快照阈值"
 // （超过则跳过 undo/review 快照），本常量是"绝对拒绝上限"（超过才真正拒绝编辑）。
@@ -237,52 +241,6 @@ const getContextPrunableToolCallIds = (
   return acceptedToolCallIds
 }
 
-export const LOCAL_FILE_TOOL_SHORT_NAMES = [
-  BASH_TOOL_NAME,
-  'context_prune_tool_results',
-  'context_compact',
-  'fs_read',
-  'fs_edit',
-  'fs_write',
-  'memory_add',
-  'memory_update',
-  'memory_delete',
-  'meta_search',
-  'web_search',
-  'web_scrape',
-  JS_SANDBOX_TOOL_NAME,
-  TERMINAL_COMMAND_TOOL_NAME,
-  'delegate_subagent',
-  'load_tool_schemas',
-  'todo_write',
-  'ask_user_question',
-  'send_attachment',
-] as const
-
-// Excluded from the user-facing Agent settings surface. `load_tool_schemas`
-// is a protocol tool for the on-demand disclosure mechanism, not a user
-// capability. `send_attachment` is a bot-runtime-only capability (Bot
-// Platform Phase 6.5) — it is only ever offered by `agent-runner.ts`
-// appending its FQN directly to a bot run's `allowedToolNames`, never through
-// per-assistant `toolPreferences`, so it must not be enumerable/toggleable in
-// the normal Agent settings UI.
-const NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES = new Set<string>([
-  'load_tool_schemas',
-  'send_attachment',
-])
-
-/**
- * Subset of {@link LOCAL_FILE_TOOL_SHORT_NAMES} that the user actually
- * configures via the Agent settings panel. See
- * {@link NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES} for what's excluded and why.
- * The runtime still dispatches and normalizes excluded tools through
- * `LOCAL_FILE_TOOL_SHORT_NAMES`; they just aren't part of the per-agent tool
- * preference surface.
- */
-export const USER_FACING_LOCAL_TOOL_SHORT_NAMES: readonly string[] =
-  LOCAL_FILE_TOOL_SHORT_NAMES.filter(
-    (name) => !NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES.has(name),
-  )
 type LocalFileToolName = (typeof LOCAL_FILE_TOOL_SHORT_NAMES)[number]
 type ContextPruneMode = 'selected' | 'all'
 // 'delete' | 'create_dir' | 'move' retired with fs_delete/fs_create_dir/fs_move
@@ -367,10 +325,6 @@ type FsEditReviewResult =
       status: ToolCallResponseStatus.Aborted
     }
 
-const LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION = {
-  fs_write: 'write',
-} as const
-
 // Retired path-operation tools kept for the agent editor's toolset grouping
 // (fs_file_ops); the bash tool covers path operations via vaultFileOps.
 export const LOCAL_FS_PATH_OPERATION_TOOL_NAMES = [
@@ -378,12 +332,6 @@ export const LOCAL_FS_PATH_OPERATION_TOOL_NAMES = [
   'fs_create_dir',
   'fs_move',
 ] as const
-
-export const LOCAL_FS_SPLIT_ACTION_TOOL_NAMES = Object.keys(
-  LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION,
-) as Array<keyof typeof LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION>
-
-export const LOCAL_FS_EDIT_TOOL_NAMES = ['fs_edit', 'fs_write'] as const
 
 export const LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES = [
   'memory_add',
@@ -657,8 +605,6 @@ const sliceLinesForFsReadOperation = (
     nextStartLine: hasMoreBelow ? endExclusive + 1 : null,
   }
 }
-
-export const LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME = 'load_tool_schemas'
 
 /**
  * Build the modality enum + description fragment exposed to the current chat
@@ -2002,8 +1948,6 @@ const normalizeLocalToolName = (toolName: string): string => {
 export function isLocalFsWriteToolName(toolName: string): boolean {
   return LOCAL_FS_WRITE_TOOL_NAMES.has(normalizeLocalToolName(toolName))
 }
-
-export const ASK_USER_QUESTION_TOOL_NAME = 'ask_user_question'
 
 export type AskUserQuestionInputType =
   | 'free_text'

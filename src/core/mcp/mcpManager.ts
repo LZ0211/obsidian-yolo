@@ -26,7 +26,6 @@ import {
   WEB_OPS_GROUP_TOOL_NAME,
 } from '../agent/builtinToolUiMeta'
 import type { PromptSourceWatcher } from '../agent/promptSourceWatcher'
-import type { SubagentParentContext } from '../agent/subagent/parent-context'
 import type { AgentRunContext } from '../agent/types'
 import type { RAGEngine } from '../rag/ragEngine'
 import {
@@ -42,12 +41,14 @@ import {
   getJsSandboxSettings,
 } from './jsSandboxSettings'
 import { disposeJsSandbox } from './jsSandboxTool'
-// eslint-disable-next-line import/order -- false positive: sibling group is contiguous; rule miscounts the blank line above this group
 import {
   LOCAL_FS_EDIT_TOOL_NAMES,
+  getLocalFileToolServerName,
+} from './localFileToolNames'
+// eslint-disable-next-line import/order -- false positive: sibling group is contiguous; rule miscounts the blank line above this group
+import {
   LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
   callLocalFileTool,
-  getLocalFileToolServerName,
   getLocalFileTools,
   parseLocalFsActionFromToolArgs,
 } from './localFileTools'
@@ -1155,7 +1156,17 @@ export class McpManager {
     workspaceAccessPolicy?: WorkspaceAccessPolicy
     allowedSkillPaths?: readonly string[]
     runContext?: AgentRunContext
-    subagentParentContext?: SubagentParentContext
+    /**
+     * 与 callLocalFileTool 一致的结构子集（仅消费/转发三个字段）——用完整
+     * SubagentParentContext 会建立 mcpManager → subagent/parent-context 的类型
+     * 边，与 parent-context → mcpManager 互成 2 环并把巨型 SCC 的枚举路径全部
+     * 拉到 parent-context（决策 B 断环，localFileTools.ts 同款声明）。
+     */
+    subagentParentContext?: {
+      workspaceAccessPolicy?: WorkspaceAccessPolicy
+      requestContextBuilder: unknown
+      assistantId?: string
+    }
     /** Effective approval tier for the bash tool; see tool-gateway.ts. */
     bashApprovalMode?: AssistantToolApprovalMode
     /** Forces the structurally read-only bash variant; see tool-gateway.ts. */

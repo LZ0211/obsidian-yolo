@@ -2,7 +2,7 @@ import {
   getInjectedToolGroupName,
   isInjectedBridgeToolName,
 } from './injectionBridge'
-import { USER_FACING_LOCAL_TOOL_SHORT_NAMES } from './localFileTools'
+import { USER_FACING_LOCAL_TOOL_SHORT_NAMES } from './localFileToolNames'
 
 /**
  * 智能体设置工具树中本地工具的可见性：内置工具按

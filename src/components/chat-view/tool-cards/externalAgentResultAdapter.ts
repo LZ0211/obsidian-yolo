@@ -1,7 +1,7 @@
 // Legacy display adapter for persisted external_agent_result messages.
 // Synthesizes a terminal_command tool card so old conversations stay readable.
 
-import { getLocalFileToolServerName } from '../../../core/mcp/localFileTools'
+import { getLocalFileToolServerName } from '../../../core/mcp/localFileToolNames'
 import { getToolName } from '../../../core/mcp/tool-name-utils'
 import type {
   ChatExternalAgentResultMessage,

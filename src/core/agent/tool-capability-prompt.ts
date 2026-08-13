@@ -3,7 +3,7 @@ import {
   LOCAL_FS_EDIT_TOOL_NAMES,
   TERMINAL_COMMAND_TOOL_NAME,
   getLocalFileToolServerName,
-} from '../mcp/localFileTools'
+} from '../mcp/localFileToolNames'
 import { getToolName } from '../mcp/tool-name-utils'
 
 export type ToolCapabilityMode = 'ask' | 'agent'

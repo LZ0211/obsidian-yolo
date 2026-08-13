@@ -20,13 +20,15 @@ import {
   getBuiltinToolDisplayIndex,
   getBuiltinToolUiMeta,
 } from '../../../core/agent/builtinToolUiMeta'
-import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from '../../../core/agent/subagent/constants'
+import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from '../../../core/agent/subagent/tool-name-utils'
 import { getInjectedToolGroup } from '../../../core/mcp/injectedToolGroup'
-import { JS_SANDBOX_TOOL_NAME } from '../../../core/mcp/jsSandboxTool'
 import {
+  JS_SANDBOX_TOOL_NAME,
   LOCAL_FS_EDIT_TOOL_NAMES,
-  LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
   TERMINAL_COMMAND_TOOL_NAME,
+} from '../../../core/mcp/localFileToolNames'
+import {
+  LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
   getLocalFileTools,
 } from '../../../core/mcp/localFileTools'
 import YoloPlugin from '../../../main'

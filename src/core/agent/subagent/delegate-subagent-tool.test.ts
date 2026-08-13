@@ -1,6 +1,6 @@
 import { getLocalFileTools } from '../../mcp/localFileTools'
 
-import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './constants'
+import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './tool-name-utils'
 
 describe('delegate_subagent tool registration', () => {
   it('registers description and prompt as required, plus optional delegation inputs', () => {

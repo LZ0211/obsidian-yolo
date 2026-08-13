@@ -85,12 +85,12 @@ import {
   JS_SANDBOX_VAULT_LIST_MAX_ENTRIES,
   formatJsSandboxToolText,
 } from './jsSandboxTool'
+import { USER_FACING_LOCAL_TOOL_SHORT_NAMES } from './localFileToolNames'
 import {
   buildJsSandboxProxyHandlers,
   callLocalFileTool,
   getLocalFileTools,
   isLocalFsWriteToolName,
-  USER_FACING_LOCAL_TOOL_SHORT_NAMES,
   parseLocalFsActionFromToolArgs,
   recoverLikelyEscapedBackslashSequences,
 } from './localFileTools'

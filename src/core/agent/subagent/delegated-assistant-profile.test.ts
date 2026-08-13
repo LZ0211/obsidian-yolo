@@ -10,10 +10,8 @@ import type { ChatModel } from '../../../types/chat-model.types'
 import { RequestContextBuilder } from '../../../utils/chat/requestContextBuilder'
 import { resolveAssistantSkillPaths } from '../../skills/assistantSkillPaths'
 
-import {
-  SUBAGENT_BLOCKED_TOOL_NAMES,
-  SUBAGENT_MAX_AUTO_ITERATIONS,
-} from './constants'
+import { SUBAGENT_MAX_AUTO_ITERATIONS } from './constants'
+import { SUBAGENT_BLOCKED_TOOL_NAMES } from './tool-name-utils'
 import { resolveDelegatedAssistantProfile } from './delegated-assistant-profile'
 
 jest.mock('../../skills/assistantSkillPaths', () => ({

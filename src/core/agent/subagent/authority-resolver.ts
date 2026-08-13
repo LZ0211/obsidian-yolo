@@ -18,7 +18,7 @@ import type {
 import type { ReasoningLevel } from '../../../types/reasoning'
 import { RequestContextBuilder } from '../../../utils/chat/requestContextBuilder'
 import type { BaseLLMProvider } from '../../llm/base'
-import { getLocalFileToolServerName } from '../../mcp/localFileTools'
+import { getLocalFileToolServerName } from '../../mcp/localFileToolNames'
 import type { McpManager } from '../../mcp/mcpManager'
 import { getToolName } from '../../mcp/tool-name-utils'
 import { resolveConversationFileScope } from '../../workspace/conversationFileScope'
@@ -34,10 +34,8 @@ import {
 } from '../workspaceAgentResolver'
 import { resolveAssistantWorkspaceAccessPolicy } from '../workspaceScope'
 
-import {
-  DELEGATE_SUBAGENT_TOOL_SHORT_NAME,
-  SUBAGENT_MAX_AUTO_ITERATIONS,
-} from './constants'
+import { SUBAGENT_MAX_AUTO_ITERATIONS } from './constants'
+import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './tool-name-utils'
 import {
   type DelegatedAssistantProfile,
   resolveDelegatedAssistantProfile,

@@ -4,7 +4,7 @@ import {
   DEFAULT_CHAT_MODELS,
   DEFAULT_CHAT_TITLE_MODEL_ID,
 } from '../../constants'
-import { SUBAGENT_FORK_CONTEXT_TURNS_DEFAULT } from '../../core/agent/subagent/parent-context'
+import { SUBAGENT_FORK_CONTEXT_TURNS_DEFAULT } from '../../core/agent/subagent/constants'
 import {
   SUBAGENT_RESULT_MAX_CHARS,
   SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH,

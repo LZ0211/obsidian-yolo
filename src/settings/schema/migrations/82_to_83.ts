@@ -1,4 +1,4 @@
-import { SUBAGENT_FORK_CONTEXT_TURNS_DEFAULT } from '../../../core/agent/subagent/parent-context'
+import { SUBAGENT_FORK_CONTEXT_TURNS_DEFAULT } from '../../../core/agent/subagent/constants'
 import type { SettingMigration } from '../setting.types'
 
 /**

@@ -29,8 +29,8 @@ import {
   isCliToolCallCapability,
 } from '../../core/cli-runtime/tool-call'
 import { InvalidToolNameException } from '../../core/mcp/exception'
+import { getLocalFileToolServerName } from '../../core/mcp/localFileToolNames'
 import {
-  getLocalFileToolServerName,
   isAskUserQuestionToolName,
   parseLocalFsActionFromToolArgs,
 } from '../../core/mcp/localFileTools'

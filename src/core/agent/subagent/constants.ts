@@ -1,10 +1,5 @@
-import { getLocalFileToolServerName } from '../../mcp/localFileTools'
-import { getToolName } from '../../mcp/tool-name-utils'
-
 /** Matches parent agent default loop cap (`DEFAULT_AGENT_MAX_AUTO_ITERATIONS`). */
 export const SUBAGENT_MAX_AUTO_ITERATIONS = 100
-
-export const DELEGATE_SUBAGENT_TOOL_SHORT_NAME = 'delegate_subagent'
 
 export const SUBAGENT_DEFAULT_SYSTEM_PROMPT = `You are an isolated temporary sub-agent dispatched by a parent agent.
 
@@ -18,21 +13,7 @@ Guidelines:
 - Prefer focused research, inspection, summarization, or second-opinion work within the task boundary.`
 
 /**
- * Baseline tools blocked for every child subagent run regardless of settings:
- * `delegate_subagent` (no recursive subagent dispatch) and `ask_user_question`
- * (no UI surface to render the prompt). These are runtime-enforced.
- *
- * Tools that merely require approval (`js_eval` with high-risk caps, `fs_edit`
- * in review mode, etc.) are NOT blocked here — their approval requests are
- * routed to the parent conversation's UI (the SubagentCard renders an inline
- * approval block). See `docs/plans/2026-06-18-subagent-tool-approval-routing.md`.
+ * forkContextTurns 缺省值（Task 14 迁移；原住 parent-context.ts——被
+ * settings/schema/setting.types 引用经回流成环，决策 B 断环下沉到此叶子）。
  */
-export const SUBAGENT_BLOCKED_TOOL_SHORT_NAMES: readonly string[] = [
-  DELEGATE_SUBAGENT_TOOL_SHORT_NAME,
-  'ask_user_question',
-]
-
-export const SUBAGENT_BLOCKED_TOOL_NAMES: readonly string[] =
-  SUBAGENT_BLOCKED_TOOL_SHORT_NAMES.map((shortName) =>
-    getToolName(getLocalFileToolServerName(), shortName),
-  )
+export const SUBAGENT_FORK_CONTEXT_TURNS_DEFAULT = 10

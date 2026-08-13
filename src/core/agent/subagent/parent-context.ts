@@ -15,6 +15,7 @@ import type { BaseLLMProvider } from '../../llm/base'
 import type { McpManager } from '../../mcp/mcpManager'
 import type { AgentRuntimeLoopConfig, AgentRuntimeRunInput } from '../types'
 
+import { SUBAGENT_FORK_CONTEXT_TURNS_DEFAULT } from './constants'
 import { truncateSubagentResult } from './result-limit'
 import type { ForkContext } from './types'
 
@@ -58,9 +59,6 @@ export type SubagentParentContext = {
   assistantId?: string
   bypassToolApproval?: boolean
 }
-
-/** Default number of parent messages composed for the `last_turns` fork. */
-export const SUBAGENT_FORK_CONTEXT_TURNS_DEFAULT = 10
 
 /**
  * Cap for the composed whole-history text of the `full` fork. Mirrors the

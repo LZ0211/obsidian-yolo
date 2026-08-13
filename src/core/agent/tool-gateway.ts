@@ -39,6 +39,8 @@ import {
   LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME,
   TERMINAL_COMMAND_TOOL_NAME,
   getLocalFileToolServerName,
+} from '../mcp/localFileToolNames'
+import {
   isAskUserQuestionToolName,
   isLocalFsWriteToolName,
   validateAskUserQuestionArgs,

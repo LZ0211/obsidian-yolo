@@ -6,8 +6,7 @@ import { ToolCallResponseStatus } from '../../types/tool-call.types'
 import { collectWikilinkPaths } from '../../utils/llm/annotate-wikilinks'
 
 import { buildJsSandboxToolDescription } from './jsSandboxSettings'
-
-export const JS_SANDBOX_TOOL_NAME = 'js_eval'
+import { JS_SANDBOX_TOOL_NAME } from './localFileToolNames'
 
 const SANDBOX_CHANNEL = 'yolo-js-sandbox-v1'
 export const JS_SANDBOX_DEFAULT_TIMEOUT_MS = 3000

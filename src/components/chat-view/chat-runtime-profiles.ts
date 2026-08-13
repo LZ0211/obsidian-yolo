@@ -4,7 +4,7 @@ import type { AgentRuntimeLoopConfig } from '../../core/agent/types'
 import {
   BASH_TOOL_NAME,
   getLocalFileToolServerName,
-} from '../../core/mcp/localFileTools'
+} from '../../core/mcp/localFileToolNames'
 import { getToolName } from '../../core/mcp/tool-name-utils'
 import { resolveModuleCapabilityProfile } from '../../core/modules/moduleCapabilityProfile'
 import type { RegisteredModuleChatModeV1 } from '../../core/modules/moduleChatModeRegistry'

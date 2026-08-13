@@ -47,7 +47,7 @@ import { isInjectedBridgeToolName } from '../mcp/injectionBridge'
 import {
   LOCAL_FILE_TOOL_SHORT_NAMES,
   getLocalFileToolServerName,
-} from '../mcp/localFileTools'
+} from '../mcp/localFileToolNames'
 import { McpManager } from '../mcp/mcpManager'
 
 import { CONTEXT_COMPACT_TOOL_NAME } from './compaction'

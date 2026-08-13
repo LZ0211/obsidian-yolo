@@ -4,7 +4,7 @@ import {
   ToolCallResponseStatus,
   createCompleteToolCallArguments,
 } from '../../types/tool-call.types'
-import { getLocalFileToolServerName } from '../mcp/localFileTools'
+import { getLocalFileToolServerName } from '../mcp/localFileToolNames'
 import { getToolName } from '../mcp/tool-name-utils'
 
 import {

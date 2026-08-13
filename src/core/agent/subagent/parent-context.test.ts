@@ -1,9 +1,9 @@
 import type { ChatMessage } from '../../../types/chat'
 import { ToolCallResponseStatus } from '../../../types/tool-call.types'
 
+import { SUBAGENT_FORK_CONTEXT_TURNS_DEFAULT } from './constants'
 import {
   SUBAGENT_FORK_CONTEXT_MAX_CHARS,
-  SUBAGENT_FORK_CONTEXT_TURNS_DEFAULT,
   composeParentContextPrompt,
   getForkContextTurns,
   resetForkContextTurnsSettingsGetter,

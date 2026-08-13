@@ -2,9 +2,9 @@ import type { Assistant } from '../../types/assistant.types'
 import type { McpTool } from '../../types/mcp.types'
 import {
   LOCAL_FS_EDIT_TOOL_NAMES,
-  LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
   getLocalFileToolServerName,
-} from '../mcp/localFileTools'
+} from '../mcp/localFileToolNames'
+import { LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES } from '../mcp/localFileTools'
 import { parseToolName } from '../mcp/tool-name-utils'
 
 import { WEB_OPS_SPLIT_ACTION_TOOL_NAMES } from './builtinToolUiMeta'

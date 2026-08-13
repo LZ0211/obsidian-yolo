@@ -1,7 +1,5 @@
-import {
-  getLocalFileToolServerName,
-  getLocalFileTools,
-} from '../../../core/mcp/localFileTools'
+import { getLocalFileToolServerName } from '../../../core/mcp/localFileToolNames'
+import { getLocalFileTools } from '../../../core/mcp/localFileTools'
 import { getToolName, parseToolName } from '../../../core/mcp/tool-name-utils'
 import type { AssistantToolPreference } from '../../../types/assistant.types'
 import type { McpTool } from '../../../types/mcp.types'

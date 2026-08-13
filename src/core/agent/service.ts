@@ -26,7 +26,7 @@ import { captureLLMDebugOperation } from '../llm/debugCapture'
 import {
   TERMINAL_COMMAND_TOOL_NAME,
   getLocalFileToolServerName,
-} from '../mcp/localFileTools'
+} from '../mcp/localFileToolNames'
 import type { McpManager } from '../mcp/mcpManager'
 import { parseToolName } from '../mcp/tool-name-utils'
 
@@ -50,7 +50,7 @@ import type { AgentFileChangeTracker } from './agentFileChangeTracker'
 import { CitationRegistry } from './citationRegistry'
 import { NativeAgentRuntime } from './native-runtime'
 import { PromptSourceWatcher } from './promptSourceWatcher'
-import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './subagent/constants'
+import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './subagent/tool-name-utils'
 import {
   type SubagentParentContext,
   buildSubagentParentContext,

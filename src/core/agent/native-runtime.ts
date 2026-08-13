@@ -43,8 +43,8 @@ import {
 } from './repeated-tool-failure-guard'
 import { estimateContinuationRequestContextTokens } from './requestContextEstimate'
 import { AgentRuntime } from './runtime'
-import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './subagent/constants'
 import { buildSubagentParentContext } from './subagent/parent-context'
+import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './subagent/tool-name-utils'
 import {
   PARENT_SUBAGENT_TIMEOUT_ERROR,
   clearParentSubagentDeadline,
