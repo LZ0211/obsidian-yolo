@@ -15,10 +15,11 @@ import {
   NativeAgentRuntime,
 } from './native-runtime'
 import {
-  getParentSubagentBreakerState,
   hasParentSubagentDeadline,
+  isParentSubagentDelegationBlocked,
   isParentSubagentToolCallTimedOut,
   markParentSubagentTimeoutSettled,
+  recordParentSubagentTimeout,
   registerParentSubagentDeadline,
   resetParentSubagentBreakers,
   resetParentSubagentDeadlines,
@@ -363,7 +364,6 @@ describe('NativeAgentRuntime parent subagent deadline wiring', () => {
     try {
       await withDeadlineInternals(runtime).registerSubagentDeadlines({
         toolMessage: makeRunningDelegateToolMessage(),
-        runKey: 'run-1',
         conversationId: CONVERSATION_ID,
         toolGateway,
       })
@@ -415,11 +415,11 @@ describe('NativeAgentRuntime parent subagent deadline wiring', () => {
         }),
       ])
 
-      // The per-conversation breaker was incremented.
-      expect(getParentSubagentBreakerState(CONVERSATION_ID)).toMatchObject({
-        consecutiveTimeouts: 1,
-        blocked: false,
-      })
+      // The per-conversation breaker was incremented by the expiry: one more
+      // timeout (maxConsecutive = 2) trips it — observable through the
+      // delegation gate instead of the removed state getter.
+      recordParentSubagentTimeout(CONVERSATION_ID)
+      expect(isParentSubagentDelegationBlocked(CONVERSATION_ID)).toBe(true)
     } finally {
       unsubscribe()
     }
@@ -504,13 +504,11 @@ describe('NativeAgentRuntime parent subagent deadline wiring', () => {
     }
     registerParentSubagentDeadline({
       toolCallId: 'failed-call',
-      runKey: 'run-1',
       conversationId: CONVERSATION_ID,
       onExpire: () => undefined,
     })
     registerParentSubagentDeadline({
       toolCallId: 'kept-call',
-      runKey: 'run-1',
       conversationId: CONVERSATION_ID,
       onExpire: () => undefined,
     })

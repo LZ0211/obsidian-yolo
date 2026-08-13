@@ -148,17 +148,6 @@ export class SubagentTaskRegistry {
     controller.abort()
   }
 
-  abortAllForConversation(conversationId: string): void {
-    for (const record of this.tasks.values()) {
-      if (
-        record.conversationId === conversationId &&
-        record.status === 'running'
-      ) {
-        this.abort(record.taskId)
-      }
-    }
-  }
-
   abortAll(): void {
     for (const controller of this.abortControllers.values()) {
       if (!controller.signal.aborted) {

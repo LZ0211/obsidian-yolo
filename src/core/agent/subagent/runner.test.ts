@@ -648,7 +648,6 @@ describe('approval pause parent deadline renewal (F5)', () => {
     const onExpire = jest.fn()
     registerParentSubagentDeadline({
       toolCallId: 'tc',
-      runKey: 'c',
       conversationId: 'c',
       onExpire,
     })

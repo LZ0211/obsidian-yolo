@@ -12,8 +12,6 @@
 
 export type PendingSubagentDeadline = {
   toolCallId: string
-  /** Parent-side run key that owns the pending subagent dispatch. */
-  runKey: string
   /** Wall-clock time (ms) at which the call is considered hung if not renewed. */
   deadlineAt: number
   /** Renewal window: each heartbeat grants another `timeoutMs`. */
@@ -24,13 +22,11 @@ export type PendingSubagentDeadline = {
 
 export function registerSubagentDeadline(input: {
   toolCallId: string
-  runKey: string
   now: number
   timeoutMs: number
 }): PendingSubagentDeadline {
   return {
     toolCallId: input.toolCallId,
-    runKey: input.runKey,
     deadlineAt: input.now + input.timeoutMs,
     timeoutMs: input.timeoutMs,
     lastHeartbeatAt: input.now,
@@ -43,7 +39,6 @@ export function renewSubagentDeadline(
 ): PendingSubagentDeadline {
   return {
     toolCallId: d.toolCallId,
-    runKey: d.runKey,
     deadlineAt: now + d.timeoutMs,
     timeoutMs: d.timeoutMs,
     lastHeartbeatAt: now,

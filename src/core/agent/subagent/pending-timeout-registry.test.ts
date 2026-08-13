@@ -1,5 +1,4 @@
 import {
-  getParentSubagentTimeoutConfig,
   hasParentSubagentDeadline,
   isParentSubagentDelegationBlocked,
   recordParentSubagentTimeout,
@@ -8,7 +7,6 @@ import {
   resetParentSubagentDeadlines,
   resetParentSubagentTimeoutConfig,
   resetParentSubagentTimeoutSettingsGetter,
-  setParentSubagentTimeoutConfig,
   setParentSubagentTimeoutSettingsGetter,
 } from './pending-timeout-registry'
 
@@ -27,54 +25,6 @@ describe('parent subagent timeout config (settings getter)', () => {
     jest.useRealTimers()
   })
 
-  it('reads the effective timeout config from the settings getter and re-reads it without restart', () => {
-    setParentSubagentTimeoutSettingsGetter(() => ({
-      timeoutMs: 30_000,
-      maxConsecutiveTimeouts: 4,
-      cooldownMs: 60_000,
-    }))
-
-    expect(getParentSubagentTimeoutConfig()).toEqual({
-      timeoutMs: 30_000,
-      maxConsecutiveTimeouts: 4,
-      cooldownMs: 60_000,
-    })
-
-    // A settings change while the plugin is running: the getter is a live read
-    // of current settings, so the new value takes effect without a restart.
-    setParentSubagentTimeoutSettingsGetter(() => ({
-      timeoutMs: 45_000,
-      maxConsecutiveTimeouts: 3,
-      cooldownMs: 90_000,
-    }))
-
-    expect(getParentSubagentTimeoutConfig()).toEqual({
-      timeoutMs: 45_000,
-      maxConsecutiveTimeouts: 3,
-      cooldownMs: 90_000,
-    })
-  })
-
-  it('falls back to the module override, then the defaults, when no settings getter is set', () => {
-    setParentSubagentTimeoutConfig({
-      timeoutMs: 5_000,
-      maxConsecutiveTimeouts: 7,
-      cooldownMs: 10_000,
-    })
-    expect(getParentSubagentTimeoutConfig()).toEqual({
-      timeoutMs: 5_000,
-      maxConsecutiveTimeouts: 7,
-      cooldownMs: 10_000,
-    })
-
-    resetParentSubagentTimeoutConfig()
-    expect(getParentSubagentTimeoutConfig()).toEqual({
-      timeoutMs: 5 * 60 * 1000,
-      maxConsecutiveTimeouts: 2,
-      cooldownMs: 5 * 60 * 1000,
-    })
-  })
-
   it('registers a deadline at the timeout read from the settings getter (no restart)', () => {
     jest.useFakeTimers().setSystemTime(0)
     const onExpire = jest.fn()
@@ -82,7 +32,6 @@ describe('parent subagent timeout config (settings getter)', () => {
 
     registerParentSubagentDeadline({
       toolCallId: 'tc-config',
-      runKey: 'conv',
       conversationId: 'conv',
       onExpire,
     })

@@ -528,7 +528,6 @@ export class NativeAgentRuntime implements AgentRuntime {
                 // when the user approves them (see `AgentService.approveToolCall`).
                 await this.registerSubagentDeadlines({
                   toolMessage: initialToolMessage,
-                  runKey: input.conversationId,
                   conversationId: input.conversationId,
                   toolGateway,
                 })
@@ -980,12 +979,10 @@ export class NativeAgentRuntime implements AgentRuntime {
    */
   private async registerSubagentDeadlines({
     toolMessage,
-    runKey,
     conversationId,
     toolGateway,
   }: {
     toolMessage: ChatToolMessage
-    runKey: string
     conversationId: string
     toolGateway: AgentToolGateway
   }): Promise<void> {
@@ -996,7 +993,6 @@ export class NativeAgentRuntime implements AgentRuntime {
       if (hasParentSubagentDeadline(toolCallId)) continue
       registerParentSubagentDeadline({
         toolCallId,
-        runKey,
         conversationId,
         onExpire: ({
           toolCallId: expiredToolCallId,

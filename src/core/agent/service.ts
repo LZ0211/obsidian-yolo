@@ -1645,7 +1645,6 @@ export class AgentService {
     if (isDelegateSubagentToolName(toolCall.request.name)) {
       this.registerApprovedSubagentDeadline({
         toolCallId,
-        runKey: conversationId,
         conversationId,
         mcpManager: lastRunInput.mcpManager,
       })
@@ -1745,12 +1744,10 @@ export class AgentService {
    */
   private registerApprovedSubagentDeadline({
     toolCallId,
-    runKey,
     conversationId,
     mcpManager,
   }: {
     toolCallId: string
-    runKey: string
     conversationId: string
     mcpManager: McpManager
   }): void {
@@ -1772,7 +1769,6 @@ export class AgentService {
     }
     registerParentSubagentDeadline({
       toolCallId,
-      runKey,
       conversationId,
       onExpire: ({
         toolCallId: expiredToolCallId,
