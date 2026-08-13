@@ -180,28 +180,57 @@ export class VectorManager {
     return this.vectorStore?.listNamespaces?.() ?? []
   }
 
-  /** 兼容上游 UI：清空全部向量。 */
+  /** 兼容上游 UI：清空全部向量（不传参数）或指定模型的向量。 */
   async clearAllVectors(embeddingModelOrId?: string | EmbeddingModelClient): Promise<void> {
-    const namespaces = await this.listNamespaces()
-    for (const ns of namespaces) {
-      const key = ns
-      const targetId =
-        typeof embeddingModelOrId === 'string'
-          ? embeddingModelOrId
-          : embeddingModelOrId?.id
-      if (targetId && key !== targetId) continue
-      await this.vectorStore?.dropNamespaceById?.(ns)
+    if (!this.vectorStore) return
+    if (embeddingModelOrId == null) {
+      for (const ns of await this.listNamespaces()) {
+        await this.vectorStore.dropNamespaceById(ns)
+      }
+      return
     }
+    const client =
+      typeof embeddingModelOrId === 'string'
+        ? this.settings?.embeddingModels?.find(
+            (model) => model.id === embeddingModelOrId,
+          )
+        : embeddingModelOrId
+    if (!client) {
+      console.warn(
+        `[YOLO] Cannot clear embeddings: unknown embedding model ${
+          typeof embeddingModelOrId === 'string'
+            ? embeddingModelOrId
+            : embeddingModelOrId?.id
+        }`,
+      )
+      return
+    }
+    // The namespace key is a derived id (`<model-last-segment>-d<dimension>`),
+    // never the model id — match through getVectorNamespace instead of
+    // comparing the model id against the key string (which never matches, so
+    // the old code silently dropped nothing).
+    await this.vectorStore.dropNamespace?.(this.getVectorNamespace(client))
   }
 
   /** 兼容上游 UI：按模型清空。 */
   async clearVectorsByModelIds(modelIds: string[]): Promise<void> {
-    const namespaces = await this.listNamespaces()
-    for (const ns of namespaces) {
-      const key = ns
-      if (modelIds.includes(key)) {
-        await this.vectorStore?.dropNamespaceById?.(ns)
+    if (!this.vectorStore) return
+    for (const id of modelIds) {
+      const model = this.settings?.embeddingModels?.find(
+        (embeddingModel) => embeddingModel.id === id,
+      )
+      if (!model) {
+        console.warn(
+          `[YOLO] Cannot clear embeddings for unknown model id: ${id}`,
+        )
+        continue
       }
+      await this.vectorStore.dropNamespace?.(
+        createEmbeddingVectorNamespace({
+          model: model.model,
+          dimension: model.dimension,
+        }),
+      )
     }
   }
 
@@ -232,14 +261,16 @@ export class VectorManager {
   > {
     const namespaces = await this.listNamespaces()
     const stats: Array<{ model: string; rowCount: number; totalDataBytes: number }> = []
-    for (const ns of namespaces) {
-      const statsFor = await this.vectorStore?.getStats?.()
-      const model = ns
-      const rowCount = statsFor?.chunkCount ?? 0
+    for (const nsId of namespaces) {
+      // getStats() without a namespace returns the aggregate placeholder with
+      // zeroed counters — derive the namespace object from the id so the per-
+      // namespace row/chunk counts and db file size are real.
+      const ns = namespaceFromNamespaceId(nsId)
+      const statsFor = ns ? await this.vectorStore?.getStats?.(ns) : undefined
       stats.push({
-        model,
-        rowCount,
-        totalDataBytes: 0,
+        model: nsId,
+        rowCount: statsFor?.chunkCount ?? 0,
+        totalDataBytes: statsFor?.fileSizeBytes ?? 0,
       })
     }
     return stats
@@ -526,6 +557,12 @@ export class VectorManager {
         ? allCandidates
         : allCandidates.filter((file) => scope.paths.includes(file.path))
     const candidateSet = new Set(candidateFiles.map((file) => file.path))
+    // Emptied files can't be chunkified, but their old rows must still be
+    // removed — otherwise retrieval keeps returning content that no longer
+    // exists in the vault.
+    const emptyFilePaths = new Set(
+      candidateFiles.filter((file) => file.stat.size === 0).map((f) => f.path),
+    )
 
     const getIndexedFiles = vectorStore.getIndexedFiles?.bind(vectorStore)
     if (!truncate && typeof getIndexedFiles !== 'function') {
@@ -550,17 +587,13 @@ export class VectorManager {
         filesToChunkify.push(file)
         continue
       }
-      // 文件在索引写入之后被修改过 → 待处理；否则（mtime 早于索引时间）
-      // 视为已索引的旧文件。用索引写入时间（updated_at）做基准，不比较
-      // db 存的 mtime，避免 Obsidian TFile.stat 缓存噪声导致重复索引。
+      // 文件在索引时记录的 mtime 之后被修改过 → 待处理。比较基准是写入时
+      // 记录的文件 mtime（rag_files.mtime），不是索引写入时刻（updated_at）：
+      // 用 updated_at 会把索引运行窗口内（可能几分钟）被修改的文件误判为
+      // "未修改"而永久跳过，直到该文件再次被编辑。
+      // readRealFileMtime 走 adapter.stat，值稳定，不会因 TFile.stat 缓存
+      // 噪声误判为"文件变了"而重复索引。
       const realMtime = await this.readRealFileMtime(file)
-      if (existing.updatedAt !== undefined) {
-        if (realMtime > existing.updatedAt * 1000) {
-          filesToChunkify.push(file)
-        }
-        continue
-      }
-      // 老数据无 updated_at：回退 mtime 比较
       if (existing.mtime !== realMtime) {
         filesToChunkify.push(file)
       }
@@ -570,7 +603,10 @@ export class VectorManager {
       const inScope = (path: string) =>
         scope.kind === 'all' ? true : scope.paths.includes(path)
       for (const path of indexedFiles.keys()) {
-        if (!candidateSet.has(path) && inScope(path)) {
+        if (
+          (!candidateSet.has(path) || emptyFilePaths.has(path)) &&
+          inScope(path)
+        ) {
           await vectorStore.deleteFile(namespace, path)
         }
       }
@@ -681,6 +717,12 @@ export class VectorManager {
 
         if (permanentFailed) {
           permanentFailedPaths.push(file.path)
+        }
+        if (fileWrite.chunks.length === 0) {
+          // Nothing was embedded (whole-file permanent failure): keep the old
+          // indexed rows instead of replacing the file with an empty write
+          // (which would erase previously indexed content).
+          return
         }
         await enqueueWrite(fileWrite, permanentFailed)
       } catch (error) {
@@ -956,6 +998,15 @@ export class VectorManager {
     }
 
     if (wholeBatchFailed) {
+      if (failedChunks.length > 0) {
+        // The whole batch failed permanently (a transient failure would have
+        // thrown RagIndexIncompleteError above). Record the file as a
+        // permanent failure so the caller keeps whatever earlier batches
+        // succeeded and does NOT re-embed the doomed chunks on every future
+        // reconcile — the previous behavior classified the file as a
+        // transient chunkify failure and re-ran all its embeddings each run.
+        return { chunks: writes, permanentFailed: true }
+      }
       throw new Error(
         'Embedding halted: an entire batch failed to embed and indexing was stopped before completing all chunks.',
       )
@@ -1030,4 +1081,18 @@ function throwIfVectorSearchAborted(signal?: AbortSignal): void {
   const error = new Error('Vector search cancelled')
   error.name = 'AbortError'
   throw error
+}
+
+/**
+ * Reverse of `vectorNamespaceId`: reconstructs a VectorNamespace from a
+ * namespace id (`<model>-d<dimension>`). Normalization is idempotent, so the
+ * reconstructed model segment re-derives the same key. Returns null for ids
+ * that don't carry the `-d<n>` suffix (e.g. non-vector namespaces).
+ */
+function namespaceFromNamespaceId(id: string): VectorNamespace | null {
+  const match = id.match(/^(.*)-d(\d+)$/)
+  if (!match) return null
+  const dimension = Number(match[2])
+  if (!Number.isFinite(dimension) || dimension <= 0) return null
+  return createEmbeddingVectorNamespace({ model: match[1], dimension })
 }
