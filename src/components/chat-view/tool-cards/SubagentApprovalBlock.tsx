@@ -10,8 +10,8 @@ import {
   handleRuntimeToolRejection,
 } from '../runtime-action-handlers'
 
-import { SubagentDetailModal } from './SubagentDetailModal'
 import { buildSubagentApprovalSummary } from './subagentApprovalSummary'
+import { SubagentDetailModal } from './SubagentDetailModal'
 
 export type SubagentPendingApproval = {
   toolCallId: string

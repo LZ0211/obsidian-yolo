@@ -2,9 +2,9 @@ import { v4 as uuidv4 } from 'uuid'
 
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import {
+  AgentFileChange,
   ChatConversationCompactionLike,
   ChatConversationCompactionState,
-  AgentFileChange,
   ChatMessage,
   ChatSubagentResultMessage,
   ChatTerminalCommandResultMessage,
@@ -29,7 +29,12 @@ import {
 } from '../mcp/localFileToolNames'
 import type { McpManager } from '../mcp/mcpManager'
 import { parseToolName } from '../mcp/tool-name-utils'
+import {
+  MemoryExtractionQueue,
+  type MemoryExtractionQueueTask,
+} from '../memory/memoryExtractionQueue'
 
+import type { AgentFileChangeTracker } from './agentFileChangeTracker'
 import {
   type BackgroundTaskEvent,
   type SubagentCumulativeUsage,
@@ -41,12 +46,6 @@ import {
 } from './bash/command-classifier'
 import type { BashTaskRecord } from './bash/types'
 import { DEFAULT_BRANCH_ID } from './branch'
-import {
-  MemoryExtractionQueue,
-  type MemoryExtractionQueueTask,
-} from '../memory/memoryExtractionQueue'
-import type { MemoryExtractionRequest } from './types'
-import type { AgentFileChangeTracker } from './agentFileChangeTracker'
 import {
   CitationRegistry,
   attachSourcesToLatestAssistant,
@@ -84,6 +83,7 @@ import type {
   SubagentTaskSummary,
 } from './subagent/types'
 import { SystemPromptSnapshotStore } from './systemPromptSnapshotStore'
+import type { MemoryExtractionRequest } from './types'
 import {
   AgentRunContext,
   AgentRuntimeLoopConfig,
@@ -2535,7 +2535,7 @@ export class AgentService {
     const runtimeInput: AgentRuntimeRunInput = {
       ...input,
       runContext,
-      enqueueMemoryExtraction: Boolean(input.systemPromptOverride)
+      enqueueMemoryExtraction: input.systemPromptOverride
         ? undefined
         : (request) => {
             this.memoryExtractionQueue.enqueue({

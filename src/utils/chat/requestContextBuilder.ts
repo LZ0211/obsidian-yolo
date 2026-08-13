@@ -13,30 +13,31 @@ import type {
   SystemPromptSnapshot,
   SystemPromptSnapshotStore,
 } from '../../core/agent/systemPromptSnapshotStore'
+import { executeSingleTurn } from '../../core/ai/single-turn'
+import type { BaseLLMProvider } from '../../core/llm/base'
+import { getChatModelClient } from '../../core/llm/manager'
 import { runMemoryAgentWithFallback } from '../../core/memory/memoryAgent'
 import { MemoryEmbeddingStore } from '../../core/memory/memoryEmbeddings'
 import {
-  buildMemoryPartition,
   type MemoryIndexMaintenanceStore,
+  buildMemoryPartition,
 } from '../../core/memory/memoryIndex'
 import type { MemoryIndexRuntimeHandle } from '../../core/memory/memoryIndexRuntime'
-import {
-  MAX_RECALL_RECENT_USER_MESSAGES,
-  MemoryRecallOrchestrator,
-} from '../../core/memory/memoryRecallOrchestrator'
-import { executeSingleTurn } from '../../core/ai/single-turn'
-import { getChatModelClient } from '../../core/llm/manager'
-import { getEmbeddingModelClient } from '../../core/rag/embedding'
-import { QueryEmbeddingMemoryCache } from '../../core/rag/queryEmbeddingMemoryCache'
 import {
   getMemoryPromptContext,
   loadMemorySourceSnapshot,
   resolveMemoryFilePaths,
 } from '../../core/memory/memoryManager'
 import {
+  MAX_RECALL_RECENT_USER_MESSAGES,
+  MemoryRecallOrchestrator,
+} from '../../core/memory/memoryRecallOrchestrator'
+import {
   getProjectInstructionsSection,
   resolveProjectInstructionFilePaths,
 } from '../../core/project-instructions'
+import { getEmbeddingModelClient } from '../../core/rag/embedding'
+import { QueryEmbeddingMemoryCache } from '../../core/rag/queryEmbeddingMemoryCache'
 import {
   type LiteSkillScope,
   getLiteSkillDocument,
@@ -61,9 +62,7 @@ import type {
   ChatUserMessage,
 } from '../../types/chat'
 import { getLatestChatConversationCompaction } from '../../types/chat'
-import type { BaseLLMProvider } from '../../core/llm/base'
 import type { ChatModel } from '../../types/chat-model.types'
-import type { LLMProvider } from '../../types/provider.types'
 import type { ContentPart, RequestMessage } from '../../types/llm/request'
 import type {
   Mentionable,
@@ -78,6 +77,7 @@ import type {
   MentionableTextAttachment,
   MentionableWebSelection,
 } from '../../types/mentionable'
+import type { LLMProvider } from '../../types/provider.types'
 import type { ToolCallRequest } from '../../types/tool-call.types'
 import {
   createCompleteToolCallArguments,

@@ -32,7 +32,6 @@ import {
 import { AgentLlmTurnExecutor } from './llm-turn-executor'
 import { applyLoopPolicy } from './loop-policy'
 import { createAgentLoopWorker } from './loop-worker'
-import type { ResponsesContinuation } from './responsesContinuation'
 import {
   applyRepeatedReadCallGuard,
   createRepeatedReadCallGuardState,
@@ -42,9 +41,9 @@ import {
   createRepeatedToolFailureGuardState,
 } from './repeated-tool-failure-guard'
 import { estimateContinuationRequestContextTokens } from './requestContextEstimate'
+import type { ResponsesContinuation } from './responsesContinuation'
 import { AgentRuntime } from './runtime'
 import { buildSubagentParentContext } from './subagent/parent-context'
-import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './subagent/tool-name-utils'
 import {
   PARENT_SUBAGENT_TIMEOUT_ERROR,
   clearParentSubagentDeadline,
@@ -56,6 +55,7 @@ import {
   registerParentSubagentDeadline,
 } from './subagent/pending-timeout-registry'
 import { subagentTaskRegistry } from './subagent/task-registry'
+import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './subagent/tool-name-utils'
 import type {
   SubagentTaskCompletionRecord,
   SubagentTaskSummary,
