@@ -94,11 +94,17 @@ export const buildServerToolTokenBudgets = async (
  * Built-in tools that default to **off** even when the user has never
  * customized preferences. Kept here as the single source of truth so both UI
  * and runtime read the same policy.
+ *
+ * Dual read: both the legacy split tool names (`context_compact`,
+ * `context_prune_tool_results`) and the consolidated capability-key group
+ * (`context_manage`) are listed — the default-off policy applies whichever
+ * form a preference was persisted under (pre/post 82→83 migration).
  */
 export const BUILTIN_DEFAULT_DISABLED_TOOL_SHORT_NAMES: ReadonlySet<string> =
   new Set([
     'context_prune_tool_results',
     'context_compact',
+    'context_manage',
     'delegate_subagent',
     JS_SANDBOX_TOOL_NAME,
     'terminal_command',

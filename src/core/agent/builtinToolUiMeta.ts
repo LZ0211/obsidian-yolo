@@ -12,6 +12,18 @@ export const FILE_OPS_GROUP_TOOL_NAME = 'fs_file_ops'
 export const MEMORY_OPS_GROUP_TOOL_NAME = 'memory_ops'
 export const WEB_OPS_GROUP_TOOL_NAME = 'web_ops'
 export const SCHEDULED_TASK_OPS_GROUP_TOOL_NAME = 'scheduled_task_ops'
+export const CONTEXT_MANAGE_GROUP_TOOL_NAME = 'context_manage'
+
+/**
+ * Legacy split tools folded into the `context_manage` group (migration 82→83
+ * capability keys `context_manage:compact/prune`). Still registered and
+ * dispatchable for model/legacy compatibility, but hidden from the settings
+ * tool rows — the group row is the single switch surface.
+ */
+export const CONTEXT_MANAGE_LEGACY_SPLIT_TOOL_NAMES: readonly string[] = [
+  'context_compact',
+  'context_prune_tool_results',
+]
 
 export type BuiltinToolOptionLike = {
   disabled?: boolean
@@ -163,6 +175,13 @@ export const BUILTIN_TOOL_UI_META: Record<string, BuiltinToolUiMeta> = {
     descFallback:
       'Grouped scheduled task operations: create, update, delete, list, get, and run tasks now.',
   },
+  [CONTEXT_MANAGE_GROUP_TOOL_NAME]: {
+    labelKey: 'settings.agent.builtinContextManageLabel',
+    descKey: 'settings.agent.builtinContextManageDesc',
+    labelFallback: 'Context Management Toolset',
+    descFallback:
+      'Grouped context operations: compact earlier history into a summary, or prune historical tool results from model-visible context.',
+  },
   // The legacy split names (scheduled_task_create/update/delete/list/get/
   // run_now) intentionally have no UI meta: the consolidated scheduled_task_ops
   // is registered, and the split names survive only in the historical
@@ -254,6 +273,7 @@ const BUILTIN_TOOL_CATEGORY_MAP: Record<string, BuiltinToolCategory> = {
   [FILE_OPS_GROUP_TOOL_NAME]: 'vault',
   context_prune_tool_results: 'context',
   context_compact: 'context',
+  [CONTEXT_MANAGE_GROUP_TOOL_NAME]: 'context',
   load_tool_schemas: 'context',
   todo_write: 'context',
   ask_user_question: 'context',

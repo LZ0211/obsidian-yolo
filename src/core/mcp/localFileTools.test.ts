@@ -1469,6 +1469,164 @@ describe('local fs tool action helpers', () => {
     })
   })
 
+  describe('context_manage consolidated group', () => {
+    it('registers with the consolidated schema advertising compact and prune actions', () => {
+      const tool = getLocalFileTools().find((t) => t.name === 'context_manage')
+      expect(tool).toBeDefined()
+      expect(tool?.inputSchema.properties?.action).toMatchObject({
+        type: 'string',
+        enum: ['compact', 'prune'],
+      })
+      expect(
+        (tool?.inputSchema.properties?.action as { enum: string[] }).enum,
+      ).toEqual(['compact', 'prune'])
+    })
+
+    it('dispatches action compact onto the existing compact execution logic', async () => {
+      const result = await callLocalFileTool({
+        app: { vault: {} } as unknown as App,
+        toolCallId: 'cm-compact-1',
+        toolName: 'context_manage',
+        args: {
+          action: 'compact',
+          reason: 'long thread',
+          instruction: 'keep the API contract details',
+        },
+      })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      if (result.status !== ToolCallResponseStatus.Success) {
+        throw new Error('expected success')
+      }
+      // The result keeps the legacy split tool name so the compaction
+      // pipeline (parseCompactOperationResult / findCompactTrigger /
+      // findCompactToolCallId) stays untouched.
+      expect(JSON.parse(result.text)).toEqual({
+        tool: 'context_compact',
+        toolCallId: 'cm-compact-1',
+        operation: 'compact_restart',
+        reason: 'long thread',
+        instruction: 'keep the API contract details',
+      })
+    })
+
+    it('dispatches action prune selected onto the prune execution logic', async () => {
+      const result = await callLocalFileTool({
+        app: { vault: {} } as unknown as App,
+        toolCallId: 'cm-prune-1',
+        toolName: 'context_manage',
+        conversationMessages: [
+          {
+            role: 'tool',
+            id: 'tool-message-1',
+            toolCalls: [
+              {
+                request: {
+                  id: 'edit-1',
+                  name: 'yolo_local__fs_edit',
+                  arguments: createCompleteToolCallArguments({ value: {} }),
+                },
+                response: {
+                  status: ToolCallResponseStatus.Success,
+                  data: { type: 'text', text: '{}' },
+                },
+              },
+            ],
+          },
+        ],
+        args: {
+          action: 'prune',
+          mode: 'selected',
+          toolCallIds: ['edit-1', 'read-2'],
+          reason: 'superseded',
+        },
+      })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      if (result.status !== ToolCallResponseStatus.Success) {
+        throw new Error('expected success')
+      }
+      expect(JSON.parse(result.text)).toMatchObject({
+        tool: 'context_prune_tool_results',
+        toolCallId: 'cm-prune-1',
+        operation: 'prune_selected',
+        acceptedToolCallIds: ['edit-1'],
+        ignoredToolCallIds: ['read-2'],
+        reason: 'superseded',
+      })
+    })
+
+    it('dispatches action prune all without toolCallIds', async () => {
+      const result = await callLocalFileTool({
+        app: { vault: {} } as unknown as App,
+        toolName: 'context_manage',
+        conversationMessages: [
+          {
+            role: 'tool',
+            id: 'tool-message-1',
+            toolCalls: [
+              {
+                request: {
+                  id: 'edit-1',
+                  name: 'yolo_local__fs_edit',
+                  arguments: createCompleteToolCallArguments({ value: {} }),
+                },
+                response: {
+                  status: ToolCallResponseStatus.Success,
+                  data: { type: 'text', text: '{}' },
+                },
+              },
+            ],
+          },
+        ],
+        args: {
+          action: 'prune',
+          mode: 'all',
+        },
+      })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      if (result.status !== ToolCallResponseStatus.Success) {
+        throw new Error('expected success')
+      }
+      expect(JSON.parse(result.text)).toMatchObject({
+        tool: 'context_prune_tool_results',
+        operation: 'prune_all',
+        acceptedToolCallIds: ['edit-1'],
+      })
+    })
+
+    it('rejects an unknown action up front instead of dispatching it', async () => {
+      const result = await callLocalFileTool({
+        app: { vault: {} } as unknown as App,
+        toolName: 'context_manage',
+        args: { action: 'explode' },
+      })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      if (result.status === ToolCallResponseStatus.Error) {
+        expect(result.error).toContain('unknown action explode')
+      }
+    })
+
+    it('rejects compact with prune-only fields via the consolidated validator', async () => {
+      const result = await callLocalFileTool({
+        app: { vault: {} } as unknown as App,
+        toolName: 'context_manage',
+        args: {
+          action: 'compact',
+          mode: 'all',
+          toolCallIds: ['edit-1'],
+        },
+      })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      if (result.status === ToolCallResponseStatus.Error) {
+        expect(result.error).toContain('compact rejects mode/toolCallIds')
+      }
+    })
+  })
+
   it('handles memory tools through local tool dispatcher', async () => {
     const entries = new Map<string, unknown>()
     const contents = new Map<string, string>()

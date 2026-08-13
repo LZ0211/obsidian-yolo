@@ -770,6 +770,18 @@ export function getLocalFileTools(options?: {
         },
       },
     },
+    // Consolidated group tool (migration 82→83 capability key
+    // `context_manage:compact/prune`). Registered like project_ops /
+    // scheduled_task_ops: a single `action`-switched tool covering both the
+    // compact and prune operations. The legacy split tools
+    // (context_compact / context_prune_tool_results) stay registered and
+    // dispatchable — they map to the same execution logic below.
+    {
+      name: 'context_manage',
+      description:
+        'Manage conversation context. Pass action plus the action-specific fields: action="compact" summarizes earlier history into a fresh context window (optional instruction focus hint), action="prune" excludes selected or all historical tool results from future model-visible context without deleting chat history (mode="selected" requires toolCallIds, mode="all" prunes every prunable call).',
+      inputSchema: buildConsolidatedToolSchemas().context_manage,
+    },
     {
       name: 'fs_read',
       description: [
@@ -2692,6 +2704,78 @@ export async function callLocalFileTool({
             instruction:
               getOptionalTextArg(args, 'instruction')?.trim() || null,
           }),
+        }
+      }
+
+      // Consolidated context_manage group dispatch. Maps each action onto the
+      // existing split-tool execution logic; the result keeps the legacy split
+      // tool name in the `tool` field so the compaction pipeline
+      // (parseCompactOperationResult / findCompactTrigger /
+      // findCompactToolCallId) stays untouched. `action` is validated through
+      // resolveConsolidatedAction + validateConsolidatedAction below; the
+      // fallthrough error mirrors project_ops/scheduled_task_ops.
+      case 'context_manage': {
+        const capability = resolveConsolidatedAction('context_manage', args)
+        validateConsolidatedAction(capability, args)
+        switch (capability.action) {
+          case 'compact': {
+            return {
+              status: ToolCallResponseStatus.Success,
+              text: formatJsonResult({
+                tool: 'context_compact',
+                toolCallId: toolCallId ?? null,
+                operation: 'compact_restart',
+                reason: getOptionalTextArg(args, 'reason')?.trim() || null,
+                instruction:
+                  getOptionalTextArg(args, 'instruction')?.trim() || null,
+              }),
+            }
+          }
+          case 'prune': {
+            const mode = getContextPruneMode(args)
+
+            const prunableToolCallIds = getContextPrunableToolCallIds(
+              conversationMessages,
+              toolCallId,
+            )
+            const toolCallIds =
+              mode === 'all'
+                ? [...prunableToolCallIds]
+                : getStringArrayArg(args, 'toolCallIds')
+                    .map((value) => value.trim())
+                    .filter(
+                      (value, index, arr) =>
+                        value.length > 0 && arr.indexOf(value) === index,
+                    )
+
+            if (mode === 'selected' && toolCallIds.length === 0) {
+              throw new Error(
+                'toolCallIds cannot be empty when mode is selected.',
+              )
+            }
+
+            const acceptedToolCallIds = toolCallIds.filter((value) =>
+              prunableToolCallIds.has(value),
+            )
+            const ignoredToolCallIds = toolCallIds.filter(
+              (value) => !prunableToolCallIds.has(value),
+            )
+
+            return {
+              status: ToolCallResponseStatus.Success,
+              text: formatJsonResult({
+                tool: 'context_prune_tool_results',
+                toolCallId: toolCallId ?? null,
+                operation: mode === 'all' ? 'prune_all' : 'prune_selected',
+                acceptedToolCallIds,
+                ignoredToolCallIds,
+                reason: getOptionalTextArg(args, 'reason')?.trim() || null,
+              }),
+            }
+          }
+          default:
+            // Unreachable: resolve+validate reject unknown actions above.
+            throw new Error(`Unsupported context_manage action: ${capability.action}`)
         }
       }
 

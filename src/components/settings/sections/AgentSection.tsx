@@ -8,6 +8,7 @@ import { usePlugin } from '../../../contexts/plugin-context'
 import { useSettings } from '../../../contexts/settings-context'
 import { getAssistantModelDisplayLabel } from '../../../core/agent/assistant-model'
 import {
+  CONTEXT_MANAGE_LEGACY_SPLIT_TOOL_NAMES,
   FILE_EDIT_GROUP_TOOL_NAME,
   MEMORY_OPS_GROUP_TOOL_NAME,
   WEB_OPS_GROUP_TOOL_NAME,
@@ -59,6 +60,9 @@ const SPLIT_MEMORY_TOOL_NAME_SET = new Set<string>(
   LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
 )
 const SPLIT_WEB_TOOL_NAME_SET = new Set<string>(WEB_OPS_SPLIT_ACTION_TOOL_NAMES)
+const SPLIT_CONTEXT_TOOL_NAME_SET = new Set<string>(
+  CONTEXT_MANAGE_LEGACY_SPLIT_TOOL_NAMES,
+)
 
 class TemplatePickerModal extends SuggestModal<Assistant> {
   constructor(
@@ -330,6 +334,7 @@ export function AgentSection({ app }: AgentSectionProps) {
           !EDIT_FS_TOOL_NAME_SET.has(tool.name) &&
           !SPLIT_MEMORY_TOOL_NAME_SET.has(tool.name) &&
           !SPLIT_WEB_TOOL_NAME_SET.has(tool.name) &&
+          !SPLIT_CONTEXT_TOOL_NAME_SET.has(tool.name) &&
           (USER_FACING_LOCAL_TOOL_SHORT_NAMES.includes(tool.name) ||
             isInjectedBridgeToolName(tool.name)),
       )

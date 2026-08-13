@@ -79,6 +79,20 @@ describe('tool-preferences defaults', () => {
       expect(getDefaultEnabledForTool('yolo_local__js_eval')).toBe(false)
     })
 
+    it('dual-reads the context_manage group default-off policy under both the legacy split names and the capability-key group', () => {
+      // Legacy split names (pre-82→83 form).
+      expect(
+        getDefaultEnabledForTool('yolo_local__context_prune_tool_results'),
+      ).toBe(false)
+      expect(getDefaultEnabledForTool('yolo_local__context_compact')).toBe(
+        false,
+      )
+      // Consolidated capability-key group form (post-migration form).
+      expect(getDefaultEnabledForTool('yolo_local__context_manage')).toBe(
+        false,
+      )
+    })
+
     it('returns false for third-party MCP tools', () => {
       expect(getDefaultEnabledForTool('Gemini__get_all_tabs')).toBe(false)
       expect(getDefaultEnabledForTool('some_server__some_tool')).toBe(false)

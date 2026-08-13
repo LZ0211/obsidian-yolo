@@ -12,6 +12,8 @@ import {
   BUILTIN_TOOL_CATEGORY_I18N,
   BUILTIN_TOOL_CATEGORY_ORDER,
   BuiltinToolCategory,
+  CONTEXT_MANAGE_GROUP_TOOL_NAME,
+  CONTEXT_MANAGE_LEGACY_SPLIT_TOOL_NAMES,
   FILE_EDIT_GROUP_TOOL_NAME,
   MEMORY_OPS_GROUP_TOOL_NAME,
   WEB_OPS_GROUP_TOOL_NAME,
@@ -52,6 +54,9 @@ const SPLIT_MEMORY_TOOL_NAME_SET = new Set<string>(
   LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
 )
 const SPLIT_WEB_TOOL_NAME_SET = new Set<string>(WEB_OPS_SPLIT_ACTION_TOOL_NAMES)
+const SPLIT_CONTEXT_TOOL_NAME_SET = new Set<string>(
+  CONTEXT_MANAGE_LEGACY_SPLIT_TOOL_NAMES,
+)
 
 export class AgentToolsModal extends ReactModal<AgentToolsModalProps> {
   constructor(app: App, plugin: YoloPlugin) {
@@ -103,7 +108,8 @@ function AgentToolsModalContent({
         (tool) =>
           !EDIT_FS_TOOL_NAME_SET.has(tool.name) &&
           !SPLIT_MEMORY_TOOL_NAME_SET.has(tool.name) &&
-          !SPLIT_WEB_TOOL_NAME_SET.has(tool.name),
+          !SPLIT_WEB_TOOL_NAME_SET.has(tool.name) &&
+          !SPLIT_CONTEXT_TOOL_NAME_SET.has(tool.name),
       )
       .map((tool) => {
         const meta = getBuiltinToolUiMeta(tool.name)
@@ -233,7 +239,12 @@ function AgentToolsModalContent({
             ]
           : toolName === WEB_OPS_GROUP_TOOL_NAME
             ? [WEB_OPS_GROUP_TOOL_NAME, ...WEB_OPS_SPLIT_ACTION_TOOL_NAMES]
-            : [toolName]
+            : toolName === CONTEXT_MANAGE_GROUP_TOOL_NAME
+              ? [
+                  CONTEXT_MANAGE_GROUP_TOOL_NAME,
+                  ...CONTEXT_MANAGE_LEGACY_SPLIT_TOOL_NAMES,
+                ]
+              : [toolName]
     const nextBuiltinToolOptions = { ...settings.mcp.builtinToolOptions }
     for (const target of targets) {
       nextBuiltinToolOptions[target] = {

@@ -38,6 +38,7 @@ import {
   BUILTIN_TOOL_CATEGORY_I18N,
   BUILTIN_TOOL_CATEGORY_ORDER,
   type BuiltinToolCategory,
+  CONTEXT_MANAGE_LEGACY_SPLIT_TOOL_NAMES,
   FILE_EDIT_GROUP_TOOL_NAME,
   FILE_OPS_GROUP_TOOL_NAME,
   MEMORY_OPS_GROUP_TOOL_NAME,
@@ -204,6 +205,9 @@ const SPLIT_MEMORY_TOOL_NAME_SET = new Set<string>(
   LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
 )
 const SPLIT_WEB_TOOL_NAME_SET = new Set<string>(WEB_OPS_SPLIT_ACTION_TOOL_NAMES)
+const SPLIT_CONTEXT_TOOL_NAME_SET = new Set<string>(
+  CONTEXT_MANAGE_LEGACY_SPLIT_TOOL_NAMES,
+)
 
 const AGENT_EDITOR_TABS: AgentEditorTab[] = [
   'profile',
@@ -1496,6 +1500,12 @@ export function AgentsSectionContent({
       }
       if (isBuiltin && SPLIT_WEB_TOOL_NAME_SET.has(toolName)) {
         localWebSplitToolTargets.add(tool.name)
+        return
+      }
+      // context_manage legacy split tools are represented by the registered
+      // context_manage group row — skip them so the per-agent editor keeps a
+      // single switch surface.
+      if (isBuiltin && SPLIT_CONTEXT_TOOL_NAME_SET.has(toolName)) {
         return
       }
 
