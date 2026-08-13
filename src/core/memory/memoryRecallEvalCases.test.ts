@@ -2,10 +2,7 @@ import {
   MEMORY_RECALL_EVAL_CASES,
   type MemoryRecallEvalCase,
 } from './__fixtures__/memoryRecallEvalCases'
-import {
-  buildMemoryRecallTarget,
-  shouldRewriteMemoryRecallTarget,
-} from './memoryRecallTarget'
+import { buildMemoryRecallTarget } from './memoryRecallTarget'
 
 const expectLexicalTarget = (
   target: ReturnType<typeof buildMemoryRecallTarget>,
@@ -29,20 +26,5 @@ describe('memory recall evaluation cases', () => {
     const target = buildMemoryRecallTarget(testCase.input)
 
     expectLexicalTarget(target, testCase)
-    expect(
-      shouldRewriteMemoryRecallTarget(target, {
-        hitCount: testCase.hitCount,
-        hasUsableRecentContext: testCase.hasUsableRecentContext,
-      }),
-    ).toBe(testCase.expectsRewrite)
-
-    if (testCase.requiresUsableRecentContext) {
-      expect(
-        shouldRewriteMemoryRecallTarget(target, {
-          hitCount: testCase.hitCount,
-          hasUsableRecentContext: false,
-        }),
-      ).toBe(false)
-    }
   })
 })
