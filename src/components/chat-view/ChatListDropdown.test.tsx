@@ -62,6 +62,7 @@ import {
 } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
+import type { KeymapEventListener, Modifier } from 'obsidian'
 import type { ChatConversationMetadata } from '../../database/json/chat/types'
 
 import {
@@ -934,14 +935,17 @@ describe('resolveChatListDeleteConfirmation', () => {
 })
 
 const createFakeScope = () => {
-  const handlers = new Map<string, () => false | undefined>()
+  const handlers = new Map<string, () => boolean | undefined>()
   return {
     register: (
-      modifiers: string[] | null,
+      modifiers: Modifier[] | null,
       key: string | null,
-      func: () => false | undefined,
+      func: KeymapEventListener,
     ) => {
-      handlers.set(`${(modifiers ?? []).join('+')}:${key}`, func)
+      handlers.set(
+        `${(modifiers ?? []).join('+')}:${key}`,
+        func as () => boolean | undefined,
+      )
       return {} as never
     },
     trigger(modifiers: string[], key: string) {

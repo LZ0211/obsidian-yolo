@@ -2052,7 +2052,7 @@ export function ChatListDropdown({
   // DOM 监听根本收不到；scope 跨窗口有效（issue #567，pjeby）。
   useEffect(() => {
     if (!open) return
-    const panelScope = new Scope(app.keymap.scope)
+    const panelScope = new Scope((app.keymap as unknown as { scope: Scope }).scope)
     registerChatListPanelKeys(panelScope, {
       onEscape: () => panelKeyHandlersRef.current.onEscape(),
       shouldIgnoreListKeys: () =>
@@ -2078,7 +2078,7 @@ export function ChatListDropdown({
   // 刚 push 的弹层 scope，菜单关掉后自动回到弹层那一层。
   useEffect(() => {
     if (activeMenuId === null) return
-    const menuScope = new Scope(panelScopeRef.current ?? app.keymap.scope)
+    const menuScope = new Scope(panelScopeRef.current ?? (app.keymap as unknown as { scope: Scope }).scope)
     registerChatListMenuKeys(menuScope, {
       onEscape: closeContextMenu,
       onMove: (key) => {
