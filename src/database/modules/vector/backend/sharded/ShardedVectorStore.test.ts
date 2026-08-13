@@ -190,6 +190,106 @@ class WriteFailVaultAdapter extends InMemoryVaultAdapter {
   }
 }
 
+/**
+ * Adapter double that parks the next `vectors.f32` writeBinary until
+ * released. Simulates the exact mid-write window the reader-writer lock
+ * protects: the chunk row is already in chunks.sqlite while vectors.f32/
+ * index.bin still describe the pre-write shard.
+ */
+class BlockVectorsWriteVaultAdapter extends InMemoryVaultAdapter {
+  private armBlock = false
+  private parked = false
+  private parkWaiters: Array<() => void> = []
+  private releaseResolve: (() => void) | null = null
+
+  blockNextVectorsWrite(): void {
+    this.armBlock = true
+  }
+
+  /** Resolves once the parked vectors.f32 write is in flight. */
+  waitUntilBlocked(): Promise<void> {
+    if (this.parked) return Promise.resolve()
+    return new Promise((resolve) => {
+      this.parkWaiters.push(resolve)
+    })
+  }
+
+  releaseBlockedWrite(): void {
+    this.releaseResolve?.()
+  }
+
+  override writeBinary(value: string, data: ArrayBuffer): Promise<void> {
+    if (this.armBlock && value.replace(/\\/g, '/').endsWith('/vectors.f32')) {
+      this.armBlock = false
+      this.parked = true
+      for (const resolve of this.parkWaiters.splice(0)) resolve()
+      return new Promise<void>((resolve) => {
+        this.releaseResolve = () => {
+          this.releaseResolve = null
+          resolve()
+        }
+      }).then(() => super.writeBinary(value, data))
+    }
+    return super.writeBinary(value, data)
+  }
+}
+
+/**
+ * Adapter double that parks the next `read` call (the search's manifest
+ * read) until released, and signals when a second `read` arrives while the
+ * first is still parked — proving two readers run concurrently.
+ */
+class ParkNextReadVaultAdapter extends InMemoryVaultAdapter {
+  private armPark = false
+  private parked = false
+  private parkWaiters: Array<() => void> = []
+  private releaseResolve: (() => void) | null = null
+  private concurrentReadSeen = false
+  private concurrentWaiters: Array<(value: boolean) => void> = []
+
+  armParkNextRead(): void {
+    this.armPark = true
+  }
+
+  waitUntilParked(): Promise<void> {
+    if (this.parked) return Promise.resolve()
+    return new Promise((resolve) => {
+      this.parkWaiters.push(resolve)
+    })
+  }
+
+  /** Resolves `true` once another read arrives while the parked read is held. */
+  waitForConcurrentRead(): Promise<boolean> {
+    if (this.concurrentReadSeen) return Promise.resolve(true)
+    return new Promise((resolve) => {
+      this.concurrentWaiters.push(resolve)
+    })
+  }
+
+  releaseParkedRead(): void {
+    this.releaseResolve?.()
+  }
+
+  override read(value: string): Promise<string> {
+    if (this.armPark) {
+      this.armPark = false
+      this.parked = true
+      for (const resolve of this.parkWaiters.splice(0)) resolve()
+      return new Promise<void>((resolve) => {
+        this.releaseResolve = () => {
+          this.releaseResolve = null
+          resolve()
+        }
+      }).then(() => super.read(value))
+    }
+    if (this.parked) {
+      this.concurrentReadSeen = true
+      for (const resolve of this.concurrentWaiters.splice(0)) resolve(true)
+    }
+    return super.read(value)
+  }
+}
+
 const BASE_DIR = '/vault/.yolo'
 
 const testNamespace: VectorNamespace = {
@@ -1232,6 +1332,184 @@ describe('ShardedVectorStore search', () => {
     await expect(
       store.search(writeNamespace, query, { topK: 5 }),
     ).rejects.toMatchObject({ code: 'not_open' })
+  })
+})
+
+describe('ShardedVectorStore read-write locking', () => {
+  jest.setTimeout(60_000)
+
+  /**
+   * Races a promise against a fallback after `ms`, canceling the timer on
+   * either outcome so a lost race never leaves a live handle behind.
+   */
+  const withTimeout = <T>(
+    promise: Promise<T>,
+    ms: number,
+    fallback: T,
+  ): Promise<T> => {
+    let timer: NodeJS.Timeout | null = null
+    const timeout = new Promise<T>((resolve) => {
+      timer = setTimeout(() => resolve(fallback), ms)
+    })
+    return Promise.race([promise, timeout]).finally(() => {
+      if (timer != null) clearTimeout(timer)
+    })
+  }
+
+  it('a search concurrent with a mid-write replaceFile waits and never observes the half-written shard', async () => {
+    const adapter = new BlockVectorsWriteVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-lock-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+      })
+
+      // Park the second file's vectors.f32 append: its chunks.sqlite row
+      // (c2) is already inserted while vectors.f32/index.bin still describe
+      // c1 only — the exact window that would surface as a byteLength
+      // database_corrupt mismatch or stale hits without the write lease.
+      adapter.blockNextVectorsWrite()
+      const writePromise = store.replaceFile(writeNamespace, {
+        path: 'notes/b.md',
+        mtime: 2,
+        contentHash: 'hb',
+        chunks: [chunk('c2', 'beta', [0, 1, 0, 0], 1, 'notes/b.md')],
+      })
+      await adapter.waitUntilBlocked()
+
+      // The search must stay queued on the read lease while the write is
+      // parked — it cannot race past and observe the half-written shard.
+      const searchPromise = store.search(writeNamespace, [1, 0, 0, 0], {
+        topK: 10,
+      })
+      await expect(
+        withTimeout(
+          searchPromise.then(() => 'done'),
+          200,
+          'pending',
+        ),
+      ).resolves.toBe('pending')
+
+      adapter.releaseBlockedWrite()
+      await writePromise
+      const result = await searchPromise
+      expect(result.hits.map((hit) => hit.chunkId)).toEqual(['c1', 'c2'])
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('concurrent searches run in parallel, not serialized by the read lease', async () => {
+    const adapter = new ParkNextReadVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-lock-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/big.md',
+        mtime: 1,
+        chunks: Array.from({ length: 40 }, (_, i) =>
+          chunk(`c${i}`, `text-${i}`, [1, 0, 0, 0], i),
+        ),
+      })
+
+      // Park the first search at its manifest read (holding a read lease),
+      // then start a second search: it must be admitted immediately and
+      // reach its own manifest read while the first is still parked.
+      adapter.armParkNextRead()
+      const searchA = store.search(writeNamespace, [1, 0, 0, 0], { topK: 5 })
+      await adapter.waitUntilParked()
+
+      const searchB = store.search(writeNamespace, [1, 0, 0, 0], { topK: 5 })
+      const concurrent = await withTimeout(
+        adapter.waitForConcurrentRead(),
+        2000,
+        false,
+      )
+      expect(concurrent).toBe(true)
+
+      adapter.releaseParkedRead()
+      const [resultA, resultB] = await Promise.all([searchA, searchB])
+      expect(resultA.hits.map((hit) => hit.chunkId)).toEqual(
+        resultB.hits.map((hit) => hit.chunkId),
+      )
+      expect(resultA.hits).toHaveLength(5)
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('a failed search releases its read lease so a subsequent write is not blocked', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-lock-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+      })
+
+      // Corrupt index.bin so the search fails mid-lease (database_corrupt).
+      const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
+      await adapter.writeBinary(`${shardRoot}/index.bin`, new ArrayBuffer(4))
+      await expect(
+        store.search(writeNamespace, [1, 0, 0, 0], { topK: 5 }),
+      ).rejects.toMatchObject({ code: 'database_corrupt' })
+
+      // The stale read lease must not deadlock the next writer.
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/b.md',
+        mtime: 2,
+        contentHash: 'hb',
+        chunks: [chunk('c2', 'beta', [0, 1, 0, 0], 1, 'notes/b.md')],
+      })
+      const manifest = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifest.shards[0]?.vectorCount).toBe(2)
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('a failed replaceFile releases its write lease so a subsequent search is not blocked', async () => {
+    const adapter = new WriteFailVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-lock-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+      })
+
+      // Fail the vectors.f32 append of a second file mid-write.
+      const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
+      adapter.armWriteBinaryFailure(`${shardRoot}/vectors.f32`, 1)
+      await expect(
+        store.replaceFile(writeNamespace, {
+          path: 'notes/b.md',
+          mtime: 2,
+          contentHash: 'hb',
+          chunks: [chunk('c2', 'beta', [0, 1, 0, 0], 1, 'notes/b.md')],
+        }),
+      ).rejects.toThrow('injected write failure')
+
+      // The stale write lease must not deadlock the next search.
+      const result = await store.search(writeNamespace, [1, 0, 0, 0], {
+        topK: 5,
+      })
+      expect(result.hits.map((hit) => hit.chunkId)).toEqual(['c1'])
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
   })
 })
 

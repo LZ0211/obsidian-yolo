@@ -143,6 +143,24 @@ type ShardQueryResult = {
 }
 
 /**
+ * Per-namespace reader-writer gate (desktop `SqliteVectorStore` semantics):
+ * readers run concurrently, a writer waits for all readers and blocks new
+ * readers while active, waiters are admitted FIFO.
+ */
+type NamespaceGateWaiter = {
+  kind: 'read' | 'write'
+  resolve: () => void
+  reject: (error: unknown) => void
+}
+
+type NamespaceGateState = {
+  activeReaders: number
+  writerActive: boolean
+  pendingWriters: number
+  gateWaiters: NamespaceGateWaiter[]
+}
+
+/**
  * Coarse vectors for a whole shard: for each chunk, the first
  * `min(dim, COARSE_DIMENSION)` dims of its full vector, L2-normalized.
  * Zero-padded to `COARSE_DIMENSION × 4` bytes per vector, contiguous.
@@ -404,6 +422,14 @@ export class ShardedVectorStore implements VectorStore {
   private isOpen = false
   private isClosing = false
 
+  /**
+   * Per-namespace reader-writer gates. A search concurrent with a write must
+   * never observe a shard mid-mutation (chunk row inserted into chunks.sqlite
+   * before vectors.f32/index.bin are appended) — that would surface as a
+   * spurious `database_corrupt` byteLength mismatch or stale hits.
+   */
+  private readonly namespaceGates = new Map<string, NamespaceGateState>()
+
   constructor(options: ShardedVectorStoreOptions) {
     this.baseDir = options.baseDir
     this.app = options.app
@@ -447,9 +473,14 @@ export class ShardedVectorStore implements VectorStore {
     this.assertOpen()
     this.assertNotClosing()
     validateShardedNamespaceId(namespaceId)
-    const modelRoot = getShardedModelRoot(this.baseDir, namespaceId)
-    if (!(await this.adapter.exists(modelRoot))) return
-    await this.adapter.remove(modelRoot, { recursive: true })
+    const release = await this.acquireNamespaceWriteLease(namespaceId)
+    try {
+      const modelRoot = getShardedModelRoot(this.baseDir, namespaceId)
+      if (!(await this.adapter.exists(modelRoot))) return
+      await this.adapter.remove(modelRoot, { recursive: true })
+    } finally {
+      release()
+    }
   }
 
   async getStatus(namespace?: VectorNamespace): Promise<VectorBackendStatus> {
@@ -577,6 +608,25 @@ export class ShardedVectorStore implements VectorStore {
     this.assertNotClosing()
     throwIfVectorSearchAborted(options.signal)
     const namespaceId = validateShardedNamespaceId(vectorNamespaceId(namespace))
+    const release = await this.acquireNamespaceReadLease(namespaceId)
+    try {
+      return await this.searchDetailedWithLease(
+        namespace,
+        embedding,
+        options,
+        namespaceId,
+      )
+    } finally {
+      release()
+    }
+  }
+
+  private async searchDetailedWithLease(
+    namespace: VectorNamespace,
+    embedding: number[],
+    options: VectorSearchOptions,
+    namespaceId: string,
+  ): Promise<VectorSearchResult> {
     const manifest = await this.readManifest()
     if (manifest == null || manifest.activeModel !== namespaceId) {
       throw new VectorStoreError(
@@ -721,7 +771,10 @@ export class ShardedVectorStore implements VectorStore {
           runtime
             .query<{
               rowid: number
-            }>(`select rowid from chunks where tombstone = 0 and (${scopeSql.clause})`, scopeSql.params)
+            }>(
+              `select rowid from chunks where tombstone = 0 and (${scopeSql.clause})`,
+              scopeSql.params,
+            )
             .map((row) => Number(row.rowid)),
         )
       }
@@ -834,41 +887,46 @@ export class ShardedVectorStore implements VectorStore {
     this.assertOpen()
     this.assertNotClosing()
     const namespaceId = validateShardedNamespaceId(vectorNamespaceId(namespace))
-    const manifest = await this.readManifest()
-    const indexed = new Map<
-      string,
-      { mtime: number; contentHash?: string; updatedAt?: number }
-    >()
-    if (manifest == null || manifest.activeModel !== namespaceId) {
-      return indexed
-    }
-    for (const shard of manifest.shards) {
-      if (shard.state !== 'ready' || shard.vectorCount === 0) continue
-      const runtime = this.openShardRuntime(namespaceId, shard.id)
-      try {
-        const rows = runtime.query<{
-          file_path: string
-          file_mtime: number | null
-          file_content_hash: string | null
-        }>(
-          `select file_path, max(file_mtime) as file_mtime, file_content_hash
-           from chunks where tombstone = 0 group by file_path`,
-        )
-        for (const row of rows) {
-          const existing = indexed.get(row.file_path)
-          const mtime = row.file_mtime ?? 0
-          if (existing == null || mtime > existing.mtime) {
-            indexed.set(row.file_path, {
-              mtime,
-              contentHash: row.file_content_hash ?? undefined,
-            })
-          }
-        }
-      } finally {
-        runtime.close()
+    const release = await this.acquireNamespaceReadLease(namespaceId)
+    try {
+      const manifest = await this.readManifest()
+      const indexed = new Map<
+        string,
+        { mtime: number; contentHash?: string; updatedAt?: number }
+      >()
+      if (manifest == null || manifest.activeModel !== namespaceId) {
+        return indexed
       }
+      for (const shard of manifest.shards) {
+        if (shard.state !== 'ready' || shard.vectorCount === 0) continue
+        const runtime = this.openShardRuntime(namespaceId, shard.id)
+        try {
+          const rows = runtime.query<{
+            file_path: string
+            file_mtime: number | null
+            file_content_hash: string | null
+          }>(
+            `select file_path, max(file_mtime) as file_mtime, file_content_hash
+             from chunks where tombstone = 0 group by file_path`,
+          )
+          for (const row of rows) {
+            const existing = indexed.get(row.file_path)
+            const mtime = row.file_mtime ?? 0
+            if (existing == null || mtime > existing.mtime) {
+              indexed.set(row.file_path, {
+                mtime,
+                contentHash: row.file_content_hash ?? undefined,
+              })
+            }
+          }
+        } finally {
+          runtime.close()
+        }
+      }
+      return indexed
+    } finally {
+      release()
     }
-    return indexed
   }
 
   async getFileReadiness(
@@ -878,36 +936,41 @@ export class ShardedVectorStore implements VectorStore {
     this.assertOpen()
     this.assertNotClosing()
     const namespaceId = validateShardedNamespaceId(vectorNamespaceId(namespace))
-    const uniquePaths = [...new Set(paths)]
-    const readiness = new Map<string, VectorFileReadiness>(
-      uniquePaths.map((path) => [path, { path, vectorReady: false }]),
-    )
-    if (uniquePaths.length === 0) return readiness
-    const manifest = await this.readManifest()
-    if (manifest == null || manifest.activeModel !== namespaceId) {
-      return readiness
-    }
-    const placeholders = uniquePaths.map(() => '?').join(', ')
-    for (const shard of manifest.shards) {
-      if (shard.state !== 'ready' || shard.vectorCount === 0) continue
-      const runtime = this.openShardRuntime(namespaceId, shard.id)
-      try {
-        const rows = runtime.query<{ file_path: string }>(
-          `select distinct file_path from chunks
-           where tombstone = 0 and file_path in (${placeholders})`,
-          uniquePaths,
-        )
-        for (const row of rows) {
-          readiness.set(row.file_path, {
-            path: row.file_path,
-            vectorReady: true,
-          })
-        }
-      } finally {
-        runtime.close()
+    const release = await this.acquireNamespaceReadLease(namespaceId)
+    try {
+      const uniquePaths = [...new Set(paths)]
+      const readiness = new Map<string, VectorFileReadiness>(
+        uniquePaths.map((path) => [path, { path, vectorReady: false }]),
+      )
+      if (uniquePaths.length === 0) return readiness
+      const manifest = await this.readManifest()
+      if (manifest == null || manifest.activeModel !== namespaceId) {
+        return readiness
       }
+      const placeholders = uniquePaths.map(() => '?').join(', ')
+      for (const shard of manifest.shards) {
+        if (shard.state !== 'ready' || shard.vectorCount === 0) continue
+        const runtime = this.openShardRuntime(namespaceId, shard.id)
+        try {
+          const rows = runtime.query<{ file_path: string }>(
+            `select distinct file_path from chunks
+             where tombstone = 0 and file_path in (${placeholders})`,
+            uniquePaths,
+          )
+          for (const row of rows) {
+            readiness.set(row.file_path, {
+              path: row.file_path,
+              vectorReady: true,
+            })
+          }
+        } finally {
+          runtime.close()
+        }
+      }
+      return readiness
+    } finally {
+      release()
     }
-    return readiness
   }
 
   async getQueryEmbedding(
@@ -952,16 +1015,24 @@ export class ShardedVectorStore implements VectorStore {
     dimension: number,
     file: VectorFileWrite,
   ): Promise<void> {
-    let manifest = await this.readManifest()
-    if (manifest == null) {
-      manifest = this.createEmptyManifest(namespaceId)
-    } else if (manifest.activeModel !== namespaceId) {
-      throw new VectorStoreError(
-        'namespace_mismatch',
-        'sqlite',
-        'none',
-        `Manifest active model "${manifest.activeModel}" does not match "${namespaceId}"`,
-      )
+    // Exclusive lease: a concurrent search must never observe this shard
+    // mid-mutation (chunk row inserted before vectors.f32/index.bin append).
+    const release = await this.acquireNamespaceWriteLease(namespaceId)
+    let manifest: ShardedManifest
+    try {
+      manifest =
+        (await this.readManifest()) ?? this.createEmptyManifest(namespaceId)
+      if (manifest.activeModel !== namespaceId) {
+        throw new VectorStoreError(
+          'namespace_mismatch',
+          'sqlite',
+          'none',
+          `Manifest active model "${manifest.activeModel}" does not match "${namespaceId}"`,
+        )
+      }
+    } catch (error) {
+      release()
+      throw error
     }
 
     try {
@@ -983,6 +1054,8 @@ export class ShardedVectorStore implements VectorStore {
       }
     } catch (error) {
       await this.rollbackFileWrite(manifest, namespaceId, file.path, error)
+    } finally {
+      release()
     }
   }
 
@@ -1320,6 +1393,107 @@ export class ShardedVectorStore implements VectorStore {
     const runtime = this.openShardSqlite(dbPath)
     runtime.exec(CHUNKS_TABLE_SQL)
     return runtime
+  }
+
+  private getNamespaceGateState(namespaceId: string): NamespaceGateState {
+    let state = this.namespaceGates.get(namespaceId)
+    if (state == null) {
+      state = {
+        activeReaders: 0,
+        writerActive: false,
+        pendingWriters: 0,
+        gateWaiters: [],
+      }
+      this.namespaceGates.set(namespaceId, state)
+    }
+    return state
+  }
+
+  /**
+   * Shared read lease: admitted immediately when no writer is active or
+   * queued; otherwise queued FIFO behind the pending writer. Mirrors the
+   * desktop `SqliteVectorStore` gate semantics.
+   */
+  private async acquireNamespaceReadLease(
+    namespaceId: string,
+  ): Promise<() => void> {
+    this.assertOpen()
+    this.assertNotClosing()
+    const state = this.getNamespaceGateState(namespaceId)
+    if (!state.writerActive && state.pendingWriters === 0) {
+      state.activeReaders += 1
+      return () => this.releaseNamespaceReadLease(namespaceId)
+    }
+    return new Promise<() => void>((resolve, reject) => {
+      state.gateWaiters.push({
+        kind: 'read',
+        resolve: () => {
+          state.activeReaders += 1
+          resolve(() => this.releaseNamespaceReadLease(namespaceId))
+        },
+        reject,
+      })
+      this.drainNamespaceGate(namespaceId)
+    })
+  }
+
+  /**
+   * Exclusive write lease: queued FIFO, admitted once all active readers
+   * finish; blocks new readers while active.
+   */
+  private async acquireNamespaceWriteLease(
+    namespaceId: string,
+  ): Promise<() => void> {
+    this.assertOpen()
+    this.assertNotClosing()
+    const state = this.getNamespaceGateState(namespaceId)
+    state.pendingWriters += 1
+    return new Promise<() => void>((resolve, reject) => {
+      state.gateWaiters.push({
+        kind: 'write',
+        resolve: () => {
+          state.pendingWriters -= 1
+          state.writerActive = true
+          resolve(() => this.releaseNamespaceWriteLease(namespaceId))
+        },
+        reject: (error) => {
+          state.pendingWriters -= 1
+          reject(error instanceof Error ? error : new Error(String(error)))
+        },
+      })
+      this.drainNamespaceGate(namespaceId)
+    })
+  }
+
+  private releaseNamespaceReadLease(namespaceId: string): void {
+    const state = this.namespaceGates.get(namespaceId)
+    if (state == null) return
+    state.activeReaders = Math.max(0, state.activeReaders - 1)
+    this.drainNamespaceGate(namespaceId)
+  }
+
+  private releaseNamespaceWriteLease(namespaceId: string): void {
+    const state = this.namespaceGates.get(namespaceId)
+    if (state == null) return
+    state.writerActive = false
+    this.drainNamespaceGate(namespaceId)
+  }
+
+  /** FIFO admission: leading writer, or all leading readers. */
+  private drainNamespaceGate(namespaceId: string): void {
+    const state = this.namespaceGates.get(namespaceId)
+    if (state == null) return
+    if (!state.writerActive && state.activeReaders === 0) {
+      const first = state.gateWaiters[0]
+      if (first?.kind === 'write') {
+        state.gateWaiters.shift()
+        first.resolve()
+      } else if (first?.kind === 'read') {
+        while (state.gateWaiters[0]?.kind === 'read') {
+          state.gateWaiters.shift()?.resolve()
+        }
+      }
+    }
   }
 
   private assertOpen(): void {
