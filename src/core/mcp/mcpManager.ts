@@ -274,6 +274,10 @@ export class McpManager {
     this.subscribers.clear()
     this.activeToolCalls.clear()
     this.reconnectAttempts.clear()
+    // Per-conversation tool allowances must not outlive the manager: they are
+    // in-memory permission grants keyed by conversationId, and a leaked entry
+    // would resurface on a future conversationId reuse after reinstall.
+    this.allowedToolsByConversation.clear()
     this.oauthController.close()
     disposeJsSandbox()
   }
@@ -1066,6 +1070,27 @@ export class McpManager {
     })
     allowedTools.add(allowanceKey)
     allowedTools.add(requestToolName)
+  }
+
+  /**
+   * Snapshot of the tools currently allow-listed for a conversation (the
+   * tool-name keys recorded by `allowToolForConversation`). Returns an empty
+   * array for unknown conversations. Exposed so the UI can surface the
+   * conversation's standing allowances and so lifecycle code can verify
+   * cleanup (`removeAllowedTools`) took effect.
+   */
+  public getAllowedTools(conversationId: string): string[] {
+    return [...(this.allowedToolsByConversation.get(conversationId) ?? [])]
+  }
+
+  /**
+   * Revoke every tool allowance recorded for a conversation. Idempotent:
+   * unknown conversation ids are a no-op. Call when a conversation is
+   * deleted so a later conversationId reuse cannot inherit stale permission
+   * grants.
+   */
+  public removeAllowedTools(conversationId: string): void {
+    this.allowedToolsByConversation.delete(conversationId)
   }
 
   public isToolExecutionAllowed({

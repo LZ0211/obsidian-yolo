@@ -1448,6 +1448,19 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     async (conversationId: string) => {
       const conversation = await getConversationById(conversationId)
       await deleteConversation(conversationId)
+      // Per-conversation MCP tool allowances ("always allow in this chat")
+      // die with the conversation — a later conversationId reuse must not
+      // inherit the deleted chat's permission grants. removeAllowedTools is
+      // idempotent, so deleting twice or deleting an unknown id is safe.
+      void plugin
+        .getMcpManager()
+        .then((mcpManager) => mcpManager.removeAllowedTools(conversationId))
+        .catch((error: unknown) => {
+          console.error(
+            'Failed to revoke MCP tool allowances for deleted conversation',
+            error,
+          )
+        })
       if (conversation?.cliSession && cliRuntimeScope) {
         await cliRuntimeScope.sessionService.removeOverlay(
           conversation.cliSession,

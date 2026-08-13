@@ -246,3 +246,132 @@ describe('McpManager connected tool catalog', () => {
     expect(listTools).not.toHaveBeenCalled()
   })
 })
+
+describe('McpManager per-conversation tool allowance lifecycle', () => {
+  const originalIsDesktop = Platform.isDesktop
+
+  beforeEach(() => {
+    Platform.isDesktop = false
+  })
+
+  afterEach(() => {
+    Platform.isDesktop = originalIsDesktop
+  })
+
+  function createManager() {
+    return new McpManager({
+      pluginId: 'test-plugin',
+      app: {
+        vault: { configDir: OBSIDIAN_CONFIG_DIR },
+      } as unknown as App,
+      settings: {
+        mcp: { servers: [], builtinToolOptions: {} },
+        webSearch: {
+          providers: [],
+          defaultProviderId: undefined,
+          common: {
+            resultSize: 8,
+            searchTimeoutMs: 15000,
+            scrapeTimeoutMs: 20000,
+          },
+        },
+      } as never,
+      openApplyReview: jest.fn(),
+      registerSettingsListener: () => () => {},
+    })
+  }
+
+  it('grants and reports the conversation-scoped allowance', () => {
+    const manager = createManager()
+
+    manager.allowToolForConversation('yolo_local__fs_write', 'chat-1', {
+      path: 'A.md',
+      content: 'x',
+    })
+
+    // The arg-scoped action key is recorded alongside the tool-name key.
+    expect(manager.getAllowedTools('chat-1')).toEqual([
+      'yolo_local__fs_write::write',
+      'yolo_local__fs_write',
+    ])
+    // Execution is allowed for the granting conversation…
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__fs_write',
+        conversationId: 'chat-1',
+        requestArgs: { path: 'A.md', content: 'x' },
+        requireAutoExecution: false,
+      }),
+    ).toBe(true)
+    // …but never leaks into another conversation.
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__fs_write',
+        conversationId: 'chat-2',
+        requestArgs: { path: 'A.md', content: 'x' },
+        requireAutoExecution: false,
+      }),
+    ).toBe(false)
+    expect(manager.getAllowedTools('chat-2')).toEqual([])
+  })
+
+  it('revokes the whole conversation allowance on removeAllowedTools', () => {
+    const manager = createManager()
+
+    manager.allowToolForConversation('yolo_local__fs_read', 'chat-1')
+    manager.allowToolForConversation('yolo_local__fs_read', 'chat-2')
+
+    manager.removeAllowedTools('chat-1')
+
+    expect(manager.getAllowedTools('chat-1')).toEqual([])
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__fs_read',
+        conversationId: 'chat-1',
+        requireAutoExecution: false,
+      }),
+    ).toBe(false)
+    // The other conversation's grant is untouched.
+    expect(manager.getAllowedTools('chat-2')).toEqual([
+      'yolo_local__fs_read',
+    ])
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__fs_read',
+        conversationId: 'chat-2',
+        requireAutoExecution: false,
+      }),
+    ).toBe(true)
+
+    // Revoking an unknown conversation is a safe no-op.
+    expect(() => manager.removeAllowedTools('never-granted')).not.toThrow()
+  })
+
+  it('leaves no residue when a conversationId is reused after deletion', () => {
+    const manager = createManager()
+
+    manager.allowToolForConversation('yolo_local__fs_read', 'chat-1')
+    // The conversation is deleted; its allowances must not survive.
+    manager.removeAllowedTools('chat-1')
+    // A new chat reuses the same id.
+    expect(manager.getAllowedTools('chat-1')).toEqual([])
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__fs_read',
+        conversationId: 'chat-1',
+        requireAutoExecution: false,
+      }),
+    ).toBe(false)
+  })
+
+  it('clears every allowance on cleanup', () => {
+    const manager = createManager()
+
+    manager.allowToolForConversation('yolo_local__fs_read', 'chat-1')
+    manager.allowToolForConversation('yolo_local__fs_read', 'chat-2')
+    manager.cleanup()
+
+    expect(manager.getAllowedTools('chat-1')).toEqual([])
+    expect(manager.getAllowedTools('chat-2')).toEqual([])
+  })
+})
