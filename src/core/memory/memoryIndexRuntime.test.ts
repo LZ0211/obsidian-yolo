@@ -1379,3 +1379,196 @@ describe('cold memory archive', () => {
     }
   })
 })
+
+/**
+ * Pre-03b377087 v2 DDL (dead hash-band/consolidated columns included).
+ * Kept verbatim so the migration test exercises the exact legacy shape the
+ * old schema creator produced.
+ */
+const LEGACY_V2_SCHEMA_SQL: readonly string[] = [
+  `create table if not exists memory_schema_meta (
+    key text primary key,
+    value text not null
+  );`,
+  `create table if not exists memory_index (
+    partition_key text not null,
+    memory_key text not null unique,
+    scope text not null check (scope in ('global', 'assistant')),
+    assistant_id text,
+    local_id text not null,
+    category text not null check (category in ('profile', 'preferences', 'other')),
+    sector text not null check (sector in ('episodic', 'semantic', 'procedural', 'emotional', 'reflective')),
+    content text not null,
+    keywords_json text not null,
+    content_hash text not null,
+    hash_band_0 integer not null,
+    hash_band_1 integer not null,
+    hash_band_2 integer not null,
+    hash_band_3 integer not null,
+    salience real not null default 0.5 check (salience >= 0 and salience <= 1),
+    last_recalled_at integer,
+    created_at integer not null,
+    updated_at integer not null,
+    source_path text not null,
+    source_file_fingerprint text not null,
+    entry_fingerprint text not null,
+    parser_version text not null,
+    consolidated integer not null default 0 check (consolidated in (0, 1)),
+    primary key (partition_key, local_id),
+    check ((scope = 'global' and assistant_id is null) or
+           (scope = 'assistant' and assistant_id is not null))
+  );`,
+  `create index if not exists idx_memory_partition_score
+    on memory_index(partition_key, category, salience, updated_at);`,
+  `create index if not exists idx_memory_partition_hash
+    on memory_index(partition_key, hash_band_0, hash_band_1, hash_band_2, hash_band_3);`,
+  `create table if not exists memory_keywords (
+    partition_key text not null,
+    local_id text not null,
+    keyword text not null,
+    primary key (partition_key, local_id, keyword),
+    foreign key (partition_key, local_id)
+      references memory_index(partition_key, local_id) on delete cascade
+  );`,
+  `create index if not exists idx_memory_keyword_lookup
+    on memory_keywords(partition_key, keyword);`,
+  `create table if not exists memory_edges (
+    partition_key text not null,
+    src_local_id text not null,
+    dst_local_id text not null,
+    weight real not null check (weight >= 0 and weight <= 1),
+    created_at integer not null,
+    updated_at integer not null,
+    primary key (partition_key, src_local_id, dst_local_id),
+    check (src_local_id <> dst_local_id),
+    foreign key (partition_key, src_local_id)
+      references memory_index(partition_key, local_id) on delete cascade,
+    foreign key (partition_key, dst_local_id)
+      references memory_index(partition_key, local_id) on delete cascade
+  );`,
+  `create table if not exists memory_reflections (
+    partition_key text not null,
+    reflection_id text not null,
+    content text not null,
+    sector text not null check (sector = 'reflective'),
+    source_keys_json text not null,
+    source_fingerprint text not null,
+    prompt_version text not null,
+    created_at integer not null,
+    updated_at integer not null,
+    primary key (partition_key, reflection_id),
+    unique (partition_key, source_fingerprint, prompt_version)
+  );`,
+  `create table if not exists memory_partition_state (
+    partition_key text primary key,
+    source_path text not null,
+    source_file_fingerprint text not null,
+    parser_version text not null,
+    dirty_reason text,
+    last_reconciled_at integer,
+    last_reflection_at integer,
+    updated_at integer not null
+  );`,
+  `create table if not exists memory_maintenance_log (
+    id integer primary key,
+    partition_key text,
+    operation text not null,
+    status text not null check (status in ('started', 'completed', 'failed')),
+    source_file_fingerprint text,
+    created_at integer not null
+  );`,
+  `create table if not exists memory_embeddings (
+    partition_key text not null,
+    memory_key text not null,
+    local_id integer not null,
+    embedding blob not null,
+    dimension integer not null,
+    updated_at integer not null,
+    primary key (partition_key, memory_key)
+  );`,
+]
+
+describe('legacy schema migration (v2 → v3 dead columns)', () => {
+  it('migrates a legacy database so reconcile inserts succeed and data survives', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-migrate-'))
+    const dbPath = path.join(root, 'YOLO', 'memory', 'index.sqlite')
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true })
+    const legacy = openSqliteRuntime({ dbPath })
+    try {
+      for (const sql of LEGACY_V2_SCHEMA_SQL) legacy.exec(sql)
+      legacy.exec(
+        "insert into memory_schema_meta (key, value) values ('schema_version', '2')",
+      )
+      legacy.exec(
+        `insert into memory_index
+         (partition_key, memory_key, scope, assistant_id, local_id, category, sector, content, keywords_json,
+          content_hash, hash_band_0, hash_band_1, hash_band_2, hash_band_3, salience, last_recalled_at,
+          created_at, updated_at, source_path, source_file_fingerprint, entry_fingerprint, parser_version, consolidated)
+         values ('global', 'global::Memory_1', 'global', null, 'Memory_1', 'other', 'episodic', 'legacy preserved', '[]',
+          'h', 1, 2, 3, 4, 0.5, null, 1, 2, 'global.md', 'fp-v1', 'e-v1', 'p', 0)`,
+      )
+    } finally {
+      legacy.close()
+    }
+
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const entry = {
+      localId: 'Memory_1',
+      content: 'legacy preserved',
+      keywords: [],
+      category: 'other' as const,
+      partition,
+      sourcePath: 'global.md',
+      entryFingerprint: 'e-v1',
+    }
+    const snapshot: MemorySourceSnapshot = {
+      partition,
+      sourcePath: 'global.md',
+      sourceFileFingerprint: 'fp-v1',
+      parserVersion: 'p',
+      entries: [entry],
+      valid: true,
+    }
+    const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
+    const store = await openMemoryIndexStore({
+      app,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot: async () => snapshot,
+    })
+    try {
+      expect(store.capability).toBe('sqlite')
+      await store.reconcilePartition({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: 'fp-v1',
+        parserVersion: 'p',
+        entries: [entry],
+      })
+      const runtime = await (store as MemoryIndexMaintenanceStore).getRuntime()
+      const row = runtime.queryOne<{ content: string }>(
+        'select content from memory_index where partition_key = ? and local_id = ?',
+        ['global', 'Memory_1'],
+      )
+      expect(row?.content).toBe('legacy preserved')
+      expect(
+        runtime.queryOne<{ value: string }>(
+          "select value from memory_schema_meta where key = 'schema_version'",
+        )?.value,
+      ).toBe('3')
+      const columns = runtime
+        .query<{ name: string }>('pragma table_info(memory_index)')
+        .map(({ name }) => name)
+      expect(columns).not.toContain('hash_band_0')
+      expect(columns).not.toContain('consolidated')
+      expect(
+        runtime.queryOne<{ count: number }>(
+          "select count(*) as count from sqlite_master where type = 'index' and name = 'idx_memory_partition_hash'",
+        )?.count,
+      ).toBe(0)
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
