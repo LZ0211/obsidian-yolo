@@ -31,7 +31,6 @@ type CreateVectorStoreOptions = {
   baseDir: string
   pluginDir: string
   settings: VectorStoreFactorySettingsLike
-  expectedTargetRuntime?: string
   /** Vault surface for the sharded backend (mobile); desktop ignores it. */
   app: ShardedVaultApp
 }

@@ -5042,20 +5042,6 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
     return await this.getRagIndexService().runIndex(options)
   }
 
-  /** Re-issue the previously failed run. Falls back to a full sync reconcile. */
-  async retryRagIndex(): Promise<void> {
-    const snapshot = this.getRagIndexSnapshot()
-    if (snapshot.mode === null) {
-      return
-    }
-    await this.runRagIndex({
-      mode: snapshot.mode,
-      scope: { kind: 'all' },
-      trigger: 'manual',
-      retryPolicy: 'transient',
-    })
-  }
-
   subscribeToRagIndexRuns(
     listener: (snapshot: RagIndexRunSnapshot) => void,
   ): () => void {

@@ -10,7 +10,6 @@ import {
   RagIndexBusyError,
   type RagIndexRunSnapshot,
 } from '../../../core/rag/ragIndexService'
-import type { RetrievalInspectStatus } from '../../../core/rag/retrievalTraceTypes'
 import type { VectorBackendStatus } from '../../../database/modules/rag/VectorStore'
 import YoloPlugin from '../../../main'
 import type { YoloSettings } from '../../../settings/schema/setting.types'
@@ -57,11 +56,6 @@ type RagSettingsPatch<TSettings extends RagSettingsBase = YoloSettings> =
     ragBackendSettings?: Partial<TSettings['ragBackendSettings']>
   }
 
-export type RetrievalInspectRow = {
-  label: string
-  value: string
-}
-
 export const isRagLogRibbonVisible = (settings: {
   ragOptions: { showRagLogRibbonIcon?: boolean }
 }): boolean => settings.ragOptions.showRagLogRibbonIcon !== false
@@ -87,74 +81,6 @@ export const mergeRagSettingsPatch = <TSettings extends RagSettingsBase>(
           ...patch.ragBackendSettings,
         },
 })
-
-export const buildRetrievalInspectRows = (
-  status: RetrievalInspectStatus,
-  t: (key: string, fallback?: string) => string,
-): RetrievalInspectRow[] => {
-  const totalMs =
-    status.latestTrace && typeof status.latestTrace.timingsMs.total === 'number'
-      ? String(status.latestTrace.timingsMs.total)
-      : status.latestTrace?.finishedAt && status.latestTrace.startedAt
-        ? String(status.latestTrace.finishedAt - status.latestTrace.startedAt)
-        : '—'
-  const latestQueryValue = status.latestTrace
-    ? `${totalMs} ms / ${status.latestTrace.evidence.length} evidence`
-    : '—'
-
-  return [
-    {
-      label: t('settings.rag.inspectExecutionMode', 'Execution mode'),
-      value: status.executionMode,
-    },
-    {
-      label: t('settings.rag.inspectPersistenceMode', 'Persistence mode'),
-      value: status.persistenceMode,
-    },
-    {
-      label: t('settings.rag.inspectStoragePath', 'Storage path'),
-      value: status.storagePath || '—',
-    },
-    {
-      label: t('settings.rag.inspectCounts', 'Indexed files / chunks'),
-      value: `${status.indexedFileCount} / ${status.chunkCount}`,
-    },
-    {
-      label: t('settings.rag.inspectNamespaceModel', 'Namespace / model / dim'),
-      value: `${status.namespaceId ?? '—'} / ${status.modelId ?? '—'} / ${
-        status.embeddingDimension ?? '—'
-      }`,
-    },
-    {
-      label: t('settings.rag.inspectLatestIndex', 'Latest index'),
-      value: status.lastIndexStatus?.status ?? '—',
-    },
-    {
-      label: t('settings.rag.inspectLatestQuery', 'Latest query'),
-      value: latestQueryValue,
-    },
-    {
-      label: t('settings.rag.inspectWarning', 'Warning'),
-      value: status.warningCodes[0] ?? '—',
-    },
-    {
-      label: t('settings.rag.inspectError', 'Error'),
-      value: status.errorCode ?? '—',
-    },
-    {
-      label: t('settings.rag.inspectDiagnostic', 'Diagnostic'),
-      value: status.diagnostic
-        ? `${status.diagnostic.recoveryAction ?? '—'} · ${
-            status.diagnostic.message ?? '—'
-          }`
-        : '—',
-    },
-    {
-      label: t('settings.rag.inspectFailedFiles', 'Failed files'),
-      value: String(status.lastIndexStatus?.failedFiles.length ?? 0),
-    },
-  ]
-}
 
 const snapshotToProgress = (
   snapshot: RagIndexRunSnapshot,

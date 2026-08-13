@@ -795,7 +795,7 @@ describe('VectorManager.reconcile', () => {
   })
 })
 
-describe('VectorManager.clearAllVectors / clearVectorsByModelIds / getEmbeddingStats', () => {
+describe('VectorManager.clearAllVectors / clearVectorsByModelIds', () => {
   beforeEach(() => {
     jest.clearAllMocks()
   })
@@ -842,42 +842,6 @@ describe('VectorManager.clearAllVectors / clearVectorsByModelIds / getEmbeddingS
         dimension: 3,
       }),
     )
-  })
-
-  it('reports per-namespace stats from the real namespace object', async () => {
-    const vectorStore = fakeVectorStore()
-    vectorStore.listNamespaces.mockResolvedValue(['text-embedding-3-large-d3'])
-    vectorStore.getStats.mockResolvedValue({
-      backend: 'sqlite',
-      storagePath: '/db',
-      fileCount: 5,
-      chunkCount: 42,
-      fileSizeBytes: 12345,
-      namespaceCount: 1,
-      executionMode: 'plugin-host',
-      persistenceMode: 'native-sqlite-file',
-      usesWholeDatabaseSnapshot: false,
-      ready: true,
-    } as never)
-    const { manager } = createVectorStoreManager(vectorStore, [])
-
-    const stats = await manager.getEmbeddingStats()
-
-    // getStats() without a namespace returns zeroed aggregate stats; the fix
-    // derives the namespace from the id so counters are real.
-    expect(vectorStore.getStats).toHaveBeenCalledWith(
-      expect.objectContaining({
-        model: 'text-embedding-3-large',
-        dimension: 3,
-      }),
-    )
-    expect(stats).toEqual([
-      {
-        model: 'text-embedding-3-large-d3',
-        rowCount: 42,
-        totalDataBytes: 12345,
-      },
-    ])
   })
 })
 

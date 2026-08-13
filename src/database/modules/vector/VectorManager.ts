@@ -265,30 +265,6 @@ export class VectorManager {
     }
   }
 
-  async getEmbeddingStats(): Promise<
-    Array<{ model: string; rowCount: number; totalDataBytes: number }>
-  > {
-    const namespaces = await this.listNamespaces()
-    const stats: Array<{
-      model: string
-      rowCount: number
-      totalDataBytes: number
-    }> = []
-    for (const nsId of namespaces) {
-      // getStats() without a namespace returns the aggregate placeholder with
-      // zeroed counters — derive the namespace object from the id so the per-
-      // namespace row/chunk counts and db file size are real.
-      const ns = namespaceFromNamespaceId(nsId)
-      const statsFor = ns ? await this.vectorStore?.getStats?.(ns) : undefined
-      stats.push({
-        model: nsId,
-        rowCount: statsFor?.chunkCount ?? 0,
-        totalDataBytes: statsFor?.fileSizeBytes ?? 0,
-      })
-    }
-    return stats
-  }
-
   async performSimilaritySearch(
     queryVector: number[],
     embeddingModel: EmbeddingModelClient,
@@ -1128,18 +1104,4 @@ function throwIfVectorSearchAborted(signal?: AbortSignal): void {
   const error = new Error('Vector search cancelled')
   error.name = 'AbortError'
   throw error
-}
-
-/**
- * Reverse of `vectorNamespaceId`: reconstructs a VectorNamespace from a
- * namespace id (`<model>-d<dimension>`). Normalization is idempotent, so the
- * reconstructed model segment re-derives the same key. Returns null for ids
- * that don't carry the `-d<n>` suffix (e.g. non-vector namespaces).
- */
-function namespaceFromNamespaceId(id: string): VectorNamespace | null {
-  const match = id.match(/^(.*)-d(\d+)$/)
-  if (!match) return null
-  const dimension = Number(match[2])
-  if (!Number.isFinite(dimension) || dimension <= 0) return null
-  return createEmbeddingVectorNamespace({ model: match[1], dimension })
 }
