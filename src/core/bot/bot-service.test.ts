@@ -766,3 +766,41 @@ describe('BotService adapter diagnostics', () => {
     )
   })
 })
+
+describe('BotService disable aborts in-flight turns', () => {
+  it('aborts queued turns before stopping adapters when bots.enabled flips off', async () => {
+    // runBotAgentTurn is a shared module-level mock — calls from earlier
+    // tests accumulate, so isolate this test's observation window.
+    ;(runBotAgentTurn as jest.Mock).mockClear()
+    // Hold the turn in flight so disable has something to abort.
+    let releaseTurn: (() => void) | undefined
+    ;(runBotAgentTurn as jest.Mock).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseTurn = resolve
+        }),
+    )
+    const h = makeHarness()
+    await h.service.initialize()
+    void h.service.handleIncoming(
+      makeEvent({ messageId: 'm-abort' }),
+      makeTelegramConfig(),
+    )
+    // Let the queued turn reach runBotAgentTurn (mocked, still pending).
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(runBotAgentTurn).toHaveBeenCalledTimes(1)
+    const { abortSignal } = (runBotAgentTurn as jest.Mock).mock
+      .calls[0][0] as {
+      abortSignal: AbortSignal
+    }
+
+    h.triggerSettingsChange({
+      bots: makeBotsSettings({ enabled: false }),
+    } as unknown as YoloSettings)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(abortSignal.aborted).toBe(true)
+    expect(h.adaptersByPlatformId.get('bot-1')!.stop).toHaveBeenCalled()
+    releaseTurn?.()
+  })
+})

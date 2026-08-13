@@ -1301,13 +1301,19 @@ export default class YoloPlugin extends Plugin {
     if (!Platform.isDesktop) {
       return
     }
-    if (this.botService) {
+    // A live instance is never rebuilt; a cleaned-up one is dead
+    // (acceptingEvents is permanently false), so it must be replaced.
+    if (this.botService && !this.botService.isCleanedUp) {
       return
     }
+    this.botService = null
     const { BotService } = await import('./core/bot/bot-service')
     const { createBotPlatformAdapterFactory } = await import(
       './core/bot/platform-adapter-factory'
     )
+    if (this.isUnloaded) {
+      return
+    }
     const chatManager = new ChatManager(this.app, this.settings)
     const botService = new BotService({
       app: this.app,
@@ -1332,9 +1338,22 @@ export default class YoloPlugin extends Plugin {
       getAgentService: () => this.getAgentService(),
       getMcpManager: () => this.getMcpManager(),
       notifyUser: (message) => new Notice(message),
+      translate: (key, fallback) => this.t(key, fallback),
     })
+    // Set the field before initialize() so a re-entrant settings flip during
+    // the async start reuses this instance instead of building a second one.
     this.botService = botService
-    await botService.initialize()
+    try {
+      await botService.initialize()
+    } catch (error) {
+      this.botService = null
+      throw error
+    }
+  }
+
+  /** Public accessor for the Bots settings UI (health dots, test connection). */
+  getBotService(): BotService | null {
+    return this.botService
   }
 
   getAgentService(): AgentService {
@@ -2326,6 +2345,36 @@ export default class YoloPlugin extends Plugin {
       }
       previousScheduledTasksEnabled = nextScheduledTasksEnabled
     })
+    // Bot: 「服务本体没建 → 应该建」时惰性启动（desktop 门控在 startBotService
+    // 内）。触发条件与 onload 的启动门完全一致：enabled 且存在启用中的平台；
+    // 任一维度从 false→true（enabled 翻转，或全局开着但此前没有任何平台启用）
+    // 都补建服务。职责边界：这里只管建服务，平台级 adapter 启停/重启由
+    // BotService 内部 settings 监听自行 diff（bot-service.ts 的 onSettingsChanged），
+    // 不与本监听重叠——enabled=false 也无需在此停服务，内部监听会停全部 adapter；
+    // 重复触发由 startBotService 的「存活实例不重建」守卫吸收。
+    let previousBotsEnabled = this.settings.bots.enabled === true
+    let previousHasEnabledPlatform = this.settings.bots.platforms.some(
+      (platform) => platform.enabled,
+    )
+    this.addSettingsChangeListener((settings) => {
+      const nextBotsEnabled = settings.bots.enabled === true
+      const nextHasEnabledPlatform = settings.bots.platforms.some(
+        (platform) => platform.enabled,
+      )
+      if (
+        nextBotsEnabled &&
+        nextHasEnabledPlatform &&
+        (!previousBotsEnabled || !previousHasEnabledPlatform)
+      ) {
+        void this.warmupAgentService()
+          .then(() => this.startBotService())
+          .catch((error: unknown) => {
+            console.error('[YOLO] Bot service startup failed:', error)
+          })
+      }
+      previousBotsEnabled = nextBotsEnabled
+      previousHasEnabledPlatform = nextHasEnabledPlatform
+    })
     // 启动 reconcile：无条件构建服务（desktop + vault 路径门控），enabled 决定是否启动调度循环。
     this.reconcileScheduledTasks()
     await loadLocale(this.resolveObsidianLanguage())
@@ -2953,6 +3002,12 @@ export default class YoloPlugin extends Plugin {
     this.scheduledTasksService = null
     this.scheduledTasksStore?.close()
     this.scheduledTasksStore = null
+    // Bot cleanup（等待在飞 turn 与 adapter 停靠；字段置 null，reload 后按
+    // settings 经 startBotService 重建）。
+    if (this.botService) {
+      void this.botService.cleanup()
+      this.botService = null
+    }
     this.chatManager = null
     this.ragAutoUpdateService?.cleanup()
     this.ragAutoUpdateService = null

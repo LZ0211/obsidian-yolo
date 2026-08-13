@@ -129,6 +129,15 @@ export class BotService {
     })
   }
 
+  /**
+   * `cleanup()` leaves the instance permanently dead (`acceptingEvents` is
+   * never re-enabled). Lets `main.ts` tell a cleaned-up instance apart from a
+   * live one so a settings flip can rebuild instead of silently no-op'ing.
+   */
+  get isCleanedUp(): boolean {
+    return this.cleanupPromise !== null
+  }
+
   private loadConversation(
     conversationId: string,
   ): Promise<readonly ChatMessage[] | null> {
@@ -202,6 +211,12 @@ export class BotService {
   ): Promise<void> {
     if (!this.acceptingEvents) return
     if (!next.enabled) {
+      // Abort in-flight turns before stopping adapters — the same order as
+      // `cleanup()`: without the abort, a queued turn would keep running and
+      // try to reply through an already-stopped adapter, failing silently.
+      for (const controller of this.activeTurnAbortControllers) {
+        controller.abort()
+      }
       await Promise.all(
         Array.from(this.adapters.keys()).map((id) => this.stopPlatform(id)),
       )
