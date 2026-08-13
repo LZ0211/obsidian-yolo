@@ -410,6 +410,45 @@ describe('ScheduledTaskScheduler', () => {
     }
   })
 
+  it('shutdown aborts in-flight runs so a plugin reload cannot leave them running against a closed store', async () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const eventBus = new TaskEventBus()
+      let runAbortSignal: AbortSignal | undefined
+      const agentApi = makeAgentApi(
+        (request) =>
+          new Promise((_, reject) => {
+            runAbortSignal = request.abortSignal
+            request.abortSignal?.addEventListener('abort', () =>
+              reject(new Error('aborted')),
+            )
+          }),
+      )
+      const executor = new TaskExecutor({ getAgentApi: () => agentApi })
+      const scheduler = new ScheduledTaskScheduler({
+        store,
+        executor,
+        eventBus,
+      })
+      store.createTask('task-1', makeTaskConfig({ timeoutSeconds: 30 }), 1000)
+
+      const result = scheduler.executeTaskNow('task-1')
+      if (result.outcome !== 'started') throw new Error('unreachable')
+      await flushPromises()
+      expect(runAbortSignal?.aborted).toBe(false)
+
+      scheduler.shutdown()
+      await flushPromises()
+
+      expect(runAbortSignal?.aborted).toBe(true)
+
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
   it('executeTaskNow rejects for a task that does not exist', () => {
     const dir = makeTempDir()
     try {

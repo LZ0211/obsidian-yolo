@@ -9,7 +9,6 @@ export const Platform = {
   isIosApp: false,
   isAndroidApp: false,
 }
-export const Platform = { isDesktop: true, isMobile: false }
 export class Scope {
   constructor(_parent?: unknown) {}
   register(

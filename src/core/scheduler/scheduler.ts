@@ -202,6 +202,16 @@ export class ScheduledTaskScheduler {
     this.stop()
     this.queue.pause()
     this.queue.clear()
+    // Abort in-flight runs: a plugin reload/disable must not leave the previous
+    // instance's script/agent runs running — their completion writes would hit a
+    // store the new instance already re-opened, and a reload's orphan recovery
+    // would mark them CANCELLED while the old run was still writing COMPLETED.
+    // executeQueuedTask's shuttingDown branch already skips persistence, so the
+    // aborted runs settle without touching the store.
+    for (const controller of this.runAbortControllers.values()) {
+      controller.abort()
+    }
+    this.runAbortControllers.clear()
   }
 
   private hasWebLocks(): boolean {
