@@ -168,15 +168,17 @@ export class TaskQueue {
 
   /**
    * Transient "move to front" for a still-queued (not yet dequeued) item:
-   * re-sorts it ahead of everything for THIS dequeue only. Unlike
-   * updatePendingPriority it does not record the bump in latestPriority, so a
-   * retry of a failed run keeps the task's stored priority (the permanent
-   * priority lives in the task store and is edited there). Returns false if
-   * not found (already executing/finished).
+   * re-sorts it ahead of everything for THIS dequeue only. The pre-bump
+   * priority is recorded in latestPriority before jumping to 10, so a retry
+   * of a failed run falls back to the task's stored priority instead of
+   * inheriting the transient bump (the permanent priority lives in the task
+   * store and is edited there). Returns false if not found (already
+   * executing/finished).
    */
   promotePendingTask(taskId: string): boolean {
     const item = this.items.find((i) => i.taskId === taskId)
     if (!item) return false
+    this.latestPriority.set(taskId, item.priority)
     item.priority = 10
     this.items.sort((a, b) =>
       a.priority !== b.priority

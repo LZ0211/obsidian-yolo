@@ -263,6 +263,23 @@ describe('TaskQueue', () => {
     expect(queue.promotePendingTask('never-enqueued')).toBe(false)
   })
 
+  it('retries a promoted task at its original priority, not the transient 10', () => {
+    const queue = new TaskQueue({ maxConcurrent: 1, defaultMode: 'concurrent' })
+    queue.enqueue(makeItem({ taskId: 'a', priority: 3 }))
+    queue.enqueue(makeItem({ taskId: 'b', priority: 3 }))
+
+    // 'b' jumps to the front for this dequeue only.
+    expect(queue.promotePendingTask('b')).toBe(true)
+    expect(queue.getPendingTasks().map((i) => i.taskId)).toEqual(['b'])
+
+    // 'b' runs next, then fails: its retry must fall back to the original
+    // priority (3) rather than inheriting the transient 10 from the promote.
+    queue.markCompleted('a', 'batch-1')
+    queue.markFailed('b', 'batch-1', true)
+    const retryItem = queue.getPendingTasks().find((i) => i.taskId === 'b')
+    expect(retryItem?.priority).toBe(3)
+  })
+
   it('labels the run from the explicit source, not the priority', () => {
     const queue = new TaskQueue({ maxConcurrent: 2, defaultMode: 'concurrent' })
     queue.enqueue(makeItem({ taskId: 'scheduled-high', priority: 10 }))
