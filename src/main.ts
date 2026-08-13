@@ -33,6 +33,7 @@ import {
 } from './core/agent/agentEventStore'
 import { AgentFileChangeTracker } from './core/agent/agentFileChangeTracker'
 import { ProjectDeliveryBridge } from './core/agent/project/deliveryBridge'
+import { subagentTaskRegistry } from './core/agent/subagent/task-registry'
 import type {
   AgentConversationRunSummary,
   AgentService,
@@ -2310,6 +2311,14 @@ export default class YoloPlugin extends Plugin {
     this.projectDeliveryBridge = new ProjectDeliveryBridge({
       getSettings: () => this.settings,
       adapter: this.app.vault.adapter,
+      // Liveness probe: a claim whose runKey maps to a live subagent in the
+      // task registry is never reclaimed, even past the 30-minute lease.
+      // Without it, long-running implementer runs (>30min) are recycled as
+      // crashes by status() and their delivery is dropped as stale.
+      // runKey === the subagent taskId (backfilled at dispatch), so the
+      // registry lookup by runKey is the identity match.
+      isRunActive: (runKey) =>
+        subagentTaskRegistry.get(runKey)?.status === 'running',
     })
     this.projectDeliveryBridge.start()
     // The parent subagent timeout + breaker read the CURRENT settings on every

@@ -1,6 +1,8 @@
 import { normalizePath } from 'obsidian'
 
 import type { YoloSettingsLike } from '../../../types/yoloSettingsLike'
+import { subagentTaskRegistry } from '../subagent/task-registry'
+import type { SubagentTaskRecord } from '../subagent/types'
 
 import {
   ProjectStore,
@@ -519,6 +521,44 @@ describe('status signals and lazy reclaim', () => {
     expect(status?.reclaimed).toEqual([])
     const after = await store.readTask('p1', 't1')
     expect(after?.task.status).toBe('running')
+  })
+
+  it('keeps an expired claim when the production liveness probe (real subagent registry) reports the run alive', async () => {
+    // Production wiring: main.ts passes isRunActive: (runKey) =>
+    // subagentTaskRegistry.get(runKey)?.status === 'running'. The claim
+    // runKey is the real subagent taskId (backfilled at dispatch), so the
+    // registry lookup is the identity match. A >30min long-running implementer
+    // must NOT be reclaimed as a crash, or its delivery would be dropped.
+    const runKey = `sub_probe_${Date.now()}`
+    const record: SubagentTaskRecord = {
+      taskId: runKey,
+      conversationId: 'conv-probe',
+      source: {
+        type: 'llm_tool_call',
+        toolCallId: 'tool-probe',
+        assistantMessageId: 'msg-probe',
+      },
+      title: 'Probe',
+      status: 'running',
+      createdAt: Date.now(),
+      prompt: 'do it',
+      runKey,
+      sessionId: runKey,
+      runSequence: 1,
+      abortController: new AbortController(),
+    }
+    subagentTaskRegistry.register(record)
+    const store = createStore(undefined, {
+      isRunActive: (k) => subagentTaskRegistry.get(k)?.status === 'running',
+    })
+    await makeProjectWithTask(store)
+    const read = await store.readTask('p1', 't1')
+    await store.claimTask('p1', 't1', preconditionOf(read), { runKey, durationMs: -1000 })
+    const status = await store.status('p1')
+    expect(status?.reclaimed).toEqual([])
+    const after = await store.readTask('p1', 't1')
+    expect(after?.task.status).toBe('running')
+    expect(after?.task.claim?.runKey).toBe(runKey)
   })
 
   it('skips reclaim when the task leaves running before the write (in-lock re-read)', async () => {
