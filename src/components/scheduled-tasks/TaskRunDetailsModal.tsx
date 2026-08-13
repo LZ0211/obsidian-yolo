@@ -1,5 +1,5 @@
 import { App, Notice } from 'obsidian'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useLanguage } from '../../contexts/language-context'
 import {
@@ -37,6 +37,8 @@ export class TaskRunDetailsModal extends ReactModal<TaskRunDetailsComponentProps
 }
 
 const POLL_MS = 2000
+/** Logs beyond this many entries are collapsed behind an expand button by default. */
+const LOGS_COLLAPSE_THRESHOLD = 50
 
 function TaskRunDetailsComponent({
   plugin,
@@ -45,6 +47,8 @@ function TaskRunDetailsComponent({
   const { t } = useLanguage()
   const [run, setRun] = useState<TaskRun | null>(null)
   const [retrying, setRetrying] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
+  const [logsExpanded, setLogsExpanded] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [retryInfo, setRetryInfo] = useState<{
     attempt: number
@@ -56,32 +60,36 @@ function TaskRunDetailsComponent({
   const loadErrorRef = useRef(loadError)
   loadErrorRef.current = loadError
 
+  // Guards against a slow earlier response overwriting a newer one (e.g. a
+  // manual reload after cancel racing the poll interval).
+  const loadSeq = useRef(0)
+
+  const load = useCallback(() => {
+    if (!service) return
+    const seq = ++loadSeq.current
+    void service
+      .getTaskRun(runId)
+      .then((next) => {
+        if (seq !== loadSeq.current) return
+        setRun(next)
+        setLoadError(null)
+      })
+      .catch(() => {
+        // The run may have been pruned by run-history retention after the
+        // history list rendered — surface that instead of hanging on
+        // "Loading..." forever with an unhandled rejection every poll.
+        if (seq !== loadSeq.current) return
+        setLoadError(
+          t(
+            'settings.scheduledTasks.runNotFound',
+            'Run record not found (it may have been pruned by retention).',
+          ),
+        )
+      })
+  }, [service, runId, t])
+
   useEffect(() => {
     if (!service) return
-    let cancelled = false
-    const load = () => {
-      void service
-        .getTaskRun(runId)
-        .then((next) => {
-          if (!cancelled) {
-            setRun(next)
-            setLoadError(null)
-          }
-        })
-        .catch(() => {
-          // The run may have been pruned by run-history retention after the
-          // history list rendered — surface that instead of hanging on
-          // "Loading..." forever with an unhandled rejection every poll.
-          if (!cancelled) {
-            setLoadError(
-              t(
-                'settings.scheduledTasks.runNotFound',
-                'Run record not found (it may have been pruned by retention).',
-              ),
-            )
-          }
-        })
-    }
     load()
 
     const unsubscribe = service.subscribeToTaskRun(runId, (event) => {
@@ -110,11 +118,10 @@ function TaskRunDetailsComponent({
     }, POLL_MS)
 
     return () => {
-      cancelled = true
       unsubscribe()
       clearInterval(interval)
     }
-  }, [service, runId])
+  }, [service, runId, load])
 
   if (!service) {
     return (
@@ -162,6 +169,21 @@ function TaskRunDetailsComponent({
         }
       })
       .finally(() => setRetrying(false))
+  }
+
+  const handleCancel = () => {
+    setCancelling(true)
+    void service
+      .cancelTaskRun(runId)
+      .then(() => {
+        new Notice(
+          t('settings.scheduledTasks.runCancelledNotice', 'Run cancelled'),
+        )
+        // The task_cancelled event also triggers a reload via the subscription;
+        // reloading here makes the terminal state appear immediately.
+        load()
+      })
+      .finally(() => setCancelling(false))
   }
 
   const statusLabels: Record<TaskRunStatus, string> = {
@@ -232,6 +254,15 @@ function TaskRunDetailsComponent({
           />
         </ObsidianSetting>
       )}
+      {run.status === TaskRunStatus.RUNNING && (
+        <ObsidianSetting>
+          <ObsidianButton
+            text={t('settings.scheduledTasks.runCancel', 'Cancel run')}
+            onClick={handleCancel}
+            disabled={cancelling}
+          />
+        </ObsidianSetting>
+      )}
       <div>
         {t('settings.scheduledTasks.runTriggeredBy', 'Triggered by')}:{' '}
         {triggeredByLabels[run.triggeredBy]}
@@ -277,12 +308,30 @@ function TaskRunDetailsComponent({
           <div className="setting-item-name">
             {t('settings.scheduledTasks.runLogs', 'Logs')}
           </div>
-          {run.logs.map((entry, index) => (
+          {run.logs.length > LOGS_COLLAPSE_THRESHOLD && !logsExpanded && (
+            <ObsidianButton
+              text={t(
+                'settings.scheduledTasks.logExpand',
+                'Show all logs ({count})',
+              ).replace('{count}', String(run.logs.length))}
+              onClick={() => setLogsExpanded(true)}
+            />
+          )}
+          {(logsExpanded
+            ? run.logs
+            : run.logs.slice(0, LOGS_COLLAPSE_THRESHOLD)
+          ).map((entry, index) => (
             <div key={index}>
               [{new Date(entry.timestamp).toLocaleTimeString()}] {entry.level}:{' '}
               {entry.message}
             </div>
           ))}
+          {run.logs.length > LOGS_COLLAPSE_THRESHOLD && logsExpanded && (
+            <ObsidianButton
+              text={t('settings.scheduledTasks.logCollapse', 'Hide logs')}
+              onClick={() => setLogsExpanded(false)}
+            />
+          )}
         </div>
       )}
     </div>

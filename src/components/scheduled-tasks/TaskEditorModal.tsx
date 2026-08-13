@@ -1,9 +1,13 @@
 import { App, Notice } from 'obsidian'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { useLanguage } from '../../contexts/language-context'
 import { DEFAULT_ASSISTANT_ID } from '../../core/agent/default-assistant'
-import { validateCronExpression } from '../../core/scheduler/cron-parser'
+import {
+  describeCronSchedule,
+  describeIntervalSchedule,
+  validateCronExpression,
+} from '../../core/scheduler/cron-parser'
 import type {
   ScheduleType,
   ScheduledTask,
@@ -18,11 +22,18 @@ import { ObsidianTextArea } from '../common/ObsidianTextArea'
 import { ObsidianTextInput } from '../common/ObsidianTextInput'
 import { ObsidianToggle } from '../common/ObsidianToggle'
 import { ReactModal } from '../common/ReactModal'
+import { ConfirmModal } from '../modals/ConfirmModal'
 
 type TaskEditorModalComponentProps = {
   plugin: YoloPlugin
   task: ScheduledTask | null // null when creating a new task
   onSaved?: () => void
+  /**
+   * Shared with the modal class so its onClose() can intercept ESC/×/Cancel
+   * while the form is dirty: the component writes `dirty` on every change and
+   * `settled` once the user saved (or explicitly confirmed discarding).
+   */
+  closeGuardRef?: { current: { dirty: boolean; settled: boolean } }
 }
 
 const USE_DEFAULT_ASSISTANT_VALUE = ''
@@ -77,12 +88,23 @@ function fromDatetimeLocalValue(value: string): number | null {
   return Number.isNaN(ms) ? null : ms
 }
 
+/** Shared close-guard state for the editor modals: dirty + settled, written by the React component, read by the modal class's onClose(). */
+type CloseGuard = { current: { dirty: boolean; settled: boolean } }
+
+const makeCloseGuard = (): CloseGuard => ({
+  current: { dirty: false, settled: false },
+})
+
 export class AddScheduledTaskModal extends ReactModal<TaskEditorModalComponentProps> {
+  private readonly closeGuard: CloseGuard
+  private readonly hostPlugin: YoloPlugin
+
   constructor(app: App, plugin: YoloPlugin, onSaved?: () => void) {
+    const closeGuard = makeCloseGuard()
     super({
       app,
       Component: TaskEditorModalComponent,
-      props: { plugin, task: null, onSaved },
+      props: { plugin, task: null, onSaved, closeGuardRef: closeGuard },
       options: {
         title: plugin.t(
           'settings.scheduledTasks.addTaskTitle',
@@ -91,21 +113,53 @@ export class AddScheduledTaskModal extends ReactModal<TaskEditorModalComponentPr
       },
       plugin,
     })
+    this.hostPlugin = plugin
+    this.closeGuard = closeGuard
     this.modalEl.classList.add('yolo-modal--wide')
+  }
+
+  onClose() {
+    if (this.closeGuard.current.dirty && !this.closeGuard.current.settled) {
+      this.confirmDiscardChanges()
+      return
+    }
+    super.onClose()
+  }
+
+  private confirmDiscardChanges(): void {
+    new ConfirmModal(this.app, {
+      title: this.hostPlugin.t(
+        'settings.scheduledTasks.discardChangesTitle',
+        'Discard changes?',
+      ),
+      message: this.hostPlugin.t(
+        'settings.scheduledTasks.discardChangesMessage',
+        'You have unsaved changes in this form. Discard them?',
+      ),
+      ctaText: this.hostPlugin.t('common.discard', 'Discard'),
+      onConfirm: () => {
+        this.closeGuard.current.settled = true
+        this.close()
+      },
+    }).open()
   }
 }
 
 export class EditScheduledTaskModal extends ReactModal<TaskEditorModalComponentProps> {
+  private readonly closeGuard: CloseGuard
+  private readonly hostPlugin: YoloPlugin
+
   constructor(
     app: App,
     plugin: YoloPlugin,
     task: ScheduledTask,
     onSaved?: () => void,
   ) {
+    const closeGuard = makeCloseGuard()
     super({
       app,
       Component: TaskEditorModalComponent,
-      props: { plugin, task, onSaved },
+      props: { plugin, task, onSaved, closeGuardRef: closeGuard },
       options: {
         title: plugin
           .t(
@@ -116,21 +170,97 @@ export class EditScheduledTaskModal extends ReactModal<TaskEditorModalComponentP
       },
       plugin,
     })
+    this.hostPlugin = plugin
+    this.closeGuard = closeGuard
     this.modalEl.classList.add('yolo-modal--wide')
   }
+
+  onClose() {
+    if (this.closeGuard.current.dirty && !this.closeGuard.current.settled) {
+      this.confirmDiscardChanges()
+      return
+    }
+    super.onClose()
+  }
+
+  private confirmDiscardChanges(): void {
+    new ConfirmModal(this.app, {
+      title: this.hostPlugin.t(
+        'settings.scheduledTasks.discardChangesTitle',
+        'Discard changes?',
+      ),
+      message: this.hostPlugin.t(
+        'settings.scheduledTasks.discardChangesMessage',
+        'You have unsaved changes in this form. Discard them?',
+      ),
+      ctaText: this.hostPlugin.t('common.discard', 'Discard'),
+      onConfirm: () => {
+        this.closeGuard.current.settled = true
+        this.close()
+      },
+    }).open()
+  }
 }
+
+type FieldName =
+  | 'name'
+  | 'scriptPath'
+  | 'agentPrompt'
+  | 'cron'
+  | 'interval'
+  | 'once'
+  | 'timeout'
+
+/** Order in which the submit handler walks fields to focus the first error. */
+const FIELD_FOCUS_ORDER: FieldName[] = [
+  'name',
+  'cron',
+  'interval',
+  'once',
+  'scriptPath',
+  'agentPrompt',
+  'timeout',
+]
+
+type FieldErrors = Partial<Record<FieldName, string>>
 
 function TaskEditorModalComponent({
   plugin,
   task,
   onSaved,
   onClose,
+  closeGuardRef,
 }: TaskEditorModalComponentProps & { onClose: () => void }) {
-  const { t } = useLanguage()
+  const { t, language } = useLanguage()
   const [formData, setFormData] = useState<TaskConfig>(
     task ? taskToConfig(task) : createDefaultTaskConfig(),
   )
   const [otherTasks, setOtherTasks] = useState<ScheduledTask[]>([])
+  // Blur-touched fields show their inline error immediately; untouched fields
+  // only get validated (and revealed) at submit time.
+  const [touched, setTouched] = useState<ReadonlySet<FieldName>>(
+    () => new Set(),
+  )
+  const fieldRefs = useRef<Partial<Record<FieldName, HTMLDivElement | null>>>(
+    {},
+  )
+
+  const initialConfigRef = useRef<TaskConfig>(
+    task ? taskToConfig(task) : createDefaultTaskConfig(),
+  )
+
+  // Dirty tracking for the close guard: any difference from the initial
+  // config marks the form as having unsaved changes (ESC/×/Cancel then ask
+  // for confirmation in the modal class's onClose).
+  const [dirty, setDirty] = useState(false)
+  useEffect(() => {
+    const isDirty =
+      JSON.stringify(formData) !== JSON.stringify(initialConfigRef.current)
+    setDirty(isDirty)
+    if (closeGuardRef) {
+      closeGuardRef.current.dirty = isDirty
+    }
+  }, [formData, closeGuardRef])
 
   useEffect(() => {
     const service = plugin.getScheduledTasksService()
@@ -141,6 +271,82 @@ function TaskEditorModalComponent({
         setOtherTasks(all.filter((other) => other.id !== task?.id)),
       )
   }, [plugin, task?.id])
+
+  const touchField = (field: FieldName) => {
+    setTouched((prev) => new Set(prev).add(field))
+  }
+
+  const validateFormData = (data: TaskConfig): FieldErrors => {
+    const errors: FieldErrors = {}
+    if (!data.name.trim()) {
+      errors.name = t(
+        'settings.scheduledTasks.errorNameRequired',
+        'Name is required',
+      )
+    }
+    if (data.type === 'script') {
+      if (!data.scriptPath?.trim()) {
+        errors.scriptPath = t(
+          'settings.scheduledTasks.errorScriptPathRequired',
+          'Script path is required',
+        )
+      }
+    } else if (data.type === 'agent' && !data.agentPrompt?.trim()) {
+      errors.agentPrompt = t(
+        'settings.scheduledTasks.errorPromptRequired',
+        'Prompt is required',
+      )
+    }
+    if (data.scheduleType === 'cron') {
+      if (!data.cronExpression?.trim()) {
+        errors.cron = t(
+          'settings.scheduledTasks.errorCronRequired',
+          'Cron expression is required',
+        )
+      } else {
+        const cronError = validateCronExpression(data.cronExpression)
+        if (cronError) {
+          errors.cron = t(
+            'settings.scheduledTasks.errorCronInvalid',
+            'Invalid cron expression: {error}',
+          ).replace('{error}', cronError)
+        }
+      }
+    } else if (data.scheduleType === 'interval') {
+      if (!data.intervalSeconds || data.intervalSeconds <= 0) {
+        errors.interval = t(
+          'settings.scheduledTasks.errorIntervalRequired',
+          'Interval must be greater than 0 seconds',
+        )
+      }
+    } else if (data.scheduleType === 'once') {
+      if (!data.oneTimeDateTime) {
+        errors.once = t(
+          'settings.scheduledTasks.errorOnceRequired',
+          'Pick a run time',
+        )
+      } else if (data.oneTimeDateTime <= Date.now()) {
+        // A past time would fire at the very next poll tick with no warning;
+        // the catch-up pass deliberately skips 'once' schedules, so the run
+        // would also be silently lost if the process was down at that moment.
+        errors.once = t(
+          'settings.scheduledTasks.errorOnceInPast',
+          'The run time must be in the future',
+        )
+      }
+    }
+    if (data.timeoutSeconds <= 0) {
+      errors.timeout = t(
+        'settings.scheduledTasks.errorTimeoutRequired',
+        'Timeout must be greater than 0 seconds',
+      )
+    }
+    return errors
+  }
+
+  const errors = validateFormData(formData)
+  const fieldError = (field: FieldName): string | undefined =>
+    touched.has(field) ? errors[field] : undefined
 
   const assistantOptions: Record<string, string> = {
     [USE_DEFAULT_ASSISTANT_VALUE]: t(
@@ -174,82 +380,26 @@ function TaskEditorModalComponent({
   }
 
   const handleSubmit = () => {
-    const errors: string[] = []
-    if (!formData.name.trim()) {
-      errors.push(
-        t('settings.scheduledTasks.errorNameRequired', 'Name is required'),
-      )
-    }
-    if (formData.type === 'script') {
-      if (!formData.scriptPath?.trim()) {
-        errors.push(
-          t(
-            'settings.scheduledTasks.errorScriptPathRequired',
-            'Script path is required',
-          ),
-        )
-      }
-    } else if (formData.type === 'agent' && !formData.agentPrompt?.trim()) {
-      errors.push(
-        t('settings.scheduledTasks.errorPromptRequired', 'Prompt is required'),
-      )
-    }
-    if (formData.scheduleType === 'cron') {
-      if (!formData.cronExpression?.trim()) {
-        errors.push(
-          t(
-            'settings.scheduledTasks.errorCronRequired',
-            'Cron expression is required',
-          ),
-        )
-      } else {
-        const cronError = validateCronExpression(formData.cronExpression)
-        if (cronError) {
-          errors.push(
-            t(
-              'settings.scheduledTasks.errorCronInvalid',
-              'Invalid cron expression: {error}',
-            ).replace('{error}', cronError),
-          )
-        }
-      }
-    } else if (formData.scheduleType === 'interval') {
-      if (!formData.intervalSeconds || formData.intervalSeconds <= 0) {
-        errors.push(
-          t(
-            'settings.scheduledTasks.errorIntervalRequired',
-            'Interval must be greater than 0 seconds',
-          ),
-        )
-      }
-    } else if (formData.scheduleType === 'once') {
-      if (!formData.oneTimeDateTime) {
-        errors.push(
-          t('settings.scheduledTasks.errorOnceRequired', 'Pick a run time'),
-        )
-      } else if (formData.oneTimeDateTime <= Date.now()) {
-        // A past time would fire at the very next poll tick with no warning;
-        // the catch-up pass deliberately skips 'once' schedules, so the run
-        // would also be silently lost if the process was down at that moment.
-        errors.push(
-          t(
-            'settings.scheduledTasks.errorOnceInPast',
-            'The run time must be in the future',
-          ),
-        )
-      }
-    }
-    if (formData.timeoutSeconds <= 0) {
-      errors.push(
-        t(
-          'settings.scheduledTasks.errorTimeoutRequired',
-          'Timeout must be greater than 0 seconds',
-        ),
-      )
-    }
+    const validationErrors = validateFormData(formData)
+    const errorList = FIELD_FOCUS_ORDER.filter(
+      (field) => validationErrors[field] != null,
+    )
 
-    if (errors.length > 0) {
-      new Notice(errors.join('\n'))
+    if (errorList.length > 0) {
+      // Reveal every invalid field inline, focus the first one, and keep the
+      // submit-time Notice as the backstop (validation is also reachable when
+      // no field has been blurred yet).
+      setTouched(new Set(FIELD_FOCUS_ORDER))
+      const first = errorList[0]
+      const firstInput =
+        fieldRefs.current[first]?.querySelector('input, textarea')
+      if (firstInput instanceof HTMLElement) {
+        firstInput.focus()
+      }
+      new Notice(
+        errorList.map((field) => validationErrors[field]).join('\n') ||
+          t('settings.scheduledTasks.errorNameRequired', 'Name is required'),
+      )
       return
     }
 
@@ -270,7 +420,15 @@ function TaskEditorModalComponent({
         } else {
           await service.createTask(formData)
         }
+        new Notice(
+          task
+            ? t('settings.scheduledTasks.saveSuccessNotice', 'Task saved')
+            : t('settings.scheduledTasks.createSuccessNotice', 'Task created'),
+        )
         onSaved?.()
+        if (closeGuardRef) {
+          closeGuardRef.current.settled = true
+        }
         onClose()
       } catch (error) {
         new Notice(error instanceof Error ? error.message : String(error))
@@ -281,21 +439,34 @@ function TaskEditorModalComponent({
 
   return (
     <div>
-      <ObsidianSetting
-        name={t('settings.scheduledTasks.fieldName', 'Name')}
-        required
+      <div
+        className={`yolo-settings-field ${fieldError('name') ? 'is-invalid' : ''}`}
+        ref={(el) => {
+          fieldRefs.current.name = el
+        }}
       >
-        <ObsidianTextInput
-          value={formData.name}
-          placeholder={t(
-            'settings.scheduledTasks.namePlaceholder',
-            'Nightly summary',
-          )}
-          onChange={(value) =>
-            setFormData((prev) => ({ ...prev, name: value }))
-          }
-        />
-      </ObsidianSetting>
+        <ObsidianSetting
+          name={t('settings.scheduledTasks.fieldName', 'Name')}
+          required
+        >
+          <ObsidianTextInput
+            value={formData.name}
+            placeholder={t(
+              'settings.scheduledTasks.namePlaceholder',
+              'Nightly summary',
+            )}
+            onChange={(value) =>
+              setFormData((prev) => ({ ...prev, name: value }))
+            }
+            onBlur={() => touchField('name')}
+          />
+        </ObsidianSetting>
+        {fieldError('name') && (
+          <div className="yolo-settings-inline-error" role="alert">
+            {fieldError('name')}
+          </div>
+        )}
+      </div>
 
       <ObsidianSetting
         name={t('settings.scheduledTasks.fieldEnabled', 'Enabled')}
@@ -353,50 +524,76 @@ function TaskEditorModalComponent({
             />
           </ObsidianSetting>
 
-          <ObsidianSetting
-            name={t('settings.scheduledTasks.fieldPrompt', 'Prompt')}
-            required
-            desc={t(
-              'settings.scheduledTasks.fieldPromptDesc',
-              'The message sent to the assistant each time this task runs',
-            )}
+          <div
+            className={`yolo-settings-field ${fieldError('agentPrompt') ? 'is-invalid' : ''}`}
+            ref={(el) => {
+              fieldRefs.current.agentPrompt = el
+            }}
           >
-            <ObsidianTextArea
-              value={formData.agentPrompt ?? ''}
-              placeholder={t(
-                'settings.scheduledTasks.promptPlaceholder',
-                'Summarize what happened today...',
+            <ObsidianSetting
+              name={t('settings.scheduledTasks.fieldPrompt', 'Prompt')}
+              required
+              desc={t(
+                'settings.scheduledTasks.fieldPromptDesc',
+                'The message sent to the assistant each time this task runs',
               )}
-              onChange={(value) =>
-                setFormData((prev) => ({ ...prev, agentPrompt: value }))
-              }
-              autoResize
-              maxAutoResizeHeight={200}
-            />
-          </ObsidianSetting>
+            >
+              <ObsidianTextArea
+                value={formData.agentPrompt ?? ''}
+                placeholder={t(
+                  'settings.scheduledTasks.promptPlaceholder',
+                  'Summarize what happened today...',
+                )}
+                onChange={(value) =>
+                  setFormData((prev) => ({ ...prev, agentPrompt: value }))
+                }
+                onBlur={() => touchField('agentPrompt')}
+                autoResize
+                maxAutoResizeHeight={200}
+              />
+            </ObsidianSetting>
+            {fieldError('agentPrompt') && (
+              <div className="yolo-settings-inline-error" role="alert">
+                {fieldError('agentPrompt')}
+              </div>
+            )}
+          </div>
         </>
       )}
 
       {formData.type === 'script' && (
-        <ObsidianSetting
-          name={t('settings.scheduledTasks.fieldScriptPath', 'Script path')}
-          required
-          desc={t(
-            'settings.scheduledTasks.fieldScriptPathDesc',
-            'Vault-relative path to a .js file to run in a worker thread (desktop only)',
-          )}
+        <div
+          className={`yolo-settings-field ${fieldError('scriptPath') ? 'is-invalid' : ''}`}
+          ref={(el) => {
+            fieldRefs.current.scriptPath = el
+          }}
         >
-          <ObsidianTextInput
-            value={formData.scriptPath ?? ''}
-            placeholder={t(
-              'settings.scheduledTasks.scriptPathPlaceholder',
-              'scripts/run.js',
+          <ObsidianSetting
+            name={t('settings.scheduledTasks.fieldScriptPath', 'Script path')}
+            required
+            desc={t(
+              'settings.scheduledTasks.fieldScriptPathDesc',
+              'Vault-relative path to a .js file to run in a worker thread (desktop only)',
             )}
-            onChange={(value) =>
-              setFormData((prev) => ({ ...prev, scriptPath: value }))
-            }
-          />
-        </ObsidianSetting>
+          >
+            <ObsidianTextInput
+              value={formData.scriptPath ?? ''}
+              placeholder={t(
+                'settings.scheduledTasks.scriptPathPlaceholder',
+                'scripts/run.js',
+              )}
+              onChange={(value) =>
+                setFormData((prev) => ({ ...prev, scriptPath: value }))
+              }
+              onBlur={() => touchField('scriptPath')}
+            />
+          </ObsidianSetting>
+          {fieldError('scriptPath') && (
+            <div className="yolo-settings-inline-error" role="alert">
+              {fieldError('scriptPath')}
+            </div>
+          )}
+        </div>
       )}
 
       <ObsidianSetting
@@ -415,48 +612,86 @@ function TaskEditorModalComponent({
       </ObsidianSetting>
 
       {formData.scheduleType === 'interval' && (
-        <ObsidianSetting
-          name={t(
-            'settings.scheduledTasks.fieldIntervalSeconds',
-            'Interval (seconds)',
-          )}
+        <div
+          className={`yolo-settings-field ${fieldError('interval') ? 'is-invalid' : ''}`}
+          ref={(el) => {
+            fieldRefs.current.interval = el
+          }}
         >
-          <ObsidianTextInput
-            type="number"
-            value={String(formData.intervalSeconds ?? '')}
-            onChange={(value) =>
-              setFormData((prev) => ({
-                ...prev,
-                intervalSeconds: Math.max(1, Number(value) || 0),
-              }))
-            }
-          />
-        </ObsidianSetting>
+          <ObsidianSetting
+            name={t(
+              'settings.scheduledTasks.fieldIntervalSeconds',
+              'Interval (seconds)',
+            )}
+          >
+            <ObsidianTextInput
+              type="number"
+              value={String(formData.intervalSeconds ?? '')}
+              onChange={(value) =>
+                setFormData((prev) => ({
+                  ...prev,
+                  intervalSeconds: Math.max(1, Number(value) || 0),
+                }))
+              }
+              onBlur={() => touchField('interval')}
+            />
+          </ObsidianSetting>
+          {formData.intervalSeconds != null &&
+            formData.intervalSeconds > 0 &&
+            !errors.interval && (
+              <div className="yolo-settings-desc">
+                {describeIntervalSchedule(formData.intervalSeconds, t)}
+              </div>
+            )}
+          {fieldError('interval') && (
+            <div className="yolo-settings-inline-error" role="alert">
+              {fieldError('interval')}
+            </div>
+          )}
+        </div>
       )}
 
       {formData.scheduleType === 'cron' && (
         <>
-          <ObsidianSetting
-            name={t(
-              'settings.scheduledTasks.fieldCronExpression',
-              'Cron expression',
-            )}
-            desc={t(
-              'settings.scheduledTasks.cronFormatHint',
-              '* * * * * (minute hour day month weekday)',
-            )}
+          <div
+            className={`yolo-settings-field ${fieldError('cron') ? 'is-invalid' : ''}`}
+            ref={(el) => {
+              fieldRefs.current.cron = el
+            }}
           >
-            <ObsidianTextInput
-              value={formData.cronExpression ?? ''}
-              placeholder={t(
-                'settings.scheduledTasks.cronPlaceholder',
-                '0 9 * * *',
+            <ObsidianSetting
+              name={t(
+                'settings.scheduledTasks.fieldCronExpression',
+                'Cron expression',
               )}
-              onChange={(value) =>
-                setFormData((prev) => ({ ...prev, cronExpression: value }))
-              }
-            />
-          </ObsidianSetting>
+              desc={t(
+                'settings.scheduledTasks.cronFormatHint',
+                '* * * * * (minute hour day month weekday)',
+              )}
+            >
+              <ObsidianTextInput
+                value={formData.cronExpression ?? ''}
+                placeholder={t(
+                  'settings.scheduledTasks.cronPlaceholder',
+                  '0 9 * * *',
+                )}
+                onChange={(value) =>
+                  setFormData((prev) => ({ ...prev, cronExpression: value }))
+                }
+                onBlur={() => touchField('cron')}
+              />
+            </ObsidianSetting>
+            {formData.cronExpression?.trim() && !errors.cron && (
+              <div className="yolo-settings-desc">
+                {describeCronSchedule(formData.cronExpression, t, language)}
+              </div>
+            )}
+            {fieldError('cron') && (
+              <div className="yolo-settings-inline-error" role="alert">
+                {fieldError('cron')}
+              </div>
+            )}
+          </div>
           <ObsidianSetting
             name={t('settings.scheduledTasks.fieldTimezone', 'Timezone')}
             desc={t(
@@ -482,24 +717,37 @@ function TaskEditorModalComponent({
       )}
 
       {formData.scheduleType === 'once' && (
-        <div className="setting-item">
-          <div className="setting-item-info">
-            <div className="setting-item-name">
-              {t('settings.scheduledTasks.fieldRunAt', 'Run at')}
+        <div
+          className={`yolo-settings-field ${fieldError('once') ? 'is-invalid' : ''}`}
+          ref={(el) => {
+            fieldRefs.current.once = el
+          }}
+        >
+          <div className="setting-item">
+            <div className="setting-item-info">
+              <div className="setting-item-name">
+                {t('settings.scheduledTasks.fieldRunAt', 'Run at')}
+              </div>
+            </div>
+            <div className="setting-item-control">
+              <input
+                type="datetime-local"
+                value={toDatetimeLocalValue(formData.oneTimeDateTime)}
+                onChange={(e) =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    oneTimeDateTime: fromDatetimeLocalValue(e.target.value),
+                  }))
+                }
+                onBlur={() => touchField('once')}
+              />
             </div>
           </div>
-          <div className="setting-item-control">
-            <input
-              type="datetime-local"
-              value={toDatetimeLocalValue(formData.oneTimeDateTime)}
-              onChange={(e) =>
-                setFormData((prev) => ({
-                  ...prev,
-                  oneTimeDateTime: fromDatetimeLocalValue(e.target.value),
-                }))
-              }
-            />
-          </div>
+          {fieldError('once') && (
+            <div className="yolo-settings-inline-error" role="alert">
+              {fieldError('once')}
+            </div>
+          )}
         </div>
       )}
 
@@ -522,20 +770,33 @@ function TaskEditorModalComponent({
         />
       </ObsidianSetting>
 
-      <ObsidianSetting
-        name={t('settings.scheduledTasks.fieldTimeout', 'Timeout (seconds)')}
+      <div
+        className={`yolo-settings-field ${fieldError('timeout') ? 'is-invalid' : ''}`}
+        ref={(el) => {
+          fieldRefs.current.timeout = el
+        }}
       >
-        <ObsidianTextInput
-          type="number"
-          value={String(formData.timeoutSeconds)}
-          onChange={(value) =>
-            setFormData((prev) => ({
-              ...prev,
-              timeoutSeconds: Math.max(1, Number(value) || 0),
-            }))
-          }
-        />
-      </ObsidianSetting>
+        <ObsidianSetting
+          name={t('settings.scheduledTasks.fieldTimeout', 'Timeout (seconds)')}
+        >
+          <ObsidianTextInput
+            type="number"
+            value={String(formData.timeoutSeconds)}
+            onChange={(value) =>
+              setFormData((prev) => ({
+                ...prev,
+                timeoutSeconds: Math.max(1, Number(value) || 0),
+              }))
+            }
+            onBlur={() => touchField('timeout')}
+          />
+        </ObsidianSetting>
+        {fieldError('timeout') && (
+          <div className="yolo-settings-inline-error" role="alert">
+            {fieldError('timeout')}
+          </div>
+        )}
+      </div>
 
       <ObsidianSetting
         name={t('settings.scheduledTasks.fieldMaxRetries', 'Max retries')}

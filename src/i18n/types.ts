@@ -42,6 +42,7 @@ export type TranslationKeys = {
     adding: string
     probingDimension: string
     clear: string
+    discard: string
     remove: string
     confirm: string
     close: string
@@ -1973,6 +1974,41 @@ export type TranslationKeys = {
       noOtherTasks?: string
       fieldContinueOnDependencyFailure?: string
       fieldContinueOnDependencyFailureDesc?: string
+      runCancel?: string
+      runCancelledNotice?: string
+      retryInSeconds?: string
+      nextRunAt?: string
+      nextRunTodayAt?: string
+      timeJustNow?: string
+      timeInSeconds?: string
+      timeMinutesAgo?: string
+      timeInMinutes?: string
+      timeHoursAgo?: string
+      timeInHours?: string
+      timeDaysAgo?: string
+      timeInDays?: string
+      describeIntervalHour?: string
+      describeIntervalHours?: string
+      describeIntervalMinute?: string
+      describeIntervalMinutes?: string
+      cronDescEveryMinute?: string
+      cronDescEveryNMinutes?: string
+      cronDescEveryHour?: string
+      cronDescEveryNHours?: string
+      cronDescWeekly?: string
+      cronDescMonthly?: string
+      cronDescDaily?: string
+      queueBumpPriorityTooltip?: string
+      allRunsHistory?: string
+      allRunsHistoryTitle?: string
+      logExpand?: string
+      logCollapse?: string
+      saveSuccessNotice?: string
+      createSuccessNotice?: string
+      discardChangesTitle?: string
+      discardChangesMessage?: string
+      editFieldErrorHint?: string
+      moreActions?: string
     }
     smartSpace?: {
       quickActionsTitle: string

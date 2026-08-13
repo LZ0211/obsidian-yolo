@@ -7,6 +7,7 @@ type ObsidianTextAreaProps = {
   value: string
   placeholder?: string
   onChange: (value: string) => void
+  onBlur?: (value: string) => void
   containerClassName?: string
   inputClassName?: string
   autoResize?: boolean
@@ -20,6 +21,7 @@ export function ObsidianTextArea({
   value,
   placeholder,
   onChange,
+  onBlur,
   containerClassName,
   inputClassName,
   autoResize = false,
@@ -33,6 +35,7 @@ export function ObsidianTextArea({
   const [textAreaComponent, setTextAreaComponent] =
     useState<TextAreaComponent | null>(null)
   const onChangeRef = useRef(onChange)
+  const onBlurRef = useRef(onBlur)
 
   useEffect(() => {
     if (setting) {
@@ -58,6 +61,21 @@ export function ObsidianTextArea({
   useEffect(() => {
     onChangeRef.current = onChange
   }, [onChange])
+
+  useEffect(() => {
+    onBlurRef.current = onBlur
+  }, [onBlur])
+
+  useEffect(() => {
+    if (!textAreaComponent || !onBlurRef.current) return
+    const handler = () => {
+      onBlurRef.current?.(textAreaComponent.getValue())
+    }
+    textAreaComponent.inputEl.addEventListener('blur', handler)
+    return () => {
+      textAreaComponent.inputEl.removeEventListener('blur', handler)
+    }
+  }, [textAreaComponent])
 
   useEffect(() => {
     if (!textAreaComponent) return

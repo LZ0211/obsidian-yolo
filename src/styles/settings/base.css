@@ -139,6 +139,14 @@
   border-color: color-mix(in srgb, var(--text-error) 42%, transparent);
 }
 
+/* Non-card fields (e.g. the scheduled-task editor modal) get the same
+   invalid-input highlight. */
+.yolo-settings-field.is-invalid .setting-item input,
+.yolo-settings-field.is-invalid .setting-item textarea,
+.yolo-settings-field.is-invalid .setting-item select {
+  border-color: color-mix(in srgb, var(--text-error) 42%, transparent);
+}
+
 .yolo-settings-inline-error {
   margin-bottom: var(--size-4-3);
   padding: 10px var(--size-4-3);
@@ -160,6 +168,20 @@
   padding: var(--size-4-6) var(--size-4-4);
   color: var(--text-muted);
   font-size: var(--font-ui-small);
+}
+
+/* Scheduled-task card: last error clamped to two lines, full text on hover
+   (title) and in the run-details modal. */
+.yolo-scheduled-task-error {
+  margin-top: 4px;
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
 }
 
 .yolo-module-settings-block:not(:first-child) {
@@ -1235,7 +1257,6 @@ select.yolo-module-settings-select {
 
 /* Restored from backup/pre-rollback-2026-08-10 (migration gap) */
 .yolo-sqlite-explorer {
-
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr);
   height: auto;
@@ -1247,7 +1268,6 @@ select.yolo-module-settings-select {
 }
 
 .yolo-sqlite-explorer-sidebar {
-
   min-height: 0;
   padding: 8px;
   border-right: 1px solid var(--background-modifier-border);
@@ -1259,7 +1279,6 @@ select.yolo-module-settings-select {
 .yolo-sqlite-explorer-sidebar-heading,
 .yolo-sqlite-explorer-toolbar,
 .yolo-sqlite-explorer-pagination {
-
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1267,7 +1286,6 @@ select.yolo-module-settings-select {
 }
 
 .yolo-sqlite-explorer-sidebar-heading {
-
   position: sticky;
   top: 0;
   z-index: 1;
@@ -1283,7 +1301,6 @@ select.yolo-module-settings-select {
 }
 
 .yolo-sqlite-explorer-table {
-
   display: block;
   width: 100%;
   padding: 6px 10px;
@@ -1303,12 +1320,10 @@ select.yolo-module-settings-select {
 }
 
 .yolo-sqlite-explorer-table:hover {
-
   background: var(--background-modifier-hover);
 }
 
 .yolo-sqlite-explorer-table.is-active {
-
   background: var(--background-modifier-hover);
   color: var(--text-accent);
   box-shadow: inset 2px 0 0 var(--text-accent);
@@ -1316,7 +1331,6 @@ select.yolo-module-settings-select {
 }
 
 .yolo-sqlite-explorer-main {
-
   display: grid;
   grid-template-rows: auto auto auto auto;
   min-width: 0;
@@ -1327,26 +1341,22 @@ select.yolo-module-settings-select {
 }
 
 .yolo-sqlite-explorer-toolbar {
-
   min-height: 24px;
 }
 
 .yolo-sqlite-explorer-toolbar strong {
-
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .yolo-sqlite-explorer-count {
-
   padding: 2px 8px;
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
 }
 
 .yolo-sqlite-explorer-table-wrap {
-
   position: relative;
   min-height: 120px;
   max-height: calc(100vh - 300px);
@@ -1358,12 +1368,10 @@ select.yolo-module-settings-select {
 }
 
 .yolo-sqlite-explorer-table-wrap[aria-busy='true'] {
-
   opacity: 0.78;
 }
 
 .yolo-sqlite-explorer-loading {
-
   position: sticky;
   top: 0;
   left: 0;
@@ -1379,14 +1387,12 @@ select.yolo-module-settings-select {
 }
 
 .yolo-sqlite-explorer-table-wrap table {
-
   width: 100%;
   border-collapse: collapse;
   font-size: var(--font-ui-smaller);
 }
 
 .yolo-sqlite-explorer-table-wrap th {
-
   position: sticky;
   top: 0;
   z-index: 1;
@@ -1397,7 +1403,6 @@ select.yolo-module-settings-select {
 
 .yolo-sqlite-explorer-table-wrap th,
 .yolo-sqlite-explorer-table-wrap td {
-
   padding: 6px 10px;
   border-bottom: 1px solid var(--background-modifier-border);
   text-align: left;
@@ -1405,24 +1410,20 @@ select.yolo-module-settings-select {
 }
 
 .yolo-sqlite-explorer-table-wrap td {
-
   max-width: 300px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .yolo-sqlite-explorer-table-wrap tbody tr:nth-child(even) {
-
   background: var(--background-modifier-hover);
 }
 
 .yolo-sqlite-explorer-table-wrap tbody tr:hover {
-
   background: var(--background-modifier-active-hover);
 }
 
 .yolo-sqlite-explorer-cell {
-
   display: inline-block;
   max-width: 100%;
   vertical-align: bottom;
@@ -1430,23 +1431,19 @@ select.yolo-module-settings-select {
 
 .yolo-sqlite-explorer-cell--blob,
 .yolo-sqlite-explorer-cell--json {
-
   font-family: var(--font-monospace);
   font-size: 0.92em;
 }
 
 .yolo-sqlite-explorer-cell--blob {
-
   color: var(--text-muted);
 }
 
 .yolo-sqlite-explorer-cell--json {
-
   color: var(--text-accent);
 }
 
 .yolo-sqlite-explorer-sql {
-
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
@@ -1454,7 +1451,6 @@ select.yolo-module-settings-select {
 }
 
 .yolo-sqlite-explorer-sql textarea {
-
   height: 56px;
   min-height: 56px;
   max-height: 56px;
@@ -1463,7 +1459,6 @@ select.yolo-module-settings-select {
 }
 
 .yolo-sqlite-explorer-pagination {
-
   justify-content: center;
   gap: 12px;
   color: var(--text-muted);
@@ -1471,44 +1466,37 @@ select.yolo-module-settings-select {
 }
 
 .yolo-sqlite-explorer-page-button:disabled {
-
   opacity: 0.35;
 }
 
 .yolo-sqlite-explorer-run[aria-busy='true'],
 .yolo-sqlite-explorer-refresh[aria-busy='true'] {
-
   opacity: 0.7;
 }
 
 .yolo-sqlite-explorer-truncated {
-
   color: var(--text-warning);
   font-size: var(--font-ui-smaller);
   text-align: right;
 }
 
 .yolo-sqlite-explorer-empty {
-
   display: grid;
   place-items: center;
   color: var(--text-muted);
 }
 
 .yolo-settings-embedding-db-manage-status-row {
-
   min-width: 0;
 }
 
 .yolo-settings-embedding-db-manage-toolbar-title {
-
   color: var(--text-normal);
   font-size: var(--font-ui-medium);
   font-weight: var(--font-medium);
 }
 
 .yolo-settings-embedding-db-manage-last-updated {
-
   color: var(--text-muted);
   font-size: var(--font-ui-small);
   line-height: var(--line-height-normal);
@@ -1517,7 +1505,6 @@ select.yolo-module-settings-select {
 }
 
 .yolo-settings-embedding-db-manage-progress-cell {
-
   min-width: 180px;
   color: var(--text-muted);
   font-size: var(--font-ui-small);
@@ -1527,7 +1514,6 @@ select.yolo-module-settings-select {
    that need to live inside a Setting's controlEl, in DOM order alongside
    sibling addText/addButton controls — see useObsidianSettingPortalContainer. */
 .yolo-setting-control-portal {
-
   display: inline-flex;
   align-items: center;
 }
@@ -1536,7 +1522,6 @@ select.yolo-module-settings-select {
   .yolo-assistant-message-metadata-toggle-icon,
 .yolo-assistant-message-metadata--settled
   .yolo-assistant-message-metadata-toggle-icon {
-
   opacity: 0.68;
 }
 
