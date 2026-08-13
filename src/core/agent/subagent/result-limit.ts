@@ -1,3 +1,6 @@
+import type { ChatMessage } from '../../../types/chat'
+import { ToolCallResponseStatus } from '../../../types/tool-call.types'
+
 /** Cap for a child subagent result injected back into the parent conversation. */
 export const SUBAGENT_RESULT_MAX_CHARS = 8_000
 
@@ -66,4 +69,56 @@ export function truncateSubagentResult(
     truncated: true,
     originalLength,
   }
+}
+
+/**
+ * Bound a live-transcript snapshot before the runner stores it in the task
+ * registry (S4). The UI renders this array live (SubagentCard preview + detail
+ * modal) and a runaway child can emit megabyte tool results or final answers;
+ * without a cap the registry holds the whole blob for the task's lifetime.
+ * Each oversized text piece (assistant content, Success tool-result text) is
+ * cut to the same configured head+tail window that bounds the parent-side
+ * result injection — the settings-driven cap applies at subscription time.
+ * Returns the input reference unchanged when nothing exceeds the cap, so
+ * subscribers can keep referential-equality short-circuits.
+ */
+export function truncateLiveTranscriptMessages(
+  messages: ChatMessage[],
+  maxChars: number = getSubagentResultMaxChars(),
+): ChatMessage[] {
+  if (messages.length === 0) return messages
+  let changed = false
+  const result = messages.map((message) => {
+    if (message.role === 'assistant') {
+      const { text, truncated } = truncateSubagentResult(message.content, maxChars)
+      if (!truncated) return message
+      changed = true
+      return { ...message, content: text }
+    }
+    if (message.role === 'tool') {
+      const toolCalls = message.toolCalls.map((toolCall) => {
+        const response = toolCall.response
+        if (response.status !== ToolCallResponseStatus.Success) {
+          return toolCall
+        }
+        const { text, truncated } = truncateSubagentResult(
+          response.data.text,
+          maxChars,
+        )
+        if (!truncated) return toolCall
+        changed = true
+        return {
+          ...toolCall,
+          response: {
+            ...response,
+            data: { ...response.data, text },
+          },
+        }
+      })
+      if (toolCalls === message.toolCalls) return message
+      return { ...message, toolCalls }
+    }
+    return message
+  })
+  return changed ? result : messages
 }

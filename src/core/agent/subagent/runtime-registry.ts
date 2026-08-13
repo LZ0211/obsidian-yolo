@@ -70,10 +70,6 @@ class SubagentRuntimeRegistry {
     }
     return undefined
   }
-
-  list(): SubagentRuntimeEntry[] {
-    return [...this.byTaskId.values()]
-  }
 }
 
 export const subagentRuntimeRegistry = new SubagentRuntimeRegistry()

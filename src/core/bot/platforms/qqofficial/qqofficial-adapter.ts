@@ -26,6 +26,10 @@ type GatewayPayload = {
 }
 const API = 'https://api.sgroup.qq.com'
 
+const RECONNECT_BASE_DELAY_MS = 10_000
+const RECONNECT_MAX_DELAY_MS = 300_000
+const STABLE_CONNECTION_MS = 300_000
+
 const errorOf = (value: unknown): Error =>
   value instanceof Error ? value : new Error(String(value))
 
@@ -61,8 +65,13 @@ export class QQOfficialAdapter implements PlatformAdapter {
   private readonly messageHandlers: MessageHandler[] = []
   private readonly errorHandlers: ErrorHandler[] = []
   private config: BotPlatformQqOfficialConfig | null = null
-  private heartbeat: number | null = null
+  private heartbeat: ReturnType<typeof setInterval> | null = null
   private sequence: number | undefined
+  private stopping = false
+  private gatewayUrl: string | null = null
+  private reconnectAttempt = 0
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private stableTimer: ReturnType<typeof setTimeout> | null = null
 
   async start(config: BotPlatformQqOfficialConfig): Promise<void> {
     if (Platform.isMobile)
@@ -70,6 +79,8 @@ export class QQOfficialAdapter implements PlatformAdapter {
     if (!config.appId || !config.appSecret)
       throw new Error('QQ App ID and App Secret are required.')
     this.config = config
+    this.stopping = false
+    this.reconnectAttempt = 0
     const gateway = await requestUrl({
       url: `${API}/gateway/bot`,
       headers: this.headers(),
@@ -77,25 +88,19 @@ export class QQOfficialAdapter implements PlatformAdapter {
     const url = gateway.json?.url
     if (typeof url !== 'string')
       throw new Error('QQ Gateway URL is unavailable.')
-    const ws = new WebSocket(url)
-    this.ws = ws
-    ws.onmessage = (event) =>
-      this.handleGatewayPayload(
-        JSON.parse(String(event.data)) as GatewayPayload,
-      )
-    ws.onerror = () =>
-      this.fail(new Error('QQ Gateway connection error.'), {
-        operation: 'receive',
-        retryable: true,
-      })
-    ws.onclose = () => {
-      if (this.status === 'running') this.status = 'degraded'
-    }
+    this.gatewayUrl = url
+    this.openConnection(url)
   }
 
   async stop(): Promise<void> {
-    if (this.heartbeat !== null) window.clearInterval(this.heartbeat)
+    this.stopping = true
+    if (this.heartbeat !== null) clearInterval(this.heartbeat)
     this.heartbeat = null
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    this.clearStableTimer()
     this.ws?.close()
     this.ws = null
     this.status = 'stopped'
@@ -169,8 +174,17 @@ export class QQOfficialAdapter implements PlatformAdapter {
           shard: [0, 1],
         },
       })
+      // The hello handshake is the "connection open" moment: the session is
+      // live and identified, so the adapter is running and the reconnect
+      // backoff resets after a stable period (same policy as Feishu/DingTalk).
+      this.status = 'running'
+      this.reconnectAttempt = 0
+      this.clearStableTimer()
+      this.stableTimer = setTimeout(() => {
+        this.reconnectAttempt = 0
+      }, STABLE_CONNECTION_MS)
       if (interval > 0)
-        this.heartbeat = window.setInterval(
+        this.heartbeat = setInterval(
           () =>
             this.sendGateway({
               op: 1,
@@ -191,6 +205,54 @@ export class QQOfficialAdapter implements PlatformAdapter {
         retryable: false,
       })
   }
+
+  private openConnection(url: string): void {
+    const ws = new WebSocket(url)
+    this.ws = ws
+    ws.onmessage = (event) =>
+      this.handleGatewayPayload(
+        JSON.parse(String(event.data)) as GatewayPayload,
+      )
+    ws.onerror = () =>
+      this.fail(new Error('QQ Gateway connection error.'), {
+        operation: 'receive',
+        retryable: true,
+      })
+    ws.onclose = () => this.handleClose()
+  }
+
+  private handleClose(): void {
+    this.ws = null
+    if (this.heartbeat !== null) clearInterval(this.heartbeat)
+    this.heartbeat = null
+    this.clearStableTimer()
+    if (this.stopping) {
+      this.status = 'stopped'
+      return
+    }
+    this.status = 'degraded'
+    this.scheduleReconnect()
+  }
+
+  private scheduleReconnect(): void {
+    if (this.stopping || this.reconnectTimer || !this.gatewayUrl) return
+    this.reconnectAttempt += 1
+    const delay = Math.min(
+      RECONNECT_BASE_DELAY_MS * 2 ** (this.reconnectAttempt - 1),
+      RECONNECT_MAX_DELAY_MS,
+    )
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      this.openConnection(this.gatewayUrl!)
+    }, delay)
+  }
+
+  private clearStableTimer(): void {
+    if (this.stableTimer) {
+      clearTimeout(this.stableTimer)
+      this.stableTimer = null
+    }
+  }
   private intents(): number {
     const c = this.config
     return (
@@ -205,31 +267,33 @@ export class QQOfficialAdapter implements PlatformAdapter {
   }
   private handleDispatch(type: string, data: Record<string, unknown>): void {
     const c2c = type === 'C2C_MESSAGE_CREATE'
-    const group = type === 'GROUP_AT_MESSAGE_CREATE'
-    const guild =
-      type === 'AT_MESSAGE_CREATE' || type === 'DIRECT_MESSAGE_CREATE'
-    if (!c2c && !group && !guild) return
+    const groupAt = type === 'GROUP_AT_MESSAGE_CREATE'
+    const guildAt = type === 'AT_MESSAGE_CREATE'
+    const guildDm = type === 'DIRECT_MESSAGE_CREATE'
+    if (!c2c && !groupAt && !guildAt && !guildDm) return
     const chatId = stringValue(
       c2c
         ? data.author?.['user_openid' as never]
-        : group
+        : groupAt
           ? data.group_openid
           : (data.channel_id ?? data.guild_id ?? ''),
     )
     if (!chatId) return
-    const content = stringValue(data.content)
-      .replace(/<@!?[^>]+>/g, '')
-      .trim()
+    const rawContent = stringValue(data.content)
+    const content = rawContent.replace(/<@!?[^>]+>/g, '').trim()
     const author = (data.author ?? {}) as Record<string, unknown>
+    const chatType = c2c || guildDm ? 'private' : 'group'
+    // Group/guild at-message events also fire for a bare "@everyone" — a
+    // wake signal requires a specific `<@...>` mention tag (the bot's own
+    // openid tag, or alongside other users' tags) so @everyone-only traffic
+    // does not wake the bot.
+    const hasSpecificMention =
+      /<@!?[^>]+>/.test(rawContent) && !/<@!?everyone>/i.test(rawContent)
     const event: PlatformMessageEvent = {
       platformName: 'qq_official',
       messageId: stringValue(data.id),
-      sessionKey: encodeSessionKey(
-        'qq_official',
-        c2c ? 'private' : 'group',
-        chatId,
-      ),
-      chatType: c2c ? 'private' : 'group',
+      sessionKey: encodeSessionKey('qq_official', chatType, chatId),
+      chatType,
       senderId: stringValue(
         author.user_openid ?? author.member_openid ?? author.id ?? 'unknown',
       ),
@@ -237,7 +301,8 @@ export class QQOfficialAdapter implements PlatformAdapter {
         author.username ?? author.user_nick ?? 'QQ user',
         'QQ user',
       ),
-      mentionedBotId: group || guild ? 'qq_official' : undefined,
+      mentionedBotId:
+        (groupAt || guildAt) && hasSpecificMention ? 'qq_official' : undefined,
       message: {
         components: [{ type: 'text', text: content }],
         plainText: content,

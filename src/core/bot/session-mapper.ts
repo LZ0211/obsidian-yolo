@@ -43,12 +43,6 @@ export class SessionMapper {
     )
   }
 
-  getSessionsByConversationId(conversationId: string): SessionMapping[] {
-    return this.getSettings().sessionMappings.filter(
-      (mapping) => mapping.conversationId === conversationId,
-    )
-  }
-
   /**
    * Creates a new mapping, or replaces the existing one for the same
    * `sessionKey` (e.g. `/reset` rebinding a session to a fresh
@@ -95,48 +89,6 @@ export class SessionMapper {
       // archivedAt 已设置且 disabled !== true，自动清除 archivedAt 恢复活跃").
       archivedAt: undefined,
     }
-    const nextMappings = settings.sessionMappings.map((mapping) =>
-      mapping.sessionKey === sessionKey ? updated : mapping,
-    )
-    await this.saveSettings({ ...settings, sessionMappings: nextMappings })
-    return updated
-  }
-
-  async archiveSession(
-    sessionKey: string,
-    now: number = Date.now(),
-  ): Promise<SessionMapping | undefined> {
-    return this.patchSession(sessionKey, { archivedAt: now })
-  }
-
-  async setSessionDisabled(
-    sessionKey: string,
-    disabled: boolean,
-  ): Promise<SessionMapping | undefined> {
-    return this.patchSession(sessionKey, { disabled })
-  }
-
-  async removeSession(sessionKey: string): Promise<boolean> {
-    const settings = this.getSettings()
-    const nextMappings = settings.sessionMappings.filter(
-      (mapping) => mapping.sessionKey !== sessionKey,
-    )
-    if (nextMappings.length === settings.sessionMappings.length) return false
-    await this.saveSettings({ ...settings, sessionMappings: nextMappings })
-    return true
-  }
-
-  private async patchSession(
-    sessionKey: string,
-    patch: Partial<Omit<SessionMapping, 'sessionKey'>>,
-  ): Promise<SessionMapping | undefined> {
-    const settings = this.getSettings()
-    const existing = settings.sessionMappings.find(
-      (mapping) => mapping.sessionKey === sessionKey,
-    )
-    if (!existing) return undefined
-
-    const updated: SessionMapping = { ...existing, ...patch }
     const nextMappings = settings.sessionMappings.map((mapping) =>
       mapping.sessionKey === sessionKey ? updated : mapping,
     )

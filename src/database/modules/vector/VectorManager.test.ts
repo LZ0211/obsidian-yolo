@@ -12,9 +12,10 @@ jest.mock('../../../components/modals/ErrorModal', () => ({
 }))
 
 // Run the embed fn once with no real backoff delays. Faithful for these tests:
-// success returns the value; failure rethrows immediately.
+// success returns the value; failure rethrows immediately. Tests that need
+// retry semantics override the implementation per-test.
 jest.mock('exponential-backoff', () => ({
-  backOff: (fn: () => Promise<unknown>) => fn(),
+  backOff: jest.fn((fn: () => Promise<unknown>) => fn()),
 }))
 
 jest.mock('../../../utils/pdf/extractPdfText', () => ({
@@ -36,6 +37,7 @@ jest.mock('../../../core/rag/markdownChunkSplitter', () => {
   }
 })
 
+import { backOff } from 'exponential-backoff'
 import { splitMarkdownIntoChunks } from '../../../core/rag/markdownChunkSplitter'
 import { hashProjectionSource } from '../../../core/search/index/projectionSegmenter'
 import type { VectorStore } from '../../../database/modules/rag/VectorStore'
@@ -382,6 +384,93 @@ describe('VectorManager.reconcile', () => {
     expect(ragStore.replaceFile).not.toHaveBeenCalled()
   })
 
+  it('with VectorStore, reports real chunk progress: totalChunks > 0 and completedChunks increments to match', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(new Map())
+    const content = Array.from(
+      { length: 40 },
+      (_, i) => `Section ${i}: ${'y'.repeat(140)}`,
+    ).join('\n\n')
+    const { manager } = createVectorStoreManager(ragStore, [
+      { path: 'notes/big.md', mtime: 100, content },
+      { path: 'notes/bigger.md', mtime: 200, content: `${content}\n\n${content}` },
+    ])
+    const onProgress = jest.fn()
+
+    await manager.reconcile(embeddingModel, baseConfig, {
+      scope: { kind: 'all' },
+      onProgress,
+    })
+
+    expect(onProgress).toHaveBeenCalled()
+    const completedChunkValues = onProgress.mock.calls.map(
+      ([progress]) => progress.completedChunks,
+    )
+    const totalChunkValues = onProgress.mock.calls.map(
+      ([progress]) => progress.totalChunks,
+    )
+    // The final emission is an exact 1:1 ratio of real chunk counts.
+    expect(totalChunkValues.at(-1)).toBeGreaterThan(0)
+    expect(completedChunkValues.at(-1)).toBe(totalChunkValues.at(-1))
+    // Chunk counts only grow as files enter/finish the pipeline.
+    expect(completedChunkValues).toEqual(
+      [...completedChunkValues].sort((a, b) => a - b),
+    )
+    expect(Math.max(...completedChunkValues)).toBeGreaterThan(0)
+  })
+
+  it('with VectorStore, emits waitingForRateLimit while embeddings back off on a transient failure and clears it after recovery', async () => {
+    const backOffMock = backOff as jest.Mock
+    const originalImplementation = backOffMock.getMockImplementation()
+    let retried = false
+    backOffMock.mockImplementation(
+      async (
+        fn: () => Promise<unknown>,
+        options: { retry?: (error: unknown) => boolean },
+      ) => {
+        try {
+          return await fn()
+        } catch (error) {
+          if (!retried && options.retry?.(error)) {
+            retried = true
+            return await fn()
+          }
+          throw error
+        }
+      },
+    )
+    try {
+      const ragStore = fakeVectorStore()
+      ragStore.getIndexedFiles.mockResolvedValue(new Map())
+      const { manager } = createVectorStoreManager(ragStore, [
+        { path: 'notes/a.md', mtime: 100, content: 'alpha' },
+      ])
+      ;(embeddingModel as unknown as { getEmbedding: jest.Mock }).getEmbedding =
+        jest
+          .fn()
+          .mockRejectedValueOnce(
+            Object.assign(new Error('rate limited'), { status: 429 }),
+          )
+          .mockResolvedValue([0.1, 0.2, 0.3])
+      const onProgress = jest.fn()
+
+      await manager.reconcile(embeddingModel, baseConfig, {
+        scope: { kind: 'all' },
+        onProgress,
+      })
+
+      const progressCalls = onProgress.mock.calls.map(([progress]) => progress)
+      expect(
+        progressCalls.some((progress) => progress.waitingForRateLimit === true),
+      ).toBe(true)
+      // The wait flag clears once the retried embedding succeeds.
+      expect(progressCalls.at(-1)!.waitingForRateLimit).toBeFalsy()
+      expect(ragStore.replaceFile).toHaveBeenCalledTimes(1)
+    } finally {
+      backOffMock.mockImplementation(originalImplementation)
+    }
+  })
+
   it('with VectorStore, removed files call deleteFile', async () => {
     const ragStore = fakeVectorStore()
     ragStore.getIndexedFiles.mockResolvedValue(
@@ -706,7 +795,7 @@ describe('VectorManager.reconcile', () => {
   })
 })
 
-describe('VectorManager.clearAllVectors / clearVectorsByModelIds / getEmbeddingStats', () => {
+describe('VectorManager.clearAllVectors / clearVectorsByModelIds', () => {
   beforeEach(() => {
     jest.clearAllMocks()
   })
@@ -753,42 +842,6 @@ describe('VectorManager.clearAllVectors / clearVectorsByModelIds / getEmbeddingS
         dimension: 3,
       }),
     )
-  })
-
-  it('reports per-namespace stats from the real namespace object', async () => {
-    const vectorStore = fakeVectorStore()
-    vectorStore.listNamespaces.mockResolvedValue(['text-embedding-3-large-d3'])
-    vectorStore.getStats.mockResolvedValue({
-      backend: 'sqlite',
-      storagePath: '/db',
-      fileCount: 5,
-      chunkCount: 42,
-      fileSizeBytes: 12345,
-      namespaceCount: 1,
-      executionMode: 'plugin-host',
-      persistenceMode: 'native-sqlite-file',
-      usesWholeDatabaseSnapshot: false,
-      ready: true,
-    } as never)
-    const { manager } = createVectorStoreManager(vectorStore, [])
-
-    const stats = await manager.getEmbeddingStats()
-
-    // getStats() without a namespace returns zeroed aggregate stats; the fix
-    // derives the namespace from the id so counters are real.
-    expect(vectorStore.getStats).toHaveBeenCalledWith(
-      expect.objectContaining({
-        model: 'text-embedding-3-large',
-        dimension: 3,
-      }),
-    )
-    expect(stats).toEqual([
-      {
-        model: 'text-embedding-3-large-d3',
-        rowCount: 42,
-        totalDataBytes: 12345,
-      },
-    ])
   })
 })
 

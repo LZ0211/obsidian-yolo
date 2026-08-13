@@ -172,16 +172,6 @@ export function scanForSendAttachment(
   return calls
 }
 
-/** Reverse-lookup for a single `toolCallId` (the `BotOutputDispatcher` use case). */
-export function findSendAttachmentCall(
-  messages: ChatMessage[],
-  toolCallId: string,
-): SendAttachmentCall | undefined {
-  return scanForSendAttachment(messages).find(
-    (call) => call.toolCallId === toolCallId,
-  )
-}
-
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp'])
 
 function getExtension(path: string): string | undefined {
@@ -199,12 +189,10 @@ export type ConvertAttachmentsToReplyResult = {
 /**
  * Converts resolved `send_attachment` calls into `ReplyContent` refs.
  * Deliberately produces `source: 'vault-path'` refs rather than reading file
- * bytes itself — actual size/mime/allowDir re-validation is the
+ * bytes itself — actual size/allowDir re-validation is the
  * `BotOutputDispatcher`'s job (Phase 5, "二次验证"), and adapters that accept
  * `vault-path` refs read the bytes themselves at send time. `mimeType` here
- * is a best-effort extension-based guess only; the dispatcher's
- * `inferAndVerifyMimeType` (from `attachment-security.ts`) is what actually
- * verifies file content once bytes are available.
+ * is a best-effort extension-based guess only.
  */
 export function convertAttachmentsToReply(
   calls: SendAttachmentCall[],

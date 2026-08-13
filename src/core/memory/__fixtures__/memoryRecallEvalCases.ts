@@ -6,10 +6,6 @@ export type MemoryRecallEvalCase = {
   expectedEntity?: string
   expectedPersistedAlias?: string
   expectedMissingKeyword?: string
-  hitCount: number
-  hasUsableRecentContext?: boolean
-  requiresUsableRecentContext?: boolean
-  expectsRewrite: boolean
 }
 
 export const MEMORY_RECALL_EVAL_CASES: MemoryRecallEvalCase[] = [
@@ -20,8 +16,6 @@ export const MEMORY_RECALL_EVAL_CASES: MemoryRecallEvalCase[] = [
       recentUserMessages: [],
     },
     expectedEntity: 'obsidian',
-    hitCount: 1,
-    expectsRewrite: false,
   },
   {
     name: 'persisted English alias',
@@ -31,8 +25,6 @@ export const MEMORY_RECALL_EVAL_CASES: MemoryRecallEvalCase[] = [
       knownMemoryKeywords: ['Smart RAG'],
     },
     expectedPersistedAlias: 'smart rag',
-    hitCount: 1,
-    expectsRewrite: true,
   },
   {
     name: 'referential Chinese query',
@@ -40,8 +32,6 @@ export const MEMORY_RECALL_EVAL_CASES: MemoryRecallEvalCase[] = [
       latestQuery: '继续那个方案',
       recentUserMessages: ['讨论了迁移方案'],
     },
-    hitCount: 1,
-    expectsRewrite: true,
   },
   {
     name: 'high-confidence zero-hit morphology',
@@ -51,9 +41,6 @@ export const MEMORY_RECALL_EVAL_CASES: MemoryRecallEvalCase[] = [
         'We configured the Smart RAG integration yesterday.',
       ],
     },
-    hitCount: 0,
-    hasUsableRecentContext: true,
-    expectsRewrite: false,
   },
   {
     name: 'alias-free synonym gap',
@@ -63,14 +50,9 @@ export const MEMORY_RECALL_EVAL_CASES: MemoryRecallEvalCase[] = [
       knownMemoryKeywords: ['Smart RAG'],
     },
     expectedMissingKeyword: 'smart rag',
-    hitCount: 1,
-    expectsRewrite: false,
   },
   {
     name: 'unrelated negative',
     input: { latestQuery: '上海明天天气怎么样？', recentUserMessages: [] },
-    hitCount: 0,
-    hasUsableRecentContext: false,
-    expectsRewrite: false,
   },
 ]

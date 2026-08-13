@@ -40,12 +40,6 @@ import {
   type ParentSubagentTimeoutConfig,
 } from './subagent-timeout-config'
 
-// Re-exported for callers/tests that imported the defaults from this module
-// before the settings-getter mechanism existed.
-export { PARENT_SUBAGENT_DEFAULT_COOLDOWN_MS }
-export { PARENT_SUBAGENT_DEFAULT_MAX_CONSECUTIVE_TIMEOUTS }
-export { PARENT_SUBAGENT_DEFAULT_TIMEOUT_MS }
-
 /**
  * Human-readable reason returned by `delegate_subagent` while the per-conversation
  * consecutive-timeout breaker is open. The dispatch result payload marks
@@ -64,7 +58,6 @@ export type ParentSubagentDeadlineExpireInput = {
 
 export type ParentSubagentDeadlineOptions = {
   toolCallId: string
-  runKey: string
   conversationId: string
   onExpire: (input: ParentSubagentDeadlineExpireInput) => void
 }
@@ -135,14 +128,6 @@ const resolveConfig = (): ParentSubagentTimeoutConfig => {
   }
 }
 
-/**
- * The effective timeout + breaker config: settings-getter fields win over the
- * module override (test hook), which wins over the built-in defaults.
- */
-export function getParentSubagentTimeoutConfig(): ParentSubagentTimeoutConfig {
-  return resolveConfig()
-}
-
 const scheduleExpiry = (
   entry: ParentSubagentDeadlineEntry,
 ): ReturnType<typeof setTimeout> => {
@@ -170,7 +155,6 @@ export function registerParentSubagentDeadline(
   const now = Date.now()
   const deadline = registerSubagentDeadline({
     toolCallId: options.toolCallId,
-    runKey: options.runKey,
     now,
     timeoutMs: resolveConfig().timeoutMs,
   })
@@ -299,12 +283,6 @@ export function isParentSubagentDelegationBlocked(
   const state =
     breakerStates.get(conversationId) ?? createBreaker(conversationId)
   return isBreakerBlocked(state, Date.now())
-}
-
-export function getParentSubagentBreakerState(
-  conversationId: string,
-): SubagentTimeoutBreakerState | undefined {
-  return breakerStates.get(conversationId)
 }
 
 export function resetParentSubagentBreakers(): void {

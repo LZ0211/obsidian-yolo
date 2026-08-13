@@ -58,8 +58,9 @@ const DEFAULT_WS_URL =
 type RouteHandler = (param: RequestUrlParam) => unknown
 
 /** Routes `requestUrl` calls by URL substring so tests don't depend on call
- * order. Always includes the handshake route so `startAdapter()` keeps
- * working when a test layers on more routes afterwards. */
+ * order. Always includes the handshake + bot-identity + token routes so
+ * `startAdapter()` keeps working when a test layers on more routes
+ * afterwards (identity resolution needs a tenant token + bot/v3/info). */
 function mockRoutes(routes: Record<string, RouteHandler>): void {
   const allRoutes: Record<string, RouteHandler> = {
     'callback/ws/endpoint': () => ({
@@ -75,6 +76,21 @@ function mockRoutes(routes: Record<string, RouteHandler>): void {
             ReconnectNonce: 10,
           },
         },
+      },
+    }),
+    tenant_access_token: () => ({
+      json: {
+        code: 0,
+        msg: 'ok',
+        tenant_access_token: 'tok-1',
+        expire: 7200,
+      },
+    }),
+    'bot/v3/info': () => ({
+      json: {
+        code: 0,
+        msg: 'ok',
+        data: { open_id: 'ou_bot_1', app_name: 'Yolo Bot' },
       },
     }),
     ...routes,
@@ -335,6 +351,35 @@ describe('FeishuAdapter — start()', () => {
     expect(adapter.health()).toBe('degraded')
     await expect(errorPromise).resolves.toThrow(/invalid app secret/)
   })
+
+  it('does not resurrect the connection when stop() lands while the handshake is in flight', async () => {
+    let releaseHandshake!: () => void
+    const handshakeGate = new Promise<void>((resolve) => {
+      releaseHandshake = resolve
+    })
+    mockRoutes({
+      'callback/ws/endpoint': () =>
+        handshakeGate.then(() => ({
+          json: {
+            code: 0,
+            msg: 'ok',
+            data: { URL: DEFAULT_WS_URL, ClientConfig: { PingInterval: 120 } },
+          },
+        })),
+    })
+
+    const adapter = new FeishuAdapter(makeApp())
+    liveAdapters.push(adapter)
+    const startPromise = adapter.start(makeConfig())
+
+    // Disable lands while the handshake request is still pending.
+    await adapter.stop()
+    releaseHandshake()
+    await startPromise
+
+    expect(adapter.health()).toBe('stopped')
+    expect(MockWebSocket.instances).toHaveLength(0)
+  })
 })
 
 describe('FeishuAdapter — WS frame handling', () => {
@@ -400,6 +445,73 @@ describe('FeishuAdapter — WS frame handling', () => {
       { type: 'text', text: 'hello there' },
     ])
     expect(event.message.plainText).toBe('hello there')
+  })
+
+  it('sets mentionedBotId for a group message that @s the bot (open_id match)', async () => {
+    const { adapter, ws } = await startAdapter()
+    const messagePromise = waitForNextMessage(adapter)
+
+    sendEventFrame(
+      ws,
+      makeMessageReceiveEnvelope({
+        chat_type: 'group',
+        mentions: [
+          { key: '@_user_1', id: { open_id: 'ou_sender_1' }, name: 'Alice' },
+          { key: '@_user_2', id: { open_id: 'ou_bot_1' }, name: 'Yolo Bot' },
+        ],
+      }),
+    )
+
+    const event = await messagePromise
+    expect(event.chatType).toBe('group')
+    expect(event.mentionedBotId).toBe('ou_bot_1')
+  })
+
+  it('falls back to matching the bot by mention name when the open_id differs', async () => {
+    const { adapter, ws } = await startAdapter()
+    const messagePromise = waitForNextMessage(adapter)
+
+    sendEventFrame(
+      ws,
+      makeMessageReceiveEnvelope({
+        chat_type: 'group',
+        mentions: [
+          { key: '@_user_1', id: { open_id: 'ou_other' }, name: 'Yolo Bot' },
+        ],
+      }),
+    )
+
+    const event = await messagePromise
+    expect(event.mentionedBotId).toBe('Yolo Bot')
+  })
+
+  it('leaves mentionedBotId unset for a group message that @s someone else', async () => {
+    const { adapter, ws } = await startAdapter()
+    const messagePromise = waitForNextMessage(adapter)
+
+    sendEventFrame(
+      ws,
+      makeMessageReceiveEnvelope({
+        chat_type: 'group',
+        mentions: [
+          { key: '@_user_1', id: { open_id: 'ou_sender_1' }, name: 'Alice' },
+        ],
+      }),
+    )
+
+    const event = await messagePromise
+    expect(event.mentionedBotId).toBeUndefined()
+  })
+
+  it('leaves mentionedBotId unset for private-chat messages', async () => {
+    const { adapter, ws } = await startAdapter()
+    const messagePromise = waitForNextMessage(adapter)
+
+    sendEventFrame(ws, makeMessageReceiveEnvelope())
+
+    const event = await messagePromise
+    expect(event.chatType).toBe('private')
+    expect(event.mentionedBotId).toBeUndefined()
   })
 
   it('reassembles a message split across multiple physical frames sharing the same message_id', async () => {

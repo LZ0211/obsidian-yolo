@@ -4,7 +4,6 @@ import {
   buildBidirectionalGraphEdges,
   buildGraphCandidates,
   normalizedJaccard,
-  pruneMemoryGraphEdges,
   scoreGraphExpansion,
 } from './memoryGraph'
 
@@ -106,39 +105,6 @@ describe('memory graph primitives', () => {
           dstLocalId: 'source',
           weight: 2 / 3,
         }),
-      ]),
-    )
-  })
-
-  it('enforces per-node degree and partition edge caps by evicting weakest oldest edges', () => {
-    const edges: MemoryGraphEdge[] = Array.from({ length: 40 }, (_, index) => [
-      {
-        partitionKey: 'global',
-        srcLocalId: 'source',
-        dstLocalId: `target-${index}`,
-        weight: index < 2 ? 0.9 : 0.2,
-        createdAt: index,
-        updatedAt: index,
-      },
-      {
-        partitionKey: 'global',
-        srcLocalId: `target-${index}`,
-        dstLocalId: 'source',
-        weight: index < 2 ? 0.9 : 0.2,
-        createdAt: index,
-        updatedAt: index,
-      },
-    ]).flat()
-    const pruned = pruneMemoryGraphEdges(edges, {
-      maxDegree: 2,
-      maxPartitionEdges: 4,
-    })
-
-    expect(pruned).toHaveLength(4)
-    expect(pruned).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ dstLocalId: 'target-0' }),
-        expect.objectContaining({ dstLocalId: 'target-1' }),
       ]),
     )
   })

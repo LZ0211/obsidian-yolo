@@ -10,12 +10,13 @@ jest.mock('react-markdown', () => ({
 jest.mock('remark-gfm', () => ({ __esModule: true, default: jest.fn() }))
 jest.mock('remark-math', () => ({ __esModule: true, default: jest.fn() }))
 
+// Mutable holder so tests can flip the platform for the mobile gate checks.
+const mockPlatform = { isDesktop: true, isMobile: false }
 jest.mock('obsidian', () => {
   class ObsidianBase {}
-  const Platform = { isDesktop: true, isMobile: false }
   return new Proxy(
     {
-      Platform,
+      Platform: mockPlatform,
       Plugin: ObsidianBase,
       normalizePath: (path: string) => path,
       getLanguage: () => 'en',
@@ -45,6 +46,10 @@ jest.mock(
     ),
 )
 
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
 import YoloPlugin from './main'
 import { MAINTENANCE_JOB_KIND } from './core/maintenance/types'
 
@@ -56,6 +61,7 @@ type TestPlugin = {
   getDatabaseMaintenanceController: YoloPlugin['getDatabaseMaintenanceController']
   runRagIndex: jest.Mock
   getRagIndexService: jest.Mock
+  getVectorBackendStatus: jest.Mock
 }
 
 const createPlugin = (): TestPlugin => {
@@ -149,5 +155,62 @@ describe('YoloPlugin RAG maintenance runJob', () => {
     finishRun()
     await expect(cancelPromise).resolves.toMatchObject({ status: 'cancelled' })
     await expect(job).resolves.toMatchObject({ status: 'cancelled' })
+  })
+
+  it('maintenance open rejects a missing database without creating the file', async () => {
+    const plugin = createPlugin()
+    const missingDbPath = path.join(
+      os.tmpdir(),
+      `yolo-rag-maintenance-missing-${Date.now()}`,
+      'rag',
+      'missing.sqlite',
+    )
+    plugin.getVectorBackendStatus = jest.fn(async () => ({
+      backend: 'sqlite',
+      readiness: 'ready',
+      rebuildRequired: true,
+      storagePath: missingDbPath,
+      executionMode: 'plugin-host',
+      persistenceMode: 'native-sqlite-file',
+      recoveryAction: 'rebuild_index',
+    }))
+    const controller = plugin.getDatabaseMaintenanceController('rag')
+
+    const result = await controller.loadSummary()
+
+    expect(result.status).toBe('failed')
+    // The explorer is read-only: opening it must not create the missing
+    // database file (which would also flip rebuildRequired via existsSync).
+    expect(fs.existsSync(missingDbPath)).toBe(false)
+  })
+
+  it('maintenance open rejects on mobile without touching the filesystem', async () => {
+    mockPlatform.isDesktop = false
+    try {
+      const plugin = createPlugin()
+      const missingDbPath = path.join(
+        os.tmpdir(),
+        `yolo-rag-maintenance-mobile-${Date.now()}`,
+        'rag',
+        'rag.sqlite',
+      )
+      plugin.getVectorBackendStatus = jest.fn(async () => ({
+        backend: 'sqlite',
+        readiness: 'ready',
+        rebuildRequired: true,
+        storagePath: missingDbPath,
+        executionMode: 'plugin-host',
+        persistenceMode: 'native-sqlite-file',
+        recoveryAction: 'rebuild_index',
+      }))
+      const controller = plugin.getDatabaseMaintenanceController('rag')
+
+      const result = await controller.loadSummary()
+
+      expect(result.status).toBe('failed')
+      expect(fs.existsSync(missingDbPath)).toBe(false)
+    } finally {
+      mockPlatform.isDesktop = true
+    }
   })
 })

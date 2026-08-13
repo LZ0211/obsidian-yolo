@@ -12,13 +12,11 @@ import {
 
 describe('subagent deadline registry', () => {
   const TOOL_CALL_ID = 'tool_call_001'
-  const RUN_KEY = 'run_key_abc123'
   const TIMEOUT_MS = 300_000
 
   const registerAt = (now: number): PendingSubagentDeadline =>
     registerSubagentDeadline({
       toolCallId: TOOL_CALL_ID,
-      runKey: RUN_KEY,
       now,
       timeoutMs: TIMEOUT_MS,
     })
@@ -28,7 +26,6 @@ describe('subagent deadline registry', () => {
 
     expect(d).toEqual({
       toolCallId: TOOL_CALL_ID,
-      runKey: RUN_KEY,
       deadlineAt: 301_000,
       timeoutMs: TIMEOUT_MS,
       lastHeartbeatAt: 1_000,
@@ -42,7 +39,6 @@ describe('subagent deadline registry', () => {
 
     expect(renewed).toEqual({
       toolCallId: TOOL_CALL_ID,
-      runKey: RUN_KEY,
       deadlineAt: 500_000,
       timeoutMs: TIMEOUT_MS,
       lastHeartbeatAt: 200_000,

@@ -655,12 +655,25 @@ export class SqliteVectorStore
   async getStatus(namespace?: VectorNamespace): Promise<VectorBackendStatus> {
     this.assertOpen()
     this.assertNotClosing()
-    const storagePath =
-      namespace == null
-        ? getSqliteNamespaceDir(this.baseDir, '<namespace>')
-        : getSqliteDbPath(this.baseDir, vectorNamespaceId(namespace))
+    // Aggregate (namespace-less) status has no single database file. The old
+    // `<namespace>` placeholder looked like a real path and made the
+    // maintenance explorer open (and CREATE) a garbage SQLite file at a
+    // path that does not exist — the empty path instead makes such callers
+    // fail fast with "RAG database is unavailable" before touching the fs.
+    if (namespace == null) {
+      return {
+        backend: 'sqlite',
+        readiness: 'ready',
+        rebuildRequired: false,
+        storagePath: '',
+        executionMode: 'plugin-host',
+        persistenceMode: 'native-sqlite-file',
+        recoveryAction: 'none',
+      }
+    }
 
-    if (namespace != null && !fs.existsSync(storagePath)) {
+    const storagePath = getSqliteDbPath(this.baseDir, vectorNamespaceId(namespace))
+    if (!fs.existsSync(storagePath)) {
       return {
         backend: 'sqlite',
         readiness: 'ready',

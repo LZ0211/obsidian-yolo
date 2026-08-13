@@ -2394,6 +2394,73 @@ describe('RequestContextBuilder system prompt freezing', () => {
     )
   })
 
+  it('lists delegatable assistant roles in the request context (delegatedRoleId discoverability)', async () => {
+    const settings = {
+      ...baseSettings,
+      assistants: [
+        { id: 'role-1', name: 'Research Analyst', delegatable: true },
+        { id: 'role-2', name: 'Plain Helper' },
+      ],
+    } as unknown as YoloSettings
+    const builder = new RequestContextBuilder(makeApp(), settings, {
+      includeSkills: false,
+    })
+
+    const messages = await builder.generateRequestMessages({
+      messages: userMessages,
+      model,
+      conversationId: 'conv-delegatable-roles',
+      hasTools: true,
+      systemPromptSnapshotMode: 'create',
+    })
+
+    const systemContent = getSystemContent(messages)
+    // The `delegate_subagent` schema promises "the available roles listed in
+    // the request context" — the catalogue must be there, delegatable-only,
+    // in the backup-compatible XML format.
+    expect(systemContent).toContain(
+      '<assistant id="role-1" name="Research Analyst" />',
+    )
+    expect(systemContent).not.toContain('role-2')
+  })
+
+  it('refreshes the frozen prompt when the delegatable role set changes', async () => {
+    const store = new SystemPromptSnapshotStore()
+    memMock.mockResolvedValue({ global: 'MEM', assistant: null })
+
+    const builderA = new RequestContextBuilder(makeApp(), baseSettings, {
+      includeSkills: false,
+      systemPromptSnapshotStore: store,
+    })
+    const a = await builderA.generateRequestMessages({
+      messages: userMessages,
+      model,
+      conversationId: 'conv-1',
+      hasTools: true,
+      systemPromptSnapshotMode: 'create',
+    })
+    expect(getSystemContent(a)).not.toContain('NEW_ROLE')
+
+    // A newly delegatable assistant must refresh the frozen system prompt,
+    // otherwise the model keeps answering from a stale role list.
+    const builderB = new RequestContextBuilder(
+      makeApp(),
+      {
+        ...baseSettings,
+        assistants: [{ id: 'role-new', name: 'NEW_ROLE', delegatable: true }],
+      } as unknown as YoloSettings,
+      { includeSkills: false, systemPromptSnapshotStore: store },
+    )
+    const b = await builderB.generateRequestMessages({
+      messages: userMessages,
+      model,
+      conversationId: 'conv-1',
+      hasTools: true,
+      systemPromptSnapshotMode: 'create',
+    })
+    expect(getSystemContent(b)).toContain('NEW_ROLE')
+  })
+
   it('describes exclude-only scope as allowing all other vault paths', async () => {
     const settings = {
       ...baseSettings,

@@ -257,6 +257,13 @@ export type TranslationKeys = {
       editPlatformTitle?: string
       defaultAssistant?: string
       pickerTitle?: string
+      tokenConfigured?: string
+      noTokenSet?: string
+      whitelistOn?: string
+      whitelistOff?: string
+      unset?: string
+      describeRobotCode?: string
+      describeAppId?: string
       form?: {
         name?: string
         nameDesc?: string
@@ -305,6 +312,9 @@ export type TranslationKeys = {
         appIdDesc?: string
         appSecret?: string
         appSecretDesc?: string
+        enableC2c?: string
+        enableGroup?: string
+        enableGuild?: string
       }
       picker?: {
         telegramLabel?: string
@@ -459,7 +469,6 @@ export type TranslationKeys = {
         description: string
         tokenizer: { name: string; description: string; impact: string }
         pdfEngine: { name: string; description: string; impact: string }
-        pgliteEngine: { name: string; description: string; impact: string }
         bashEngine: { name: string; description: string; impact: string }
         jiebaEngine?: { name: string; description: string; impact: string }
         sqliteEngine?: { name: string; description: string; impact: string }
@@ -1353,65 +1362,13 @@ export type TranslationKeys = {
       advanced?: string
       basicCardTitle?: string
       basicCardDesc?: string
-      resourceCardTitle?: string
-      resourceCardDesc?: string
       scopeCardTitle?: string
       scopeCardDesc?: string
-      maintenanceCardTitle?: string
-      maintenanceCardDesc?: string
       maintenanceUnavailableHint?: string
-      currentStatus?: string
-      currentStatusDesc?: string
       lastIndexedAt?: string
       lastIndexedAtDesc?: string
       maintenanceActions?: string
-      deleteIndex?: string
-      deleteIndexConfirm?: string
-      deleteIndexSuccess?: string
-      deleteIndexFailed?: string
-      statusDisabled?: string
-      statusSyncing?: string
-      statusRuntimeRequired?: string
-      statusReady?: string
-      statusEmpty?: string
       selectEmbeddingModelFirst?: string
-      openKnowledgeSettings?: string
-      openKnowledgeSettingsDesc?: string
-      composerEntryDesc?: string
-      pgliteStatusCurrent?: string
-      pgliteStatusSource?: string
-      pgliteStatusPath?: string
-      pgliteStatusCheckedAt?: string
-      pgliteStatusVersion?: string
-      pgliteStatusReadyAt?: string
-      pgliteStatusReason?: string
-      pgliteStateUnchecked?: string
-      pgliteStateChecking?: string
-      pgliteStateMissing?: string
-      pgliteStateDownloading?: string
-      pgliteStateUnavailable?: string
-      pgliteStateFailed?: string
-      pgliteStateReady?: string
-      pgliteSourceRemote?: string
-      pgliteSourceBundled?: string
-      pgliteSourceLocalCache?: string
-      pgliteDeliveryManual?: string
-      pgliteDownload?: string
-      pgliteRedownload?: string
-      pgliteRecheck?: string
-      pgliteDeleteLocal?: string
-      pgliteDownloadPlaceholder?: string
-      pgliteDeletePlaceholder?: string
-      pgliteDownloadingUnknownFile?: string
-      pgliteInlineErrorTitle?: string
-      pgliteSummaryReadyRemote?: string
-      pgliteSummaryReadyBundled?: string
-      pgliteSummaryUnavailable?: string
-      pgliteSummaryReady?: string
-      pgliteSummaryDownloading?: string
-      pgliteSummaryFailed?: string
-      pgliteSummaryMissing?: string
-      pgliteDownloadingFile?: string
       // Index progress header/status
       indexProgressTitle?: string
       indexing?: string
@@ -2624,6 +2581,8 @@ export type TranslationKeys = {
       statusDispatched?: string
       /** F10: breaker 拦截派发（delegate_subagent 返回 blocked 载荷）。 */
       statusBlocked?: string
+      /** U4: blocked 卡片无 title 时的语义回退（不落 toolCallId）。 */
+      blockedCardTitle?: string
       blockedCooldown?: string
       /** F2/F11: 委托角色显示名（子代理按角色运行时的摘要前缀）。 */
       delegatedRole?: string
@@ -2678,8 +2637,6 @@ export type TranslationKeys = {
     continueComplete?: string
     continueFailed?: string
     openYoloNewChatFailed: string
-    pgliteUnavailable: string
-    downloadingPglite: string
     updatingIndex: string
     indexUpdated: string
     indexUpdateFailed: string

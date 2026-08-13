@@ -34,11 +34,20 @@ const makeEntry = (
 })
 
 describe('subagentRuntimeRegistry', () => {
+  const registeredTaskIds = new Set<string>()
+
+  const register = (entry: SubagentRuntimeEntry): SubagentRuntimeEntry => {
+    subagentRuntimeRegistry.register(entry)
+    registeredTaskIds.add(entry.taskId)
+    return entry
+  }
+
   // Singleton — reset between tests.
   afterEach(() => {
-    for (const entry of subagentRuntimeRegistry.list()) {
-      subagentRuntimeRegistry.unregister(entry.taskId)
+    for (const taskId of registeredTaskIds) {
+      subagentRuntimeRegistry.unregister(taskId)
     }
+    registeredTaskIds.clear()
   })
 
   it('register / getByTaskId / unregister round-trips', () => {
@@ -51,33 +60,37 @@ describe('subagentRuntimeRegistry', () => {
   })
 
   it('findByToolCallId returns the owning entry', () => {
-    const entryA = makeEntry({
-      taskId: 'sub_a',
-      runtime: makeRuntime(['call-1', 'call-2']),
-    })
-    const entryB = makeEntry({
-      taskId: 'sub_b',
-      runtime: makeRuntime(['call-3']),
-    })
-    subagentRuntimeRegistry.register(entryA)
-    subagentRuntimeRegistry.register(entryB)
+    const entryA = register(
+      makeEntry({
+        taskId: 'sub_a',
+        runtime: makeRuntime(['call-1', 'call-2']),
+      }),
+    )
+    const entryB = register(
+      makeEntry({
+        taskId: 'sub_b',
+        runtime: makeRuntime(['call-3']),
+      }),
+    )
 
     expect(subagentRuntimeRegistry.findByToolCallId('call-2')).toBe(entryA)
     expect(subagentRuntimeRegistry.findByToolCallId('call-3')).toBe(entryB)
     expect(subagentRuntimeRegistry.findByToolCallId('unknown')).toBeUndefined()
   })
 
-  it('list returns currently-registered entries', () => {
+  it('getByTaskId returns undefined after unregister', () => {
     const entryA = makeEntry({ taskId: 'sub_a' })
     const entryB = makeEntry({ taskId: 'sub_b' })
     subagentRuntimeRegistry.register(entryA)
     subagentRuntimeRegistry.register(entryB)
+    registeredTaskIds.add('sub_a')
+    registeredTaskIds.add('sub_b')
 
-    expect(subagentRuntimeRegistry.list()).toEqual(
-      expect.arrayContaining([entryA, entryB]),
-    )
+    expect(subagentRuntimeRegistry.getByTaskId('sub_a')).toBe(entryA)
+    expect(subagentRuntimeRegistry.getByTaskId('sub_b')).toBe(entryB)
 
     subagentRuntimeRegistry.unregister('sub_a')
-    expect(subagentRuntimeRegistry.list()).toEqual([entryB])
+    expect(subagentRuntimeRegistry.getByTaskId('sub_a')).toBeUndefined()
+    expect(subagentRuntimeRegistry.getByTaskId('sub_b')).toBe(entryB)
   })
 })

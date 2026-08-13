@@ -73,6 +73,43 @@ describe('MemoryIndexMaintenanceQueue', () => {
     expect(store.rebuildEdges).toHaveBeenCalledTimes(2)
   })
 
+  it('drains periodic maintenance for a partition without a reconcile', async () => {
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const store = makeStore(async () => undefined)
+    const runReflectionModel = jest.fn(async () => '{}')
+    const queue = new MemoryIndexMaintenanceQueue({
+      store,
+      getSourceSnapshot: async () => makeSnapshot(partition, 'one'),
+      isReflectionEnabled: () => true,
+      runReflectionModel,
+      clock: () => 123,
+    })
+
+    queue.enqueueMaintenance(partition)
+    await queue.drain()
+
+    expect(store.applyDecay).toHaveBeenCalledTimes(1)
+    expect(store.applyDecay).toHaveBeenCalledWith({ partition, nowMs: 123 })
+    expect(store.archiveColdEntries).toHaveBeenCalledTimes(1)
+    expect(store.runReflection).toHaveBeenCalledTimes(1)
+    expect(store.reconcilePartition).not.toHaveBeenCalled()
+  })
+
+  it('coalesces repeated maintenance while a decay task is pending', async () => {
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const store = makeStore(async () => undefined)
+    const queue = new MemoryIndexMaintenanceQueue({
+      store,
+      getSourceSnapshot: async () => makeSnapshot(partition, 'one'),
+    })
+
+    queue.enqueueMaintenance(partition)
+    queue.enqueueMaintenance(partition)
+    await queue.drain()
+
+    expect(store.applyDecay).toHaveBeenCalledTimes(1)
+  })
+
   it('applies salience decay after each reconcile using the injected clock', async () => {
     const partition = buildMemoryPartition({ scope: 'global' })
     const store = makeStore(async () => undefined)

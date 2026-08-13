@@ -87,6 +87,7 @@ import {
 const FEISHU_DOMAIN = 'https://open.feishu.cn'
 const WS_ENDPOINT_URL = `${FEISHU_DOMAIN}/callback/ws/endpoint`
 const TENANT_TOKEN_URL = `${FEISHU_DOMAIN}/open-apis/auth/v3/tenant_access_token/internal`
+const BOT_INFO_URL = `${FEISHU_DOMAIN}/open-apis/bot/v3/info`
 const IMAGE_UPLOAD_URL = `${FEISHU_DOMAIN}/open-apis/im/v1/images`
 const FILE_UPLOAD_URL = `${FEISHU_DOMAIN}/open-apis/im/v1/files`
 
@@ -371,6 +372,13 @@ export class FeishuAdapter implements PlatformAdapter {
   private pingIntervalMs = DEFAULT_PING_INTERVAL_S * 1000
   private service = 0
   private accessToken: { token: string; expiresAt: number } | null = null
+  /**
+   * The bot's own identity (open_id + display name) resolved from
+   * `/open-apis/bot/v3/info` at connect time — group `@`-mentions in
+   * `im.message.receive_v1` are attributed to this bot by matching this
+   * identity. `null` until resolved (or when the lookup failed).
+   */
+  private botIdentity: { openId: string; name: string } | null = null
   private readonly pendingFrames = new Map<string, PendingDataFrame>()
   private readonly sessionBindings = new BoundedTtlMap<string, SessionBinding>({
     capacity: SESSION_BINDING_CAPACITY,
@@ -617,6 +625,14 @@ export class FeishuAdapter implements PlatformAdapter {
       return
     }
 
+    // A stop() that landed while the handshake (or the identity lookup below)
+    // was in flight must not create a socket that resurrects the adapter —
+    // stop() already cleared the timers and nulled `ws`; connecting again
+    // would leave a live socket with no lifecycle owner.
+    if (this.stopping) return
+    await this.resolveBotIdentity(config)
+    if (this.stopping) return
+
     const wsUrl = new URL(handshake.URL)
     const serviceId = Number(wsUrl.searchParams.get('service_id'))
     this.service = Number.isFinite(serviceId) ? serviceId : 0
@@ -632,7 +648,69 @@ export class FeishuAdapter implements PlatformAdapter {
     this.ws = ws
   }
 
+  /**
+   * Resolves the bot's own open_id/display name from `/open-apis/bot/v3/info`
+   * (once, then cached). A failed lookup only disables group @-mention wake
+   * detection — private chats and outgoing replies are unaffected — so the
+   * failure is surfaced via onError and the connection proceeds.
+   */
+  private async resolveBotIdentity(
+    config: BotPlatformFeishuConfig,
+  ): Promise<void> {
+    if (this.botIdentity) return
+    try {
+      const token = await this.getAccessToken(config)
+      const response = await requestUrl({
+        url: BOT_INFO_URL,
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const json = response.json as {
+        code: number
+        msg: string
+        data?: { open_id?: string; app_name?: string }
+      }
+      if (json.code !== 0 || !json.data?.open_id) {
+        throw new Error(`Feishu bot info request failed: ${json.msg}`)
+      }
+      this.botIdentity = {
+        openId: json.data.open_id,
+        name: json.data.app_name ?? '',
+      }
+    } catch (error) {
+      this.emitError(toError(error), {
+        operation: 'start',
+        retryable: true,
+        raw: error,
+      })
+    }
+  }
+
+  /**
+   * Group wake signal: `im.message.receive_v1` can deliver messages in a chat
+   * the bot is in that never @'d it, so a group message only wakes the bot
+   * when a mention names the bot itself. The bot's mention is identified by
+   * matching the mention's open_id (or display name, as a fallback) against
+   * the identity resolved from `/open-apis/bot/v3/info`; without that
+   * identity no group message can be attributed, and the signal stays off.
+   */
+  private resolveMentionedBotId(
+    raw: FeishuMessageReceiveEvent,
+  ): string | undefined {
+    if (raw.message.chat_type !== 'group') return undefined
+    const identity = this.botIdentity
+    if (!identity) return undefined
+    for (const mention of raw.message.mentions ?? []) {
+      if (mention.id?.open_id === identity.openId) return identity.openId
+      if (identity.name !== '' && mention.name === identity.name) {
+        return identity.name
+      }
+    }
+    return undefined
+  }
+
   private handleOpen(): void {
+    if (this.stopping) return
     this.status = 'running'
     this.reconnectAttempt = 0
     this.clearStableTimer()
@@ -896,6 +974,9 @@ export class FeishuAdapter implements PlatformAdapter {
         rawMessage: raw,
         timestamp: Number(message.create_time) || Date.now(),
       },
+      mentionedBotId: this.resolveMentionedBotId(raw),
+      // Feishu never pushes messages sent by the app itself (REST replies
+      // included), so there is no self-echo loop to guard against.
       isFromBot: false,
     }
   }

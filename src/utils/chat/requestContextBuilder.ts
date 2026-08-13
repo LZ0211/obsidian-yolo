@@ -8,34 +8,36 @@ import {
   buildCompactionResumeMessage,
   buildCompactionSummaryMessage,
 } from '../../core/agent/compaction'
+import { listDelegatableAssistantRoles } from '../../core/agent/subagent/delegatable-assistant'
 import type {
   SystemPromptSnapshot,
   SystemPromptSnapshotStore,
 } from '../../core/agent/systemPromptSnapshotStore'
+import { executeSingleTurn } from '../../core/ai/single-turn'
+import type { BaseLLMProvider } from '../../core/llm/base'
+import { getChatModelClient } from '../../core/llm/manager'
 import { runMemoryAgentWithFallback } from '../../core/memory/memoryAgent'
 import { MemoryEmbeddingStore } from '../../core/memory/memoryEmbeddings'
 import {
-  buildMemoryPartition,
   type MemoryIndexMaintenanceStore,
+  buildMemoryPartition,
 } from '../../core/memory/memoryIndex'
 import type { MemoryIndexRuntimeHandle } from '../../core/memory/memoryIndexRuntime'
-import {
-  MAX_RECALL_RECENT_USER_MESSAGES,
-  MemoryRecallOrchestrator,
-} from '../../core/memory/memoryRecallOrchestrator'
-import { executeSingleTurn } from '../../core/ai/single-turn'
-import { getChatModelClient } from '../../core/llm/manager'
-import { getEmbeddingModelClient } from '../../core/rag/embedding'
-import { QueryEmbeddingMemoryCache } from '../../core/rag/queryEmbeddingMemoryCache'
 import {
   getMemoryPromptContext,
   loadMemorySourceSnapshot,
   resolveMemoryFilePaths,
 } from '../../core/memory/memoryManager'
 import {
+  MAX_RECALL_RECENT_USER_MESSAGES,
+  MemoryRecallOrchestrator,
+} from '../../core/memory/memoryRecallOrchestrator'
+import {
   getProjectInstructionsSection,
   resolveProjectInstructionFilePaths,
 } from '../../core/project-instructions'
+import { getEmbeddingModelClient } from '../../core/rag/embedding'
+import { QueryEmbeddingMemoryCache } from '../../core/rag/queryEmbeddingMemoryCache'
 import {
   type LiteSkillScope,
   getLiteSkillDocument,
@@ -60,9 +62,7 @@ import type {
   ChatUserMessage,
 } from '../../types/chat'
 import { getLatestChatConversationCompaction } from '../../types/chat'
-import type { BaseLLMProvider } from '../../core/llm/base'
 import type { ChatModel } from '../../types/chat-model.types'
-import type { LLMProvider } from '../../types/provider.types'
 import type { ContentPart, RequestMessage } from '../../types/llm/request'
 import type {
   Mentionable,
@@ -77,6 +77,7 @@ import type {
   MentionableTextAttachment,
   MentionableWebSelection,
 } from '../../types/mentionable'
+import type { LLMProvider } from '../../types/provider.types'
 import type { ToolCallRequest } from '../../types/tool-call.types'
 import {
   createCompleteToolCallArguments,
@@ -1918,6 +1919,12 @@ ${entries}
     const useAssistant = contextPolicy?.useAssistant ?? true
     const assistant = useAssistant ? this.getCurrentAssistant() : null
     const latestCompaction = getLatestChatConversationCompaction(compaction)
+    // The delegatable-assistant catalogue is injected into the system prompt
+    // (`system.delegatable-assistants`), so the snapshot must refresh when the
+    // set of delegatable roles changes.
+    const delegatableAssistantCatalogue = listDelegatableAssistantRoles(
+      this.settings,
+    )
     // The exact memory files this request will read. Captures baseDir, the
     // assistant name, AND the sibling-driven duplicate index — so a same-named
     // assistant being added/renamed (which changes which file we read) refreshes
@@ -1986,6 +1993,7 @@ ${entries}
             workspaceScope: assistant.workspaceScope ?? null,
           }
         : null,
+      delegatableAssistantCatalogue,
     })
   }
 
@@ -2146,6 +2154,27 @@ ${resolvedAssistantSystemPrompt}
         content: `<module_mode_instructions module="${modePersonaModuleId ?? ''}">
 ${modePersonaPrompt.trim()}
 </module_mode_instructions>`,
+      })
+    }
+
+    // Delegatable-assistant catalogue — bucket: system. The
+    // `delegate_subagent` tool schema promises "the available roles listed in
+    // the request context", so the model must be able to discover them here
+    // (backup `requestContextBuilder.ts` behavior; the built-in subagent roles
+    // are always appended by `listDelegatableAssistantRoles`).
+    const delegatableAssistants = listDelegatableAssistantRoles(this.settings)
+    if (delegatableAssistants.length > 0) {
+      sections.push({
+        bucket: 'system',
+        id: 'system.delegatable-assistants',
+        content: `<delegatable_assistants>
+${delegatableAssistants
+  .map(
+    ({ id, name }) =>
+      `<assistant id="${escapeXmlAttr(id)}" name="${escapeXmlAttr(name)}" />`,
+  )
+  .join('\n')}
+</delegatable_assistants>`,
       })
     }
 

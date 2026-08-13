@@ -4,8 +4,8 @@ import { ToolCallResponseStatus } from '../../types/tool-call.types'
 import { backgroundTaskCompletionBus } from './background-task/completion-bus'
 import { AgentService, RUNNING_PERSIST_MIN_INTERVAL_MS } from './service'
 import {
-  getParentSubagentBreakerState,
   hasParentSubagentDeadline,
+  isParentSubagentDelegationBlocked,
   isParentSubagentToolCallTimedOut,
   markParentSubagentTimeoutSettled,
   recordParentSubagentTimeout,
@@ -1713,11 +1713,16 @@ describe('AgentService parent subagent deadline settlement', () => {
     service.startBackgroundTaskResultListener()
     registerParentSubagentDeadline({
       toolCallId: 'subagent-call-completed',
-      runKey: 'run-1',
       conversationId: 'conv-subagent-completed',
       onExpire: () => undefined,
     })
+    // Trip the per-conversation breaker so the reset is observable through
+    // the delegation gate (the state getter was removed as dead code).
     recordParentSubagentTimeout('conv-subagent-completed')
+    recordParentSubagentTimeout('conv-subagent-completed')
+    expect(isParentSubagentDelegationBlocked('conv-subagent-completed')).toBe(
+      true,
+    )
 
     try {
       backgroundTaskCompletionBus.pushCompleted({
@@ -1729,8 +1734,8 @@ describe('AgentService parent subagent deadline settlement', () => {
 
       expect(hasParentSubagentDeadline('subagent-call-completed')).toBe(false)
       expect(
-        getParentSubagentBreakerState('conv-subagent-completed'),
-      ).toMatchObject({ consecutiveTimeouts: 0, blocked: false })
+        isParentSubagentDelegationBlocked('conv-subagent-completed'),
+      ).toBe(false)
     } finally {
       service.stopBackgroundTaskResultListener()
     }
@@ -1885,9 +1890,81 @@ describe('AgentService parent subagent deadline settlement', () => {
       expect(hasParentSubagentDeadline('call-1')).toBe(false)
 
       // Advance past the deadline: nothing fires into the abandoned
-      // conversation — no synthetic timeout record, no breaker increment.
+      // conversation — no synthetic timeout record (and therefore no breaker
+      // increment) reaches it.
       jest.advanceTimersByTime(4_001)
-      expect(getParentSubagentBreakerState('conv-approve-abort')).toBeUndefined()
+      const timeoutMessages = service
+        .getState('conv-approve-abort')
+        .messages.filter((message) => message.role === 'subagent_result')
+      expect(timeoutMessages).toHaveLength(0)
+    } finally {
+      runtimeInstances[1]?.resolveRun()
+      firstRuntime.resolveRun()
+      await runPromise
+      await approvePromise
+      jest.useRealTimers()
+    }
+  })
+
+  it('clears the approval-path deadline when the approved delegate_subagent dispatch fails (no ghost timeout)', async () => {
+    jest.useFakeTimers().setSystemTime(0)
+    setParentSubagentTimeoutSettingsGetter(() => ({ timeoutMs: 4_000 }))
+    const service = new AgentService()
+    const userMessage = makeUserMessage('u1', 'dispatch once')
+    // The dispatch fails BEFORE any child is admitted (invalid
+    // delegatedRoleId / empty model pool / unregistered model all fail inside
+    // `callTool`, returning an Error response without spawning a subagent).
+    const callTool = jest.fn().mockResolvedValue({
+      status: ToolCallResponseStatus.Error,
+      error: 'delegated role not registered',
+    })
+
+    const runPromise = service.run({
+      conversationId: 'conv-approve-fail',
+      loopConfig: {
+        enableTools: true,
+        maxAutoIterations: 100,
+        includeBuiltinTools: true,
+      },
+      input: {
+        conversationId: 'conv-approve-fail',
+        messages: [userMessage],
+        model: { id: 'model-1' },
+        mcpManager: { callTool },
+      } as unknown as AgentRuntimeRunInput,
+    })
+    const firstRuntime = runtimeInstances[0]
+    firstRuntime.emitSnapshot(
+      makeAssistantToolMessages({
+        userMessage,
+        responseStatus: ToolCallResponseStatus.PendingApproval,
+        toolName: 'yolo_local__delegate_subagent',
+      }),
+    )
+
+    const approvePromise = service.approveToolCall({
+      conversationId: 'conv-approve-fail',
+      toolCallId: 'call-1',
+    })
+    try {
+      // The approve flow is microtask-driven (no timers), so flush microtasks
+      // instead of `waitForRuntimeCount` (whose `setTimeout(0)` is faked away).
+      for (let i = 0; i < 50; i += 1) {
+        await Promise.resolve()
+      }
+      // Dispatch failed: no child completion will ever arrive through the
+      // completion bus, so the deadline must be cleared immediately (mirror
+      // of the auto path's `cleanupSettledSubagentDeadlines`).
+      expect(hasParentSubagentDeadline('call-1')).toBe(false)
+
+      // Advance past the deadline: no ghost timeout fires into the settled
+      // call — no synthetic timeout result reaches the conversation (and
+      // therefore no breaker increment).
+      jest.advanceTimersByTime(4_001)
+      const timeoutMessages = service
+        .getState('conv-approve-fail')
+        .messages.filter((message) => message.role === 'subagent_result')
+      expect(timeoutMessages).toHaveLength(0)
     } finally {
       runtimeInstances[1]?.resolveRun()
       firstRuntime.resolveRun()
@@ -2619,6 +2696,10 @@ describe('AgentService subagent approval routing', () => {
     allowToolForConversation: jest.fn(),
   })
 
+  // Singleton — the afterEach below must unregister exactly what the tests
+  // registered (the registry's `list()` was removed as dead code).
+  const registeredRuntimeTaskIds = new Set<string>()
+
   const registerEntry = ({
     taskId = 'sub_test',
     toolCallId = 'tool-call-x',
@@ -2638,13 +2719,15 @@ describe('AgentService subagent approval routing', () => {
       parentToolCallId: 'parent-call-1',
       resumeRun,
     })
+    registeredRuntimeTaskIds.add(taskId)
     return { taskId, toolCallId, runtime, mcpManager, resumeRun }
   }
 
   afterEach(() => {
-    for (const entry of subagentRuntimeRegistry.list()) {
-      subagentRuntimeRegistry.unregister(entry.taskId)
+    for (const taskId of registeredRuntimeTaskIds) {
+      subagentRuntimeRegistry.unregister(taskId)
     }
+    registeredRuntimeTaskIds.clear()
     runtimeInstances.length = 0
   })
 

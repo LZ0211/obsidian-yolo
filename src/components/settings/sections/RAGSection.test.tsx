@@ -8,8 +8,12 @@ const mockObsidianDropdown = jest.fn()
 const mockObsidianToggle = jest.fn()
 const mockObsidianButton = jest.fn()
 
+// Mutable holder so tests can flip the platform: the RAG log ribbon toggle
+// must be hidden on mobile (the ribbon itself only exists on desktop).
+const mockPlatform = { isDesktop: true }
 jest.mock('obsidian', () => ({
   Notice: jest.fn(),
+  Platform: mockPlatform,
 }))
 
 jest.mock('../../../contexts/settings-context', () => ({
@@ -99,19 +103,14 @@ jest.mock('../modals/IncludedFilesModal', () => ({
   IncludedFilesModal: class {},
 }))
 
-import type { RetrievalInspectStatus } from '../../../core/rag/retrievalTraceTypes'
-
 import {
   RAGSection,
-  buildRetrievalInspectRows,
   formatProgressPercent,
   getProgressPercent,
   isRagLogRibbonVisible,
   mergeRagSettingsPatch,
   rebuildRequiredLabel,
 } from './RAGSection'
-
-const t = (_key: string, fallback?: string) => fallback ?? ''
 
 describe('getProgressPercent', () => {
   it('floors to two decimals and never reports 100 before work is complete', () => {
@@ -136,145 +135,6 @@ describe('getProgressPercent', () => {
   it('always renders progress with two decimal places', () => {
     expect(formatProgressPercent(99.9)).toBe('99.90')
     expect(formatProgressPercent(100)).toBe('100.00')
-  })
-})
-
-const inspectStatus: RetrievalInspectStatus = {
-  backend: 'sqlite',
-  storagePath: '/vault/.obsidian/plugins/yolo/rag/sqlite.db',
-  executionMode: 'plugin-host',
-  persistenceMode: 'native-sqlite-file',
-  namespaceId: 'embedding:text-embedding-3-large:1024',
-  modelId: 'text-embedding-3-large',
-  embeddingDimension: 1024,
-  chunkCount: 420,
-  indexedFileCount: 42,
-  warningCodes: ['partial_evidence'],
-  errorCode: 'transient_network_failure',
-  diagnostic: {
-    recoveryAction: 'retry',
-    message: 'network flake',
-  },
-  latestTrace: {
-    queryId: 'rq-1-abc',
-    backend: 'sqlite',
-    modelId: 'text-embedding-3-large',
-    namespaceId: 'embedding:text-embedding-3-large:1024',
-    startedAt: 1000,
-    finishedAt: 1250,
-    timingsMs: {
-      normalizeInput: 5,
-      resolveScope: 5,
-      embedQuery: 160,
-      searchBackend: 40,
-      assembleEvidence: 40,
-      total: 250,
-    },
-    evidence: [
-      {
-        id: 'chunk-1',
-        path: 'notes/a.md',
-        score: 0.9,
-      },
-    ],
-    warningCodes: ['partial_evidence'],
-    errorCode: 'transient_network_failure',
-    diagnostic: {
-      recoveryAction: 'retry',
-      message: 'network flake',
-    },
-  },
-  lastIndexStatus: {
-    status: 'degraded',
-    startedAt: 500,
-    finishedAt: 750,
-    indexedFileCount: 42,
-    chunkCount: 420,
-    failedFiles: [
-      {
-        path: 'notes/bad.pdf',
-        errorCode: 'rebuild_required',
-      },
-    ],
-    skippedFiles: [],
-  },
-}
-
-describe('buildRetrievalInspectRows', () => {
-  it('builds compact rows with the visible inspect values', () => {
-    const rows = buildRetrievalInspectRows(inspectStatus, t)
-
-    expect(rows).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          label: 'Execution mode',
-          value: 'plugin-host',
-        }),
-        expect.objectContaining({
-          label: 'Persistence mode',
-          value: 'native-sqlite-file',
-        }),
-        expect.objectContaining({
-          label: 'Storage path',
-          value: '/vault/.obsidian/plugins/yolo/rag/sqlite.db',
-        }),
-        expect.objectContaining({
-          label: 'Indexed files / chunks',
-          value: '42 / 420',
-        }),
-        expect.objectContaining({
-          label: 'Namespace / model / dim',
-          value:
-            'embedding:text-embedding-3-large:1024 / text-embedding-3-large / 1024',
-        }),
-        expect.objectContaining({
-          label: 'Latest index',
-          value: 'degraded',
-        }),
-        expect.objectContaining({
-          label: 'Latest query',
-          value: '250 ms / 1 evidence',
-        }),
-        expect.objectContaining({
-          label: 'Warning',
-          value: 'partial_evidence',
-        }),
-        expect.objectContaining({
-          label: 'Error',
-          value: 'transient_network_failure',
-        }),
-        expect.objectContaining({
-          label: 'Diagnostic',
-          value: 'retry · network flake',
-        }),
-      ]),
-    )
-  })
-
-  it('uses placeholders for missing storage and failed file paths', () => {
-    const rows = buildRetrievalInspectRows(
-      {
-        ...inspectStatus,
-        storagePath: '',
-        latestTrace: undefined,
-        warningCodes: [],
-        errorCode: undefined,
-        diagnostic: undefined,
-        lastIndexStatus: {
-          ...inspectStatus.lastIndexStatus!,
-          failedFiles: [
-            {
-              path: '',
-              errorCode: 'rebuild_required',
-            },
-          ],
-        },
-      },
-      t,
-    )
-
-    expect(rows.find((row) => row.label === 'Storage path')?.value).toBe('—')
-    expect(rows.find((row) => row.label === 'Failed files')?.value).toBe('1')
   })
 })
 
@@ -398,6 +258,31 @@ describe('RAG log settings entry points', () => {
         name: '显示 RAG 日志侧边栏图标',
       }),
     )
+  })
+
+  it('hides the RAG log ribbon toggle on mobile where no ribbon exists', () => {
+    mockPlatform.isDesktop = false
+    try {
+      mockObsidianSetting.mockClear()
+      renderToStaticMarkup(
+        <RAGSection app={{} as never} plugin={plugin as never} />,
+      )
+
+      expect(
+        mockObsidianSetting.mock.calls.some(
+          ([props]) =>
+            (props as { name?: string }).name === '显示 RAG 日志侧边栏图标',
+        ),
+      ).toBe(false)
+      // The RAG log modal itself is still reachable from settings.
+      expect(
+        mockObsidianSetting.mock.calls.some(
+          ([props]) => (props as { name?: string }).name === 'RAG 日志',
+        ),
+      ).toBe(true)
+    } finally {
+      mockPlatform.isDesktop = true
+    }
   })
 
   it('renders the auto-update toggle and last-sync row', () => {

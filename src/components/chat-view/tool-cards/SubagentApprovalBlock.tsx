@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 
 import { useApp } from '../../../contexts/app-context'
 import { useLanguage } from '../../../contexts/language-context'
@@ -11,6 +11,7 @@ import {
 } from '../runtime-action-handlers'
 
 import { buildSubagentApprovalSummary } from './subagentApprovalSummary'
+import { SubagentDetailModal } from './SubagentDetailModal'
 
 export type SubagentPendingApproval = {
   toolCallId: string
@@ -29,6 +30,15 @@ export function SubagentApprovalBlock({
   const { t } = useLanguage()
   const app = useApp()
   const { actions, conversation } = useChatRuntimeActions(conversationId)
+
+  // U1: the approval row only shows an 80-char truncated argument summary;
+  // "View parameters" opens the existing SubagentDetailModal with the full
+  // JSON payload of the pending call.
+  const blockRef = useRef<HTMLDivElement | null>(null)
+  const [detailsToolCall, setDetailsToolCall] = useState<{
+    toolCallId: string
+    request: ToolCallRequest
+  } | null>(null)
 
   // F13: tool call ids whose decision (approve/reject) is currently in
   // flight. Their buttons are disabled while the runtime call is pending so a
@@ -138,7 +148,9 @@ export function SubagentApprovalBlock({
       : t('chat.subagent.approval.heading', 'Awaiting approval')
 
   return (
+    <>
     <div
+      ref={blockRef}
       className="yolo-subagent-approval"
       role="group"
       aria-label={heading}
@@ -164,6 +176,21 @@ export function SubagentApprovalBlock({
                 )}
               </div>
               <div className="yolo-subagent-approval__item-actions">
+                <button
+                  type="button"
+                  className="yolo-subagent-approval__btn yolo-subagent-approval__btn--ghost"
+                  onClick={() => setDetailsToolCall({ toolCallId, request })}
+                  title={t(
+                    'chat.subagent.approval.viewDetails',
+                    'View parameters',
+                  )}
+                  aria-label={t(
+                    'chat.subagent.approval.viewDetails',
+                    'View parameters',
+                  )}
+                >
+                  {t('chat.subagent.approval.viewDetails', 'View parameters')}
+                </button>
                 <button
                   type="button"
                   className="yolo-subagent-approval__btn yolo-subagent-approval__btn--ghost"
@@ -215,5 +242,23 @@ export function SubagentApprovalBlock({
         </div>
       )}
     </div>
+
+    {detailsToolCall && (
+      <SubagentDetailModal
+        container={
+          blockRef.current?.closest<HTMLElement>('.yolo-chat-container') ??
+          document.body
+        }
+        title={detailsToolCall.request.name}
+        status="running"
+        requestArgs={{
+          name: detailsToolCall.request.name,
+          arguments: detailsToolCall.request.arguments,
+        }}
+        activityLines={[]}
+        onClose={() => setDetailsToolCall(null)}
+      />
+    )}
+    </>
   )
 }

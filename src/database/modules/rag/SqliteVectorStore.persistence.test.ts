@@ -131,6 +131,26 @@ describe('SqliteVectorStore persistence', () => {
     fs.rmSync(rootDir, { recursive: true, force: true })
   })
 
+  test('aggregate getStatus reports no storage path and never implies a placeholder namespace file', async () => {
+    const { rootDir, baseDir } = createTempStoreRoot()
+    const store = createStore(baseDir)
+    await store.open()
+
+    // Without an embedding model there is no namespace: the status must not
+    // fabricate a plausible path — the maintenance explorer used to take that
+    // placeholder and CREATE a garbage SQLite file at it.
+    const status = await store.getStatus()
+    expect(status.storagePath).toBe('')
+    expect(status.readiness).toBe('ready')
+    expect(status.rebuildRequired).toBe(false)
+    expect(
+      fs.existsSync(path.join(baseDir, 'rag', '<namespace>')),
+    ).toBe(false)
+
+    await store.close()
+    fs.rmSync(rootDir, { recursive: true, force: true })
+  })
+
   test('rolls back a partially failing schema migration', async () => {
     const { rootDir, baseDir } = createTempStoreRoot()
     const dbPath = getSqliteDbPath(baseDir, vectorNamespaceId(namespace))

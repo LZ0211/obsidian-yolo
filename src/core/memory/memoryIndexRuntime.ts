@@ -1,5 +1,7 @@
 import type { App, EventRef, TAbstractFile, Vault } from 'obsidian'
 
+import { getEmbeddingModelClient } from '../rag/embedding'
+
 import {
   type MemoryIndexMaintenanceStore,
   type MemoryIndexStore,
@@ -12,6 +14,7 @@ import {
   type MemorySettingsLike,
   loadMemorySourceSnapshot,
   loadMemorySourceSnapshotAtPath,
+  resolveMemoryFilePaths,
   resolveMemoryPartitionByPath,
 } from './memoryManager'
 import type { MemoryPartition, MemorySector } from './memoryTypes'
@@ -19,6 +22,8 @@ import type { MemoryPartition, MemorySector } from './memoryTypes'
 type MemoryIndexSettings = MemorySettingsLike & {
   advancedMemoryIndexEnabled?: boolean
   memoryReflectionEnabled?: boolean
+  /** RAG embedding model id; reconciles write memory_embeddings with it. */
+  embeddingModelId?: string
 }
 
 export type MemoryIndexRuntimeHandle = {
@@ -44,8 +49,62 @@ export type MemoryRenameResolution = Readonly<{
   cleanupPartition: MemoryPartition | null
 }>
 
+/** Periodic maintenance cadence: salience decay + cold archive + reflection. */
+const MEMORY_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000
+
 const getOptionalVault = (app: App): VaultWithOptionalEvents | undefined =>
   (app as Partial<App>).vault as VaultWithOptionalEvents | undefined
+
+export type MemorySettingsReconcilePlan = {
+  removedAssistantIds: readonly string[]
+  reconciles: ReadonlyArray<{
+    partition: MemoryPartition
+    sourcePath: string
+  }>
+}
+
+/**
+ * What a settings change means for the memory index (backup main.ts
+ * settings-listener behavior, extracted so main.ts wiring is a thin shell):
+ * - assistants that disappeared must have their partitions dropped;
+ * - while the advanced index is enabled, every memory partition (global plus
+ *   each assistant) is re-reconciled so renames/duplicate-index shifts are
+ *   picked up;
+ * - disabling the advanced index yields no reconciles (main.ts then closes
+ *   the runtime).
+ */
+export const planMemorySettingsReconcile = ({
+  previousAssistantIds,
+  settings,
+}: {
+  previousAssistantIds: readonly string[]
+  settings: MemorySettingsLike
+}): MemorySettingsReconcilePlan => {
+  const removedAssistantIds = previousAssistantIds.filter(
+    (assistantId) =>
+      !settings.assistants?.some((assistant) => assistant.id === assistantId),
+  )
+  if (!settings.advancedMemoryIndexEnabled) {
+    return { removedAssistantIds, reconciles: [] }
+  }
+  const paths = new Set<string>()
+  for (const assistantId of [
+    undefined,
+    ...(settings.assistants?.map((assistant) => assistant.id) ?? []),
+  ]) {
+    const memoryPaths = resolveMemoryFilePaths({ settings, assistantId })
+    paths.add(memoryPaths.global)
+    if (memoryPaths.assistant) paths.add(memoryPaths.assistant)
+  }
+  const reconciles = [...paths].flatMap((sourcePath) => {
+    const partition = resolveMemoryPartitionByPath({
+      settings,
+      path: sourcePath,
+    })
+    return partition ? [{ partition, sourcePath }] : []
+  })
+  return { removedAssistantIds, reconciles }
+}
 
 export const resolveMemoryRename = ({
   settings,
@@ -90,6 +149,8 @@ export class MemoryIndexRuntime {
   >()
   private readonly sourcePathOverrides = new Map<string, string>()
   private readonly renameCleanups = new Map<string, MemoryPartition>()
+  private readonly knownPartitions = new Map<string, MemoryPartition>()
+  private maintenanceTimer: ReturnType<typeof setInterval> | null = null
   private closed = false
   private settingsGetter: () => MemoryIndexSettings | undefined
   private reflectionModelRunner:
@@ -130,6 +191,7 @@ export class MemoryIndexRuntime {
         app: this.app,
         getSettings: () => this.settingsGetter(),
         getSourceSnapshot: (partition) => this.getSourceSnapshot(partition),
+        embedContent: (content) => this.embedContent(content),
       })
     }
     const pendingStore = this.storePromise
@@ -168,8 +230,26 @@ export class MemoryIndexRuntime {
     })
     this.sourcePathOverrides.delete(partition.partitionKey)
     this.renameCleanups.delete(partition.partitionKey)
+    this.knownPartitions.delete(partition.partitionKey)
     this.queue?.cancelPartition(partition.partitionKey)
     void this.deletePartition(partition)
+  }
+
+  /**
+   * Periodic maintenance catch-up for every partition the runtime knows:
+   * decay + cold archive (+ reflection when configured) without a reconcile.
+   * Called on an hourly interval; also run once when the queue starts.
+   */
+  async runPeriodicMaintenance(): Promise<void> {
+    if (
+      this.closed ||
+      this.settingsGetter()?.advancedMemoryIndexEnabled !== true
+    )
+      return
+    if (!this.queue) return
+    for (const partition of this.knownPartitions.values()) {
+      this.queue.enqueueMaintenance(partition)
+    }
   }
 
   private async deletePartition(partition: MemoryPartition): Promise<void> {
@@ -181,6 +261,10 @@ export class MemoryIndexRuntime {
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
+    if (this.maintenanceTimer !== null) {
+      clearInterval(this.maintenanceTimer)
+      this.maintenanceTimer = null
+    }
     for (const timer of this.debounceTimers.values()) clearTimeout(timer)
     this.debounceTimers.clear()
     const vault = getOptionalVault(this.app)
@@ -195,6 +279,7 @@ export class MemoryIndexRuntime {
     sectorHints?: Readonly<Record<string, MemorySector | null>>
   }): Promise<void> {
     this.sourcePathOverrides.set(input.partition.partitionKey, input.sourcePath)
+    this.knownPartitions.set(input.partition.partitionKey, input.partition)
     const store = await this.getStore()
     if (store.capability !== 'sqlite' || this.closed) return
     if (!this.queue) {
@@ -221,8 +306,46 @@ export class MemoryIndexRuntime {
           }
         },
       })
+      this.ensurePeriodicMaintenance()
     }
     this.queue.enqueueReconcile(input)
+  }
+
+  /**
+   * Start the hourly maintenance cadence once (first sqlite queue creation):
+   * an immediate catch-up run for partitions known so far, then the interval.
+   */
+  private ensurePeriodicMaintenance(): void {
+    if (this.maintenanceTimer !== null || this.closed) return
+    void this.runPeriodicMaintenance().catch(() => undefined)
+    this.maintenanceTimer = setInterval(() => {
+      void this.runPeriodicMaintenance().catch(() => undefined)
+    }, MEMORY_MAINTENANCE_INTERVAL_MS)
+  }
+
+  /**
+   * Embed one memory entry with the vault's configured RAG embedding model.
+   * Resolves the model per call so settings changes apply without restart.
+   * Returns null when no model is configured or the call fails — the vector
+   * path then stays empty (lexical/graph recall continue to work).
+   */
+  private async embedContent(content: string): Promise<number[] | null> {
+    const settings = this.settingsGetter()
+    const embeddingModelId = settings?.embeddingModelId?.trim()
+    if (!embeddingModelId) return null
+    try {
+      const client = getEmbeddingModelClient({
+        settings: settings as never,
+        embeddingModelId,
+      })
+      return await client.getEmbedding(content)
+    } catch (error) {
+      console.warn(
+        '[YOLO][Memory] embedding unavailable during reconcile',
+        error,
+      )
+      return null
+    }
   }
 
   private async getSourceSnapshot(

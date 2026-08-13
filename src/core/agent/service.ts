@@ -2,9 +2,9 @@ import { v4 as uuidv4 } from 'uuid'
 
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import {
+  AgentFileChange,
   ChatConversationCompactionLike,
   ChatConversationCompactionState,
-  AgentFileChange,
   ChatMessage,
   ChatSubagentResultMessage,
   ChatTerminalCommandResultMessage,
@@ -29,7 +29,12 @@ import {
 } from '../mcp/localFileToolNames'
 import type { McpManager } from '../mcp/mcpManager'
 import { parseToolName } from '../mcp/tool-name-utils'
+import {
+  MemoryExtractionQueue,
+  type MemoryExtractionQueueTask,
+} from '../memory/memoryExtractionQueue'
 
+import type { AgentFileChangeTracker } from './agentFileChangeTracker'
 import {
   type BackgroundTaskEvent,
   type SubagentCumulativeUsage,
@@ -41,12 +46,6 @@ import {
 } from './bash/command-classifier'
 import type { BashTaskRecord } from './bash/types'
 import { DEFAULT_BRANCH_ID } from './branch'
-import {
-  MemoryExtractionQueue,
-  type MemoryExtractionQueueTask,
-} from '../memory/memoryExtractionQueue'
-import type { MemoryExtractionRequest } from './types'
-import type { AgentFileChangeTracker } from './agentFileChangeTracker'
 import {
   CitationRegistry,
   attachSourcesToLatestAssistant,
@@ -84,6 +83,7 @@ import type {
   SubagentTaskSummary,
 } from './subagent/types'
 import { SystemPromptSnapshotStore } from './systemPromptSnapshotStore'
+import type { MemoryExtractionRequest } from './types'
 import {
   AgentRunContext,
   AgentRuntimeLoopConfig,
@@ -1645,7 +1645,6 @@ export class AgentService {
     if (isDelegateSubagentToolName(toolCall.request.name)) {
       this.registerApprovedSubagentDeadline({
         toolCallId,
-        runKey: conversationId,
         conversationId,
         mcpManager: lastRunInput.mcpManager,
       })
@@ -1707,6 +1706,23 @@ export class AgentService {
       return false
     }
 
+    // The dispatch failed before a child was admitted (invalid
+    // delegatedRoleId / empty model pool / unregistered model all fail inside
+    // `callTool`, returning an Error response without spawning a subagent), so
+    // no child completion will ever land through the completion bus to clear
+    // the deadline registered above. Clear it here, mirroring the auto path's
+    // `NativeAgentRuntime.cleanupSettledSubagentDeadlines`: a terminal
+    // non-Success result means no live child, and leaving the timer armed
+    // would later inject a synthetic timeout into the settled call and
+    // increment the breaker (ghost timeout). `Success` keeps the deadline —
+    // the child runs in the background and its completion clears it.
+    if (
+      result.status !== ToolCallResponseStatus.Success &&
+      result.status !== ToolCallResponseStatus.Running
+    ) {
+      this.cleanupApprovedSubagentDeadline({ toolCallId, conversationId })
+    }
+
     if (isTrailingResolvedToolMessage(nextMessages, toolMessage.id)) {
       await this.run({
         conversationId,
@@ -1728,12 +1744,10 @@ export class AgentService {
    */
   private registerApprovedSubagentDeadline({
     toolCallId,
-    runKey,
     conversationId,
     mcpManager,
   }: {
     toolCallId: string
-    runKey: string
     conversationId: string
     mcpManager: McpManager
   }): void {
@@ -1755,7 +1769,6 @@ export class AgentService {
     }
     registerParentSubagentDeadline({
       toolCallId,
-      runKey,
       conversationId,
       onExpire: ({
         toolCallId: expiredToolCallId,
@@ -1768,6 +1781,33 @@ export class AgentService {
         })
       },
     })
+  }
+
+  /**
+   * Approval-path mirror of `NativeAgentRuntime.cleanupSettledSubagentDeadlines`
+   * for the auto path: an approved `delegate_subagent` dispatch that settled to
+   * a terminal non-Success outcome admitted no child, so no completion will
+   * ever arrive through the bus to clear the deadline. Clear it (plus the
+   * teardown-set entry and any settled marker when no child task exists) so the
+   * timer cannot fire later into the settled call — synthetic timeout injection
+   * + breaker increment (ghost timeout).
+   */
+  private cleanupApprovedSubagentDeadline({
+    toolCallId,
+    conversationId,
+  }: {
+    toolCallId: string
+    conversationId: string
+  }): void {
+    clearParentSubagentDeadline(toolCallId)
+    // Keep the approval-path teardown set bounded like
+    // `handleBackgroundTaskCompleted` does for the success path.
+    this.approvedSubagentDeadlineToolCallIds
+      .get(conversationId)
+      ?.delete(toolCallId)
+    if (!findSubagentTaskByParentToolCall(toolCallId)) {
+      clearParentSubagentTimeoutSettled(toolCallId)
+    }
   }
 
   /**
@@ -2495,7 +2535,7 @@ export class AgentService {
     const runtimeInput: AgentRuntimeRunInput = {
       ...input,
       runContext,
-      enqueueMemoryExtraction: Boolean(input.systemPromptOverride)
+      enqueueMemoryExtraction: input.systemPromptOverride
         ? undefined
         : (request) => {
             this.memoryExtractionQueue.enqueue({

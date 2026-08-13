@@ -37,6 +37,7 @@ import {
   type SubagentParentContext,
   composeParentContextPrompt,
 } from './parent-context'
+import { truncateLiveTranscriptMessages } from './result-limit'
 import { subagentRuntimeRegistry } from './runtime-registry'
 import { subagentTaskRegistry } from './task-registry'
 import { filterAllowedToolsForSubagent } from './tool-filter'
@@ -203,6 +204,17 @@ export function autoRejectPendingApprovals(runtime: NativeAgentRuntime): void {
 
 /** Auto-reject window for paused subagent tool calls. */
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000
+
+/**
+ * S3: grace window after the child abort signal fires before the runner
+ * force-settles a child whose `runtime.run` never returns (provider call or
+ * mcp tool that ignores the abort signal). Without it the registry entry
+ * stays `running` forever — the bound project task claim is never released
+ * and the parent-side timeout-settled marker is never consumed. The child's
+ * own abort path settles in milliseconds, so this is a rarely-reached
+ * safety net, not the common path.
+ */
+export const SUBAGENT_ABORT_SETTLE_GRACE_MS = 10_000
 
 /**
  * F5: cadence at which the runner renews the parent-side subagent deadline
@@ -452,7 +464,11 @@ async function runChildAgent(
         snapshot.pendingCompactionAnchorMessageId,
     }
     subagentTaskRegistry.update(record.taskId, {
-      liveTranscript: snapshot.messages,
+      // S4: the registry holds the latest snapshot for the task's lifetime
+      // (live UI preview), so cap oversized text pieces at the configured
+      // `subagentResultMaxChars` — same window the parent-side result
+      // injection uses. The final result transcript stays untruncated.
+      liveTranscript: truncateLiveTranscriptMessages(snapshot.messages),
     })
     const nextEvents = conversationStateToEvents({
       state,
@@ -508,7 +524,37 @@ async function runChildAgent(
   try {
     let nextRunInput: AgentRuntimeRunInput = runInput
     while (true) {
-      await runWithBackgroundExecution(() => runtime.run(nextRunInput))
+      // S3: race the child run against an abort + grace window. An aborted
+      // child whose `runtime.run` never returns would otherwise keep the
+      // registry entry `running` forever (project claim stuck, parent
+      // timeout-settled marker leaked). When the grace expires the race is
+      // won below and the loop breaks into the normal settle path (aborted).
+      const runPromise = runWithBackgroundExecution(() =>
+        runtime.run(nextRunInput),
+      )
+      let forceSettle: (() => void) | undefined
+      const abortSettlePromise = new Promise<void>((resolve) => {
+        forceSettle = resolve
+      })
+      let abortGraceHandle: ReturnType<typeof setTimeout> | undefined
+      const startAbortGrace = () => {
+        abortGraceHandle = setTimeout(() => {
+          forceSettle?.()
+        }, SUBAGENT_ABORT_SETTLE_GRACE_MS)
+      }
+      if (abortController.signal.aborted) {
+        startAbortGrace()
+      } else {
+        abortController.signal.addEventListener('abort', startAbortGrace, {
+          once: true,
+        })
+      }
+      await Promise.race([runPromise, abortSettlePromise])
+      abortController.signal.removeEventListener('abort', startAbortGrace)
+      if (abortGraceHandle !== undefined) {
+        clearTimeout(abortGraceHandle)
+        abortGraceHandle = undefined
+      }
       const snapshotAfterRun = runtime.getSnapshot()
       if (
         abortController.signal.aborted ||

@@ -336,6 +336,35 @@ describe('TelegramAdapter — polling error recovery', () => {
     expect(bot.stopPollingMock).not.toHaveBeenCalled()
     expect(adapter.health()).toBe('failed')
   })
+
+  it('does not restart polling on a bot that was stopped while recovery was in flight', async () => {
+    const { adapter, bot } = await startAdapter()
+    const errors: unknown[] = []
+    adapter.onError((error) => {
+      errors.push(error)
+    })
+
+    // Hold the recovery's stopPolling teardown so recreatePolling is
+    // suspended mid-flight when stop() lands.
+    let releaseStopPolling!: () => void
+    const stopPollingGate = new Promise<void>((resolve) => {
+      releaseStopPolling = resolve
+    })
+    bot.stopPollingMock.mockReturnValueOnce(stopPollingGate)
+
+    bot.trigger('polling_error', new Error('ETIMEDOUT'))
+    bot.trigger('polling_error', new Error('ETIMEDOUT'))
+    bot.trigger('polling_error', new Error('ETIMEDOUT'))
+    await Promise.resolve() // recreatePolling now awaits the gated stopPolling
+
+    await adapter.stop()
+    releaseStopPolling()
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(errors).toHaveLength(3)
+    expect(bot.startPollingMock).not.toHaveBeenCalled()
+    expect(adapter.health()).toBe('stopped')
+  })
 })
 
 describe('TelegramAdapter — sendMessage', () => {

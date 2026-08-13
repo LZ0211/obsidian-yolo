@@ -28,6 +28,7 @@ import {
   initializeMemoryIndexSchema,
   trimMemoryMaintenanceLog,
 } from './memoryIndexSchema'
+import { MemoryEmbeddingStore } from './memoryEmbeddings'
 import type { MemorySettingsLike, MemorySourceSnapshot } from './memoryManager'
 import { normalizeMemoryText } from './memoryTokenizer'
 import type {
@@ -48,8 +49,6 @@ import {
   selectMemoryReflectionSources,
   shouldRunMemoryReflection,
 } from './reflection'
-import { computeSimhash } from './simhash'
-
 type MemoryPartitionInput = {
   scope: MemoryPartition['scope']
   assistantId?: string | null
@@ -164,6 +163,13 @@ type MemoryIndexStoreOptions = {
   getSourceSnapshot: (
     partition: MemoryPartition,
   ) => Promise<MemorySourceSnapshot>
+  /**
+   * Produces the dense embedding for one memory entry during reconcile;
+   * null disables the vector path (no memory_embeddings rows are written).
+   * Injected by the runtime from the configured embedding model so the
+   * semantic recall path has data to search.
+   */
+  embedContent?: (content: string) => Promise<number[] | null>
   clock?: () => number
 }
 
@@ -178,10 +184,6 @@ type MemoryIndexRow = {
   content: string
   keywords_json: string
   content_hash: string
-  hash_band_0: number
-  hash_band_1: number
-  hash_band_2: number
-  hash_band_3: number
   salience: number
   last_recalled_at: number | null
   created_at: number
@@ -232,13 +234,6 @@ const throwIfMemoryIndexAborted = (signal?: AbortSignal): void => {
   error.name = 'AbortError'
   throw error
 }
-
-const hashBands = (hash: string): [number, number, number, number] => [
-  Number.parseInt(hash.slice(0, 4), 16),
-  Number.parseInt(hash.slice(4, 8), 16),
-  Number.parseInt(hash.slice(8, 12), 16),
-  Number.parseInt(hash.slice(12, 16), 16),
-]
 
 const rowToEntry = (row: MemoryIndexRow): IndexedMemoryEntry => ({
   id: row.local_id,
@@ -405,18 +400,19 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
     } catch (error) {
       // No node:sqlite (mobile) or it failed to load: fall back to the
       // sqlite-engine runtime component (sql.js in-memory + vault file).
+      // Same pattern as shardedSqlite's toVaultRelativePath: without a
+      // FileSystemAdapter (mobile) the path is already vault-relative and
+      // passes through unchanged — the wasm opener resolves it against the
+      // vault.
       const adapter = this.options.app.vault.adapter
-      const basePath =
-        adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null
-      if (!basePath) {
-        throw new MemoryIndexUnavailableError(
-          'SQLite memory index is unavailable: no vault adapter',
-          { cause: error },
-        )
-      }
-      const relativePath = absolutePath.startsWith(basePath)
-        ? absolutePath.slice(basePath.length).replace(/^[\\/]+/, '')
-        : absolutePath
+      const relativePath =
+        adapter instanceof FileSystemAdapter
+          ? absolutePath.startsWith(adapter.getBasePath())
+            ? absolutePath
+                .slice(adapter.getBasePath().length)
+                .replace(/^[\\/]+/, '')
+            : absolutePath
+          : absolutePath
       try {
         const lease = await acquireRuntimeComponent('sqlite-engine')
         try {
@@ -514,7 +510,6 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
       const preparedEntries: Array<{
         entry: MemorySourceEntry
         contentHash: string
-        hashBands: [number, number, number, number]
       }> = []
       for (
         let start = 0;
@@ -531,10 +526,66 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
             batch.map(async (entry) => ({
               entry,
               contentHash: await sha256Hex(entry.content.normalize('NFC')),
-              hashBands: hashBands(computeSimhash(entry.content)),
             })),
           )),
         )
+      }
+      // Pre-compute dense embeddings for new/changed entries before the
+      // transaction (embedding calls are async network/model work). The same
+      // changed set is recomputed inside the transaction from identical
+      // inputs; entries whose embedding is unavailable drop any stale vector.
+      const changedLocalIds = new Set<string>()
+      const priorFingerprintById = new Map(
+        runtime
+          .query<{ local_id: string; entry_fingerprint: string }>(
+            'select local_id, entry_fingerprint from memory_index where partition_key = ?',
+            [input.partition.partitionKey],
+          )
+          .map(({ local_id, entry_fingerprint }) => [
+            local_id,
+            entry_fingerprint,
+          ]),
+      )
+      const priorParserVersion = runtime.queryOne<{ parser_version: string }>(
+        'select parser_version from memory_partition_state where partition_key = ?',
+        [input.partition.partitionKey],
+      )?.parser_version
+      for (const entry of snapshot.entries) {
+        const priorFingerprint = priorFingerprintById.get(entry.localId)
+        if (
+          !priorFingerprint ||
+          priorFingerprint !== entry.entryFingerprint ||
+          priorParserVersion !== snapshot.parserVersion
+        ) {
+          changedLocalIds.add(entry.localId)
+        }
+      }
+      const embeddingsByLocalId = new Map<string, number[]>()
+      const embedContent = this.options.embedContent
+      if (embedContent) {
+        for (
+          let start = 0;
+          start < snapshot.entries.length;
+          start += RECONCILE_HASH_BATCH_SIZE
+        ) {
+          throwIfMemoryIndexAborted(input.signal)
+          const batch = snapshot.entries.slice(
+            start,
+            start + RECONCILE_HASH_BATCH_SIZE,
+          )
+          const embedded = await Promise.all(
+            batch.map(async (entry): Promise<[string, number[]] | null> => {
+              if (!changedLocalIds.has(entry.localId)) return null
+              const embedding = await embedContent(entry.content)
+              return embedding && embedding.length > 0
+                ? [entry.localId, embedding]
+                : null
+            }),
+          )
+          for (const result of embedded) {
+            if (result) embeddingsByLocalId.set(result[0], result[1])
+          }
+        }
       }
       try {
         runtime.transaction(() => {
@@ -577,6 +628,7 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
             'delete from memory_reflections where partition_key = ? and source_fingerprint <> ?',
             [input.partition.partitionKey, snapshot.sourceFileFingerprint],
           )
+          const embeddingStore = new MemoryEmbeddingStore(runtime)
           for (let index = 0; index < preparedEntries.length; index += 1) {
             if (index % 100 === 0) {
               throwIfMemoryIndexAborted(input.signal)
@@ -585,7 +637,6 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
             const entry = prepared.entry
             const old = priorRowsById.get(entry.localId)
             const contentHash = prepared.contentHash
-            const [band0, band1, band2, band3] = prepared.hashBands
             const unchanged =
               old?.entry_fingerprint === entry.entryFingerprint &&
               priorState?.parser_version === snapshot.parserVersion
@@ -609,9 +660,9 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
             runtime.exec(
               `insert into memory_index
                (partition_key, memory_key, scope, assistant_id, local_id, category, sector, content, keywords_json,
-                content_hash, hash_band_0, hash_band_1, hash_band_2, hash_band_3, salience, last_recalled_at,
-                created_at, updated_at, source_path, source_file_fingerprint, entry_fingerprint, parser_version, consolidated)
-               values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                content_hash, salience, last_recalled_at,
+                created_at, updated_at, source_path, source_file_fingerprint, entry_fingerprint, parser_version)
+               values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                on conflict(partition_key, local_id) do update set
                  memory_key = excluded.memory_key,
                  scope = excluded.scope,
@@ -621,18 +672,13 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
                  content = excluded.content,
                  keywords_json = excluded.keywords_json,
                  content_hash = excluded.content_hash,
-                 hash_band_0 = excluded.hash_band_0,
-                 hash_band_1 = excluded.hash_band_1,
-                 hash_band_2 = excluded.hash_band_2,
-                 hash_band_3 = excluded.hash_band_3,
                  salience = excluded.salience,
                  last_recalled_at = excluded.last_recalled_at,
                  updated_at = excluded.updated_at,
                  source_path = excluded.source_path,
                  source_file_fingerprint = excluded.source_file_fingerprint,
                  entry_fingerprint = excluded.entry_fingerprint,
-                 parser_version = excluded.parser_version,
-                 consolidated = excluded.consolidated`,
+                 parser_version = excluded.parser_version`,
               [
                 input.partition.partitionKey,
                 memoryKey,
@@ -650,10 +696,6 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
                   ].sort(),
                 ),
                 contentHash,
-                band0,
-                band1,
-                band2,
-                band3,
                 salience,
                 lastRecalledAt,
                 old?.created_at ?? timestamp,
@@ -680,15 +722,34 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
                 [input.partition.partitionKey, entry.localId, keyword],
               )
             }
+            const embedding = embeddingsByLocalId.get(entry.localId)
+            if (embedding) {
+              embeddingStore.upsert(
+                {
+                  partitionKey: input.partition.partitionKey,
+                  memoryKey,
+                  localId: 0,
+                },
+                embedding,
+              )
+            } else if (changedLocalIds.has(entry.localId)) {
+              // Changed entry with no fresh embedding (model unavailable):
+              // drop the stale vector so recall never serves outdated content.
+              embeddingStore.delete(input.partition.partitionKey, [memoryKey])
+            }
           }
           throwIfMemoryIndexAborted(input.signal)
-          for (const localId of priorRows
+          const removedLocalIds = priorRows
             .map((row) => row.local_id)
-            .filter((id) => !incomingIds.has(id))) {
+            .filter((id) => !incomingIds.has(id))
+          for (const localId of removedLocalIds) {
             runtime.exec(
               'delete from memory_index where partition_key = ? and local_id = ?',
               [input.partition.partitionKey, localId],
             )
+            embeddingStore.delete(input.partition.partitionKey, [
+              buildMemoryKey(input.partition.partitionKey, localId),
+            ])
           }
           runtime.exec(
             `insert into memory_partition_state

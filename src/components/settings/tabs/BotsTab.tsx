@@ -53,32 +53,10 @@ const PLATFORM_BADGE_STYLE: Record<
   },
 }
 
-const describePlatform = (platform: BotPlatformConfig): string => {
-  switch (platform.platformType) {
-    case 'telegram':
-      return `${platform.botToken ? 'Token configured' : 'No token set'} · Whitelist ${
-        platform.whitelistEnabled ? 'on' : 'off'
-      }`
-    case 'weixin_oc':
-      return platform.botId
-        ? `Logged in as ${platform.botId}`
-        : 'Not logged in yet'
-    case 'dingtalk':
-      return `Robot code: ${platform.robotCode || '(unset)'}`
-    case 'feishu':
-      return `App ID: ${platform.appId || '(unset)'}`
-    default:
-      return ''
-  }
-}
-
 /** Poll cadence for the runtime health dots while the Bots tab is open. */
 const HEALTH_POLL_INTERVAL_MS = 5000
 
-const HEALTH_STATUS_LABEL_KEY: Record<
-  BotPlatformHealth['status'],
-  string
-> = {
+const HEALTH_STATUS_LABEL_KEY: Record<BotPlatformHealth['status'], string> = {
   running: 'settings.bots.health.running',
   degraded: 'settings.bots.health.degraded',
   failed: 'settings.bots.health.failed',
@@ -89,6 +67,42 @@ export function BotsTab({ app, plugin }: BotsTabProps) {
   const { t } = useLanguage()
   const { settings, setSettings } = useSettings()
   const bots = settings.bots
+
+  const describePlatform = (platform: BotPlatformConfig): string => {
+    switch (platform.platformType) {
+      case 'telegram':
+        return `${platform.botToken ? t('settings.bots.tokenConfigured', 'Token configured') : t('settings.bots.noTokenSet', 'No token set')} · ${t(
+          'settings.bots.whitelist',
+          'Whitelist',
+        )} ${
+          platform.whitelistEnabled
+            ? t('settings.bots.whitelistOn', 'on')
+            : t('settings.bots.whitelistOff', 'off')
+        }`
+      case 'weixin_oc':
+        return platform.botId
+          ? t('settings.bots.form.loggedInAs', 'Logged in as {botId}').replace(
+              '{botId}',
+              platform.botId,
+            )
+          : t('settings.bots.form.notLoggedIn', 'Not logged in yet')
+      case 'dingtalk':
+        return t(
+          'settings.bots.describeRobotCode',
+          'Robot code: {robotCode}',
+        ).replace(
+          '{robotCode}',
+          platform.robotCode || t('settings.bots.unset', '(unset)'),
+        )
+      case 'feishu':
+        return t('settings.bots.describeAppId', 'App ID: {appId}').replace(
+          '{appId}',
+          platform.appId || t('settings.bots.unset', '(unset)'),
+        )
+      default:
+        return ''
+    }
+  }
 
   // Runtime health per platform id, polled while the tab is open — the
   // configured `platform.enabled` flag alone would lie about whether the
@@ -114,12 +128,15 @@ export function BotsTab({ app, plugin }: BotsTabProps) {
   }, [plugin, settings.bots.platforms])
 
   const healthStatusLabel = (status: BotPlatformHealth['status']): string =>
-    t(HEALTH_STATUS_LABEL_KEY[status], {
-      running: 'Running',
-      degraded: 'Degraded',
-      failed: 'Failed',
-      stopped: 'Stopped',
-    }[status])
+    t(
+      HEALTH_STATUS_LABEL_KEY[status],
+      {
+        running: 'Running',
+        degraded: 'Degraded',
+        failed: 'Failed',
+        stopped: 'Stopped',
+      }[status],
+    )
 
   const testConnection = (platform: BotPlatformConfig) => {
     const botService = plugin.getBotService()
@@ -135,10 +152,10 @@ export function BotsTab({ app, plugin }: BotsTabProps) {
     const health = botService.getHealth(platform.id)
     if (health.startError) {
       new Notice(
-        t('settings.bots.connectionFailed', 'Connection failed: {error}').replace(
-          '{error}',
-          health.startError,
-        ),
+        t(
+          'settings.bots.connectionFailed',
+          'Connection failed: {error}',
+        ).replace('{error}', health.startError),
       )
       return
     }
@@ -352,8 +369,7 @@ export function BotsTab({ app, plugin }: BotsTabProps) {
                     ).replace('{error}', health.startError),
                   }
                 : health?.started &&
-                    (health.status === 'degraded' ||
-                      health.status === 'failed')
+                    (health.status === 'degraded' || health.status === 'failed')
                   ? {
                       kind: 'status' as const,
                       message: healthStatusLabel(health.status),

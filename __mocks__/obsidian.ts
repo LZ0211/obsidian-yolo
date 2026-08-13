@@ -3,6 +3,14 @@ export const apiVersion = '1.8.0'
 export const Editor = jest.fn()
 export const getLanguage = jest.fn(() => 'en')
 export const MarkdownView = jest.fn()
+// Base class for `ReactModal` subclasses pulled in via the chat-view graph
+// (e.g. SubagentDetailModal); subclassing a jest.fn() base would throw.
+export class Modal {
+  open(): void {}
+  close(): void {}
+  onOpen(): void {}
+  onClose(): void {}
+}
 export const Platform = {
   isDesktop: true,
   isMobile: false,

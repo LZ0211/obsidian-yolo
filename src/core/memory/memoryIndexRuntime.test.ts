@@ -18,6 +18,7 @@ import {
   getMemoryIndexRuntime,
   getMemoryIndexRuntimeHandle,
   getMemoryIndexStore,
+  planMemorySettingsReconcile,
   resolveMemoryRename,
 } from './memoryIndexRuntime'
 import type { MemorySourceSnapshot } from './memoryManager'
@@ -155,6 +156,92 @@ describe('memory index runtime adapter', () => {
 
     expect(resolution.reconcilePartition).toBeNull()
     expect(resolution.cleanupPartition).toEqual(indexedPartition)
+  })
+
+  it('plans assistant removal cleanup and full reconciles from a settings change', () => {
+    const plan = planMemorySettingsReconcile({
+      previousAssistantIds: ['agent-1', 'agent-2', 'agent-3'],
+      settings: {
+        yolo: { baseDir: 'YOLO' },
+        advancedMemoryIndexEnabled: true,
+        assistants: [
+          { id: 'agent-2', name: 'Agent 2' },
+          { id: 'agent-3', name: 'Agent 3' },
+        ],
+      },
+    })
+
+    expect(plan.removedAssistantIds).toEqual(['agent-1'])
+    expect(plan.reconciles).toEqual(
+      expect.arrayContaining([
+        {
+          partition: buildMemoryPartition({ scope: 'global' }),
+          sourcePath: 'YOLO/memory/global.md',
+        },
+        {
+          partition: buildMemoryPartition({
+            scope: 'assistant',
+            assistantId: 'agent-2',
+          }),
+          sourcePath: 'YOLO/memory/Agent 2.md',
+        },
+        {
+          partition: buildMemoryPartition({
+            scope: 'assistant',
+            assistantId: 'agent-3',
+          }),
+          sourcePath: 'YOLO/memory/Agent 3.md',
+        },
+      ]),
+    )
+    expect(plan.reconciles).toHaveLength(3)
+  })
+
+  it('plans only assistant cleanup when the advanced index is disabled', () => {
+    const plan = planMemorySettingsReconcile({
+      previousAssistantIds: ['agent-1'],
+      settings: {
+        advancedMemoryIndexEnabled: false,
+        assistants: [],
+      },
+    })
+
+    expect(plan.removedAssistantIds).toEqual(['agent-1'])
+    expect(plan.reconciles).toEqual([])
+  })
+
+  it('runs periodic maintenance for every tracked partition', async () => {
+    const enqueueMaintenance = jest.fn()
+    const runtime = new MemoryIndexRuntime({ vault: {} } as never, () => ({
+      advancedMemoryIndexEnabled: true,
+    }))
+    const privateRuntime = runtime as unknown as {
+      queue: { enqueueMaintenance: jest.Mock; shutdown: () => Promise<boolean> } | null
+      knownPartitions: Map<string, MemoryPartition>
+    }
+    privateRuntime.knownPartitions.set(
+      'global',
+      buildMemoryPartition({ scope: 'global' }),
+    )
+    privateRuntime.knownPartitions.set(
+      'assistant:a',
+      buildMemoryPartition({ scope: 'assistant', assistantId: 'a' }),
+    )
+    privateRuntime.queue = {
+      enqueueMaintenance,
+      shutdown: async () => false,
+    }
+
+    await runtime.runPeriodicMaintenance()
+
+    expect(enqueueMaintenance).toHaveBeenCalledWith(
+      buildMemoryPartition({ scope: 'global' }),
+    )
+    expect(enqueueMaintenance).toHaveBeenCalledWith(
+      buildMemoryPartition({ scope: 'assistant', assistantId: 'a' }),
+    )
+    expect(enqueueMaintenance).toHaveBeenCalledTimes(2)
+    await runtime.close()
   })
 
   it('shares one app-scoped store and disables it through current settings', async () => {
@@ -854,6 +941,152 @@ describe('memory index runtime adapter', () => {
   })
 })
 
+describe('vector recall path write-through', () => {
+  const makeEntry = (
+    localId: string,
+    content: string,
+    partition: MemoryPartition,
+    fingerprint = `${localId}-v1`,
+  ) => ({
+    localId,
+    content,
+    keywords: [],
+    category: 'other' as const,
+    partition,
+    sourcePath: 'global.md',
+    entryFingerprint: fingerprint,
+  })
+
+  it('persists embeddings during reconcile and returns vector recall hits', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-vector-write-'))
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const fingerprint = 'file-v1'
+    const entries = [
+      makeEntry('Memory_minimal', '用户偏好极简风格的设计', partition),
+      makeEntry('Memory_unrelated', '一段与查询无关的记忆', partition),
+    ]
+    const embedContent = jest.fn(async (content: string): Promise<number[]> =>
+      content.includes('极简') ? [1, 0, 0, 0] : [0, 1, 0, 0],
+    )
+    const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
+    const store = await openMemoryIndexStore({
+      app,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot: async () => ({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: fingerprint,
+        parserVersion: 'p',
+        entries,
+        valid: true,
+      }),
+      embedContent,
+    })
+    try {
+      await store.reconcilePartition({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: fingerprint,
+        parserVersion: 'p',
+        entries,
+      })
+      const runtime = await store.getRuntime()
+      const rows = runtime.query<{ memory_key: string }>(
+        'select memory_key from memory_embeddings where partition_key = ? order by memory_key',
+        [partition.partitionKey],
+      )
+      expect(rows.map(({ memory_key }) => memory_key)).toEqual([
+        'global::Memory_minimal',
+        'global::Memory_unrelated',
+      ])
+      expect(embedContent).toHaveBeenCalledWith('用户偏好极简风格的设计')
+
+      const orchestrator = new MemoryRecallOrchestrator(
+        store as never,
+        new MemoryEmbeddingStore(runtime),
+        async () => [1, 0, 0, 0],
+      )
+      const context = await orchestrator.recall(
+        { latestQuery: '极简', recentUserMessages: ['极简'] },
+        partition,
+        fingerprint,
+      )
+      expect(context.paths).toContain('vector')
+      expect(context.entries.map(({ memoryKey }) => memoryKey)).toContain(
+        'global::Memory_minimal',
+      )
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('drops vectors of removed entries and keeps embeddings of unchanged entries', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-vector-remove-'))
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const first = makeEntry('Memory_keep', 'keep me', partition, 'keep-v1')
+    const second = makeEntry('Memory_gone', 'remove me', partition, 'gone-v1')
+    const embedContent = jest.fn(async (content: string): Promise<number[]> => {
+      const buffer = new ArrayBuffer(4)
+      new Float32Array(buffer).set([content.length])
+      return Array.from(new Float32Array(buffer))
+    })
+    const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
+    let snapshot: MemorySourceSnapshot = {
+      partition,
+      sourcePath: 'global.md',
+      sourceFileFingerprint: 'file-v1',
+      parserVersion: 'p',
+      entries: [first, second],
+      valid: true,
+    }
+    const store = await openMemoryIndexStore({
+      app,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot: async () => snapshot,
+      embedContent,
+    })
+    const memoryKeys = (): Promise<string[]> =>
+      store
+        .getRuntime()
+        .then((runtime) =>
+          runtime
+            .query<{ memory_key: string }>(
+              'select memory_key from memory_embeddings where partition_key = ? order by memory_key',
+              [partition.partitionKey],
+            )
+            .map(({ memory_key }) => memory_key),
+        )
+    try {
+      await store.reconcilePartition({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: 'file-v1',
+        parserVersion: 'p',
+        entries: [first, second],
+      })
+      snapshot = {
+        ...snapshot,
+        sourceFileFingerprint: 'file-v2',
+        entries: [first],
+      }
+      await store.reconcilePartition({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: 'file-v2',
+        parserVersion: 'p',
+        entries: [first],
+      })
+      expect(await memoryKeys()).toEqual(['global::Memory_keep'])
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('recall reinforce wiring', () => {
   const waitFor = async (
     predicate: () => Promise<boolean>,
@@ -1139,6 +1372,199 @@ describe('cold memory archive', () => {
       )
       expect(coldVector).toBeUndefined()
       expect(freshVector).not.toBeUndefined()
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+/**
+ * Pre-03b377087 v2 DDL (dead hash-band/consolidated columns included).
+ * Kept verbatim so the migration test exercises the exact legacy shape the
+ * old schema creator produced.
+ */
+const LEGACY_V2_SCHEMA_SQL: readonly string[] = [
+  `create table if not exists memory_schema_meta (
+    key text primary key,
+    value text not null
+  );`,
+  `create table if not exists memory_index (
+    partition_key text not null,
+    memory_key text not null unique,
+    scope text not null check (scope in ('global', 'assistant')),
+    assistant_id text,
+    local_id text not null,
+    category text not null check (category in ('profile', 'preferences', 'other')),
+    sector text not null check (sector in ('episodic', 'semantic', 'procedural', 'emotional', 'reflective')),
+    content text not null,
+    keywords_json text not null,
+    content_hash text not null,
+    hash_band_0 integer not null,
+    hash_band_1 integer not null,
+    hash_band_2 integer not null,
+    hash_band_3 integer not null,
+    salience real not null default 0.5 check (salience >= 0 and salience <= 1),
+    last_recalled_at integer,
+    created_at integer not null,
+    updated_at integer not null,
+    source_path text not null,
+    source_file_fingerprint text not null,
+    entry_fingerprint text not null,
+    parser_version text not null,
+    consolidated integer not null default 0 check (consolidated in (0, 1)),
+    primary key (partition_key, local_id),
+    check ((scope = 'global' and assistant_id is null) or
+           (scope = 'assistant' and assistant_id is not null))
+  );`,
+  `create index if not exists idx_memory_partition_score
+    on memory_index(partition_key, category, salience, updated_at);`,
+  `create index if not exists idx_memory_partition_hash
+    on memory_index(partition_key, hash_band_0, hash_band_1, hash_band_2, hash_band_3);`,
+  `create table if not exists memory_keywords (
+    partition_key text not null,
+    local_id text not null,
+    keyword text not null,
+    primary key (partition_key, local_id, keyword),
+    foreign key (partition_key, local_id)
+      references memory_index(partition_key, local_id) on delete cascade
+  );`,
+  `create index if not exists idx_memory_keyword_lookup
+    on memory_keywords(partition_key, keyword);`,
+  `create table if not exists memory_edges (
+    partition_key text not null,
+    src_local_id text not null,
+    dst_local_id text not null,
+    weight real not null check (weight >= 0 and weight <= 1),
+    created_at integer not null,
+    updated_at integer not null,
+    primary key (partition_key, src_local_id, dst_local_id),
+    check (src_local_id <> dst_local_id),
+    foreign key (partition_key, src_local_id)
+      references memory_index(partition_key, local_id) on delete cascade,
+    foreign key (partition_key, dst_local_id)
+      references memory_index(partition_key, local_id) on delete cascade
+  );`,
+  `create table if not exists memory_reflections (
+    partition_key text not null,
+    reflection_id text not null,
+    content text not null,
+    sector text not null check (sector = 'reflective'),
+    source_keys_json text not null,
+    source_fingerprint text not null,
+    prompt_version text not null,
+    created_at integer not null,
+    updated_at integer not null,
+    primary key (partition_key, reflection_id),
+    unique (partition_key, source_fingerprint, prompt_version)
+  );`,
+  `create table if not exists memory_partition_state (
+    partition_key text primary key,
+    source_path text not null,
+    source_file_fingerprint text not null,
+    parser_version text not null,
+    dirty_reason text,
+    last_reconciled_at integer,
+    last_reflection_at integer,
+    updated_at integer not null
+  );`,
+  `create table if not exists memory_maintenance_log (
+    id integer primary key,
+    partition_key text,
+    operation text not null,
+    status text not null check (status in ('started', 'completed', 'failed')),
+    source_file_fingerprint text,
+    created_at integer not null
+  );`,
+  `create table if not exists memory_embeddings (
+    partition_key text not null,
+    memory_key text not null,
+    local_id integer not null,
+    embedding blob not null,
+    dimension integer not null,
+    updated_at integer not null,
+    primary key (partition_key, memory_key)
+  );`,
+]
+
+describe('legacy schema migration (v2 → v3 dead columns)', () => {
+  it('migrates a legacy database so reconcile inserts succeed and data survives', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-migrate-'))
+    const dbPath = path.join(root, 'YOLO', 'memory', 'index.sqlite')
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true })
+    const legacy = openSqliteRuntime({ dbPath })
+    try {
+      for (const sql of LEGACY_V2_SCHEMA_SQL) legacy.exec(sql)
+      legacy.exec(
+        "insert into memory_schema_meta (key, value) values ('schema_version', '2')",
+      )
+      legacy.exec(
+        `insert into memory_index
+         (partition_key, memory_key, scope, assistant_id, local_id, category, sector, content, keywords_json,
+          content_hash, hash_band_0, hash_band_1, hash_band_2, hash_band_3, salience, last_recalled_at,
+          created_at, updated_at, source_path, source_file_fingerprint, entry_fingerprint, parser_version, consolidated)
+         values ('global', 'global::Memory_1', 'global', null, 'Memory_1', 'other', 'episodic', 'legacy preserved', '[]',
+          'h', 1, 2, 3, 4, 0.5, null, 1, 2, 'global.md', 'fp-v1', 'e-v1', 'p', 0)`,
+      )
+    } finally {
+      legacy.close()
+    }
+
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const entry = {
+      localId: 'Memory_1',
+      content: 'legacy preserved',
+      keywords: [],
+      category: 'other' as const,
+      partition,
+      sourcePath: 'global.md',
+      entryFingerprint: 'e-v1',
+    }
+    const snapshot: MemorySourceSnapshot = {
+      partition,
+      sourcePath: 'global.md',
+      sourceFileFingerprint: 'fp-v1',
+      parserVersion: 'p',
+      entries: [entry],
+      valid: true,
+    }
+    const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
+    const store = await openMemoryIndexStore({
+      app,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot: async () => snapshot,
+    })
+    try {
+      expect(store.capability).toBe('sqlite')
+      await store.reconcilePartition({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: 'fp-v1',
+        parserVersion: 'p',
+        entries: [entry],
+      })
+      const runtime = await (store as MemoryIndexMaintenanceStore).getRuntime()
+      const row = runtime.queryOne<{ content: string }>(
+        'select content from memory_index where partition_key = ? and local_id = ?',
+        ['global', 'Memory_1'],
+      )
+      expect(row?.content).toBe('legacy preserved')
+      expect(
+        runtime.queryOne<{ value: string }>(
+          "select value from memory_schema_meta where key = 'schema_version'",
+        )?.value,
+      ).toBe('3')
+      const columns = runtime
+        .query<{ name: string }>('pragma table_info(memory_index)')
+        .map(({ name }) => name)
+      expect(columns).not.toContain('hash_band_0')
+      expect(columns).not.toContain('consolidated')
+      expect(
+        runtime.queryOne<{ count: number }>(
+          "select count(*) as count from sqlite_master where type = 'index' and name = 'idx_memory_partition_hash'",
+        )?.count,
+      ).toBe(0)
     } finally {
       if ('close' in store && typeof store.close === 'function')
         await store.close()

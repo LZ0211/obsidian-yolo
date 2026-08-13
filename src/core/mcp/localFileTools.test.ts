@@ -3144,7 +3144,6 @@ describe('delegate_subagent model selection', () => {
     it('clears the pending deadline of the blocked tool call', async () => {
       registerParentSubagentDeadline({
         toolCallId: 'tool-call',
-        runKey: 'run-1',
         conversationId: 'conv',
         onExpire: () => undefined,
       })

@@ -177,6 +177,16 @@ export class RagIndexService {
   /** Coalesces per-progress persistSnapshot calls: at most one in-flight write
    * per run, so chunk-level progress callbacks don't hammer localStorage. */
   private progressPersistInFlight = false
+  /**
+   * Serialization tail for coalesced progress writes. Terminal snapshots await
+   * it before writing, so a slow progress write can never land after the
+   * completed/failed snapshot and resurrect a stale 'running' state on the
+   * next initialize() (which would misreport the finished run as interrupted
+   * and schedule a phantom retry). Every link absorbs its write's rejection,
+   * so the tail itself never rejects: a failed progress write must not block
+   * later progress writes nor fail the terminal snapshot write.
+   */
+  private progressPersistTail: Promise<void> = Promise.resolve()
 
   constructor(deps: RagIndexServiceDeps) {
     this.app = deps.app
@@ -411,9 +421,24 @@ export class RagIndexService {
           // localStorage write is worth; coalesce to one in-flight write.
           if (!this.progressPersistInFlight) {
             this.progressPersistInFlight = true
-            void this.persistSnapshot().finally(() => {
-              this.progressPersistInFlight = false
-            })
+            // Each link absorbs failures: a rejected tail must not block the
+            // next progress write (the coalescing flag would stay stuck true
+            // and all later writes would silently never run), and a failed
+            // progress write must not poison the terminal snapshot await —
+            // persistTerminalSnapshot would throw and the catch path would
+            // overwrite an already-successful run with failed/retry_scheduled.
+            this.progressPersistTail = this.progressPersistTail
+              .catch(() => undefined)
+              .then(() => this.persistSnapshot())
+              .catch((error) => {
+                console.warn(
+                  '[YOLO] Failed to persist RAG index progress',
+                  error,
+                )
+              })
+              .finally(() => {
+                this.progressPersistInFlight = false
+              })
           }
           options.onProgress?.(progress)
         },
@@ -437,7 +462,7 @@ export class RagIndexService {
             ? result.permanentFailedPaths
             : undefined,
       }
-      await this.persistSnapshot()
+      await this.persistTerminalSnapshot()
       // The index content now matches the current scope options: the host
       // records the options snapshot and clears any rebuild-required flag.
       // Fire-and-forget so the run completion is not delayed by a settings
@@ -480,7 +505,7 @@ export class RagIndexService {
           ? Date.now() + nextRetry.delayMs
           : undefined,
       }
-      await this.persistSnapshot()
+      await this.persistTerminalSnapshot()
       if (shouldScheduleRetry && options.trigger === 'manual') {
         this.scheduleRetry(options)
       }
@@ -592,6 +617,16 @@ export class RagIndexService {
     )
     this.publishActivity()
     this.emit()
+  }
+
+  /**
+   * Terminal snapshot write (completed/failed). Serialized behind any
+   * in-flight coalesced progress write so the final localStorage value is
+   * always the terminal status (see {@link progressPersistTail}).
+   */
+  private async persistTerminalSnapshot(): Promise<void> {
+    await this.progressPersistTail
+    await this.persistSnapshot()
   }
 
   private scheduleRetry(options: RagIndexRunOptions, minDelayMs = 0): void {

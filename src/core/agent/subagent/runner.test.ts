@@ -12,7 +12,9 @@ import {
 import { SUBAGENT_DEFAULT_SYSTEM_PROMPT } from './constants'
 import type { DelegatedAssistantProfile } from './delegated-assistant-profile'
 import type { SubagentParentContext } from './parent-context'
+import { SUBAGENT_RESULT_MAX_CHARS } from './result-limit'
 import {
+  SUBAGENT_ABORT_SETTLE_GRACE_MS,
   type RunSubagentParams,
   autoRejectPendingApprovals,
   buildSubagentContinuationInput,
@@ -527,6 +529,107 @@ describe('runSubagent ephemeral dispatch', () => {
     )
   })
 
+  it('caps the stored liveTranscript at the configured result limit (runaway output)', async () => {
+    const nativeRuntimeModule = jest.requireMock<{
+      NativeAgentRuntime: jest.Mock
+    }>('../native-runtime')
+    const huge = 'x'.repeat(SUBAGENT_RESULT_MAX_CHARS * 2)
+    nativeRuntimeModule.NativeAgentRuntime.mockImplementationOnce(() => ({
+      subscribe: jest.fn((callback) => {
+        // Emit a snapshot with a megabyte assistant answer — the same shape a
+        // real runtime subscriber would receive.
+        callback({
+          messages: [
+            {
+              role: 'assistant',
+              id: 'assistant-huge',
+              content: huge,
+            },
+          ],
+          compaction: [],
+          pendingCompactionAnchorMessageId: null,
+        })
+        return () => {}
+      }),
+      run: jest.fn(() => gateRuntimeRun()),
+      getSnapshot: jest.fn().mockReturnValue({
+        messages: [{ role: 'assistant', id: 'assistant-1', content: 'done' }],
+        compaction: [],
+        pendingCompactionAnchorMessageId: null,
+      }),
+      setToolCallResponse: jest.fn(),
+    }))
+
+    const result = await runSubagent(makeParams())
+    if (!result.accepted) return
+    // The subscribe callback fires synchronously at registration, while the
+    // child run is still gated — read the capped snapshot before settlement
+    // compacts the registry-side transcript away.
+    await waitForRunGate()
+    const liveTranscript = subagentTaskRegistry.getLiveTranscript(result.taskId)
+    const content =
+      liveTranscript?.[0]?.role === 'assistant'
+        ? liveTranscript[0].content
+        : ''
+    // The registry-side transcript is bounded at the configured result cap,
+    // not the raw megabyte blob.
+    expect(content).toContain('…[truncated]…')
+    expect(content.length).toBeLessThan(huge.length)
+
+    releaseRunGate?.()
+    await flushMicrotasks()
+  })
+
+  it('force-settles an aborted child whose runtime.run never returns (no permanent running record)', async () => {
+    jest.useFakeTimers().setSystemTime(0)
+    const nativeRuntimeModule = jest.requireMock<{
+      NativeAgentRuntime: jest.Mock
+    }>('../native-runtime')
+    let started = false
+    nativeRuntimeModule.NativeAgentRuntime.mockImplementationOnce(() => ({
+      subscribe: jest.fn(() => () => {}),
+      // The provider call never settles, even after the abort signal fires.
+      run: jest.fn(() => {
+        started = true
+        return new Promise<void>(() => {})
+      }),
+      getSnapshot: jest.fn().mockReturnValue({
+        messages: [],
+        compaction: [],
+        pendingCompactionAnchorMessageId: null,
+      }),
+      setToolCallResponse: jest.fn(),
+    }))
+
+    const result = await runSubagent(makeParams())
+    if (!result.accepted) return
+    for (let attempt = 0; attempt < 50 && !started; attempt += 1) {
+      await jest.advanceTimersByTimeAsync(0)
+    }
+    expect(started).toBe(true)
+
+    // Abort the child: without the runner's settle grace the registry entry
+    // stays `running` forever (project claim stuck, timeout marker leaked).
+    subagentTaskRegistry.abort(result.taskId)
+    await jest.advanceTimersByTimeAsync(SUBAGENT_ABORT_SETTLE_GRACE_MS + 1)
+
+    // The runner force-settles: registry entry terminal + completion pushed.
+    expect(subagentTaskRegistry.get(result.taskId)?.status).toBe('aborted')
+    const pushCompleted = (
+      backgroundTaskCompletionBus as unknown as {
+        pushCompleted: jest.Mock
+      }
+    ).pushCompleted
+    expect(pushCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'subagent',
+        taskId: result.taskId,
+        record: expect.objectContaining({ status: 'aborted' }),
+      }),
+    )
+    jest.useRealTimers()
+  })
+
 })
 
 describe('approval pause parent deadline renewal (F5)', () => {
@@ -545,7 +648,6 @@ describe('approval pause parent deadline renewal (F5)', () => {
     const onExpire = jest.fn()
     registerParentSubagentDeadline({
       toolCallId: 'tc',
-      runKey: 'c',
       conversationId: 'c',
       onExpire,
     })

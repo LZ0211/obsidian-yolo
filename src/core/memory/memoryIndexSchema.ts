@@ -1,6 +1,6 @@
 import type { SqliteNativeRuntimeFacade } from '../../database/sqlite/sqliteNativeRuntime'
 
-export const MEMORY_INDEX_SCHEMA_VERSION = 2
+export const MEMORY_INDEX_SCHEMA_VERSION = 3
 
 export class MemoryIndexUnavailableError extends Error {
   readonly code = 'memory_index_unavailable'
@@ -29,10 +29,6 @@ export const buildMemoryIndexSchemaSql = (): readonly string[] => [
     content text not null,
     keywords_json text not null,
     content_hash text not null,
-    hash_band_0 integer not null,
-    hash_band_1 integer not null,
-    hash_band_2 integer not null,
-    hash_band_3 integer not null,
     salience real not null default 0.5 check (salience >= 0 and salience <= 1),
     last_recalled_at integer,
     created_at integer not null,
@@ -41,15 +37,12 @@ export const buildMemoryIndexSchemaSql = (): readonly string[] => [
     source_file_fingerprint text not null,
     entry_fingerprint text not null,
     parser_version text not null,
-    consolidated integer not null default 0 check (consolidated in (0, 1)),
     primary key (partition_key, local_id),
     check ((scope = 'global' and assistant_id is null) or
            (scope = 'assistant' and assistant_id is not null))
   );`,
   `create index if not exists idx_memory_partition_score
     on memory_index(partition_key, category, salience, updated_at);`,
-  `create index if not exists idx_memory_partition_hash
-    on memory_index(partition_key, hash_band_0, hash_band_1, hash_band_2, hash_band_3);`,
   `create table if not exists memory_keywords (
     partition_key text not null,
     local_id text not null,
@@ -101,7 +94,7 @@ export const buildMemoryIndexSchemaSql = (): readonly string[] => [
     id integer primary key,
     partition_key text,
     operation text not null,
-    status text not null check (status in ('started', 'completed', 'failed')),
+    status text not null check (status in ('completed', 'failed')),
     source_file_fingerprint text,
     created_at integer not null
   );`,
@@ -132,6 +125,38 @@ const readSchemaVersion = (
   return Number.isInteger(version) ? version : Number.NaN
 }
 
+/**
+ * v3 migration: drop the dead `hash_band_0..3` and `consolidated` columns
+ * from legacy (v1/v2) databases. The `create table if not exists` DDL never
+ * alters an existing table, so legacy rows keep those `not null` columns —
+ * and the v3 INSERT (which omits them) would violate NOT NULL and freeze
+ * every reconcile. `drop index` first: `alter table drop column` refuses a
+ * column still covered by an index.
+ */
+const dropLegacyMemoryIndexColumns = (
+  runtime: SqliteNativeRuntimeFacade,
+): void => {
+  const columns = new Set(
+    runtime
+      .query<{ name: string }>('pragma table_info(memory_index)')
+      .map(({ name }) => name),
+  )
+  if (columns.has('hash_band_0')) {
+    runtime.exec('drop index if exists idx_memory_partition_hash')
+    for (const column of [
+      'hash_band_0',
+      'hash_band_1',
+      'hash_band_2',
+      'hash_band_3',
+    ]) {
+      runtime.exec(`alter table memory_index drop column ${column}`)
+    }
+  }
+  if (columns.has('consolidated')) {
+    runtime.exec('alter table memory_index drop column consolidated')
+  }
+}
+
 export function initializeMemoryIndexSchema(
   runtime: SqliteNativeRuntimeFacade,
 ): void {
@@ -147,9 +172,13 @@ export function initializeMemoryIndexSchema(
     }
     // Older versions migrate forward: every statement is `create table if not
     // exists`, so re-running the full DDL on a v1 database only adds the new
-    // v2 tables and leaves existing data intact.
+    // v2 tables and leaves existing data intact; the explicit column drops
+    // handle the v1/v2 → v3 dead-column removal that DDL re-run cannot.
     runtime.transaction(() => {
       for (const sql of buildMemoryIndexSchemaSql()) runtime.exec(sql)
+      if (current !== null && current < MEMORY_INDEX_SCHEMA_VERSION) {
+        dropLegacyMemoryIndexColumns(runtime)
+      }
       runtime.exec(
         `insert into memory_schema_meta (key, value) values ('schema_version', ?)
          on conflict(key) do update set value = excluded.value`,

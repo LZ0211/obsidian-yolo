@@ -221,9 +221,15 @@ export function getAbsoluteYoloMemoryIndexPath(
   app: App,
   settings?: YoloSettingsLike | null,
 ): string | null {
-  const adapter = app.vault.adapter
-  if (!(adapter instanceof FileSystemAdapter)) return null
-  return normalizePath(
-    `${adapter.getBasePath()}/${getYoloBaseDir(settings)}/${YOLO_MEMORY_SUBDIR}/index.sqlite`,
+  const relativePath = normalizePath(
+    `${getYoloBaseDir(settings)}/${YOLO_MEMORY_SUBDIR}/index.sqlite`,
   )
+  const adapter = app.vault.adapter
+  if (!(adapter instanceof FileSystemAdapter)) {
+    // Mobile: no FileSystemAdapter, so hand the vault-relative path straight
+    // to the sqlite-engine runtime — the same fallback shardedSqlite's
+    // toVaultRelativePath applies (a non-absolute dbPath stays vault-relative).
+    return relativePath
+  }
+  return normalizePath(`${adapter.getBasePath()}/${relativePath}`)
 }

@@ -88,14 +88,6 @@ describe('SessionMapper', () => {
     expect(mapper.getSessionByKey('missing')).toBeUndefined()
   })
 
-  it('getSessionsByConversationId returns all sessions for a conversation', () => {
-    const a = makeMapping({ sessionKey: 'a', conversationId: 'conv-1' })
-    const b = makeMapping({ sessionKey: 'b', conversationId: 'conv-1' })
-    const c = makeMapping({ sessionKey: 'c', conversationId: 'conv-2' })
-    const { mapper } = makeMapper([a, b, c])
-    expect(mapper.getSessionsByConversationId('conv-1')).toEqual([a, b])
-  })
-
   it('upsertSession creates a new mapping and persists it', async () => {
     const { mapper, saveSettings, getCurrent } = makeMapper([])
     const mapping = makeMapping()
@@ -134,26 +126,5 @@ describe('SessionMapper', () => {
     const result = await mapper.touchActiveSession('missing')
     expect(result).toBeUndefined()
     expect(saveSettings).not.toHaveBeenCalled()
-  })
-
-  it('archiveSession sets archivedAt', async () => {
-    const { mapper, getCurrent } = makeMapper([makeMapping()])
-    await mapper.archiveSession('telegram:private:123', 555)
-    expect(getCurrent().sessionMappings[0].archivedAt).toBe(555)
-  })
-
-  it('setSessionDisabled toggles the disabled flag', async () => {
-    const { mapper, getCurrent } = makeMapper([makeMapping()])
-    await mapper.setSessionDisabled('telegram:private:123', true)
-    expect(getCurrent().sessionMappings[0].disabled).toBe(true)
-    await mapper.setSessionDisabled('telegram:private:123', false)
-    expect(getCurrent().sessionMappings[0].disabled).toBe(false)
-  })
-
-  it('removeSession removes the mapping and returns true, false if absent', async () => {
-    const { mapper, getCurrent } = makeMapper([makeMapping()])
-    expect(await mapper.removeSession('missing')).toBe(false)
-    expect(await mapper.removeSession('telegram:private:123')).toBe(true)
-    expect(getCurrent().sessionMappings).toEqual([])
   })
 })

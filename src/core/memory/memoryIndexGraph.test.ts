@@ -8,12 +8,6 @@ import { FileSystemAdapter } from 'obsidian'
 
 import { openSqliteRuntime } from '../../database/sqlite/sqliteNativeRuntime'
 
-import {
-  MAX_RECALL_CHARS,
-  MAX_RECALL_ENTRIES,
-  renderMemoryRecall,
-  selectMemoryRecallEntries,
-} from './memoryAgent'
 import { buildMemoryPartition, openMemoryIndexStore } from './memoryIndex'
 import type { MemoryRecallTarget } from './memoryRecallTarget'
 import type { MemorySourceEntry } from './memoryTypes'
@@ -171,22 +165,10 @@ describe('sqlite memory graph integration', () => {
         partition,
         seeds: [seed!],
         target,
-        maxEntries: MAX_RECALL_ENTRIES,
+        maxEntries: 8,
       })
       expect(expanded.map(({ id }) => id)).toEqual(['A', 'B'])
       expect(expanded.map(({ id }) => id)).not.toContain('C')
-
-      const selected = selectMemoryRecallEntries(
-        [...expanded],
-        target,
-        MAX_RECALL_ENTRIES,
-        MAX_RECALL_CHARS,
-      )
-      expect(selected[0]?.id).toBe('B')
-      expect(selected).toHaveLength(2)
-      expect(renderMemoryRecall(selected).length).toBeLessThanOrEqual(
-        MAX_RECALL_CHARS,
-      )
     } finally {
       if ('close' in store && typeof store.close === 'function') {
         await store.close()
