@@ -1,9 +1,17 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 
 import { useLanguage } from '../../../contexts/language-context'
+import { getSubagentSessionService } from '../../../core/agent/subagent/session-service'
 import { useLiveTaskStream } from '../../../hooks/useLiveTaskStream'
-import { useSubagentTask } from '../../../hooks/useSubagentTask'
-import type { ChatSubagentResultMessage } from '../../../types/chat'
+import { useSubagentSessionSnapshot } from '../../../hooks/useSubagentSessionSnapshot'
+import {
+  useSubagentLiveTranscript,
+  useSubagentTask,
+} from '../../../hooks/useSubagentTask'
+import type {
+  ChatMessage,
+  ChatSubagentResultMessage,
+} from '../../../types/chat'
 import {
   type ToolCallResponse,
   ToolCallResponseStatus,
@@ -15,12 +23,14 @@ import {
 } from './SubagentApprovalBlock'
 import {
   type SubagentCardArgs,
+  buildSubagentCardSessionProps,
   buildSubagentCompletionSummary,
   collectSubagentActivityText,
   getLatestActivityLine,
   normalizeActivityLines,
   parseAcceptedSubagentResponse,
   resolveSubagentEffectiveStatus,
+  runSubagentSessionAction,
 } from './subagentCardUtils'
 import {
   SubagentCardView,
@@ -30,6 +40,10 @@ import {
 type SubagentCardProps = {
   toolCallId: string
   response: ToolCallResponse
+  /**
+   * 父对话 id。转发给卡片内联审批块，让审批点击能经
+   * `AgentService.approveToolCall` 以正确的 scope 路由。
+   */
   conversationId: string
   args?: SubagentCardArgs
   subagentResult?: ChatSubagentResultMessage
@@ -53,6 +67,25 @@ function toDisplayStatus(
     default:
       return 'dispatched'
   }
+}
+
+export function collectPendingSubagentApprovals(
+  transcript: readonly ChatMessage[] | undefined,
+): SubagentPendingApproval[] {
+  const result: SubagentPendingApproval[] = []
+  for (const message of transcript ?? []) {
+    if (message.role !== 'tool') continue
+    for (const toolCall of message.toolCalls) {
+      if (toolCall.response.status !== ToolCallResponseStatus.PendingApproval) {
+        continue
+      }
+      result.push({
+        toolCallId: toolCall.request.id,
+        request: toolCall.request,
+      })
+    }
+  }
+  return result
 }
 
 export function SubagentCard({
@@ -84,6 +117,28 @@ export function SubagentCard({
   const modelName = subagentResult?.modelName || accepted.modelName
   const taskId = subagentResult?.taskId || accepted.taskId
   const liveTask = useSubagentTask(taskId)
+  // Task 6 把注册表改为 summary 形态后，liveTranscript 存于 registry 侧 map
+  // 旁路（C1 恢复）：运行中的实时消息仍按每次运行时快照推送。
+  const liveTranscript = useSubagentLiveTranscript(taskId)
+
+  // runner.ts:1054 恒等 taskId === sessionId：registry record 优先，宿主重载/
+  // registry 裁剪后 subagentResult.taskId 兜底（历史卡片仍有恢复 UI）。
+  const sessionId = liveTask?.sessionId ?? subagentResult?.taskId
+  const [sessionSnapshot, refreshSessionSnapshot] = useSubagentSessionSnapshot(
+    sessionId,
+    // status/runSequence 变化时重查 snapshot（会话服务无订阅机制）。
+    `${liveTask?.status ?? ''}:${liveTask?.runSequence ?? ''}`,
+  )
+  const sessionTaskRecord = useMemo(
+    () =>
+      liveTask ??
+      (subagentResult?.taskId ? { sessionId: subagentResult.taskId } : null),
+    [liveTask, subagentResult],
+  )
+  const sessionProps = useMemo(
+    () => buildSubagentCardSessionProps(sessionSnapshot, sessionTaskRecord, t),
+    [sessionSnapshot, sessionTaskRecord, t],
+  )
 
   const fallbackError =
     response.status === ToolCallResponseStatus.Error
@@ -106,8 +161,8 @@ export function SubagentCard({
     () => normalizeActivityLines(activityText),
     [activityText],
   )
+
   const liveAssistantSummary = useMemo(() => {
-    const liveTranscript = liveTask?.liveTranscript
     if (!liveTranscript) return undefined
     for (let index = liveTranscript.length - 1; index >= 0; index -= 1) {
       const message = liveTranscript[index]
@@ -116,7 +171,7 @@ export function SubagentCard({
       }
     }
     return undefined
-  }, [liveTask?.liveTranscript])
+  }, [liveTranscript])
 
   const activitySubtitle = subagentResult
     ? buildSubagentCompletionSummary({ subagentResult, t })
@@ -130,27 +185,12 @@ export function SubagentCard({
 
   // Surface pending tool approvals inside the card. The subagent runtime
   // pauses at PendingApproval (loop-worker emits done; runChildAgent waits
-  // on a gate), and `liveTask.liveTranscript` mirrors the runtime messages
-  // — so the card can render approval buttons next to the running thinking
-  // output. See `docs/plans/2026-06-18-subagent-tool-approval-routing.md`.
-  const pendingApprovals = useMemo<SubagentPendingApproval[]>(() => {
-    const transcript = liveTask?.liveTranscript ?? []
-    const result: SubagentPendingApproval[] = []
-    for (const message of transcript) {
-      if (message.role !== 'tool') continue
-      for (const toolCall of message.toolCalls) {
-        if (
-          toolCall.response.status === ToolCallResponseStatus.PendingApproval
-        ) {
-          result.push({
-            toolCallId: toolCall.request.id,
-            request: toolCall.request,
-          })
-        }
-      }
-    }
-    return result
-  }, [liveTask?.liveTranscript])
+  // on a gate), and `liveTranscript` mirrors the runtime messages — so the
+  // card can render approval buttons next to the running thinking output.
+  const pendingApprovals = useMemo(
+    () => collectPendingSubagentApprovals(liveTranscript),
+    [liveTranscript],
+  )
   const isAwaitingApproval = pendingApprovals.length > 0
   const subtitle = isAwaitingApproval
     ? pendingApprovals.length > 1
@@ -161,6 +201,68 @@ export function SubagentCard({
       : t('chat.subagent.approval.heading', 'Awaiting approval')
     : activitySubtitle
 
+  const handleRecover = useCallback(() => {
+    if (!sessionId || !sessionSnapshot) return
+    const service = getSubagentSessionService()
+    if (!service) return
+    // settle 后主动重查快照：恢复条/queued 按钮随新状态刷新（revision_conflict
+    // 时也重查——冲突结果带 current 快照，重拉拿到最新真相）；拒绝 warn 见
+    // runSubagentSessionAction。
+    void runSubagentSessionAction(
+      'recover',
+      service.recover({
+        sessionId,
+        expectedSessionRevision: sessionSnapshot.session.revision,
+        action: 'mark_interrupted_run_aborted',
+        requestId: `ui:recover:${crypto.randomUUID()}`,
+      }),
+      refreshSessionSnapshot,
+      sessionId,
+    )
+  }, [sessionId, sessionSnapshot, refreshSessionSnapshot])
+
+  const handleQueueResend = useCallback(
+    (messageId: string) => {
+      if (!sessionId || !sessionSnapshot) return
+      const service = getSubagentSessionService()
+      if (!service) return
+      void runSubagentSessionAction(
+        'resend',
+        service.queueRecovery({
+          sessionId,
+          messageId,
+          expectedSessionRevision: sessionSnapshot.session.revision,
+          action: 'resend',
+          requestId: `ui:resend:${crypto.randomUUID()}`,
+        }),
+        refreshSessionSnapshot,
+        sessionId,
+      )
+    },
+    [sessionId, sessionSnapshot, refreshSessionSnapshot],
+  )
+
+  const handleQueueDrop = useCallback(
+    (messageId: string) => {
+      if (!sessionId || !sessionSnapshot) return
+      const service = getSubagentSessionService()
+      if (!service) return
+      void runSubagentSessionAction(
+        'drop',
+        service.queueRecovery({
+          sessionId,
+          messageId,
+          expectedSessionRevision: sessionSnapshot.session.revision,
+          action: 'drop',
+          requestId: `ui:drop:${crypto.randomUUID()}`,
+        }),
+        refreshSessionSnapshot,
+        sessionId,
+      )
+    },
+    [sessionId, sessionSnapshot, refreshSessionSnapshot],
+  )
+
   return (
     <SubagentCardView
       title={title}
@@ -169,7 +271,7 @@ export function SubagentCard({
       status={toDisplayStatus(effectiveStatus)}
       prompt={prompt}
       taskId={taskId}
-      transcript={subagentResult?.transcript ?? liveTask?.liveTranscript}
+      transcript={subagentResult?.transcript ?? liveTranscript}
       activityLines={activityLines}
       detailStats={
         subagentResult
@@ -180,6 +282,13 @@ export function SubagentCard({
             }
           : undefined
       }
+      sessionStatus={sessionProps.sessionStatus}
+      queuedCount={sessionProps.queuedCount}
+      queuedMessages={sessionProps.queuedMessages}
+      needsResume={sessionProps.needsResume}
+      onRecover={handleRecover}
+      onQueueResend={handleQueueResend}
+      onQueueDrop={handleQueueDrop}
       onAbort={isRunning ? onAbort : undefined}
       footer={
         isAwaitingApproval ? (

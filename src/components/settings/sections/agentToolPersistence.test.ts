@@ -1,4 +1,4 @@
-import { getLocalFileToolServerName } from '../../../core/mcp/localFileTools'
+import { getLocalFileToolServerName } from '../../../core/mcp/localFileToolNames'
 import { getToolName } from '../../../core/mcp/tool-name-utils'
 
 import {

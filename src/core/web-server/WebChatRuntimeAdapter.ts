@@ -48,7 +48,7 @@ import { getChatModelClient } from '../llm/manager'
 import {
   TERMINAL_COMMAND_TOOL_NAME,
   getLocalFileToolServerName,
-} from '../mcp/localFileTools'
+} from '../mcp/localFileToolNames'
 import { McpManager } from '../mcp/mcpManager'
 import { getToolName } from '../mcp/tool-name-utils'
 import { getMemoryIndexRuntimeHandle } from '../memory/memoryIndexRuntime'

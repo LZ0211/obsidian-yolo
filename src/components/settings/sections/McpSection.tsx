@@ -14,7 +14,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useLanguage } from '../../../contexts/language-context'
 import { useSettings } from '../../../contexts/settings-context'
 import { pruneOrphanedAssistantToolPreferences } from '../../../core/agent/tool-preferences'
-import { getLocalFileToolServerName } from '../../../core/mcp/localFileTools'
+import { getLocalFileToolServerName } from '../../../core/mcp/localFileToolNames'
 import { McpManager } from '../../../core/mcp/mcpManager'
 import YoloPlugin from '../../../main'
 import {

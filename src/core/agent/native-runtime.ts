@@ -19,6 +19,7 @@ import {
 import { runWithLLMDebugTrace } from '../llm/debugCapture'
 
 import { composeAgentInjections } from './agent-injections'
+import { backgroundTaskCompletionBus } from './background-task/completion-bus'
 import {
   buildAutoContextCompactionNoticeMessage,
   buildCompactedConversationState,
@@ -43,6 +44,22 @@ import {
 import { estimateContinuationRequestContextTokens } from './requestContextEstimate'
 import { AgentRuntime } from './runtime'
 import { buildSubagentParentContext } from './subagent/parent-context'
+import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './subagent/tool-name-utils'
+import {
+  PARENT_SUBAGENT_TIMEOUT_ERROR,
+  clearParentSubagentDeadline,
+  clearParentSubagentTimeoutSettled,
+  hasParentSubagentDeadline,
+  isParentSubagentDeadlineExpired,
+  markParentSubagentTimeoutSettled,
+  recordParentSubagentTimeout,
+  registerParentSubagentDeadline,
+} from './subagent/pending-timeout-registry'
+import { subagentTaskRegistry } from './subagent/task-registry'
+import type {
+  SubagentTaskCompletionRecord,
+  SubagentTaskSummary,
+} from './subagent/types'
 import { AgentToolGateway } from './tool-gateway'
 import { shouldProceedToToolPhase } from './tool-phase'
 import {
@@ -65,6 +82,28 @@ const toShortToolName = (toolName: string): string =>
   toolName.includes('__')
     ? toolName.slice(toolName.indexOf('__') + 2)
     : (toolName.split(/[/:]/).pop() ?? toolName)
+
+const isDelegateSubagentToolName = (toolName: string): boolean =>
+  toShortToolName(toolName) === DELEGATE_SUBAGENT_TOOL_SHORT_NAME
+
+/** Locate the child task record (if any) whose parent tool call is `toolCallId`. */
+const findSubagentTaskByParentToolCall = (
+  toolCallId: string,
+): SubagentTaskSummary | undefined =>
+  subagentTaskRegistry
+    .list()
+    .find(
+      (record) =>
+        record.source.type === 'llm_tool_call' &&
+        record.source.toolCallId === toolCallId,
+    )
+
+/**
+ * Synthetic completion text injected when a parent `delegate_subagent` call
+ * expires without a heartbeat (pre `native-runtime.ts:183-185`).
+ */
+const SUBAGENT_TIMEOUT_CONTENT =
+  'The delegated subagent did not respond before its deadline, so this delegation timed out and the child run was aborted. The parent agent may retry with a different approach or take over the task directly.'
 
 /**
  * Derive the exact-duplicate-call guard signature payload from the executed
@@ -109,6 +148,14 @@ export class NativeAgentRuntime implements AgentRuntime {
   private compactionState: ChatConversationCompactionState = []
   private pendingCompactionAnchorMessageId: string | null = null
   private runAbortController: AbortController | null = null
+  /**
+   * Tool call ids this runtime registered a parent subagent deadline for during
+   * the current run. The run's `finally` tears these down (see
+   * `teardownSubagentDeadlines`) so a stale timer cannot fire into an abandoned
+   * conversation after the run ends and the module-level registry would
+   * otherwise keep the entry + settled marker alive for the plugin lifetime.
+   */
+  private registeredSubagentDeadlineToolCallIds = new Set<string>()
 
   constructor(private readonly loopConfig: AgentRuntimeLoopConfig) {}
 
@@ -471,6 +518,21 @@ export class NativeAgentRuntime implements AgentRuntime {
                 this.messages.push(initialToolMessage)
                 this.notifySubscribers()
 
+                // Register a wall-clock deadline for every `delegate_subagent`
+                // call that enters this round in `Running` (auto-approved
+                // path). The deadline is renewed by the child's observable
+                // progress (live task stream heartbeats) and, if it expires,
+                // settles the call as `error`, aborts the child, injects a
+                // synthetic timeout result, and increments the conversation's
+                // breaker. Approval-paused calls are registered by the service
+                // when the user approves them (see `AgentService.approveToolCall`).
+                await this.registerSubagentDeadlines({
+                  toolMessage: initialToolMessage,
+                  runKey: input.runKey ?? input.conversationId,
+                  conversationId: input.conversationId,
+                  toolGateway,
+                })
+
                 const completedToolMessage = await runWithLLMDebugTrace(
                   currentDebugTraceId,
                   () =>
@@ -505,6 +567,12 @@ export class NativeAgentRuntime implements AgentRuntime {
 
                 this.replaceToolMessage(guardedToolMessage)
                 this.notifySubscribers()
+
+                // Re-assert the `error` settlement on delegated calls whose
+                // deadline expired while the batch was executing, then clear
+                // deadlines whose dispatch failed without admitting a child.
+                this.reassertExpiredSubagentDeadlines(guardedToolMessage)
+                this.cleanupSettledSubagentDeadlines(guardedToolMessage)
 
                 const compactToolCallId =
                   findCompactToolCallId(guardedToolMessage)
@@ -710,6 +778,7 @@ export class NativeAgentRuntime implements AgentRuntime {
         abortSignal.removeEventListener('abort', abortListener)
       }
       worker.terminate()
+      this.teardownSubagentDeadlines(abortSignal.aborted)
       if (this.runAbortController === localAbortController) {
         this.runAbortController = null
       }
@@ -897,6 +966,251 @@ export class NativeAgentRuntime implements AgentRuntime {
           : toolCall,
       ),
     }
+  }
+
+  /**
+   * Register a wall-clock deadline for every `delegate_subagent` tool call that
+   * just entered `Running` (the auto-approved path, executed by the tool
+   * gateway). The deadline is renewed by the child's observable progress (live
+   * task stream heartbeats) and, if it expires, `handleSubagentDeadlineExpiry`
+   * settles the call as `error`, aborts the child, injects a synthetic timeout
+   * result, and increments the conversation's breaker. Approval-paused calls
+   * are handled at approval time by the service (see
+   * `AgentService.registerApprovedSubagentDeadline`).
+   */
+  private async registerSubagentDeadlines({
+    toolMessage,
+    runKey,
+    conversationId,
+    toolGateway,
+  }: {
+    toolMessage: ChatToolMessage
+    runKey: string
+    conversationId: string
+    toolGateway: AgentToolGateway
+  }): Promise<void> {
+    for (const toolCall of toolMessage.toolCalls) {
+      if (toolCall.response.status !== ToolCallResponseStatus.Running) continue
+      if (!isDelegateSubagentToolName(toolCall.request.name)) continue
+      const toolCallId = toolCall.request.id
+      if (hasParentSubagentDeadline(toolCallId)) continue
+      registerParentSubagentDeadline({
+        toolCallId,
+        runKey,
+        conversationId,
+        onExpire: ({
+          toolCallId: expiredToolCallId,
+          conversationId: expiredConversationId,
+        }) => {
+          this.handleSubagentDeadlineExpiry({
+            toolCallId: expiredToolCallId,
+            conversationId: expiredConversationId,
+            toolGateway,
+          })
+        },
+      })
+      this.registeredSubagentDeadlineToolCallIds.add(toolCallId)
+    }
+  }
+
+  private handleSubagentDeadlineExpiry({
+    toolCallId,
+    conversationId,
+    toolGateway,
+  }: {
+    toolCallId: string
+    conversationId: string
+    toolGateway: AgentToolGateway
+  }): void {
+    // 1. Abort the child run through the existing per-task abort path.
+    const childTask = findSubagentTaskByParentToolCall(toolCallId)
+    if (childTask) {
+      subagentTaskRegistry.abort(childTask.taskId)
+    }
+    // 2. Settle a still-in-flight tool executor so the parent tool phase can
+    //    return (the tool gateway otherwise blocks on the hung dispatch).
+    toolGateway.abortToolCall(toolCallId)
+    // 3. Record the timeout settlement in the survival set (independent of the
+    //    deadline entry, which the service clears synchronously when it injects
+    //    the synthetic result) so the re-assert path and the double-injection
+    //    guard both keep working.
+    markParentSubagentTimeoutSettled(toolCallId)
+    // 4. Mark the tool call `error` so `hasPendingToolCalls` returns false.
+    //    Master's `ToolCallResponseStatus` has no `timeout` variant, so the
+    //    `PARENT_SUBAGENT_TIMEOUT_ERROR` marker on the error carries the
+    //    settlement classification.
+    this.setToolCallResponse(toolCallId, {
+      status: ToolCallResponseStatus.Error,
+      error: PARENT_SUBAGENT_TIMEOUT_ERROR,
+    })
+    // 5. Inject a synthetic timeout result through the same completion bus the
+    //    subagent runner uses, mirroring the service's completion-injection
+    //    path (`buildBackgroundTaskResultMessage`).
+    const syntheticRecord = this.buildSubagentTimeoutCompletionRecord({
+      toolCallId,
+      childTask,
+      conversationId,
+    })
+    backgroundTaskCompletionBus.pushCompleted({
+      kind: 'subagent',
+      taskId: syntheticRecord.taskId,
+      conversationId: syntheticRecord.conversationId,
+      record: syntheticRecord,
+    })
+    // 6. Increment the per-conversation breaker.
+    recordParentSubagentTimeout(conversationId)
+  }
+
+  private buildSubagentTimeoutCompletionRecord({
+    toolCallId,
+    childTask,
+    conversationId,
+  }: {
+    toolCallId: string
+    childTask?: SubagentTaskSummary
+    conversationId: string
+  }): SubagentTaskCompletionRecord {
+    const now = Date.now()
+    const located = this.findToolCall(toolCallId)
+    const requestArgs = located
+      ? getToolCallArgumentsObject(located.toolCall.request.arguments)
+      : undefined
+    const title =
+      typeof requestArgs?.description === 'string'
+        ? requestArgs.description
+        : 'Subagent task'
+    const prompt =
+      typeof requestArgs?.prompt === 'string' ? requestArgs.prompt : ''
+    const taskId = childTask?.taskId ?? `sub_timeout_${toolCallId}`
+    const createdAt = childTask?.createdAt ?? now
+    return {
+      taskId,
+      conversationId,
+      source: {
+        type: 'llm_tool_call',
+        toolCallId,
+        assistantMessageId: this.findSourceAssistantMessageId(toolCallId),
+      },
+      title,
+      status: 'aborted',
+      createdAt,
+      completedAt: now,
+      prompt,
+      activityLog: '[state] subagent timed out',
+      error: PARENT_SUBAGENT_TIMEOUT_ERROR,
+      result: {
+        taskId,
+        status: 'aborted',
+        content: SUBAGENT_TIMEOUT_CONTENT,
+        activityLog: '[state] subagent timed out',
+        durationMs: now - createdAt,
+        toolUseCount: 0,
+        prompt,
+        ...(childTask?.result?.modelName
+          ? { modelName: childTask.result.modelName }
+          : {}),
+      },
+    }
+  }
+
+  private findSourceAssistantMessageId(toolCallId: string): string {
+    const toolMessageIndex = this.messages.findIndex(
+      (message) =>
+        message.role === 'tool' &&
+        message.toolCalls.some(
+          (toolCall) => toolCall.request.id === toolCallId,
+        ),
+    )
+    if (toolMessageIndex === -1) return ''
+    for (let index = toolMessageIndex - 1; index >= 0; index -= 1) {
+      if (this.messages[index].role === 'assistant') {
+        return this.messages[index].id
+      }
+    }
+    return ''
+  }
+
+  /**
+   * After the tool gateway returns, re-assert the `error` response on any
+   * delegated call whose deadline expired while the batch was executing. The
+   * gateway may have overwritten the expiry handler's `error` with the late
+   * executor result (Success/Aborted/Error), so this keeps the settled state
+   * authoritative for `hasPendingToolCalls` and the transcript.
+   */
+  private reassertExpiredSubagentDeadlines(toolMessage: ChatToolMessage): void {
+    for (const toolCall of toolMessage.toolCalls) {
+      if (!isParentSubagentDeadlineExpired(toolCall.request.id)) continue
+      this.setToolCallResponse(toolCall.request.id, {
+        status: ToolCallResponseStatus.Error,
+        error: PARENT_SUBAGENT_TIMEOUT_ERROR,
+      })
+      // No child task was admitted for this call, so no child completion can
+      // race in afterwards — the timeout-settled marker is no longer needed.
+      // If a child WAS admitted, keep the marker so the service discards the
+      // child's own (abort) completion (no double result injection).
+      if (!findSubagentTaskByParentToolCall(toolCall.request.id)) {
+        clearParentSubagentTimeoutSettled(toolCall.request.id)
+      }
+    }
+  }
+
+  /**
+   * Clear deadlines whose tool call settled to a terminal non-Success outcome
+   * (the dispatch failed, so no child is running). `Success` calls keep their
+   * deadline so a child admitted to the background can still time out if it
+   * never emits a heartbeat; the service clears it when the result lands.
+   * Expired deadlines are also kept — the `error` settlement is terminal and
+   * the service clears them when the synthetic timeout result is consumed.
+   */
+  private cleanupSettledSubagentDeadlines(toolMessage: ChatToolMessage): void {
+    for (const toolCall of toolMessage.toolCalls) {
+      if (!hasParentSubagentDeadline(toolCall.request.id)) continue
+      if (isParentSubagentDeadlineExpired(toolCall.request.id)) continue
+      const status = toolCall.response.status
+      if (
+        status === ToolCallResponseStatus.Running ||
+        status === ToolCallResponseStatus.Success
+      ) {
+        continue
+      }
+      clearParentSubagentDeadline(toolCall.request.id)
+    }
+  }
+
+  /**
+   * Run-scoped teardown of the deadlines + settled markers this runtime
+   * registered, invoked from `run()`'s `finally`. Without it the module-level
+   * registry would keep entries alive for the plugin lifetime:
+   *
+   * - An aborted parent run abandons the conversation. Every registered
+   *   deadline + settled marker is cleared so a stale `setTimeout` cannot fire
+   *   later and `handleSubagentDeadlineExpiry` injects a synthetic timeout into
+   *   the abandoned conversation and increments the breaker.
+   * - A settled run keeps a background-admitted child's deadline (its tool
+   *   call settled `Success`; the service clears it when the child's result
+   *   lands), but tears down every other call's deadline and, when no live
+   *   child task remains, its settled marker (the marker is the
+   *   double-injection guard until a child's own completion lands).
+   */
+  private teardownSubagentDeadlines(aborted: boolean): void {
+    for (const toolCallId of this.registeredSubagentDeadlineToolCallIds) {
+      if (aborted) {
+        clearParentSubagentDeadline(toolCallId)
+        clearParentSubagentTimeoutSettled(toolCallId)
+        continue
+      }
+      const located = this.findToolCall(toolCallId)
+      if (
+        located?.toolCall.response.status === ToolCallResponseStatus.Success
+      ) {
+        continue
+      }
+      clearParentSubagentDeadline(toolCallId)
+      if (!findSubagentTaskByParentToolCall(toolCallId)) {
+        clearParentSubagentTimeoutSettled(toolCallId)
+      }
+    }
+    this.registeredSubagentDeadlineToolCallIds.clear()
   }
 
   /**

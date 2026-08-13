@@ -178,6 +178,11 @@ export type TaskSource = {
   assistantMessageId: string
 }
 
+export type DelegatedRoleMetadata = {
+  assistantId: string
+  assistantName: string
+}
+
 export type ChatExternalAgentResultMessage = {
   role: 'external_agent_result'
   id: string

@@ -83,7 +83,7 @@ describe('migrateFrom80To81', () => {
     )
     expect(step?.toVersion).toBe(81)
     expect(step?.migrate).toBe(migrateFrom80To81)
-    expect(SETTINGS_SCHEMA_VERSION).toBe(81)
+    expect(SETTINGS_SCHEMA_VERSION).toBe(83)
   })
 
   it('advances the schema version without changing unrelated fields', () => {

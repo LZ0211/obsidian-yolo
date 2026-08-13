@@ -20,9 +20,11 @@ import { getEnabledAssistantToolNames } from '../../../core/agent/tool-preferenc
 import { isInjectedBridgeToolName } from '../../../core/mcp/injectionBridge'
 import {
   LOCAL_FS_EDIT_TOOL_NAMES,
+  USER_FACING_LOCAL_TOOL_SHORT_NAMES,
+} from '../../../core/mcp/localFileToolNames'
+import {
   LOCAL_FS_PATH_OPERATION_TOOL_NAMES,
   LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
-  USER_FACING_LOCAL_TOOL_SHORT_NAMES,
   getLocalFileTools,
 } from '../../../core/mcp/localFileTools'
 import { McpManager } from '../../../core/mcp/mcpManager'

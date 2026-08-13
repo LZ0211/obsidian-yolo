@@ -45,7 +45,7 @@ import { promoteProviderTransportModeToObsidian } from '../../core/llm/transport
 import {
   TERMINAL_COMMAND_TOOL_NAME,
   getLocalFileToolServerName,
-} from '../../core/mcp/localFileTools'
+} from '../../core/mcp/localFileToolNames'
 import { getToolName } from '../../core/mcp/tool-name-utils'
 import { listLiteSkillEntries } from '../../core/skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../../core/skills/skillPolicy'

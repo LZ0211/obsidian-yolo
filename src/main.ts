@@ -36,6 +36,7 @@ import type {
   AgentConversationRunSummary,
   AgentService,
 } from './core/agent/service'
+import type { SubagentAuthorityResolverDependencies } from './core/agent/subagent/authority-resolver'
 import {
   clearAllChatGPTOAuthServices,
   clearChatGPTOAuthService,
@@ -2257,6 +2258,29 @@ export default class YoloPlugin extends Plugin {
     addIcon(YOLO_ICON_ID, YOLO_ICON_SVG)
 
     await this.loadSettings()
+    // The parent subagent timeout + breaker read the CURRENT settings on every
+    // deadline registration / breaker trip, so changing `subagentTimeout` in
+    // settings takes effect without a restart (pre `main.ts:3440`).
+    const { setParentSubagentTimeoutSettingsGetter } = await import(
+      './core/agent/subagent/pending-timeout-registry'
+    )
+    setParentSubagentTimeoutSettingsGetter(() => this.settings.subagentTimeout)
+    // The subagent result cap is read on every completion injection, so changing
+    // `subagentResultMaxChars` in settings takes effect without a restart (pre
+    // `main.ts:3443`).
+    const { setSubagentResultMaxCharsSettingsGetter } = await import(
+      './core/agent/subagent/result-limit'
+    )
+    setSubagentResultMaxCharsSettingsGetter(
+      () => this.settings.subagentResultMaxChars,
+    )
+    // The parent-context fork turn count is read on every `last_turns` compose,
+    // so changing `forkContextTurns` in settings takes effect without a restart
+    // (pre `main.ts:3448`).
+    const { setForkContextTurnsSettingsGetter } = await import(
+      './core/agent/subagent/parent-context'
+    )
+    setForkContextTurnsSettingsGetter(() => this.settings.forkContextTurns)
     this.liteSkillRegistryDispose = initializeLiteSkillRegistryService({
       app: this.app,
       settings: this.settings,
@@ -2328,6 +2352,12 @@ export default class YoloPlugin extends Plugin {
     } catch (error) {
       console.error('[YOLO] User data root migration failed', error)
     }
+    // Task 9：subagent durable session 加载恢复 + 意图投递接线。挂在
+    // ensureUserDataRootDir 之后（store 的 prepareDataDir 依赖 userDataRoot）。
+    // 初始化失败（懒加载/文件系统错误）只诊断不阻断插件启动。
+    await this.initSubagentSessionRuntime().catch((error) => {
+      console.error('[YOLO] Failed to recover subagent sessions', error)
+    })
     this.warnIfInstallationIncomplete()
     this.activateModules()
     this.syncOAuthRuntimesFromSettings()
@@ -4867,6 +4897,79 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
     const manager = await (await this.getMcpCoordinator()).getMcpManager()
     this.mcpManager = manager
     return manager
+  }
+
+  /**
+   * Task 9：subagent durable session 初始化 + 崩溃恢复扫描。懒加载（与
+   * warmupAgentService 的 createAgentConversationPersistence 同模式）：
+   * - initSubagentSessionService：R3 单例（进程内一次）；isSessionActive 恒
+   *   false——onload 时内存注册表必然为空（新进程），恢复扫描必须处理所有
+   *   残留 RUNNING/NEEDS_RESUME 会话；
+   * - resolveDelegatedRole（R13）：委托角色仍存在（未删除）即可解析——模型/
+   *   工具等运行期校验留给续跑路径的 authority 解析（policy_unavailable）；
+   * - onIntentRunRequested：after_run 意图 settle 后 → runSubagentSessionContinuation
+   *   （Task 7 的续跑入口）。deps 必须传（Task 7 审查 #4 fail-fast），缺 deps
+   *   会直接抛错——续跑表现为"会话永不续跑"。
+   */
+  private async initSubagentSessionRuntime(): Promise<void> {
+    const [
+      { initSubagentSessionService, getSubagentSessionService },
+      { runSubagentSessionContinuation },
+      { resolveDelegatableAssistant },
+      { getProviderClient },
+    ] = await Promise.all([
+      import('./core/agent/subagent/session-service'),
+      import('./core/agent/subagent/runner'),
+      import('./core/agent/subagent/delegatable-assistant'),
+      import('./core/llm/manager'),
+    ])
+    const deps: SubagentAuthorityResolverDependencies = {
+      app: this.app,
+      getSettings: () => this.settings,
+      loadConversationMeta: async (conversationId) => {
+        const chat = await this.getChatManager().findById(conversationId)
+        return chat
+          ? { conversationId: chat.id, assistantId: chat.assistantId }
+          : null
+      },
+      // Task 3 Important（投递加载域重建）：父会话消息时间线用于 origin
+      // 上下文校验（origin 消息存在性/delegate 工具调用归属/branch 匹配）
+      loadParentConversation: async (conversationId) => {
+        const chat = await this.getChatManager().findById(conversationId)
+        return chat
+          ? {
+              conversationId: chat.id,
+              assistantId: chat.assistantId,
+              messages: chat.messages,
+            }
+          : null
+      },
+      createProviderClient: ({ settings, model }) =>
+        getProviderClient({ settings, providerId: model.providerId }),
+      createMcpManager: () => this.getMcpManager(),
+    }
+    initSubagentSessionService(this.app, () => this.settings, {
+      isSessionActive: () => false,
+      resolveDelegatedRole: (delegatedRoleId) => {
+        try {
+          resolveDelegatableAssistant(this.settings, delegatedRoleId)
+          return true
+        } catch {
+          return false
+        }
+      },
+      onIntentRunRequested: (sessionId) => {
+        void runSubagentSessionContinuation(sessionId, deps).catch((error) => {
+          console.error(
+            '[YOLO] Subagent session continuation failed',
+            { sessionId },
+            error,
+          )
+        })
+      },
+    })
+    const service = getSubagentSessionService()
+    await service?.recoverInterruptedSessions()
   }
 
   private getChatManager(): ChatManager {

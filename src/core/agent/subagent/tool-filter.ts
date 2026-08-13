@@ -1,4 +1,4 @@
-import { SUBAGENT_BLOCKED_TOOL_NAMES } from './constants'
+import { SUBAGENT_BLOCKED_TOOL_NAMES } from './tool-name-utils'
 
 const blockedSet = new Set(SUBAGENT_BLOCKED_TOOL_NAMES)
 
@@ -13,13 +13,17 @@ const blockedSet = new Set(SUBAGENT_BLOCKED_TOOL_NAMES)
  */
 export function filterAllowedToolsForSubagent(
   parentAllowedToolNames: string[] | undefined,
+  availableToolNames?: readonly string[],
 ): string[] {
   if (!parentAllowedToolNames) {
     return []
   }
 
+  const availableSet = availableToolNames
+    ? new Set(availableToolNames)
+    : undefined
   const filtered = parentAllowedToolNames.filter(
-    (name) => !blockedSet.has(name),
+    (name) => !blockedSet.has(name) && (availableSet?.has(name) ?? true),
   )
   return filtered.length > 0 ? filtered : []
 }

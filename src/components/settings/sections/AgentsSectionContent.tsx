@@ -69,9 +69,11 @@ import {
 import { getJsSandboxSettings } from '../../../core/mcp/jsSandboxSettings'
 import {
   LOCAL_FS_EDIT_TOOL_NAMES,
+  getLocalFileToolServerName,
+} from '../../../core/mcp/localFileToolNames'
+import {
   LOCAL_FS_PATH_OPERATION_TOOL_NAMES,
   LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
-  getLocalFileToolServerName,
 } from '../../../core/mcp/localFileTools'
 import { parseToolName } from '../../../core/mcp/tool-name-utils'
 import { getYoloSkillsDir } from '../../../core/paths/yoloPaths'

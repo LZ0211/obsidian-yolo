@@ -8,6 +8,7 @@ import {
   normalizePath,
   requestUrl,
 } from 'obsidian'
+import { v4 as uuidv4 } from 'uuid'
 
 import { upsertEditReviewSnapshot } from '../../database/json/chat/editReviewSnapshotStore'
 import { buildPdfPageImageCacheKey } from '../../database/json/chat/imageCacheStore'
@@ -77,8 +78,6 @@ import {
 import { createVaultBashFileSystem } from '../agent/bash/vaultBashFileSystem'
 import { createVaultBashSearch } from '../agent/bash/vaultBashSearch'
 import type { PromptSourceWatcher } from '../agent/promptSourceWatcher'
-import { resolveSubagentModelConfig } from '../agent/subagent/model-config'
-import type { SubagentParentContext } from '../agent/subagent/parent-context'
 import type { TodoItem } from '../agent/todos-from-messages'
 import type { AgentRunContext } from '../agent/types'
 import {
@@ -132,6 +131,10 @@ import {
 } from '../runtime-components/runtimeComponentAccess'
 import { getLiteSkillDocumentByPath } from '../skills/liteSkills'
 import {
+  AGENT_SESSION_MODE,
+  type AgentSessionMode,
+} from '../state/contracts'
+import {
   WEB_SCRAPE_TOOL_NAME,
   WEB_SEARCH_TOOL_NAME,
   runWebScrape,
@@ -155,7 +158,6 @@ import {
   JS_SANDBOX_FETCH_HARD_MAX_RESPONSE_KB,
   JS_SANDBOX_FETCH_MIN_CONCURRENT,
   JS_SANDBOX_FETCH_MIN_RESPONSE_KB,
-  JS_SANDBOX_TOOL_NAME,
   JS_SANDBOX_VAULT_LIST_MAX_ENTRIES,
   JS_SANDBOX_VAULT_READ_DEFAULT_MAX_KB,
   JS_SANDBOX_VAULT_READ_HARD_MAX_KB,
@@ -166,16 +168,21 @@ import {
   callJsSandboxTool,
   getJsSandboxTool,
 } from './jsSandboxTool'
-import { LOCAL_FILE_TOOL_SERVER } from './localFileToolNames'
+import {
+  ASK_USER_QUESTION_TOOL_NAME,
+  BASH_TOOL_NAME,
+  JS_SANDBOX_TOOL_NAME,
+  LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME,
+  LOCAL_FILE_TOOL_SERVER,
+  LOCAL_FILE_TOOL_SHORT_NAMES,
+  LOCAL_FS_SPLIT_ACTION_TOOL_NAMES,
+  LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION,
+  TERMINAL_COMMAND_TOOL_NAME,
+} from './localFileToolNames'
 import { parseToolName } from './tool-name-utils'
 import { ensureParentFolderExists, validateVaultPath } from './vaultFileOps'
 
-export { getLocalFileToolServerName } from './localFileToolNames'
-
 export { recoverLikelyEscapedBackslashSequences }
-
-export const TERMINAL_COMMAND_TOOL_NAME = 'terminal_command'
-export const BASH_TOOL_NAME = 'bash'
 const MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024
 // fs_edit 读全文做替换的绝对内存防御上限。MAX_FILE_SIZE_BYTES 是"快照阈值"
 // （超过则跳过 undo/review 快照），本常量是"绝对拒绝上限"（超过才真正拒绝编辑）。
@@ -234,52 +241,6 @@ const getContextPrunableToolCallIds = (
   return acceptedToolCallIds
 }
 
-export const LOCAL_FILE_TOOL_SHORT_NAMES = [
-  BASH_TOOL_NAME,
-  'context_prune_tool_results',
-  'context_compact',
-  'fs_read',
-  'fs_edit',
-  'fs_write',
-  'memory_add',
-  'memory_update',
-  'memory_delete',
-  'meta_search',
-  'web_search',
-  'web_scrape',
-  JS_SANDBOX_TOOL_NAME,
-  TERMINAL_COMMAND_TOOL_NAME,
-  'delegate_subagent',
-  'load_tool_schemas',
-  'todo_write',
-  'ask_user_question',
-  'send_attachment',
-] as const
-
-// Excluded from the user-facing Agent settings surface. `load_tool_schemas`
-// is a protocol tool for the on-demand disclosure mechanism, not a user
-// capability. `send_attachment` is a bot-runtime-only capability (Bot
-// Platform Phase 6.5) — it is only ever offered by `agent-runner.ts`
-// appending its FQN directly to a bot run's `allowedToolNames`, never through
-// per-assistant `toolPreferences`, so it must not be enumerable/toggleable in
-// the normal Agent settings UI.
-const NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES = new Set<string>([
-  'load_tool_schemas',
-  'send_attachment',
-])
-
-/**
- * Subset of {@link LOCAL_FILE_TOOL_SHORT_NAMES} that the user actually
- * configures via the Agent settings panel. See
- * {@link NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES} for what's excluded and why.
- * The runtime still dispatches and normalizes excluded tools through
- * `LOCAL_FILE_TOOL_SHORT_NAMES`; they just aren't part of the per-agent tool
- * preference surface.
- */
-export const USER_FACING_LOCAL_TOOL_SHORT_NAMES: readonly string[] =
-  LOCAL_FILE_TOOL_SHORT_NAMES.filter(
-    (name) => !NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES.has(name),
-  )
 type LocalFileToolName = (typeof LOCAL_FILE_TOOL_SHORT_NAMES)[number]
 type ContextPruneMode = 'selected' | 'all'
 // 'delete' | 'create_dir' | 'move' retired with fs_delete/fs_create_dir/fs_move
@@ -364,10 +325,6 @@ type FsEditReviewResult =
       status: ToolCallResponseStatus.Aborted
     }
 
-const LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION = {
-  fs_write: 'write',
-} as const
-
 // Retired path-operation tools kept for the agent editor's toolset grouping
 // (fs_file_ops); the bash tool covers path operations via vaultFileOps.
 export const LOCAL_FS_PATH_OPERATION_TOOL_NAMES = [
@@ -375,12 +332,6 @@ export const LOCAL_FS_PATH_OPERATION_TOOL_NAMES = [
   'fs_create_dir',
   'fs_move',
 ] as const
-
-export const LOCAL_FS_SPLIT_ACTION_TOOL_NAMES = Object.keys(
-  LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION,
-) as Array<keyof typeof LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION>
-
-export const LOCAL_FS_EDIT_TOOL_NAMES = ['fs_edit', 'fs_write'] as const
 
 export const LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES = [
   'memory_add',
@@ -654,8 +605,6 @@ const sliceLinesForFsReadOperation = (
     nextStartLine: hasMoreBelow ? endExclusive + 1 : null,
   }
 }
-
-export const LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME = 'load_tool_schemas'
 
 /**
  * Build the modality enum + description fragment exposed to the current chat
@@ -1170,7 +1119,7 @@ export function getLocalFileTools(options?: {
         'Returns immediately with a taskId while the child runs in the background. ' +
         'When complete, a follow-up background message starting with ' +
         '[subagent_result taskId=...] will arrive for you to summarize or continue. ' +
-        'The child inherits your current model and allowed tools (except recursive delegation and user-interaction tools). ' +
+        'The child uses the selected assistant role when delegatedRoleId is provided; otherwise it uses the generic sub-agent policy. ' +
         'The tool result is returned to you, but it does not automatically become a user-facing answer; to show the user the result, send a concise text summary of the relevant output.',
       inputSchema: {
         type: 'object',
@@ -1184,6 +1133,23 @@ export function getLocalFileTools(options?: {
             type: 'string',
             description:
               'Complete task instructions for the temporary sub-agent.',
+          },
+          delegatedRoleId: {
+            type: 'string',
+            description:
+              'Optional delegated role id from the available roles listed in the request context. When set, the sub-agent runs with that role\'s model, tools, and loop configuration.',
+          },
+          modelPreferenceId: {
+            type: 'string',
+            description:
+              'Optional model id preference for the generic sub-agent model pool (ignored when delegatedRoleId is set).',
+          },
+          forkContext: {
+            type: 'string',
+            enum: ['none', 'last_turns', 'full'],
+            description:
+              "Optional read-only parent-context fork for the sub-agent. Defaults to none (the child sees only the prompt, exactly as today). last_turns appends a read-only snapshot of the parent conversation's most recent turns to the child prompt; full appends a size-capped read-only snapshot of the whole parent history. The snapshot reflects the parent conversation as of the current parent run's start: the child cannot write to parent state.",
+            default: 'none',
           },
         },
         required: ['description', 'prompt'],
@@ -1997,8 +1963,6 @@ export function isLocalFsWriteToolName(toolName: string): boolean {
   return LOCAL_FS_WRITE_TOOL_NAMES.has(normalizeLocalToolName(toolName))
 }
 
-export const ASK_USER_QUESTION_TOOL_NAME = 'ask_user_question'
-
 export type AskUserQuestionInputType =
   | 'free_text'
   | 'single_select'
@@ -2534,7 +2498,19 @@ export async function callLocalFileTool({
   workspaceAccessPolicy?: WorkspaceAccessPolicy
   allowedSkillPaths?: readonly string[]
   runContext?: AgentRunContext
-  subagentParentContext?: SubagentParentContext
+  /**
+   * 仅消费/转发父 subagent 运行上下文的部分字段（工作区策略、request context
+   * builder、父 assistant id、forkContext）；完整形态见 SubagentParentContext。
+   * 以结构子集就地声明，避免 localFileTools → subagent/* 的静态/type 导入边
+   * （madge 对 type-only 导入计边，会与 tool-preferences 回流成环）。forkContext
+   * 由 delegate_subagent 工具参数解析后在派发处填入（Task 14）。
+   */
+  subagentParentContext?: {
+    workspaceAccessPolicy?: WorkspaceAccessPolicy
+    requestContextBuilder: unknown
+    assistantId?: string
+    forkContext?: 'none' | 'last_turns' | 'full'
+  }
   promptSourceWatcher?: PromptSourceWatcher
   /** Effective approval tier for the bash tool (see tool-gateway.ts). */
   bashApprovalMode?: AssistantToolApprovalMode
@@ -4227,33 +4203,130 @@ export async function callLocalFileTool({
           throw new Error('conversationId is required for delegate_subagent.')
         }
 
+        // 连续超时熔断 gate（pre localFileTools.ts:6264/6272 语义）：本会话的
+        // breaker 打开期间，拒绝派发一个可辨识的结果（accepted: false +
+        // blocked: true），而不是 spawn 子代理。父 runtime 为本 pending 调用
+        // 注册的 deadline 一并清理——子代理从未 spawn，计时器不能事后触发
+        // 注入虚假超时。registry 经动态 import，与 Task 8 的接线形态一致
+        // （madge 对动态 import 计边，本计划已决策接受新增环，Task 12-15
+        // 完成后统一断环）。
+        const {
+          SUBAGENT_DELEGATION_BLOCKED_REASON,
+          clearParentSubagentDeadline,
+          isParentSubagentDelegationBlocked,
+        } = await import('../agent/subagent/pending-timeout-registry')
+        if (isParentSubagentDelegationBlocked(conversationId)) {
+          if (toolCallId) clearParentSubagentDeadline(toolCallId)
+          return {
+            status: ToolCallResponseStatus.Success,
+            text: JSON.stringify({
+              accepted: false,
+              status: 'blocked',
+              blocked: true,
+              reason: SUBAGENT_DELEGATION_BLOCKED_REASON,
+            }),
+          }
+        }
+
         const description = getTextArg(args, 'description').trim()
         const taskPrompt = getTextArg(args, 'prompt').trim()
         if (!settings) {
           throw new Error('settings are required for delegate_subagent.')
         }
-        const requestedModelId =
-          getOptionalTextArg(args, 'modelId')?.trim() ?? ''
-        const subagentModelConfig = resolveSubagentModelConfig(settings)
-        if (subagentModelConfig.allowedModelIds.length === 0) {
-          throw new Error(
-            'No registered chat models are configured for delegate_subagent.',
-          )
-        }
+        const delegatedRoleId =
+          getOptionalTextArg(args, 'delegatedRoleId')?.trim() ?? ''
+        const modelPreferenceId =
+          getOptionalTextArg(args, 'modelPreferenceId')?.trim() ?? ''
+
+        // forkContext 三档校验（pre localFileTools.ts:6381-6395 语义）：none（默认，
+        // 子代理只见 prompt，与今天逐字节一致）/ last_turns（最近
+        // getForkContextTurns() 轮父消息）/ full（全文按 24_000 字符截断）。类型
+        // 就地声明，不从 subagent/types 静态/type 导入（Task 8 修复轮 2 已清零
+        // localFileTools → subagent 的导入边）。守卫用 `!== undefined`（而非
+        // truthiness）：空串/纯空白经 trim 后为 `''`，同样非法——与 backup 一致
+        // 抛错让模型纠正，而不是静默落入 full 分支注入父全文（Task 14 审查
+        // 发现 1 修复）。
+        const requestedForkContext = getOptionalTextArg(
+          args,
+          'forkContext',
+        )?.trim()
         if (
-          requestedModelId &&
-          !subagentModelConfig.allowedModelIds.includes(requestedModelId)
+          requestedForkContext !== undefined &&
+          !['none', 'last_turns', 'full'].includes(requestedForkContext)
         ) {
-          throw new Error(
-            `Model "${requestedModelId}" is not allowed for delegate_subagent.`,
-          )
+          throw new Error('forkContext must be "none", "last_turns", or "full".')
         }
-        const selectedModelId =
-          requestedModelId || subagentModelConfig.preferredModelId
-        if (!selectedModelId) {
-          throw new Error(
-            'No preferred chat model is configured for delegate_subagent.',
+        const forkContext: 'none' | 'last_turns' | 'full' =
+          (requestedForkContext as 'none' | 'last_turns' | 'full' | undefined) ??
+          'none'
+
+        // 全部 subagent 依赖走动态 import——madge 对静态与 type-only 导入都计边，
+        // localFileTools → subagent/* 会经 tool-preferences 回流成环（deps:check
+        // 棘轮基线 271，38 组新增环全部由此造成）。类型一律从动态 import 绑定
+        // 推导，不引入任何 subagent 模块的静态/type-only 导入边。
+        const { runSubagent } = await import('../agent/subagent/runner')
+        type LocalRunSubagentParams = Parameters<typeof runSubagent>[0]
+        type SubagentSessionGatewayLike = NonNullable<
+          LocalRunSubagentParams['sessionGateway']
+        >
+
+        // 委托角色路径：delegatedRoleId → Task 2 的 profile 覆盖模型/工具/loop/
+        // request context；解析失败（不存在/不可委托/模型不可用）由 resolver 抛错，
+        // undefined 返回按未知角色拒绝。
+        let delegatedProfile: LocalRunSubagentParams['delegatedProfile']
+        let selectedModelId: string
+        if (delegatedRoleId) {
+          const { resolveDelegatedAssistantProfile } = await import(
+            '../agent/subagent/delegated-assistant-profile'
           )
+          const profile = await resolveDelegatedAssistantProfile({
+            app,
+            settings,
+            assistantId: delegatedRoleId,
+            parentWorkspacePolicy: subagentParentContext.workspaceAccessPolicy,
+            // 签名用结构子集（requestContextBuilder: unknown）声明，此处按
+            // resolver 参数真实类型收窄（resolver 现将其标为 _ 前缀暂不使用）。
+            parentRequestContextBuilder:
+              subagentParentContext.requestContextBuilder as Parameters<
+                typeof resolveDelegatedAssistantProfile
+              >[0]['parentRequestContextBuilder'],
+          })
+          if (!profile) {
+            throw new Error(`Unknown delegated role "${delegatedRoleId}".`)
+          }
+          delegatedProfile = profile
+          selectedModelId = profile.modelId
+        } else {
+          // 通用路径：modelPreferenceId 是本次派发的模型偏好（等价会话层的
+          // session.modelPreferenceId 语义，authority-resolver.ts:161），优先于
+          // 既有的 modelId 参数，仍须在子代理模型池内。
+          const requestedModelId =
+            modelPreferenceId ||
+            (getOptionalTextArg(args, 'modelId')?.trim() ?? '')
+          const { resolveSubagentModelConfig } = await import(
+            '../agent/subagent/model-config'
+          )
+          const subagentModelConfig = resolveSubagentModelConfig(settings)
+          if (subagentModelConfig.allowedModelIds.length === 0) {
+            throw new Error(
+              'No registered chat models are configured for delegate_subagent.',
+            )
+          }
+          if (
+            requestedModelId &&
+            !subagentModelConfig.allowedModelIds.includes(requestedModelId)
+          ) {
+            throw new Error(
+              `Model "${requestedModelId}" is not allowed for delegate_subagent.`,
+            )
+          }
+          selectedModelId =
+            requestedModelId || subagentModelConfig.preferredModelId
+          if (!selectedModelId) {
+            throw new Error(
+              'No preferred chat model is configured for delegate_subagent.',
+            )
+          }
         }
         const { getChatModelClient } = await import('../llm/manager')
         const selectedModelClient = getChatModelClient({
@@ -4275,7 +4348,55 @@ export async function callLocalFileTool({
           }
         }
 
-        const { runSubagent } = await import('../agent/subagent/runner')
+        // 会话服务网关（Task 5 单例）：settleRun/query/deliverQueuedIntents 供
+        // runSubagent 结算与 Task 9 续跑使用；无 service（未初始化）时保持纯
+        // ephemeral 路径（与迁移前逐字节一致）。
+        const { getSubagentSessionService } = await import(
+          '../agent/subagent/session-service'
+        )
+        const sessionService = getSubagentSessionService()
+        const sessionGateway = sessionService
+          ? ({
+              settleRun: sessionService.settleRun.bind(sessionService),
+              query: sessionService.query.bind(sessionService),
+              deliverQueuedIntents:
+                sessionService.deliverQueuedIntents.bind(sessionService),
+            } satisfies SubagentSessionGatewayLike)
+          : undefined
+
+        // 审查 Critical 修复（8b）：durable 委托场景（delegatedRoleId + gateway）
+        // 先 spawn 持久会话——否则 settleRun 对未 spawn 会话静默 no-op
+        // （session-service.ts:543），recover/deliverQueuedIntents/continuation
+        // 全链路无源可作用（backup 的 mode: 'persistent' 工具入口；master 以
+        // delegatedRoleId + gateway 判定）。无 gateway 或无 delegatedRoleId →
+        // 纯 ephemeral，行为与迁移前一致。requestId 每次新 uuid，不做去重
+        // （backup 的 request_id_reused 语义交 Task 9/11 重新审视）。
+        let sessionId: string | undefined
+        let sessionMode: AgentSessionMode | undefined
+        if (sessionService && delegatedProfile) {
+          const spawned = await sessionService.spawn({
+            title: description,
+            prompt: taskPrompt,
+            mode: AGENT_SESSION_MODE.PERSISTENT,
+            delegatedRoleId,
+            ...(modelPreferenceId ? { modelPreferenceId } : {}),
+            requestId: uuidv4(),
+            parentConversationId: conversationId,
+            originAssistantMessageId: assistantMessageId,
+            originToolCallId: toolCallId ?? '',
+            // 父 run 的 assistant id 即冻结的父记忆身份（profile 的
+            // memoryAssistantIdOverride 语义，delegated-assistant-profile.ts:76-93）；
+            // 取不到时以空串回退为委托角色自身身份（resolver 内 ?? assistant.id）。
+            memoryAssistantId: subagentParentContext.assistantId ?? '',
+          })
+          if (!spawned.accepted) {
+            throw new Error(
+              `Failed to spawn a durable subagent session: ${spawned.errorCode}`,
+            )
+          }
+          sessionId = spawned.sessionId
+          sessionMode = AGENT_SESSION_MODE.PERSISTENT
+        }
         const accepted = await runSubagent({
           description,
           prompt: taskPrompt,
@@ -4285,13 +4406,33 @@ export async function callLocalFileTool({
             toolCallId: toolCallId ?? '',
             assistantMessageId,
           },
-          parent: subagentParentContext,
+          // 签名结构子集按 runner 的 parent 参数真实类型收窄（调用方总是传入
+          // 完整 SubagentParentContext，运行时无差异）。forkContext 由本工具参数
+          // 解析后并入 parent 上下文（Task 14：runner 在组合 child 初始 prompt 时
+          // 从 parent.forkContext 读取）。
+          parent: {
+            ...subagentParentContext,
+            forkContext,
+          } as LocalRunSubagentParams['parent'],
           childModel: {
             providerClient: selectedModelClient.providerClient,
             model: selectedModelClient.model,
             apiType: selectedProvider?.apiType ?? null,
           },
           signal,
+          ...(delegatedProfile ? { delegatedProfile } : {}),
+          // runSequence 1 对齐 spawn 已创建的 run 1（settleRun 按 runKey 定位）
+          ...(sessionId && sessionMode
+            ? { sessionId, runSequence: 1, mode: sessionMode }
+            : {}),
+          ...(sessionGateway
+            ? {
+                sessionGateway,
+                settleRun: sessionGateway.settleRun,
+                onSettleFailure: (err) =>
+                  console.error('[YOLO] subagent settle failure', err),
+              }
+            : {}),
         })
 
         return {

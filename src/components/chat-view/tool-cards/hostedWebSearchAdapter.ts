@@ -6,7 +6,7 @@
 // shaped into a read-only `web_search` card so a server-side search looks the
 // same as one the agent ran itself. Nothing built here is ever dispatched.
 
-import { getLocalFileToolServerName } from '../../../core/mcp/localFileTools'
+import { getLocalFileToolServerName } from '../../../core/mcp/localFileToolNames'
 import { getToolName } from '../../../core/mcp/tool-name-utils'
 import type { ChatAssistantMessage, ChatToolMessage } from '../../../types/chat'
 import type { HostedWebSearchCall } from '../../../types/llm/response'

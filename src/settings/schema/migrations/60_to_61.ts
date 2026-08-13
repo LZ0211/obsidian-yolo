@@ -2,7 +2,7 @@ import {
   BUILTIN_DEFAULT_ENABLED_TOOL_FQNS,
   getDefaultApprovalModeForTool,
 } from '../../../core/agent/tool-preferences'
-import { getLocalFileToolServerName } from '../../../core/mcp/localFileTools'
+import { getLocalFileToolServerName } from '../../../core/mcp/localFileToolNames'
 import { McpManager } from '../../../core/mcp/mcpManager'
 import type { SettingMigration } from '../setting.types'
 

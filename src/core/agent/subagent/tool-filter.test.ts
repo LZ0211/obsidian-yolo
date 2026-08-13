@@ -1,11 +1,11 @@
-import { getLocalFileToolServerName } from '../../mcp/localFileTools'
+import { getLocalFileToolServerName } from '../../mcp/localFileToolNames'
 import { getToolName } from '../../mcp/tool-name-utils'
 
-import { SUBAGENT_BLOCKED_TOOL_SHORT_NAMES } from './constants'
 import {
   filterAllowedToolsForSubagent,
   isSubagentBlockedToolName,
 } from './tool-filter'
+import { SUBAGENT_BLOCKED_TOOL_SHORT_NAMES } from './tool-name-utils'
 
 describe('subagent tool-filter', () => {
   const fsEdit = getToolName(getLocalFileToolServerName(), 'fs_edit')

@@ -6,14 +6,14 @@ import {
 } from '../../types/assistant.types'
 import type { McpTool } from '../../types/mcp.types'
 import { isInjectedBridgeToolName } from '../mcp/injectionBridge'
-import { JS_SANDBOX_TOOL_NAME } from '../mcp/jsSandboxTool'
 import {
   BASH_TOOL_NAME,
+  JS_SANDBOX_TOOL_NAME,
   LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME,
   LOCAL_FS_SPLIT_ACTION_TOOL_NAMES,
   USER_FACING_LOCAL_TOOL_SHORT_NAMES,
   getLocalFileToolServerName,
-} from '../mcp/localFileTools'
+} from '../mcp/localFileToolNames'
 import { McpManager } from '../mcp/mcpManager'
 import { parseToolName } from '../mcp/tool-name-utils'
 import { getMcpToolSchemaTokenCost } from '../mcp/toolCatalogTokenCache'

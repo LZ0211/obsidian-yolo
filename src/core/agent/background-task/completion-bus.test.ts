@@ -1,7 +1,10 @@
 import { backgroundTaskCompletionBus } from './completion-bus'
 import type { BackgroundTaskCompletedEvent } from './completion-bus'
 
-const makeEvent = (): BackgroundTaskCompletedEvent => ({
+const makeEvent = (): Extract<
+  BackgroundTaskCompletedEvent,
+  { kind: 'terminal_command' }
+> => ({
   kind: 'terminal_command',
   taskId: 'bash_test001',
   conversationId: 'conv-1',
@@ -37,6 +40,48 @@ describe('backgroundTaskCompletionBus', () => {
     unsubscribe()
     backgroundTaskCompletionBus.pushCompleted(makeEvent())
     expect(subscriber).toHaveBeenCalledTimes(1)
+  })
+
+  it('passes a subagent completion event with cumulative usage to subscribers', () => {
+    const subscriber = jest.fn()
+    const unsubscribe = backgroundTaskCompletionBus.subscribeCompleted(subscriber)
+    try {
+      const event: Extract<
+        BackgroundTaskCompletedEvent,
+        { kind: 'subagent' }
+      > = {
+        kind: 'subagent',
+        taskId: 'sub_usage001',
+        conversationId: 'conv-1',
+        usage: { inputTokens: 150, outputTokens: 30 },
+        record: {
+          taskId: 'sub_usage001',
+          conversationId: 'conv-1',
+          source: {
+            type: 'llm_tool_call',
+            assistantMessageId: 'assistant-1',
+            toolCallId: 'tool-1',
+          },
+          title: 'research',
+          status: 'completed',
+          createdAt: 1,
+          completedAt: 2,
+          prompt: 'do the research',
+          result: {
+            taskId: 'sub_usage001',
+            status: 'completed',
+            content: 'done',
+            durationMs: 1,
+            toolUseCount: 1,
+          },
+        },
+      }
+
+      backgroundTaskCompletionBus.pushCompleted(event)
+      expect(subscriber).toHaveBeenCalledWith(event)
+    } finally {
+      unsubscribe()
+    }
   })
 
   it('notifies subscribers about terminal waiting events', () => {

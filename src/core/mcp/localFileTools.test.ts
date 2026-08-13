@@ -11,6 +11,19 @@ jest.mock('../agent/subagent/runner', () => ({
   }),
 }))
 
+// R11：delegate_subagent 的 profile 解析走受控 mock（buildSettings() 不含
+// delegatable assistant，真实解析会抛错）；"unknown role" 由 undefined 返回
+// 或单独 mock 抛错两条路径覆盖。
+jest.mock('../agent/subagent/delegated-assistant-profile', () => ({
+  resolveDelegatedAssistantProfile: jest.fn(),
+}))
+
+// 8b：会话服务单例受控 mock——默认返回 undefined（无 gateway → 纯 ephemeral），
+// durable 场景按测试注入假 service 断言 spawn 接线。
+jest.mock('../agent/subagent/session-service', () => ({
+  getSubagentSessionService: jest.fn(),
+}))
+
 jest.mock('../browser/activeWebviewProbe', () => ({
   BROWSER_PAGE_ID_PATTERN: /^page_[a-z0-9]{8}_[a-z0-9]{8}$/,
   findWebviewHandleByPageId: jest.fn(),
@@ -40,7 +53,22 @@ import {
   getPendingDangerousBashApproval,
   resolveDangerousBashApproval,
 } from '../agent/bash/dangerousOperationGate'
+import {
+  type DelegatedAssistantProfile,
+  resolveDelegatedAssistantProfile,
+} from '../agent/subagent/delegated-assistant-profile'
+import {
+  hasParentSubagentDeadline,
+  recordParentSubagentSuccess,
+  recordParentSubagentTimeout,
+  registerParentSubagentDeadline,
+  resetParentSubagentBreakers,
+  resetParentSubagentDeadlines,
+  resetParentSubagentTimeoutConfig,
+  resetParentSubagentTimeoutSettingsGetter,
+} from '../agent/subagent/pending-timeout-registry'
 import { runSubagent } from '../agent/subagent/runner'
+import { getSubagentSessionService } from '../agent/subagent/session-service'
 import { findWebviewHandleByPageId } from '../browser/activeWebviewProbe'
 import { readActiveWebviewHtml } from '../browser/activeWebviewReader'
 import type {
@@ -48,6 +76,7 @@ import type {
   RuntimeComponentLease,
 } from '../runtime-components/contracts'
 import { setRuntimeComponentAcquirerForTests } from '../runtime-components/runtimeComponentAccess'
+import { AGENT_SESSION_MODE } from '../state/contracts'
 
 import { buildJsSandboxToolDescription } from './jsSandboxSettings'
 import {
@@ -56,12 +85,12 @@ import {
   JS_SANDBOX_VAULT_LIST_MAX_ENTRIES,
   formatJsSandboxToolText,
 } from './jsSandboxTool'
+import { USER_FACING_LOCAL_TOOL_SHORT_NAMES } from './localFileToolNames'
 import {
   buildJsSandboxProxyHandlers,
   callLocalFileTool,
   getLocalFileTools,
   isLocalFsWriteToolName,
-  USER_FACING_LOCAL_TOOL_SHORT_NAMES,
   parseLocalFsActionFromToolArgs,
   recoverLikelyEscapedBackslashSequences,
 } from './localFileTools'
@@ -2807,6 +2836,320 @@ describe('delegate_subagent model selection', () => {
     }
     expect(result.error).toContain('not allowed for delegate_subagent')
     expect(runSubagent).not.toHaveBeenCalled()
+  })
+
+  it('uses modelPreferenceId as the generic-path model selection', async () => {
+    const result = await callDelegateSubagent({
+      modelPreferenceId: 'openai/gpt-5',
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    expect(runSubagent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        childModel: expect.objectContaining({
+          model: expect.objectContaining({ id: 'openai/gpt-5' }),
+        }),
+      }),
+    )
+  })
+
+  it('rejects modelPreferenceId values outside the subagent model pool', async () => {
+    const result = await callDelegateSubagent({
+      modelPreferenceId: 'openai/forbidden',
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+    if (result.status === ToolCallResponseStatus.Error) {
+      expect(result.error).toContain('not allowed for delegate_subagent')
+    }
+    expect(runSubagent).not.toHaveBeenCalled()
+  })
+
+  describe('forkContext argument', () => {
+    it('defaults to none when the argument is omitted', async () => {
+      const result = await callDelegateSubagent({})
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      expect(runSubagent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          parent: expect.objectContaining({ forkContext: 'none' }),
+        }),
+      )
+    })
+
+    it('forwards each valid forkContext value into the parent context', async () => {
+      for (const forkContext of ['none', 'last_turns', 'full']) {
+        const result = await callDelegateSubagent({ forkContext })
+
+        expect(result.status).toBe(ToolCallResponseStatus.Success)
+        expect(runSubagent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            parent: expect.objectContaining({ forkContext }),
+          }),
+        )
+      }
+    })
+
+    it('rejects values outside none/last_turns/full', async () => {
+      const result = await callDelegateSubagent({ forkContext: 'everything' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      if (result.status === ToolCallResponseStatus.Error) {
+        expect(result.error).toContain(
+          'forkContext must be "none", "last_turns", or "full".',
+        )
+      }
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+
+    it('rejects an empty string like the backup (no silent full fallback)', async () => {
+      const result = await callDelegateSubagent({ forkContext: '' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      if (result.status === ToolCallResponseStatus.Error) {
+        expect(result.error).toContain(
+          'forkContext must be "none", "last_turns", or "full".',
+        )
+      }
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('delegated role resolution', () => {
+    const mockDelegatedProfile = () =>
+      ({
+        delegatedRole: { id: 'role_1', name: 'Role One' },
+        modelId: 'openai/gpt-5',
+        allowedToolNames: [],
+        allowedSkillPaths: [],
+        loopConfig: { enableTools: false },
+      }) as unknown as DelegatedAssistantProfile
+
+    const mockSessionService = (spawnImpl?: jest.Mock) => {
+      const spawn = spawnImpl ?? jest.fn().mockResolvedValue({
+        accepted: true,
+        sessionId: 'sub_durable01',
+        runKey: 'sub_durable01:1',
+        sessionRevision: 1,
+      })
+      jest.mocked(getSubagentSessionService).mockReturnValue({
+        spawn,
+        settleRun: jest.fn(),
+        query: jest.fn(),
+        deliverQueuedIntents: jest.fn(),
+      } as never)
+      return spawn
+    }
+
+    beforeEach(() => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockReset()
+      jest.mocked(getSubagentSessionService).mockReset()
+    })
+
+    it('resolves a delegated role profile and uses its model', async () => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockResolvedValue(
+        mockDelegatedProfile(),
+      )
+
+      const result = await callDelegateSubagent({ delegatedRoleId: 'role_1' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      expect(resolveDelegatedAssistantProfile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          assistantId: 'role_1',
+          settings: expect.anything(),
+        }),
+      )
+      expect(runSubagent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          delegatedProfile: expect.objectContaining({
+            delegatedRole: expect.objectContaining({ id: 'role_1' }),
+          }),
+          childModel: expect.objectContaining({
+            model: expect.objectContaining({ id: 'openai/gpt-5' }),
+          }),
+        }),
+      )
+    })
+
+    it('spawns a durable session when a session gateway is available', async () => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockResolvedValue(
+        mockDelegatedProfile(),
+      )
+      const spawnMock = mockSessionService()
+
+      const result = await callDelegateSubagent({ delegatedRoleId: 'role_1' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      expect(spawnMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Scan',
+          prompt: 'Scan notes',
+          mode: AGENT_SESSION_MODE.PERSISTENT,
+          delegatedRoleId: 'role_1',
+          parentConversationId: 'conv',
+          originAssistantMessageId: '',
+          originToolCallId: 'tool-call',
+          requestId: expect.any(String),
+        }),
+      )
+      expect(runSubagent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 'sub_durable01',
+          runSequence: 1,
+          mode: AGENT_SESSION_MODE.PERSISTENT,
+          sessionGateway: expect.anything(),
+          delegatedProfile: expect.objectContaining({
+            delegatedRole: expect.objectContaining({ id: 'role_1' }),
+          }),
+        }),
+      )
+    })
+
+    it('rejects when the durable session spawn fails', async () => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockResolvedValue(
+        mockDelegatedProfile(),
+      )
+      mockSessionService(
+        jest.fn().mockResolvedValue({
+          accepted: false,
+          errorCode: 'durability_failed',
+          retryable: false,
+        }),
+      )
+
+      const result = await callDelegateSubagent({ delegatedRoleId: 'role_1' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      if (result.status === ToolCallResponseStatus.Error) {
+        expect(result.error).toContain('Failed to spawn a durable subagent session')
+      }
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+
+    it('stays ephemeral without a session gateway', async () => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockResolvedValue(
+        mockDelegatedProfile(),
+      )
+      jest.mocked(getSubagentSessionService).mockReturnValue(null)
+
+      const result = await callDelegateSubagent({ delegatedRoleId: 'role_1' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      expect(runSubagent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          delegatedProfile: expect.objectContaining({
+            delegatedRole: expect.objectContaining({ id: 'role_1' }),
+          }),
+        }),
+      )
+      expect(runSubagent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: expect.any(String) }),
+      )
+    })
+
+    it('does not spawn a session for the generic path even with a gateway', async () => {
+      const spawnMock = mockSessionService()
+
+      const result = await callDelegateSubagent({})
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      expect(spawnMock).not.toHaveBeenCalled()
+      expect(runSubagent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: expect.any(String) }),
+      )
+    })
+
+    it('rejects an unknown delegated role when profile resolution yields no profile', async () => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockResolvedValue(
+        undefined,
+      )
+
+      const result = await callDelegateSubagent({ delegatedRoleId: 'role_404' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      if (result.status === ToolCallResponseStatus.Error) {
+        expect(result.error).toContain('Unknown delegated role "role_404"')
+      }
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+
+    it('rejects an unknown delegated role when profile resolution throws', async () => {
+      ;(resolveDelegatedAssistantProfile as jest.Mock).mockRejectedValue(
+        new Error('Assistant role "role_404" does not exist.'),
+      )
+
+      const result = await callDelegateSubagent({ delegatedRoleId: 'role_404' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('breaker gate', () => {
+    beforeEach(() => {
+      resetParentSubagentBreakers()
+      resetParentSubagentTimeoutConfig()
+      resetParentSubagentTimeoutSettingsGetter()
+    })
+
+    afterEach(() => {
+      resetParentSubagentBreakers()
+      resetParentSubagentDeadlines()
+      resetParentSubagentTimeoutConfig()
+      resetParentSubagentTimeoutSettingsGetter()
+    })
+
+    const tripBreaker = (conversationId: string): void => {
+      // Default maxConsecutiveTimeouts = 2: two consecutive timeouts trip it.
+      recordParentSubagentTimeout(conversationId)
+      recordParentSubagentTimeout(conversationId)
+    }
+
+    it('rejects delegation with a distinguishable blocked result while the breaker is open', async () => {
+      tripBreaker('conv')
+
+      const result = await callDelegateSubagent({})
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      if (result.status === ToolCallResponseStatus.Success) {
+        expect(JSON.parse(result.text)).toEqual({
+          accepted: false,
+          status: 'blocked',
+          blocked: true,
+          reason: 'delegation blocked (too many timeouts)',
+        })
+      }
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+
+    it('clears the pending deadline of the blocked tool call', async () => {
+      registerParentSubagentDeadline({
+        toolCallId: 'tool-call',
+        runKey: 'run-1',
+        conversationId: 'conv',
+        onExpire: () => undefined,
+      })
+      tripBreaker('conv')
+
+      await callDelegateSubagent({})
+
+      // No child was ever spawned: the parent runtime's pending deadline is
+      // cleared so its timer cannot later inject a bogus timeout.
+      expect(hasParentSubagentDeadline('tool-call')).toBe(false)
+    })
+
+    it('allows delegation again after the breaker resets on a success', async () => {
+      tripBreaker('conv')
+      await callDelegateSubagent({})
+      expect(runSubagent).not.toHaveBeenCalled()
+
+      recordParentSubagentSuccess('conv')
+
+      const result = await callDelegateSubagent({})
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      expect(runSubagent).toHaveBeenCalled()
+    })
   })
 })
 

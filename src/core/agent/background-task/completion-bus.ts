@@ -1,12 +1,23 @@
 import type { BashTaskRecord } from '../bash/types'
-import type { SubagentTaskRecord } from '../subagent/types'
+import type { SubagentTaskCompletionRecord } from '../subagent/types'
+
+/**
+ * Cumulative token usage for a child subagent run, summed across every turn
+ * of the child's transcript (not just the final turn). Input/output map from
+ * each assistant message's `ResponseUsage` (`prompt_tokens` / `completion_tokens`).
+ */
+export type SubagentCumulativeUsage = {
+  inputTokens: number
+  outputTokens: number
+}
 
 export type BackgroundTaskCompletedEvent =
   | {
       kind: 'subagent'
       taskId: string
       conversationId: string
-      record: SubagentTaskRecord
+      usage?: SubagentCumulativeUsage
+      record: SubagentTaskCompletionRecord
     }
   | {
       kind: 'terminal_command'

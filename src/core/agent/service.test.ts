@@ -3,9 +3,31 @@ import { ToolCallResponseStatus } from '../../types/tool-call.types'
 
 import { backgroundTaskCompletionBus } from './background-task/completion-bus'
 import { AgentService, RUNNING_PERSIST_MIN_INTERVAL_MS } from './service'
+import {
+  getParentSubagentBreakerState,
+  hasParentSubagentDeadline,
+  isParentSubagentToolCallTimedOut,
+  markParentSubagentTimeoutSettled,
+  recordParentSubagentTimeout,
+  registerParentSubagentDeadline,
+  resetParentSubagentBreakers,
+  resetParentSubagentDeadlines,
+  resetParentSubagentTimeoutConfig,
+  resetParentSubagentTimeoutSettingsGetter,
+  setParentSubagentTimeoutSettingsGetter,
+} from './subagent/pending-timeout-registry'
+import {
+  SUBAGENT_RESULT_MAX_CHARS,
+  SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH,
+  resetSubagentResultMaxCharsSettingsGetter,
+  setSubagentResultMaxCharsSettingsGetter,
+} from './subagent/result-limit'
 import { subagentRuntimeRegistry } from './subagent/runtime-registry'
 import { subagentTaskRegistry } from './subagent/task-registry'
-import type { SubagentTaskRecord } from './subagent/types'
+import type {
+  SubagentTaskCompletionRecord,
+  SubagentTaskRecord,
+} from './subagent/types'
 import { AgentRuntimeRunInput } from './types'
 
 type MockRuntimeInstance = {
@@ -1017,12 +1039,11 @@ describe('AgentService dropConversation', () => {
       expect(internals.conversationEntries.has(record.conversationId)).toBe(
         false,
       )
-      expect(
-        subagentTaskRegistry.get(record.taskId)?.liveTranscript,
-      ).toBeUndefined()
-      expect(
-        subagentTaskRegistry.get(record.taskId)?.result?.transcript,
-      ).toBeUndefined()
+      const indexed = subagentTaskRegistry.get(
+        record.taskId,
+      )
+      expect(indexed).not.toHaveProperty('liveTranscript')
+      expect(indexed?.result?.transcript).toBeUndefined()
     } finally {
       service.stopBackgroundTaskResultListener()
     }
@@ -1401,14 +1422,385 @@ describe('AgentService background subagent results', () => {
         taskId: record.taskId,
         transcript: record.liveTranscript,
       })
-      expect(
-        subagentTaskRegistry.get(record.taskId)?.liveTranscript,
-      ).toBeUndefined()
-      expect(
-        subagentTaskRegistry.get(record.taskId)?.result?.transcript,
-      ).toBeUndefined()
+      const indexed = subagentTaskRegistry.get(
+        record.taskId,
+      )
+      expect(indexed).not.toHaveProperty('liveTranscript')
+      expect(indexed?.result?.transcript).toBeUndefined()
     } finally {
       service.stopBackgroundTaskResultListener()
+    }
+  })
+
+  it('projects the completion event cumulative usage onto the parent subagent_result message', () => {
+    const service = new AgentService()
+    const record: SubagentTaskCompletionRecord = {
+      taskId: 'sub_usage_projection',
+      conversationId: 'conv-subagent-usage',
+      source: {
+        type: 'llm_tool_call',
+        toolCallId: 'subagent-call-usage',
+        assistantMessageId: 'assistant-1',
+      },
+      title: 'Research',
+      status: 'completed',
+      createdAt: 1,
+      completedAt: 2,
+      prompt: 'Research the topic',
+      result: {
+        taskId: 'sub_usage_projection',
+        status: 'completed',
+        content: 'done',
+        durationMs: 1,
+        toolUseCount: 1,
+      },
+    }
+    service.startBackgroundTaskResultListener()
+
+    try {
+      backgroundTaskCompletionBus.pushCompleted({
+        kind: 'subagent',
+        taskId: record.taskId,
+        conversationId: record.conversationId,
+        usage: { inputTokens: 150, outputTokens: 30 },
+        record,
+      })
+
+      const subagentResult = service
+        .getState(record.conversationId)
+        .messages.find((message) => message.role === 'subagent_result')
+      // Whole-transcript cumulative sum, not the per-turn usage of any single
+      // child message (pre `service.ts:281-287` projection semantics).
+      expect(subagentResult).toMatchObject({
+        role: 'subagent_result',
+        usage: {
+          prompt_tokens: 150,
+          completion_tokens: 30,
+          total_tokens: 180,
+        },
+      })
+    } finally {
+      service.stopBackgroundTaskResultListener()
+    }
+  })
+})
+
+describe('AgentService subagent result truncation', () => {
+  afterEach(() => {
+    resetSubagentResultMaxCharsSettingsGetter()
+  })
+
+  const makeLongCompletionRecord = (
+    overrides: Partial<SubagentTaskCompletionRecord> = {},
+  ): SubagentTaskCompletionRecord => ({
+    taskId: 'sub_truncated_1',
+    conversationId: 'conv-subagent-truncation',
+    source: {
+      type: 'llm_tool_call',
+      toolCallId: 'subagent-call-truncated',
+      assistantMessageId: 'assistant-1',
+    },
+    title: 'Scan',
+    status: 'completed',
+    createdAt: 1,
+    completedAt: 2,
+    prompt: 'Scan notes',
+    result: {
+      taskId: 'sub_truncated_1',
+      status: 'completed',
+      content: 'x'.repeat(10_000),
+      activityLog: '[state] completed',
+      durationMs: 1,
+      toolUseCount: 1,
+    },
+    ...overrides,
+  })
+
+  const pushAndGetContent = (
+    record: SubagentTaskCompletionRecord,
+  ): string => {
+    const service = new AgentService()
+    service.startBackgroundTaskResultListener()
+    try {
+      backgroundTaskCompletionBus.pushCompleted({
+        kind: 'subagent',
+        taskId: record.taskId,
+        conversationId: record.conversationId,
+        record,
+      })
+      const subagentResult = service
+        .getState(record.conversationId)
+        .messages.find((message) => message.role === 'subagent_result')
+      expect(subagentResult).toBeDefined()
+      return (subagentResult as { content: string }).content
+    } finally {
+      service.stopBackgroundTaskResultListener()
+    }
+  }
+
+  it('caps an oversized child result to the default cap (marker included)', () => {
+    const content = pushAndGetContent(makeLongCompletionRecord())
+    // budget = 8000 - marker length; the marker is additive on top, so the
+    // injected total is exactly the configured cap.
+    const headChars = Math.floor(
+      (SUBAGENT_RESULT_MAX_CHARS -
+        SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH) /
+        2,
+    )
+    expect(content.length).toBe(SUBAGENT_RESULT_MAX_CHARS)
+    expect(content).toContain('…[truncated]…')
+    expect(content.startsWith('x'.repeat(headChars))).toBe(true)
+    expect(content.endsWith('x'.repeat(headChars))).toBe(true)
+  })
+
+  it('reads the configured cap through the settings getter', () => {
+    setSubagentResultMaxCharsSettingsGetter(() => 120)
+    const content = pushAndGetContent(makeLongCompletionRecord())
+    expect(content.length).toBe(120)
+    expect(content).toContain('…[truncated]…')
+  })
+
+  it('leaves short results untouched', () => {
+    const content = pushAndGetContent(
+      makeLongCompletionRecord({
+        result: {
+          taskId: 'sub_truncated_1',
+          status: 'completed',
+          content: 'done',
+          activityLog: '[state] completed',
+          durationMs: 1,
+          toolUseCount: 1,
+        },
+      }),
+    )
+    expect(content).toBe('done')
+  })
+})
+
+describe('AgentService parent subagent deadline settlement', () => {
+  beforeEach(() => {
+    runtimeInstances.length = 0
+  })
+
+  afterEach(() => {
+    resetParentSubagentDeadlines()
+    resetParentSubagentBreakers()
+    resetParentSubagentTimeoutConfig()
+    resetParentSubagentTimeoutSettingsGetter()
+  })
+
+  const makeCompletedSubagentCompletionRecord = (
+    overrides: Partial<SubagentTaskCompletionRecord> = {},
+  ): SubagentTaskCompletionRecord => ({
+    taskId: 'sub_completed_1',
+    conversationId: 'conv-subagent-completed',
+    source: {
+      type: 'llm_tool_call',
+      toolCallId: 'subagent-call-completed',
+      assistantMessageId: 'assistant-1',
+    },
+    title: 'Scan',
+    status: 'completed',
+    createdAt: 1,
+    completedAt: 2,
+    prompt: 'Scan notes',
+    result: {
+      taskId: 'sub_completed_1',
+      status: 'completed',
+      content: 'done',
+      activityLog: '[state] completed',
+      durationMs: 1,
+      toolUseCount: 1,
+    },
+    ...overrides,
+  })
+
+  it('clears the deadline and resets the breaker when a subagent result lands', () => {
+    const service = new AgentService()
+    service.startBackgroundTaskResultListener()
+    registerParentSubagentDeadline({
+      toolCallId: 'subagent-call-completed',
+      runKey: 'run-1',
+      conversationId: 'conv-subagent-completed',
+      onExpire: () => undefined,
+    })
+    recordParentSubagentTimeout('conv-subagent-completed')
+
+    try {
+      backgroundTaskCompletionBus.pushCompleted({
+        kind: 'subagent',
+        taskId: 'sub_completed_1',
+        conversationId: 'conv-subagent-completed',
+        record: makeCompletedSubagentCompletionRecord(),
+      })
+
+      expect(hasParentSubagentDeadline('subagent-call-completed')).toBe(false)
+      expect(
+        getParentSubagentBreakerState('conv-subagent-completed'),
+      ).toMatchObject({ consecutiveTimeouts: 0, blocked: false })
+    } finally {
+      service.stopBackgroundTaskResultListener()
+    }
+  })
+
+  it('discards the child racing abort completion after a timeout settlement', () => {
+    const service = new AgentService()
+    service.startBackgroundTaskResultListener()
+    // The expiry handler marked the call as settled-timeout; the child's own
+    // (abort) completion then races in through the same bus.
+    markParentSubagentTimeoutSettled('subagent-call-race')
+
+    try {
+      backgroundTaskCompletionBus.pushCompleted({
+        kind: 'subagent',
+        taskId: 'sub_aborted_race',
+        conversationId: 'conv-subagent-race',
+        record: makeCompletedSubagentCompletionRecord({
+          taskId: 'sub_aborted_race',
+          conversationId: 'conv-subagent-race',
+          source: {
+            type: 'llm_tool_call',
+            toolCallId: 'subagent-call-race',
+            assistantMessageId: 'assistant-1',
+          },
+          status: 'aborted',
+          result: {
+            taskId: 'sub_aborted_race',
+            status: 'aborted',
+            content: 'aborted by parent',
+            activityLog: '[state] aborted',
+            durationMs: 1,
+            toolUseCount: 0,
+          },
+        }),
+      })
+
+      // No double result injection: the conversation has no subagent_result
+      // message for the racing completion, and the marker is consumed.
+      const resultMessages = service
+        .getState('conv-subagent-race')
+        .messages.filter((message) => message.role === 'subagent_result')
+      expect(resultMessages).toHaveLength(0)
+      expect(isParentSubagentToolCallTimedOut('subagent-call-race')).toBe(false)
+    } finally {
+      service.stopBackgroundTaskResultListener()
+    }
+  })
+
+  it('approveToolCall registers a deadline for an approval-paused delegate_subagent call', async () => {
+    const service = new AgentService()
+    const userMessage = makeUserMessage('u1', 'dispatch once')
+    const callTool = jest.fn().mockResolvedValue({
+      status: ToolCallResponseStatus.Success,
+      data: {
+        type: 'text',
+        text: 'accepted',
+      },
+    })
+
+    const runPromise = service.run({
+      conversationId: 'conv-approve-deadline',
+      loopConfig: {
+        enableTools: true,
+        maxAutoIterations: 100,
+        includeBuiltinTools: true,
+      },
+      input: {
+        conversationId: 'conv-approve-deadline',
+        messages: [userMessage],
+        model: { id: 'model-1' },
+        mcpManager: { callTool },
+      } as unknown as AgentRuntimeRunInput,
+    })
+    const firstRuntime = runtimeInstances[0]
+    firstRuntime.emitSnapshot(
+      makeAssistantToolMessages({
+        userMessage,
+        responseStatus: ToolCallResponseStatus.PendingApproval,
+        toolName: 'yolo_local__delegate_subagent',
+      }),
+    )
+
+    const approvePromise = service.approveToolCall({
+      conversationId: 'conv-approve-deadline',
+      toolCallId: 'call-1',
+    })
+
+    await waitForRuntimeCount(2)
+    // The approval-path registration kicked in before the tool executed.
+    expect(hasParentSubagentDeadline('call-1')).toBe(true)
+
+    runtimeInstances[1].resolveRun()
+    expect(await approvePromise).toBe(true)
+    firstRuntime.resolveRun()
+    await runPromise
+  })
+
+  it('clears an approval-path deadline when the parent run is aborted (no synthetic timeout or breaker trip)', async () => {
+    jest.useFakeTimers().setSystemTime(0)
+    setParentSubagentTimeoutSettingsGetter(() => ({ timeoutMs: 4_000 }))
+    const service = new AgentService()
+    const userMessage = makeUserMessage('u1', 'dispatch once')
+    const callTool = jest.fn().mockResolvedValue({
+      status: ToolCallResponseStatus.Success,
+      data: {
+        type: 'text',
+        text: 'accepted',
+      },
+    })
+
+    const runPromise = service.run({
+      conversationId: 'conv-approve-abort',
+      loopConfig: {
+        enableTools: true,
+        maxAutoIterations: 100,
+        includeBuiltinTools: true,
+      },
+      input: {
+        conversationId: 'conv-approve-abort',
+        messages: [userMessage],
+        model: { id: 'model-1' },
+        mcpManager: { callTool },
+      } as unknown as AgentRuntimeRunInput,
+    })
+    const firstRuntime = runtimeInstances[0]
+    firstRuntime.emitSnapshot(
+      makeAssistantToolMessages({
+        userMessage,
+        responseStatus: ToolCallResponseStatus.PendingApproval,
+        toolName: 'yolo_local__delegate_subagent',
+      }),
+    )
+
+    const approvePromise = service.approveToolCall({
+      conversationId: 'conv-approve-abort',
+      toolCallId: 'call-1',
+    })
+    try {
+      // The approve flow is microtask-driven (no timers), so flush microtasks
+      // instead of `waitForRuntimeCount` (whose `setTimeout(0)` is faked away).
+      for (let i = 0; i < 50; i += 1) {
+        await Promise.resolve()
+      }
+      expect(runtimeInstances).toHaveLength(2)
+      expect(hasParentSubagentDeadline('call-1')).toBe(true)
+
+      // The user stops the parent session while the approved child is still
+      // in flight. The approval-path deadline must be torn down like the
+      // auto-approved path's `teardownSubagentDeadlines` does on abort.
+      service.abortConversation('conv-approve-abort')
+      expect(hasParentSubagentDeadline('call-1')).toBe(false)
+
+      // Advance past the deadline: nothing fires into the abandoned
+      // conversation — no synthetic timeout record, no breaker increment.
+      jest.advanceTimersByTime(4_001)
+      expect(getParentSubagentBreakerState('conv-approve-abort')).toBeUndefined()
+    } finally {
+      runtimeInstances[1]?.resolveRun()
+      firstRuntime.resolveRun()
+      await runPromise
+      await approvePromise
+      jest.useRealTimers()
     }
   })
 })

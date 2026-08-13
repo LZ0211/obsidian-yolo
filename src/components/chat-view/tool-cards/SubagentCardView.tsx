@@ -6,6 +6,7 @@ import { useRef, useState } from 'react'
 import { useLanguage } from '../../../contexts/language-context'
 import type { ChatMessage } from '../../../types/chat'
 
+import type { SubagentQueuedMessage } from './subagentCardUtils'
 import { SubagentDetailModal } from './SubagentDetailModal'
 
 export type SubagentDisplayStatus =
@@ -35,6 +36,17 @@ type SubagentCardViewProps = {
   footer?: ReactNode
   onAbort?: () => void
   onDetailOpenChange?: (isOpen: boolean) => void
+  /** 会话状态 i18n 标签（仅 session 场景）。 */
+  sessionStatus?: string
+  /** 排队中的意图数（pending + recovery_required）。 */
+  queuedCount?: number
+  /** 排队意图明细，转发给详情弹窗的 queued 消息区。 */
+  queuedMessages?: SubagentQueuedMessage[]
+  /** 会话需要手动恢复（needs_resume）——详情弹窗显示"恢复"按钮。 */
+  needsResume?: boolean
+  onRecover?: () => void
+  onQueueResend?: (messageId: string) => void
+  onQueueDrop?: (messageId: string) => void
 }
 
 const DOTM_SQUARE_4_OUTER_ORDER = [
@@ -99,6 +111,13 @@ export function SubagentCardView({
   footer,
   onAbort,
   onDetailOpenChange,
+  sessionStatus,
+  queuedCount,
+  queuedMessages,
+  needsResume,
+  onRecover,
+  onQueueResend,
+  onQueueDrop,
 }: SubagentCardViewProps) {
   const { t } = useLanguage()
   const [isModalOpen, setIsModalOpen] = useState(false)
@@ -149,6 +168,23 @@ export function SubagentCardView({
                 )}
               </span>
               <span className="yolo-subagent-card__summary">{subtitle}</span>
+              {(sessionStatus || queuedCount !== undefined) && (
+                <span className="yolo-subagent-card__session">
+                  {sessionStatus && (
+                    <span className="yolo-subagent-card__session-status">
+                      {sessionStatus}
+                    </span>
+                  )}
+                  {queuedCount !== undefined && queuedCount > 0 && (
+                    <span className="yolo-subagent-card__session-queued">
+                      {t('chat.subagent.queuedCount', '{count} queued').replace(
+                        '{count}',
+                        String(queuedCount),
+                      )}
+                    </span>
+                  )}
+                </span>
+              )}
             </span>
           </button>
           {status === 'running' && onAbort && (
@@ -180,6 +216,11 @@ export function SubagentCardView({
           activityLines={activityLines}
           detailStats={detailStats}
           isTranscriptLoading={isTranscriptLoading}
+          queuedMessages={queuedMessages}
+          needsResume={needsResume}
+          onRecover={onRecover}
+          onQueueResend={onQueueResend}
+          onQueueDrop={onQueueDrop}
           onClose={() => setModalOpen(false)}
         />
       )}

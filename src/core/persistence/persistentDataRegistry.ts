@@ -82,7 +82,18 @@ export const HOST_SETTINGS_CLASSIFICATIONS = [
   hostSetting('chatModelId', '默认对话模型'),
   hostSetting('chatTitleModelId', '标题生成模型'),
   hostSetting('embeddingModelId', '默认嵌入模型'),
+  hostSetting('ttsModels', '文字转语音模型'),
+  hostSetting('sttModels', '语音转文字模型'),
+  hostSetting('imageModels', '图片生成模型'),
+  hostSetting('ttsModelId', '默认文字转语音模型'),
+  hostSetting('sttModelId', '默认语音转文字模型'),
+  hostSetting('imageModelId', '默认图片生成模型'),
   hostSetting('systemPrompt', '系统提示词'),
+  excludedHostSetting(
+    'webRuntime',
+    'config',
+    'device-local listener configuration and access token',
+  ),
   excludedHostSetting(
     'timeContextEnabled',
     'config',
@@ -130,6 +141,14 @@ export const HOST_SETTINGS_CLASSIFICATIONS = [
   hostSetting('assistants', 'Agent 配置'),
   hostSetting('currentAssistantId', '当前 Agent'),
   hostSetting('quickAskAssistantId', 'Quick Ask Agent'),
+  excludedHostSetting(
+    'currentWorkspaceAgentId',
+    'runtime-state',
+    'selection for a device-local workspace binding',
+  ),
+  hostSetting('forkContextTurns', '子代理上下文轮数'),
+  hostSetting('subagentResultMaxChars', '子代理结果上限'),
+  hostSetting('subagentTimeout', '子代理超时设置'),
 ] as const satisfies readonly HostSettingsClassification[]
 
 export const MODULE_CONFIG_TRANSFER_KEY = 'moduleConfigs'

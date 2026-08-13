@@ -1,4 +1,4 @@
-import { getLocalFileToolServerName } from '../../../core/mcp/localFileTools'
+import { getLocalFileToolServerName } from '../../../core/mcp/localFileToolNames'
 import { McpManager } from '../../../core/mcp/mcpManager'
 import type { SettingMigration } from '../setting.types'
 
