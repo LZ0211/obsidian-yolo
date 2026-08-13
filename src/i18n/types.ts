@@ -323,6 +323,18 @@ export type TranslationKeys = {
         feishu?: string
         qq?: string
       }
+      testConnection?: string
+      connectionTestResult?: string
+      connectionFailed?: string
+      botServiceNotRunning?: string
+      notifySessionExpired?: string
+      notifySendFailed?: string
+      health?: {
+        running?: string
+        degraded?: string
+        failed?: string
+        stopped?: string
+      }
     }
 
     supportYolo: {

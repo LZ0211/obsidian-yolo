@@ -1,8 +1,9 @@
-import { App } from 'obsidian'
-import React from 'react'
+import { App, Notice } from 'obsidian'
+import React, { useEffect, useState } from 'react'
 
 import { useLanguage } from '../../../contexts/language-context'
 import { useSettings } from '../../../contexts/settings-context'
+import type { BotPlatformHealth } from '../../../core/bot/bot-service'
 import YoloPlugin from '../../../main'
 import {
   BotPlatformConfig,
@@ -71,10 +72,83 @@ const describePlatform = (platform: BotPlatformConfig): string => {
   }
 }
 
+/** Poll cadence for the runtime health dots while the Bots tab is open. */
+const HEALTH_POLL_INTERVAL_MS = 5000
+
+const HEALTH_STATUS_LABEL_KEY: Record<
+  BotPlatformHealth['status'],
+  string
+> = {
+  running: 'settings.bots.health.running',
+  degraded: 'settings.bots.health.degraded',
+  failed: 'settings.bots.health.failed',
+  stopped: 'settings.bots.health.stopped',
+}
+
 export function BotsTab({ app, plugin }: BotsTabProps) {
   const { t } = useLanguage()
   const { settings, setSettings } = useSettings()
   const bots = settings.bots
+
+  // Runtime health per platform id, polled while the tab is open — the
+  // configured `platform.enabled` flag alone would lie about whether the
+  // adapter actually came up (start failure, session expiry, degraded polls).
+  const [healthByPlatform, setHealthByPlatform] = useState<
+    Record<string, BotPlatformHealth>
+  >({})
+  useEffect(() => {
+    const refresh = () => {
+      const botService = plugin.getBotService()
+      if (!botService) return
+      setHealthByPlatform((previous) => {
+        const next: Record<string, BotPlatformHealth> = {}
+        for (const platform of settings.bots.platforms) {
+          next[platform.id] = botService.getHealth(platform.id)
+        }
+        return next
+      })
+    }
+    refresh()
+    const timer = window.setInterval(refresh, HEALTH_POLL_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [plugin, settings.bots.platforms])
+
+  const healthStatusLabel = (status: BotPlatformHealth['status']): string =>
+    t(HEALTH_STATUS_LABEL_KEY[status], {
+      running: 'Running',
+      degraded: 'Degraded',
+      failed: 'Failed',
+      stopped: 'Stopped',
+    }[status])
+
+  const testConnection = (platform: BotPlatformConfig) => {
+    const botService = plugin.getBotService()
+    if (!botService) {
+      new Notice(
+        t(
+          'settings.bots.botServiceNotRunning',
+          'Bot Platform is not running. Enable it first.',
+        ),
+      )
+      return
+    }
+    const health = botService.getHealth(platform.id)
+    if (health.startError) {
+      new Notice(
+        t('settings.bots.connectionFailed', 'Connection failed: {error}').replace(
+          '{error}',
+          health.startError,
+        ),
+      )
+      return
+    }
+    new Notice(
+      t('settings.bots.connectionTestResult', 'Connection: {status}').replace(
+        '{status}',
+        healthStatusLabel(health.status),
+      ),
+    )
+  }
 
   const updateBots = (patch: Partial<BotsSettings>) => {
     void setSettings({ ...settings, bots: { ...bots, ...patch } })
@@ -88,6 +162,24 @@ export function BotsTab({ app, plugin }: BotsTabProps) {
           : platform,
       ),
     })
+  }
+
+  const platformDotColor = (platform: BotPlatformConfig): string => {
+    if (!platform.enabled) return 'var(--text-muted)'
+    const health = healthByPlatform[platform.id]
+    if (!health || !health.started) {
+      return health?.startError ? 'var(--text-error)' : 'var(--text-muted)'
+    }
+    switch (health.status) {
+      case 'running':
+        return 'var(--text-success)'
+      case 'degraded':
+        return 'var(--text-warning)'
+      case 'failed':
+        return 'var(--text-error)'
+      case 'stopped':
+        return 'var(--text-muted)'
+    }
   }
 
   const deletePlatform = (platform: BotPlatformConfig) => {
@@ -227,6 +319,25 @@ export function BotsTab({ app, plugin }: BotsTabProps) {
             )}
             {bots.platforms.map((platform) => {
               const badge = PLATFORM_BADGE_STYLE[platform.platformType]
+              const health = healthByPlatform[platform.id]
+              // A start failure or a degraded/failed runtime state is a real
+              // problem the user must see — not just a grey dot.
+              const healthIssue = health?.startError
+                ? {
+                    kind: 'start' as const,
+                    message: t(
+                      'settings.bots.connectionFailed',
+                      'Connection failed: {error}',
+                    ).replace('{error}', health.startError),
+                  }
+                : health?.started &&
+                    (health.status === 'degraded' ||
+                      health.status === 'failed')
+                  ? {
+                      kind: 'status' as const,
+                      message: healthStatusLabel(health.status),
+                    }
+                  : null
               return (
                 <div
                   className="setting-item yolo-settings-card"
@@ -243,9 +354,7 @@ export function BotsTab({ app, plugin }: BotsTabProps) {
                           width: 7,
                           height: 7,
                           borderRadius: '50%',
-                          background: platform.enabled
-                            ? 'var(--text-success)'
-                            : 'var(--text-muted)',
+                          background: platformDotColor(platform),
                         }}
                       />
                       {platform.name || badge.label}
@@ -270,8 +379,23 @@ export function BotsTab({ app, plugin }: BotsTabProps) {
                       </span>
                       {describePlatform(platform)}
                     </div>
+                    {healthIssue && (
+                      <div
+                        className="setting-item-description"
+                        style={{ color: 'var(--text-error)' }}
+                      >
+                        {healthIssue.message}
+                      </div>
+                    )}
                   </div>
                   <div className="setting-item-control yolo-item-control">
+                    <ObsidianButton
+                      text={t(
+                        'settings.bots.testConnection',
+                        'Test Connection',
+                      )}
+                      onClick={() => testConnection(platform)}
+                    />
                     <ObsidianButton
                       text={t('common.edit', 'Edit')}
                       onClick={() =>

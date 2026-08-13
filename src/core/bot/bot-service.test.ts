@@ -79,6 +79,7 @@ function makeBotsSettings(overrides: Partial<BotsSettings> = {}): BotsSettings {
 function makeFakeAdapter(): PlatformAdapter & {
   start: jest.Mock
   stop: jest.Mock
+  health: jest.Mock
   sendMessage: jest.Mock
   downloadFile: jest.Mock
   onMessage: jest.Mock
@@ -773,6 +774,93 @@ describe('BotService adapter diagnostics', () => {
     expect(h.notifyUser).toHaveBeenCalledWith(
       expect.stringContaining('WeChat bot login expired'),
     )
+  })
+
+  it('notifies the user on non-retryable send failures (credential expiry)', async () => {
+    const h = makeHarness({ platforms: [makeWeixinConfig()] })
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+    const onError = adapter.onError.mock.calls[0][0] as Parameters<
+      PlatformAdapter['onError']
+    >[0]
+
+    onError(
+      new Error('WeChat sendmessage failed: ret=0 errcode=-14 session expired'),
+      adapter,
+      { operation: 'send', sessionKey: 'k', retryable: false },
+    )
+
+    expect(h.notifyUser).toHaveBeenCalledWith(
+      expect.stringContaining('Bot reply failed to send'),
+    )
+  })
+
+  it('does not notify on retryable send failures (transient network blips)', async () => {
+    const h = makeHarness({ platforms: [makeWeixinConfig()] })
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+    const onError = adapter.onError.mock.calls[0][0] as Parameters<
+      PlatformAdapter['onError']
+    >[0]
+
+    onError(
+      new Error('WeChat sendmessage failed: ret=1 network'),
+      adapter,
+      { operation: 'send', sessionKey: 'k', retryable: true },
+    )
+
+    expect(h.notifyUser).not.toHaveBeenCalled()
+  })
+})
+
+describe('BotService runtime health', () => {
+  it('reports the live adapter health for a started platform', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+    adapter.health.mockReturnValue('degraded')
+    expect(h.service.getHealth('bot-1')).toEqual({
+      status: 'degraded',
+      started: true,
+    })
+  })
+
+  it('reports stopped + the last start error for a platform whose start failed', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    // The config diff below triggers a restart, which builds a fresh adapter
+    // via createAdapter — make every adapter it produces fail to start.
+    const originalCreateAdapter =
+      h.createAdapter.getMockImplementation() as (config: BotPlatformConfig) => ReturnType<typeof makeFakeAdapter>
+    h.createAdapter.mockImplementation((config) => {
+      const adapter = originalCreateAdapter(config)
+      adapter.start.mockRejectedValue(new Error('getMe failed: 401'))
+      return adapter
+    })
+
+    h.triggerSettingsChange({
+      bots: makeBotsSettings({
+        platforms: [makeTelegramConfig({ id: 'bot-1', botToken: 'new-token' })],
+      }),
+    } as unknown as YoloSettings)
+    // Flush the whole settings-change → stop → start chain (more than two
+    // microtask hops, so drain with a macrotask).
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(h.service.getHealth('bot-1')).toEqual({
+      status: 'stopped',
+      started: false,
+      startError: 'getMe failed: 401',
+    })
+  })
+
+  it('reports stopped without error for a disabled platform', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    expect(h.service.getHealth('missing-platform')).toEqual({
+      status: 'stopped',
+      started: false,
+    })
   })
 })
 

@@ -313,6 +313,20 @@ export const zh: TranslationKeys = {
         feishu: '飞书',
         qq: 'QQ',
       },
+      testConnection: '测试连接',
+      connectionTestResult: '连接状态：{status}',
+      connectionFailed: '连接失败：{error}',
+      botServiceNotRunning: 'Bot 平台未运行，请先启用。',
+      notifySessionExpired:
+        '微信机器人登录已过期。请打开 Bot 设置，重新扫码并点击保存。',
+      notifySendFailed:
+        'Bot 回复发送失败（{platform}）。请检查机器人连接后重试。',
+      health: {
+        running: '运行中',
+        degraded: '异常',
+        failed: '失败',
+        stopped: '已停止',
+      },
     },
 
     supportYolo: {

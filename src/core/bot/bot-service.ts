@@ -121,6 +121,15 @@ const PLATFORM_LABEL_I18N_KEY: Record<string, string> = {
   qq_official: 'settings.bots.platformName.qq',
 }
 
+/** Runtime health of one platform adapter, consumed by the Bots settings UI. */
+export type BotPlatformHealth = {
+  status: 'running' | 'stopped' | 'degraded' | 'failed'
+  /** Adapter is currently started (enabled and the last start succeeded). */
+  started: boolean
+  /** Message of the last failed start attempt, when the last start failed. */
+  startError?: string
+}
+
 const HELP_TEXT = [
   'Available commands:',
   '/help - show this message',
@@ -153,6 +162,10 @@ export class BotService {
   private readonly turnQueues = new Map<string, Promise<void>>()
   private readonly activeTurnAbortControllers = new Set<AbortController>()
   private readonly adapterUnsubscribers = new Map<string, Array<() => void>>()
+  /** Last adapter start-failure message per platform id — surfaced through
+   * `getHealth` so the Bots settings UI can show why a platform never came
+   * up instead of a silent "stopped" dot. */
+  private readonly startErrors = new Map<string, string>()
   private settingsChangeQueue: Promise<void> = Promise.resolve()
   private lastBotsSettings: BotsSettings | null = null
   private cleanupPromise: Promise<void> | null = null
@@ -182,6 +195,10 @@ export class BotService {
 
   private t(key: string, fallback: string): string {
     return this.deps.translate?.(key, fallback) ?? fallback
+  }
+
+  private notifyUser(message: string): void {
+    this.deps.notifyUser?.(message)
   }
 
   /** Builds the creation-time conversation title for an inbound event. */
@@ -318,6 +335,24 @@ export class BotService {
 
   getAdapter(id: string): PlatformAdapter | undefined {
     return this.adapters.get(id)
+  }
+
+  /**
+   * Runtime health of one platform adapter, consumed by the Bots settings UI
+   * (status dot, error row, "test connection"). A configured-but-never-started
+   * platform (including a failed start attempt) reports `stopped` with the
+   * last start-failure message attached.
+   */
+  getHealth(platformId: string): BotPlatformHealth {
+    const adapter = this.getAdapter(platformId)
+    if (!adapter) {
+      return {
+        status: 'stopped',
+        started: false,
+        startError: this.startErrors.get(platformId),
+      }
+    }
+    return { status: adapter.health(), started: true }
   }
 
   getSessionMapper(): SessionMapper {
@@ -906,13 +941,33 @@ export class BotService {
         error,
         context,
       )
+      if (!context) return
       if (
         config.platformType === 'weixin_oc' &&
-        context?.operation === 'receive' &&
+        context.operation === 'receive' &&
         error.message.includes('session expired')
       ) {
-        this.deps.notifyUser?.(
-          'WeChat bot login expired. Open Bot settings, scan the QR code again, and click Save.',
+        // Receive-side expiry detection (the long-poll loop stopping) — the
+        // user must re-scan the QR code.
+        this.notifyUser(
+          this.t(
+            'settings.bots.notifySessionExpired',
+            'WeChat bot login expired. Open Bot settings, scan the QR code again, and click Save.',
+          ),
+        )
+      } else if (
+        context.operation === 'send' &&
+        context.retryable === false
+      ) {
+        // Send-side credential failure (e.g. WeChat session expired between
+        // polls): without this the user sees neither a platform reply nor a
+        // local notice — the turn just vanishes into the console.
+        const platformLabel = config.name || config.platformType
+        this.notifyUser(
+          this.t(
+            'settings.bots.notifySendFailed',
+            'Bot reply failed to send ({platform}). Check the bot connection and try again.',
+          ).replace('{platform}', platformLabel),
         )
       }
     })
@@ -926,7 +981,12 @@ export class BotService {
 
     try {
       await adapter.start(config)
+      this.startErrors.delete(config.id)
     } catch (error) {
+      this.startErrors.set(
+        config.id,
+        error instanceof Error ? error.message : String(error),
+      )
       console.error(
         `[YOLO Bot] Failed to start adapter ${config.platformType}/${config.id}:`,
         error,
@@ -955,6 +1015,9 @@ export class BotService {
       this.adapterUnsubscribers.delete(id)
     }
     const adapter = this.adapters.get(id)
+    // A deliberate stop (disable / config change / unload) supersedes any
+    // earlier start failure — clear it so the UI doesn't keep showing it.
+    this.startErrors.delete(id)
     if (!adapter) return
     try {
       await adapter.stop()

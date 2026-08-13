@@ -356,6 +356,21 @@ export const it: DeepPartial<TranslationKeys> = {
         feishu: 'Feishu',
         qq: 'QQ',
       },
+      testConnection: 'Test connessione',
+      connectionTestResult: 'Connessione: {status}',
+      connectionFailed: 'Connessione non riuscita: {error}',
+      botServiceNotRunning:
+        'La piattaforma bot non è in esecuzione. Abilitala prima.',
+      notifySessionExpired:
+        'La sessione del bot WeChat è scaduta. Apri le impostazioni del bot, scansiona di nuovo il QR code e fai clic su Salva.',
+      notifySendFailed:
+        'Invio della risposta del bot non riuscito ({platform}). Controlla la connessione del bot e riprova.',
+      health: {
+        running: 'In esecuzione',
+        degraded: 'Degradato',
+        failed: 'Non riuscito',
+        stopped: 'Fermato',
+      },
     },
 
     supportYolo: {

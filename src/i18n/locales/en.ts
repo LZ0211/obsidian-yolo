@@ -358,6 +358,21 @@ export const en: TranslationKeys = {
         feishu: 'Feishu',
         qq: 'QQ',
       },
+      testConnection: 'Test Connection',
+      connectionTestResult: 'Connection: {status}',
+      connectionFailed: 'Connection failed: {error}',
+      botServiceNotRunning:
+        'Bot Platform is not running. Enable it first.',
+      notifySessionExpired:
+        'WeChat bot login expired. Open Bot settings, scan the QR code again, and click Save.',
+      notifySendFailed:
+        'Bot reply failed to send ({platform}). Check the bot connection and try again.',
+      health: {
+        running: 'Running',
+        degraded: 'Degraded',
+        failed: 'Failed',
+        stopped: 'Stopped',
+      },
     },
 
     supportYolo: {

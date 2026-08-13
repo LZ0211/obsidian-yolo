@@ -564,6 +564,7 @@ export class WeixinOCAdapter implements PlatformAdapter {
       )
     }
 
+    let responseBody: SendMessageResponseBody | undefined
     try {
       const items = await this.buildOutgoingItems(chatId, content)
       if (items.length === 0) {
@@ -590,7 +591,7 @@ export class WeixinOCAdapter implements PlatformAdapter {
         body,
         throw: false,
       })
-      const responseBody = response.json as SendMessageResponseBody
+      responseBody = response.json as SendMessageResponseBody
       if (this.isProtocolError(responseBody)) {
         throw new Error(
           `WeChat sendmessage failed: ret=${responseBody.ret ?? 0} errcode=${responseBody.errcode ?? 0} ${responseBody.errmsg ?? ''}`.trim(),
@@ -606,7 +607,20 @@ export class WeixinOCAdapter implements PlatformAdapter {
       ]
     } catch (error) {
       const err = toError(error)
-      this.emitError(err, { operation: 'send', sessionKey, raw: error })
+      // Credential failures (no token / session-expired protocol error) are
+      // not retryable — BotService surfaces them to the user instead of
+      // letting the send vanish into the console. Transient failures stay
+      // retryable so the UI does not spam notices on every network blip.
+      const isCredentialFailure =
+        err.message.includes('not logged in yet') ||
+        (typeof responseBody?.errcode === 'number' &&
+          responseBody.errcode === SESSION_EXPIRED_ERRCODE)
+      this.emitError(err, {
+        operation: 'send',
+        sessionKey,
+        retryable: isCredentialFailure ? false : true,
+        raw: error,
+      })
       throw err
     }
   }
