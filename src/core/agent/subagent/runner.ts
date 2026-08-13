@@ -21,11 +21,9 @@ import { backgroundTaskCompletionBus } from '../background-task/completion-bus'
 import { CitationRegistry } from '../citationRegistry'
 import { liveTaskStreamBus } from '../live-stream/taskStreamBus'
 import { NativeAgentRuntime } from '../native-runtime'
+import type { ProjectTaskBinding } from '../project/types'
 import type { AgentConversationState } from '../service'
-import type {
-  AgentRuntimeLoopConfig,
-  AgentRuntimeRunInput,
-} from '../types'
+import type { AgentRuntimeLoopConfig, AgentRuntimeRunInput } from '../types'
 
 import {
   SUBAGENT_DEFAULT_SYSTEM_PROMPT,
@@ -59,6 +57,16 @@ export type RunSubagentParams = {
   }
   delegatedProfile?: DelegatedAssistantProfile
   signal?: AbortSignal
+  /**
+   * Project delivery binding (parent-only): the parent resolves the task,
+   * composes its body + acceptance criteria into the child prompt, and binds
+   * the delivery back to the task. See project/deliveryBridge.
+   */
+  projectTask?: ProjectTaskBinding
+  /** Durable-session parity identifiers (ephemeral runner defaults below). */
+  sessionId?: string
+  runSequence?: number
+  runKey?: string
 }
 
 /**
@@ -683,6 +691,10 @@ export async function runSubagent(
       childModel,
       delegatedProfile,
       signal,
+      projectTask,
+      sessionId,
+      runSequence,
+      runKey,
     } = params
 
     if (signal?.aborted) {
@@ -722,6 +734,13 @@ export async function runSubagent(
       createdAt: Date.now(),
       prompt: taskPrompt,
       abortController,
+      // 纯 ephemeral 下 sessionId/runKey/runSequence 的缺省与 backup runner
+      // `record.runKey ?? ${taskId}:${runSequence ?? 1}` 同语义：
+      // sessionId === taskId === sub_xxx、runKey === taskId、runSequence === 1。
+      ...(projectTask ? { projectTask } : {}),
+      ...(sessionId ? { sessionId } : { sessionId: taskId }),
+      ...(runSequence !== undefined ? { runSequence } : { runSequence: 1 }),
+      ...(runKey ? { runKey } : { runKey: taskId }),
     }
 
     subagentTaskRegistry.register(record)

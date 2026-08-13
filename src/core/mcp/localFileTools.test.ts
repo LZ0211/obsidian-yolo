@@ -47,6 +47,8 @@ import {
   getPendingDangerousBashApproval,
   resolveDangerousBashApproval,
 } from '../agent/bash/dangerousOperationGate'
+import { FakeAdapter } from '../agent/project/projectTestUtils'
+import { ProjectStore } from '../agent/project/store'
 import {
   type DelegatedAssistantProfile,
   resolveDelegatedAssistantProfile,
@@ -1967,7 +1969,13 @@ describe('local fs tool action helpers', () => {
           path: 'secret/a.md',
           content: 'ok',
         },
-        workspaceAccessPolicy: { enabled: false, workspaceRoot: '', readExtraIncludes: ['Notes'], readExcludes: [], writeExcludes: [] },
+        workspaceAccessPolicy: {
+          enabled: false,
+          workspaceRoot: '',
+          readExtraIncludes: ['Notes'],
+          readExcludes: [],
+          writeExcludes: [],
+        },
       })
       expect(result.status).toBe(ToolCallResponseStatus.Success)
     })
@@ -2370,7 +2378,13 @@ describe('fs_read wikilink resolution', () => {
       app,
       toolName: 'fs_read',
       args: { paths: ['[[Secret]]'] },
-      workspaceAccessPolicy: { enabled: true, workspaceRoot: '', readExtraIncludes: [], readExcludes: ['Private'], writeExcludes: [] },
+      workspaceAccessPolicy: {
+        enabled: true,
+        workspaceRoot: '',
+        readExtraIncludes: [],
+        readExcludes: ['Private'],
+        writeExcludes: [],
+      },
     })
 
     const results = parseSuccessResults(result)
@@ -2393,7 +2407,13 @@ describe('fs_read wikilink resolution', () => {
       app,
       toolName: 'fs_read',
       args: { paths: ['[[Foo]]'] },
-      workspaceAccessPolicy: { enabled: true, workspaceRoot: '', readExtraIncludes: ['Notes'], readExcludes: [], writeExcludes: [] },
+      workspaceAccessPolicy: {
+        enabled: true,
+        workspaceRoot: '',
+        readExtraIncludes: ['Notes'],
+        readExcludes: [],
+        writeExcludes: [],
+      },
     })
 
     const results = parseSuccessResults(result)
@@ -2423,7 +2443,13 @@ describe('fs_read wikilink resolution', () => {
       app,
       toolName: 'fs_read',
       args: { paths: ['Private/Secret.md'] },
-      workspaceAccessPolicy: { enabled: true, workspaceRoot: '', readExtraIncludes: [], readExcludes: ['Private'], writeExcludes: [] },
+      workspaceAccessPolicy: {
+        enabled: true,
+        workspaceRoot: '',
+        readExtraIncludes: [],
+        readExcludes: ['Private'],
+        writeExcludes: [],
+      },
     })
 
     const results = parseSuccessResults(result)
@@ -2456,7 +2482,13 @@ describe('fs_read wikilink resolution', () => {
       app,
       toolName: 'fs_read',
       args: { paths: ['Skills/pkg/reference.md'] },
-      workspaceAccessPolicy: { enabled: true, workspaceRoot: '', readExtraIncludes: ['Notes'], readExcludes: [], writeExcludes: [] },
+      workspaceAccessPolicy: {
+        enabled: true,
+        workspaceRoot: '',
+        readExtraIncludes: ['Notes'],
+        readExcludes: [],
+        writeExcludes: [],
+      },
       allowedSkillPaths: ['Skills/pkg/SKILL.md'],
     })
 
@@ -2777,9 +2809,12 @@ describe('delegate_subagent model selection', () => {
       },
     }) as unknown as YoloSettings
 
-  const callDelegateSubagent = (args: Record<string, unknown>) =>
+  const callDelegateSubagent = (
+    args: Record<string, unknown>,
+    app: App = {} as App,
+  ) =>
     callLocalFileTool({
-      app: {} as App,
+      app,
       settings: buildSettings(),
       conversationId: 'conv',
       conversationMessages: [],
@@ -3039,6 +3074,167 @@ describe('delegate_subagent model selection', () => {
     })
   })
 
+  it('dispatches an independent reviewer that reads the delivered artifact and does not bind the task', async () => {
+    // Seed a project whose task is awaiting_review with a real delivery
+    // artifact. The delegate path reads these through `app.vault.adapter`, so
+    // the seed store and the handler must resolve the same projects directory
+    // (both default to the top-level `Projects` dir, matching the store used
+    // by the handler when `settings.yolo` is unset).
+    const adapter = new FakeAdapter()
+    const settings = buildSettings()
+    const store = new ProjectStore({ getSettings: () => settings, adapter })
+    const init = await store.initProject({
+      projectId: 'p1',
+      projectName: 'P',
+      tasks: [{ taskId: 't1', title: 'Review me' }],
+    })
+    expect(init.ok).toBe(true)
+    let current = (await store.readTask('p1', 't1'))!
+    const advanceTo = async (status: 'in_progress' | 'awaiting_review') => {
+      const result = await store.updateTask(
+        'p1',
+        't1',
+        {
+          expectedRevision: current.revision,
+          expectedContentHash: current.contentHash,
+        },
+        (task) => ({ ...task, status }),
+      )
+      expect(result.ok).toBe(true)
+      current = (await store.readTask('p1', 't1'))!
+      return result
+    }
+    // The store enforces legal state-machine transitions, so reach
+    // awaiting_review through in_progress (pending -> awaiting_review is not
+    // a legal transition).
+    await advanceTo('in_progress')
+    await advanceTo('awaiting_review')
+    const taskWithDelivery = await store.updateTask(
+      'p1',
+      't1',
+      {
+        expectedRevision: current.revision,
+        expectedContentHash: current.contentHash,
+      },
+      (task) => ({
+        ...task,
+        deliveryRefs: ['deliverables/t1/run-1.md'],
+        acceptanceCriteria: ['verify the delivered work exists'],
+      }),
+    )
+    expect(taskWithDelivery.ok).toBe(true)
+    await store.writeDeliveryArtifact(
+      'p1',
+      't1',
+      'run-1',
+      'DELIVERED_WORK_CONTENT_MARKER',
+    )
+    const bound = (await store.readTask('p1', 't1'))!
+
+    const result = await callDelegateSubagent(
+      {
+        projectTask: {
+          projectId: 'p1',
+          taskId: 't1',
+          expectedRevision: bound.revision,
+          expectedContentHash: bound.contentHash,
+          review: true,
+        },
+      },
+      { vault: { adapter } } as unknown as App,
+    )
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    // Regression for the double-`.md` runKey bug: the composed reviewer prompt
+    // must actually contain the delivery artifact body and the acceptance
+    // criteria — i.e. the delivery was read and wired into the prompt.
+    expect(runSubagent).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining('DELIVERED_WORK_CONTENT_MARKER'),
+      }),
+    )
+    expect(runSubagent).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining('verify the delivered work exists'),
+      }),
+    )
+    // A review run carries no task binding: the parent records the verdict.
+    expect(runSubagent).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ projectTask: expect.anything() }),
+    )
+  })
+})
+
+describe('project_ops', () => {
+  const projectSettings = { yolo: {} } as unknown as YoloSettings
+
+  it('dispatches init and creates the project files', async () => {
+    const adapter = new FakeAdapter()
+    const result = await callLocalFileTool({
+      app: { vault: { adapter } } as unknown as App,
+      settings: projectSettings,
+      toolName: 'project_ops',
+      args: {
+        action: 'init',
+        projectId: 'proj-x',
+        projectName: 'Project X',
+        tasks: [{ taskId: 'T-001', title: 'First' }],
+      },
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    if (result.status === ToolCallResponseStatus.Success) {
+      expect(JSON.parse(result.text)).toMatchObject({ ok: true })
+    }
+    expect(await adapter.exists('Projects/proj-x/project.md')).toBe(true)
+    expect(await adapter.exists('Projects/proj-x/tasks/T-001.md')).toBe(true)
+  })
+
+  it('reports a stale update precondition as a conflict', async () => {
+    const adapter = new FakeAdapter()
+    const store = new ProjectStore({
+      getSettings: () => projectSettings,
+      adapter,
+    })
+    const init = await store.initProject({
+      projectId: 'proj-x',
+      projectName: 'Project X',
+      tasks: [{ taskId: 'T-001', title: 'First' }],
+    })
+    expect(init.ok).toBe(true)
+    const read = (await store.readTask('proj-x', 'T-001'))!
+    // First update advances the task; reuse the now-stale preconditions.
+    await store.updateTask(
+      'proj-x',
+      'T-001',
+      {
+        expectedRevision: read.revision,
+        expectedContentHash: read.contentHash,
+      },
+      (current) => ({ ...current, status: 'in_progress' }),
+    )
+
+    const result = await callLocalFileTool({
+      app: { vault: { adapter } } as unknown as App,
+      settings: projectSettings,
+      toolName: 'project_ops',
+      args: {
+        action: 'update',
+        projectId: 'proj-x',
+        taskId: 'T-001',
+        expectedRevision: read.revision,
+        expectedContentHash: read.contentHash,
+        patch: { status: 'blocked', blockReason: { kind: 'needs_input' } },
+      },
+    })
+
+    // `update` surfaces store conflicts as a thrown error (matching `review`),
+    // not as a "Success with ok:false" payload.
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+    if (result.status === ToolCallResponseStatus.Error) {
+      expect(result.error).toMatch(/conflict/i)
+    }
+  })
 })
 
 describe('send_attachment (Bot Platform Phase 6.5)', () => {

@@ -12,12 +12,6 @@ import { v4 as uuidv4 } from 'uuid'
 
 import { upsertEditReviewSnapshot } from '../../database/json/chat/editReviewSnapshotStore'
 import { buildPdfPageImageCacheKey } from '../../database/json/chat/imageCacheStore'
-import {
-  callInjectedBridgeTool,
-  getInjectedBridgeTools,
-  isInjectedBridgeToolName,
-} from './injectionBridge'
-import { validateAttachmentPath } from '../bot/attachment-security'
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import type {
   ApplyViewResult,
@@ -77,6 +71,12 @@ import {
 } from '../agent/bash/outputBudget'
 import { createVaultBashFileSystem } from '../agent/bash/vaultBashFileSystem'
 import { createVaultBashSearch } from '../agent/bash/vaultBashSearch'
+import { buildConsolidatedToolSchemas } from '../agent/consolidated-tools'
+import { assertProjectTaskDispatchable } from '../agent/project/delivery'
+import { buildReviewPrompt } from '../agent/project/review-prompt'
+import { ProjectStore } from '../agent/project/store'
+import { ProjectTool } from '../agent/project/tool'
+import type { ProjectTaskBinding, TaskRecord } from '../agent/project/types'
 import type { PromptSourceWatcher } from '../agent/promptSourceWatcher'
 import type { TodoItem } from '../agent/todos-from-messages'
 import type { AgentRunContext } from '../agent/types'
@@ -84,8 +84,8 @@ import {
   BROWSER_READ_PATH_PREFIX,
   BUILTIN_SKILL_PATH_PREFIX,
   buildAllowedSkillPathSet,
-  findPathOutsideScope,
   collectToolCallPaths,
+  findPathOutsideScope,
   findPathWithinExcludedRoot,
   isCoveredBySkillPathExemption,
   isPathAllowedByScope,
@@ -94,6 +94,7 @@ import {
   resolveReadablePath,
   resolveWritablePath,
 } from '../agent/workspaceScope'
+import { validateAttachmentPath } from '../bot/attachment-security'
 import {
   BROWSER_PAGE_ID_PATTERN,
   findWebviewHandleByPageId,
@@ -119,16 +120,16 @@ import {
 } from '../memory/memoryManager'
 import { isWithinYoloUserDataRoot } from '../paths/yoloPaths'
 import type { RAGEngine } from '../rag/ragEngine'
+import {
+  acquireRuntimeComponent,
+  isRuntimeComponentEnabled,
+} from '../runtime-components/runtimeComponentAccess'
 import { MetadataFilterDslError } from '../search/metadataFilterDsl'
 import {
   type MetadataFileSearchHit,
   type MetadataSearchHit,
   searchFilesByMetadataDsl,
 } from '../search/metadataSearch'
-import {
-  acquireRuntimeComponent,
-  isRuntimeComponentEnabled,
-} from '../runtime-components/runtimeComponentAccess'
 import { getLiteSkillDocumentByPath } from '../skills/liteSkills'
 import {
   WEB_SCRAPE_TOOL_NAME,
@@ -137,6 +138,11 @@ import {
   runWebSearch,
 } from '../web-search'
 
+import {
+  callInjectedBridgeTool,
+  getInjectedBridgeTools,
+  isInjectedBridgeToolName,
+} from './injectionBridge'
 import {
   type JsSandboxSettings,
   getJsSandboxSettings,
@@ -1133,7 +1139,7 @@ export function getLocalFileTools(options?: {
           delegatedRoleId: {
             type: 'string',
             description:
-              'Optional delegated role id from the available roles listed in the request context. When set, the sub-agent runs with that role\'s model, tools, and loop configuration.',
+              "Optional delegated role id from the available roles listed in the request context. When set, the sub-agent runs with that role's model, tools, and loop configuration.",
           },
           modelPreferenceId: {
             type: 'string',
@@ -1147,9 +1153,37 @@ export function getLocalFileTools(options?: {
               "Optional read-only parent-context fork for the sub-agent. Defaults to none (the child sees only the prompt, exactly as today). last_turns appends a read-only snapshot of the parent conversation's most recent turns to the child prompt; full appends a size-capped read-only snapshot of the whole parent history. The snapshot reflects the parent conversation as of the current parent run's start: the child cannot write to parent state.",
             default: 'none',
           },
+          projectTask: {
+            type: 'object',
+            description:
+              'Optional binding to a project task. Provide the projectId/taskId plus the expectedRevision/expectedContentHash from a prior project get_task/query_tasks read. The parent resolves the task, composes its body + acceptance criteria into the child prompt, and binds the delivery back to the task.',
+            properties: {
+              projectId: { type: 'string' },
+              taskId: { type: 'string' },
+              expectedRevision: { type: 'number' },
+              expectedContentHash: { type: 'string' },
+              review: {
+                type: 'boolean',
+                description:
+                  'Set true to dispatch an independent reviewer for an awaiting_review task instead of an implementer; the reviewer returns a structured verdict the parent records.',
+              },
+            },
+            required: [
+              'projectId',
+              'taskId',
+              'expectedRevision',
+              'expectedContentHash',
+            ],
+          },
         },
         required: ['description', 'prompt'],
       },
+    },
+    {
+      name: 'project_ops',
+      description:
+        'Manage durable project and task files under the host-managed Projects directory (parent-only; this is the sole way to read/write project/task state — those files are excluded from the normal fs tools). Pass action plus the action-specific fields: action="init" creates a project, "get" reads one task (taskId present) or lists tasks (status filter), "status" returns the project summary + signals (reclaimed, concurrent_running, all_terminal), "update" applies a patch or claims a task for a run (requires expectedRevision/expectedContentHash from a prior get), "review" records an approved/rework/escalated decision with evidence.',
+      inputSchema: buildConsolidatedToolSchemas().project_ops,
     },
     {
       name: 'ask_user_question',
@@ -1830,7 +1864,10 @@ const sliceToByteBudget = (
   if (available <= 0) {
     return {
       text: TRUNCATION_SUFFIX.trim(),
-      truncated: { totalBytes: utf8ByteLength(full), omittedBytes: utf8ByteLength(full) },
+      truncated: {
+        totalBytes: utf8ByteLength(full),
+        omittedBytes: utf8ByteLength(full),
+      },
     }
   }
 
@@ -1838,10 +1875,7 @@ const sliceToByteBudget = (
   if (sliceEnd > full.length) {
     sliceEnd = full.length
   }
-  while (
-    sliceEnd > 0 &&
-    utf8ByteLength(full.slice(0, sliceEnd)) > available
-  ) {
+  while (sliceEnd > 0 && utf8ByteLength(full.slice(0, sliceEnd)) > available) {
     sliceEnd -= 1
   }
 
@@ -4229,6 +4263,86 @@ export async function callLocalFileTool({
         if (!settings) {
           throw new Error('settings are required for delegate_subagent.')
         }
+        let composedPrompt = taskPrompt
+        let projectTask: ProjectTaskBinding | undefined
+        if (args.projectTask !== undefined) {
+          projectTask = parseProjectTaskBinding(args.projectTask)
+          const store = new ProjectStore({
+            getSettings: () => settings,
+            adapter: app.vault.adapter,
+          })
+          const versioned = await store.readTask(
+            projectTask.projectId,
+            projectTask.taskId,
+          )
+          if (!versioned) {
+            throw new Error(
+              `Project task not found: ${projectTask.projectId}/${projectTask.taskId}`,
+            )
+          }
+          if (
+            versioned.revision !== projectTask.expectedRevision ||
+            versioned.contentHash !== projectTask.expectedContentHash
+          ) {
+            throw new Error(
+              `Project task ${projectTask.taskId} changed since it was read; re-read it via the project tool.`,
+            )
+          }
+          const review =
+            (args.projectTask as { review?: boolean } | undefined)?.review ===
+            true
+          if (review) {
+            if (versioned.task.status !== 'awaiting_review') {
+              throw new Error(
+                `Project task ${projectTask.taskId} is not awaiting_review; it cannot be reviewed.`,
+              )
+            }
+            const taskBody = (
+              await store.readTaskBody(
+                projectTask.projectId,
+                projectTask.taskId,
+              )
+            ).trim()
+            const deliveries: string[] = []
+            for (const ref of versioned.task.deliveryRefs) {
+              // deliveryRefs carry a trailing `.md`; the store appends its own
+              // `.md` when resolving the artifact path, so strip the suffix to
+              // avoid looking for a double-extension file (`run.md.md`).
+              const runKey = (ref.split('/').pop() ?? '').replace(/\.md$/, '')
+              const artifact = await store.readDeliveryArtifact(
+                projectTask.projectId,
+                projectTask.taskId,
+                runKey,
+              )
+              if (artifact) deliveries.push(artifact)
+            }
+            const history = (versioned.task.reviewHistory ?? [])
+              .map((r) => `${r.decision} (${r.at}): ${r.comments.join('; ')}`)
+              .join('\n')
+            composedPrompt = buildReviewPrompt({
+              task: versioned.task,
+              body: taskBody,
+              delivery: deliveries.join('\n\n---\n\n'),
+              history,
+            })
+            // A review run does not claim/bind the task: the parent records the
+            // verdict itself via the project tool.
+            projectTask = undefined
+          } else {
+            assertProjectTaskDispatchable(versioned.task)
+            const taskBody = (
+              await store.readTaskBody(
+                projectTask.projectId,
+                projectTask.taskId,
+              )
+            ).trim()
+            composedPrompt = buildProjectTaskPrompt(
+              versioned.task,
+              taskBody,
+              taskPrompt,
+            )
+          }
+        }
         const delegatedRoleId =
           getOptionalTextArg(args, 'delegatedRoleId')?.trim() ?? ''
         const modelPreferenceId =
@@ -4250,11 +4364,16 @@ export async function callLocalFileTool({
           requestedForkContext !== undefined &&
           !['none', 'last_turns', 'full'].includes(requestedForkContext)
         ) {
-          throw new Error('forkContext must be "none", "last_turns", or "full".')
+          throw new Error(
+            'forkContext must be "none", "last_turns", or "full".',
+          )
         }
         const forkContext: 'none' | 'last_turns' | 'full' =
-          (requestedForkContext as 'none' | 'last_turns' | 'full' | undefined) ??
-          'none'
+          (requestedForkContext as
+            | 'none'
+            | 'last_turns'
+            | 'full'
+            | undefined) ?? 'none'
 
         // 全部 subagent 依赖走动态 import——madge 对静态与 type-only 导入都计边，
         // localFileTools → subagent/* 会经 tool-preferences 回流成环（deps:check
@@ -4345,7 +4464,7 @@ export async function callLocalFileTool({
         // 仍把父上下文只读快照并入 child 初始 prompt）。
         const accepted = await runSubagent({
           description,
-          prompt: taskPrompt,
+          prompt: composedPrompt,
           conversationId,
           source: {
             type: 'llm_tool_call',
@@ -4367,11 +4486,52 @@ export async function callLocalFileTool({
           },
           signal,
           ...(delegatedProfile ? { delegatedProfile } : {}),
+          ...(projectTask ? { projectTask } : {}),
         })
 
         return {
           status: ToolCallResponseStatus.Success,
           text: JSON.stringify(accepted),
+        }
+      }
+
+      case 'project_ops': {
+        if (!settings) {
+          return {
+            status: ToolCallResponseStatus.Error,
+            error: 'Settings are not available.',
+          }
+        }
+        const store = new ProjectStore({
+          getSettings: () => settings,
+          adapter: app.vault.adapter,
+        })
+        const tool = new ProjectTool(store)
+        try {
+          const action = getTextArg(args, 'action')
+          const result =
+            action === 'init'
+              ? await tool.init(args as Parameters<typeof tool.init>[0])
+              : action === 'get'
+                ? await tool.get(args as Parameters<typeof tool.get>[0])
+                : action === 'status'
+                  ? await tool.status(getTextArg(args, 'projectId'))
+                  : action === 'update'
+                    ? await tool.update(
+                        args as Parameters<typeof tool.update>[0],
+                      )
+                    : await tool.review(
+                        args as Parameters<typeof tool.review>[0],
+                      )
+          return {
+            status: ToolCallResponseStatus.Success,
+            text: JSON.stringify(result),
+          }
+        } catch (error) {
+          return {
+            status: ToolCallResponseStatus.Error,
+            error: error instanceof Error ? error.message : String(error),
+          }
         }
       }
 
@@ -4589,6 +4749,55 @@ function executeTodoWrite({
     status: ToolCallResponseStatus.Success,
     text: 'Todos updated. Continue tracking your progress with the todo list.',
   }
+}
+
+const parseProjectTaskBinding = (value: unknown): ProjectTaskBinding => {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('projectTask must be an object.')
+  }
+  const { projectId, taskId, expectedRevision, expectedContentHash } =
+    value as Record<string, unknown>
+  if (
+    typeof projectId !== 'string' ||
+    projectId.length === 0 ||
+    typeof taskId !== 'string' ||
+    taskId.length === 0 ||
+    typeof expectedRevision !== 'number' ||
+    typeof expectedContentHash !== 'string'
+  ) {
+    throw new Error(
+      'projectTask requires projectId, taskId, expectedRevision, and expectedContentHash.',
+    )
+  }
+  return { projectId, taskId, expectedRevision, expectedContentHash }
+}
+
+const buildProjectTaskPrompt = (
+  task: TaskRecord,
+  taskBody: string,
+  userPrompt: string,
+): string => {
+  const lines: Array<string | null> = [
+    `# Project task: ${task.taskId} — ${task.title}`,
+    `Status: ${task.status}`,
+    task.dependencies.length > 0
+      ? `Dependencies: ${task.dependencies.join(', ')}`
+      : null,
+    task.acceptanceCriteria.length > 0
+      ? `Acceptance criteria:\n${task.acceptanceCriteria
+          .map((criteria) => `- ${criteria}`)
+          .join('\n')}`
+      : null,
+    taskBody ? `## Task background\n\n${taskBody}` : null,
+    `## Assignment\n\n${userPrompt}`,
+    `## Reporting`,
+    `When you finish, end with a short report covering:`,
+    `- what you completed and how you verified it (tests run, evidence);`,
+    `- the files you created or modified;`,
+    `- anything you could not finish or that needs human review.`,
+    `This report is recorded as the delivery for this task, so keep it accurate and self-contained.`,
+  ]
+  return lines.filter((line): line is string => line !== null).join('\n\n')
 }
 
 const MIME_TYPES_BY_EXT: Record<string, string> = {

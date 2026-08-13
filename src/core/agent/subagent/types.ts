@@ -58,10 +58,12 @@ export type SubagentTaskRecord = {
   activityLog?: string
   error?: string
   // Project delivery bridge parity: project/ 的 deliveryBridge 与测试（T1 拷贝）
-  // 访问 projectTask/runKey；sessionId/runSequence 由 T2 补齐。
+  // 访问 projectTask/runKey/sessionId/runSequence（T1 补前两字段，T2 补后两字段）。
   projectTask?: ProjectTaskBinding
   abortController: AbortController
   runKey?: string
+  sessionId?: string
+  runSequence?: number
 }
 
 /** Registry-facing projection without streaming transcripts or abort owners. */
