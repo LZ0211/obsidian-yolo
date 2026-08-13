@@ -3235,6 +3235,48 @@ describe('project_ops', () => {
       expect(result.error).toMatch(/conflict/i)
     }
   })
+
+  it('accepts patch.block_reason (the schema-advertised field) for blocking', async () => {
+    const adapter = new FakeAdapter()
+    const store = new ProjectStore({
+      getSettings: () => projectSettings,
+      adapter,
+    })
+    const init = await store.initProject({
+      projectId: 'proj-x',
+      projectName: 'Project X',
+      tasks: [{ taskId: 'T-001', title: 'First' }],
+    })
+    expect(init.ok).toBe(true)
+    const read = (await store.readTask('proj-x', 'T-001'))!
+
+    // The model follows the advertised schema (patch.block_reason); the
+    // handler must not reject it with "blocked requires blockReason".
+    const result = await callLocalFileTool({
+      app: { vault: { adapter } } as unknown as App,
+      settings: projectSettings,
+      toolName: 'project_ops',
+      args: {
+        action: 'update',
+        projectId: 'proj-x',
+        taskId: 'T-001',
+        expectedRevision: read.revision,
+        expectedContentHash: read.contentHash,
+        patch: {
+          status: 'blocked',
+          block_reason: { kind: 'needs_input', detail: 'blocked via tool' },
+        },
+      },
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    const after = (await store.readTask('proj-x', 'T-001'))!
+    expect(after.task.status).toBe('blocked')
+    expect(after.task.blockReason).toEqual({
+      kind: 'needs_input',
+      detail: 'blocked via tool',
+    })
+  })
 })
 
 describe('scheduled_task_ops', () => {

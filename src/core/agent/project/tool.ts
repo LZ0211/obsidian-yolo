@@ -26,6 +26,13 @@ export type ProjectTaskPatch = {
   acceptanceCriteria?: string[]
   priority?: string
   body?: string
+  /**
+   * Canonical blocked reason field — matches the model-facing schema
+   * (`block_reason`) and the on-disk frontmatter key. `blockReason` remains
+   * accepted as a legacy alias; models may send either.
+   */
+  block_reason?: BlockReason
+  /** @deprecated Legacy alias for `block_reason`. */
   blockReason?: BlockReason
 }
 
@@ -237,6 +244,9 @@ const applyPatch = (
     next.acceptanceCriteria = patch.acceptanceCriteria
   }
   if (patch.priority !== undefined) next.priority = patch.priority
-  if (patch.blockReason !== undefined) next.blockReason = patch.blockReason
+  // Canonical name wins when both are present; `blockReason` is the legacy
+  // alias some models still send.
+  const blockReason = patch.block_reason ?? patch.blockReason
+  if (blockReason !== undefined) next.blockReason = blockReason
   return next
 }

@@ -168,6 +168,64 @@ describe('ProjectTool', () => {
     expect(after?.task.blockRecurrences).toBe(1)
   })
 
+  it('update patch accepts the canonical block_reason field name (schema-parity)', async () => {
+    const { store, tool } = makeTool()
+    await initSimpleProject(store)
+
+    const read = (await tool.get({
+      projectId: 'proj-1',
+      taskId: 'T-001',
+    })) as { revision: number; contentHash: string }
+    const { revision, contentHash } = read
+
+    // The model-facing schema advertises `patch.block_reason`; a model that
+    // follows the schema must be able to block a task without the handler
+    // rejecting it ("blocked requires blockReason").
+    const updated = await tool.update({
+      projectId: 'proj-1',
+      taskId: 'T-001',
+      expectedRevision: revision,
+      expectedContentHash: contentHash,
+      patch: {
+        status: 'blocked',
+        block_reason: { kind: 'dependency', detail: 'waiting on T-002' },
+      },
+    })
+    expect(updated).toMatchObject({ status: 'blocked' })
+    const after = await store.readTask('proj-1', 'T-001')
+    expect(after?.task.blockReason).toEqual({
+      kind: 'dependency',
+      detail: 'waiting on T-002',
+    })
+    expect(after?.task.blockRecurrences).toBe(1)
+  })
+
+  it('update patch prefers block_reason over the legacy blockReason alias', async () => {
+    const { store, tool } = makeTool()
+    await initSimpleProject(store)
+
+    const read = (await tool.get({
+      projectId: 'proj-1',
+      taskId: 'T-001',
+    })) as { revision: number; contentHash: string }
+    const { revision, contentHash } = read
+
+    const updated = await tool.update({
+      projectId: 'proj-1',
+      taskId: 'T-001',
+      expectedRevision: revision,
+      expectedContentHash: contentHash,
+      patch: {
+        status: 'blocked',
+        block_reason: { kind: 'capability' },
+        blockReason: { kind: 'transient' },
+      },
+    })
+    expect(updated).toMatchObject({ status: 'blocked' })
+    const after = await store.readTask('proj-1', 'T-001')
+    expect(after?.task.blockReason).toEqual({ kind: 'capability' })
+  })
+
   it('status returns derived counts and dependency blocks', async () => {
     const { store, tool } = makeTool()
     const result = await store.initProject({
