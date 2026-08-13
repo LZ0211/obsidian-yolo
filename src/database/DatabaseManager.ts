@@ -3,7 +3,6 @@ import { App, FileSystemAdapter, normalizePath } from 'obsidian'
 import { getYoloBaseDir } from '../core/paths/yoloPaths'
 
 import type { RetrievalTraceStore } from './modules/rag/retrievalTraceStore'
-import { RetrievalTraceStore as SqliteRetrievalTraceStore } from './modules/rag/retrievalTraceStore'
 import type { VectorStore } from './modules/rag/VectorStore'
 import { createVectorStore } from './modules/rag/VectorStoreFactory'
 import { VectorManager } from './modules/vector/VectorManager'
@@ -49,10 +48,30 @@ export class DatabaseManager {
       pluginDir && pluginDir.trim().length > 0
         ? normalizePath(pluginDir)
         : undefined
-    const baseDir = DatabaseManager.resolveAbsoluteYoloBaseDir(app, settings)
+    const adapter = app.vault.adapter
+    const vaultBasePath =
+      adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null
 
-    if (baseDir) {
-      dbManager.retrievalTraceStore = new SqliteRetrievalTraceStore({ baseDir })
+    // Desktop: absolute base dir under the vault root (byte-identical to the
+    // pre-Task-7 behavior). Mobile: vault-relative — the sharded backend's
+    // file layout lives inside the vault and its sql.js opener maps shard
+    // paths through vault-relative paths (memoryIndex.ts pattern); without a
+    // FileSystemAdapter there is no absolute vault path to derive.
+    const baseDir = vaultBasePath
+      ? normalizePath(`${vaultBasePath}/${getYoloBaseDir(settings)}`)
+      : getYoloBaseDir(settings)
+
+    // The node:sqlite RetrievalTraceStore needs an absolute filesystem path
+    // and statically imports node:* — mobile must neither construct it (it
+    // would throw) nor evaluate the module (mobile bundle). Loaded lazily in
+    // the desktop-only branch, mirroring VectorStoreFactory's desktop store.
+    if (vaultBasePath) {
+      const { RetrievalTraceStore: DesktopRetrievalTraceStore } = await import(
+        './modules/rag/retrievalTraceStore'
+      )
+      dbManager.retrievalTraceStore = new DesktopRetrievalTraceStore({
+        baseDir,
+      })
       await dbManager.retrievalTraceStore.open()
     }
 
@@ -127,25 +146,6 @@ export class DatabaseManager {
     this.vectorStore = null
     this.retrievalTraceStore = null
     DatabaseManager.managers.delete(this)
-  }
-
-  private static resolveAbsoluteYoloBaseDir(
-    app: App,
-    settings?: {
-      yolo?: {
-        baseDir?: string
-      }
-    } | null,
-  ): string | null {
-    const adapter = app.vault.adapter
-    const vaultBasePath =
-      adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null
-
-    if (!vaultBasePath) {
-      return null
-    }
-
-    return normalizePath(`${vaultBasePath}/${getYoloBaseDir(settings)}`)
   }
 
   private static toVectorManagerSettings(
