@@ -9,6 +9,7 @@ import { useSettings } from '../../../contexts/settings-context'
 import { getAssistantModelDisplayLabel } from '../../../core/agent/assistant-model'
 import {
   FILE_EDIT_GROUP_TOOL_NAME,
+  MEMORY_OPS_GROUP_TOOL_NAME,
   WEB_OPS_GROUP_TOOL_NAME,
   WEB_OPS_SPLIT_ACTION_TOOL_NAMES,
   getBuiltinToolUiMeta,
@@ -23,7 +24,6 @@ import {
   USER_FACING_LOCAL_TOOL_SHORT_NAMES,
 } from '../../../core/mcp/localFileToolNames'
 import {
-  LOCAL_FS_PATH_OPERATION_TOOL_NAMES,
   LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
   getLocalFileTools,
 } from '../../../core/mcp/localFileTools'
@@ -55,9 +55,6 @@ type AgentSectionProps = {
 }
 
 const EDIT_FS_TOOL_NAME_SET = new Set<string>(LOCAL_FS_EDIT_TOOL_NAMES)
-const PATH_FS_TOOL_NAME_SET = new Set<string>(
-  LOCAL_FS_PATH_OPERATION_TOOL_NAMES,
-)
 const SPLIT_MEMORY_TOOL_NAME_SET = new Set<string>(
   LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
 )
@@ -331,7 +328,6 @@ export function AgentSection({ app }: AgentSectionProps) {
       .filter(
         (tool) =>
           !EDIT_FS_TOOL_NAME_SET.has(tool.name) &&
-          !PATH_FS_TOOL_NAME_SET.has(tool.name) &&
           !SPLIT_MEMORY_TOOL_NAME_SET.has(tool.name) &&
           !SPLIT_WEB_TOOL_NAME_SET.has(tool.name) &&
           (USER_FACING_LOCAL_TOOL_SHORT_NAMES.includes(tool.name) ||
@@ -369,9 +365,26 @@ export function AgentSection({ app }: AgentSectionProps) {
       enabled: editSplitToolEnabled,
     }
 
-    // `fs_file_ops` and `memory_ops` are now advertised by getLocalFileTools()
-    // and therefore already present in `tools`; only the synthetic groups
-    // (`fs_edit_ops`, `web_ops`) are constructed by hand.
+    // Synthetic groups, mirroring the Manage tools modal: the split tools
+    // filtered above collapse into one row. `memory_ops` is constructed here
+    // because getLocalFileTools() does not advertise it; `fs_file_ops` is a
+    // retired group (path operations moved to the bash tool) — it is neither
+    // advertised nor shown, matching the Manage tools modal.
+
+    const memorySplitToolEnabled = LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES.every(
+      (toolName) =>
+        !(toolOptions[toolName]?.disabled ?? false) &&
+        !(toolOptions[MEMORY_OPS_GROUP_TOOL_NAME]?.disabled ?? false),
+    )
+    const memoryOpsMeta = getBuiltinToolUiMeta(MEMORY_OPS_GROUP_TOOL_NAME)
+    if (!memoryOpsMeta) {
+      throw new Error('Missing built-in tool UI metadata for memory_ops')
+    }
+    const memoryOpsTool = {
+      id: MEMORY_OPS_GROUP_TOOL_NAME,
+      label: t(memoryOpsMeta.labelKey, memoryOpsMeta.labelFallback),
+      enabled: memorySplitToolEnabled,
+    }
 
     const webSplitToolEnabled = WEB_OPS_SPLIT_ACTION_TOOL_NAMES.every(
       (toolName) =>
@@ -391,9 +404,11 @@ export function AgentSection({ app }: AgentSectionProps) {
     const fsReadIndex = tools.findIndex((tool) => tool.id === 'fs_read')
     if (fsReadIndex >= 0) {
       tools.splice(fsReadIndex, 0, fileEditTool)
-      tools.splice(fsReadIndex + 1, 0, webOpsTool)
+      tools.splice(fsReadIndex + 1, 0, memoryOpsTool)
+      tools.splice(fsReadIndex + 2, 0, webOpsTool)
     } else {
       tools.push(fileEditTool)
+      tools.push(memoryOpsTool)
       tools.push(webOpsTool)
     }
 
