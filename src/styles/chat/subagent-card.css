@@ -531,168 +531,19 @@ button.yolo-subagent-card__action:focus-visible {
   font-size: var(--font-ui-smaller);
 }
 
-/* ── 会话状态行（Task 10：session snapshot 补强） ── */
+/* ── 等待审批标签（A3 最小实现：黄色 pill，与 external-agent-card badge 同款） ── */
 
-.yolo-subagent-card__session {
+.yolo-subagent-card__awaiting {
   display: inline-flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: var(--size-2-2) var(--size-4-2);
-  font-size: var(--font-ui-smaller);
-}
-
-.yolo-subagent-card__session-status {
-  color: var(--text-faint);
-}
-
-.yolo-subagent-card__session-queued {
-  color: var(--text-warning);
-}
-
-/* ── 详情弹窗：needs_resume 恢复动作 ── */
-
-.yolo-subagent-detail-recover {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--size-2-2) var(--size-4-2);
-  margin-bottom: var(--size-4-3);
-  padding: var(--size-2-2) var(--size-2-3);
-  border: 1px solid var(--background-modifier-border);
+  width: fit-content;
+  padding: 2px var(--size-2-2);
   border-radius: var(--radius-s);
-  background: var(--background-secondary);
-}
-
-.yolo-subagent-detail-recover-text {
-  min-width: 0;
-  flex: 1;
-  color: var(--text-warning);
+  background: color-mix(in srgb, var(--color-yellow) 15%, transparent);
+  color: var(--color-yellow);
   font-size: var(--font-ui-smaller);
+  font-weight: var(--font-medium);
   line-height: 1.45;
-}
-
-button.yolo-subagent-detail-recover-btn {
-  appearance: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 24px;
-  padding: 0 var(--size-2-3);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-s);
-  background: transparent;
-  color: var(--text-accent);
-  font-size: var(--font-ui-smaller);
-  cursor: pointer;
-}
-
-button.yolo-subagent-detail-recover-btn:hover,
-button.yolo-subagent-detail-recover-btn:focus-visible {
-  border-color: var(--background-modifier-border-hover);
-  background: var(--background-modifier-hover);
-  color: var(--text-accent-hover);
-}
-
-/* ── 详情弹窗：历史 run transcript 分隔条（A2：历史已结算轮次回看） ── */
-
-.yolo-subagent-detail-transcript-divider {
-  display: flex;
-  align-items: center;
-  gap: var(--size-2-3);
-  margin: var(--size-4-3) 0;
-  color: var(--text-faint);
-  font-size: var(--font-ui-smaller);
-  line-height: 1.45;
-}
-
-.yolo-subagent-detail-transcript-divider::before,
-.yolo-subagent-detail-transcript-divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--background-modifier-border);
-}
-
-/* ── 详情弹窗：queued 消息块 ── */
-
-.yolo-subagent-detail-queued {
-  display: flex;
-  flex-direction: column;
-  gap: var(--size-2-1);
-  margin-bottom: var(--size-4-3);
-  padding: var(--size-4-3);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-s);
-  background: var(--background-secondary);
-}
-
-.yolo-subagent-detail-queued-title {
-  margin-bottom: var(--size-2-1);
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-  font-weight: var(--font-semibold);
-}
-
-.yolo-subagent-detail-queued-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--size-4-2);
-  min-width: 0;
-}
-
-.yolo-subagent-detail-queued-text {
-  min-width: 0;
-  flex: 1;
-  color: var(--text-normal);
-  font-size: var(--font-ui-smaller);
-  line-height: 1.45;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.yolo-subagent-detail-queued-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--size-2-1);
-  flex-shrink: 0;
-}
-
-button.yolo-subagent-detail-queued-btn {
-  appearance: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 24px;
-  padding: 0 var(--size-2-2);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-s);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-  cursor: pointer;
-}
-
-button.yolo-subagent-detail-queued-btn:hover,
-button.yolo-subagent-detail-queued-btn:focus-visible {
-  border-color: var(--background-modifier-border-hover);
-  background: var(--background-modifier-hover);
-  color: var(--text-normal);
-}
-
-button.yolo-subagent-detail-queued-btn--resend {
-  color: var(--text-accent);
-}
-
-button.yolo-subagent-detail-queued-btn--resend:hover,
-button.yolo-subagent-detail-queued-btn--resend:focus-visible {
-  color: var(--text-accent-hover);
-}
-
-button.yolo-subagent-detail-queued-btn--drop {
-  color: var(--color-red);
 }
 
 /* ── 详情弹窗 ── */

@@ -6,10 +6,6 @@ import { useRef, useState } from 'react'
 import { useLanguage } from '../../../contexts/language-context'
 import type { ChatMessage } from '../../../types/chat'
 
-import type {
-  SubagentQueuedMessage,
-  SubagentTranscriptSection,
-} from './subagentCardUtils'
 import { SubagentDetailModal } from './SubagentDetailModal'
 
 export type SubagentDisplayStatus =
@@ -33,27 +29,14 @@ type SubagentCardViewProps = {
   prompt?: string
   taskId?: string
   transcript?: readonly ChatMessage[]
-  /** 历史/live 分段 transcript（A2）：有值时代替 transcript 传给详情弹窗。 */
-  transcriptSections?: SubagentTranscriptSection[] | null
   activityLines?: string[]
   detailStats?: SubagentDetailStats
   isTranscriptLoading?: boolean
   footer?: ReactNode
   onAbort?: () => void
   onDetailOpenChange?: (isOpen: boolean) => void
-  /** 会话状态 i18n 标签（仅 session 场景）。 */
-  sessionStatus?: string
-  /** 子代理正等待工具审批——状态行优先显示"等待审批"。 */
+  /** 子代理正等待工具审批——卡片状态区显示"等待审批"标签（A3）。 */
   awaitingApproval?: boolean
-  /** 排队中的意图数（pending + recovery_required）。 */
-  queuedCount?: number
-  /** 排队意图明细，转发给详情弹窗的 queued 消息区。 */
-  queuedMessages?: SubagentQueuedMessage[]
-  /** 会话需要手动恢复（needs_resume）——详情弹窗显示"恢复"按钮。 */
-  needsResume?: boolean
-  onRecover?: () => void
-  onQueueResend?: (messageId: string) => void
-  onQueueDrop?: (messageId: string) => void
 }
 
 const DOTM_SQUARE_4_OUTER_ORDER = [
@@ -112,21 +95,13 @@ export function SubagentCardView({
   prompt,
   taskId,
   transcript,
-  transcriptSections,
   activityLines = [],
   detailStats,
   isTranscriptLoading = false,
   footer,
   onAbort,
   onDetailOpenChange,
-  sessionStatus,
   awaitingApproval,
-  queuedCount,
-  queuedMessages,
-  needsResume,
-  onRecover,
-  onQueueResend,
-  onQueueDrop,
 }: SubagentCardViewProps) {
   const { t } = useLanguage()
   const [isModalOpen, setIsModalOpen] = useState(false)
@@ -177,27 +152,11 @@ export function SubagentCardView({
                 )}
               </span>
               <span className="yolo-subagent-card__summary">{subtitle}</span>
-              {(sessionStatus || queuedCount !== undefined) && (
-                <span className="yolo-subagent-card__session">
-                  {sessionStatus && (
-                    <span className="yolo-subagent-card__session-status">
-                      {/* A3：等待审批优先于 running 状态（session 状态行此时
-                          显示 session 状态 RUNNING，掩盖了审批等待）。 */}
-                      {awaitingApproval
-                        ? t(
-                            'chat.subagent.statusAwaitingApproval',
-                            'Awaiting approval',
-                          )
-                        : sessionStatus}
-                    </span>
-                  )}
-                  {queuedCount !== undefined && queuedCount > 0 && (
-                    <span className="yolo-subagent-card__session-queued">
-                      {t('chat.subagent.queuedCount', '{count} queued').replace(
-                        '{count}',
-                        String(queuedCount),
-                      )}
-                    </span>
+              {awaitingApproval && (
+                <span className="yolo-subagent-card__awaiting">
+                  {t(
+                    'chat.subagent.statusAwaitingApproval',
+                    'Awaiting approval',
                   )}
                 </span>
               )}
@@ -229,15 +188,9 @@ export function SubagentCardView({
           taskId={taskId}
           status={status}
           transcript={transcript ? [...transcript] : undefined}
-          transcriptSections={transcriptSections}
           activityLines={activityLines}
           detailStats={detailStats}
           isTranscriptLoading={isTranscriptLoading}
-          queuedMessages={queuedMessages}
-          needsResume={needsResume}
-          onRecover={onRecover}
-          onQueueResend={onQueueResend}
-          onQueueDrop={onQueueDrop}
           onClose={() => setModalOpen(false)}
         />
       )}

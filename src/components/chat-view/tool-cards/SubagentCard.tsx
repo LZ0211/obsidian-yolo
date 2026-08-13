@@ -24,7 +24,6 @@ import {
   buildSubagentCompletionSummary,
   collectSubagentActivityText,
   getLatestActivityLine,
-  mergeSubagentTranscript,
   normalizeActivityLines,
   parseAcceptedSubagentResponse,
   resolveSubagentEffectiveStatus,
@@ -139,11 +138,6 @@ export function SubagentCard({
     [activityText],
   )
 
-  const transcriptSections = useMemo(
-    () => mergeSubagentTranscript(undefined, subagentResult?.transcript ?? liveTranscript),
-    [subagentResult, liveTranscript],
-  )
-
   const liveAssistantSummary = useMemo(() => {
     if (!liveTranscript) return undefined
     for (let index = liveTranscript.length - 1; index >= 0; index -= 1) {
@@ -191,7 +185,7 @@ export function SubagentCard({
       status={toDisplayStatus(effectiveStatus)}
       prompt={prompt}
       taskId={taskId}
-      transcriptSections={transcriptSections}
+      transcript={subagentResult?.transcript ?? liveTranscript}
       activityLines={activityLines}
       detailStats={
         subagentResult
@@ -202,6 +196,7 @@ export function SubagentCard({
             }
           : undefined
       }
+      awaitingApproval={isAwaitingApproval}
       onAbort={isRunning ? onAbort : undefined}
       footer={
         isAwaitingApproval ? (

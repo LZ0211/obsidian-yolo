@@ -1,5 +1,5 @@
 import { Clock, Coins, Wrench, X } from 'lucide-react'
-import { Fragment, useEffect, useId } from 'react'
+import { useEffect, useId } from 'react'
 import { createPortal } from 'react-dom'
 
 import { useLanguage } from '../../../contexts/language-context'
@@ -9,10 +9,7 @@ import { formatTokenCount } from '../../../utils/llm/formatTokenCount'
 import AssistantToolMessageGroupItem from '../AssistantToolMessageGroupItem'
 
 import {
-  type SubagentQueuedMessage,
-  type SubagentTranscriptSection,
   formatDuration,
-  formatQueuedIntentLine,
   formatSubagentActivityLine,
 } from './subagentCardUtils'
 import type {
@@ -28,18 +25,9 @@ type SubagentDetailModalProps = {
   taskId?: string
   status: SubagentDisplayStatus
   transcript?: ChatMessage[]
-  /** 历史/live 分段 transcript（A2）：有值时代替 transcript 渲染。 */
-  transcriptSections?: SubagentTranscriptSection[] | null
   activityLines: string[]
   detailStats?: SubagentDetailStats
   isTranscriptLoading?: boolean
-  /** 排队意图明细（pending / recovery_required）。 */
-  queuedMessages?: SubagentQueuedMessage[]
-  /** 会话需要手动恢复（needs_resume）时显示"恢复"按钮。 */
-  needsResume?: boolean
-  onRecover?: () => void
-  onQueueResend?: (messageId: string) => void
-  onQueueDrop?: (messageId: string) => void
   onClose: () => void
 }
 
@@ -71,15 +59,9 @@ export function SubagentDetailModal({
   taskId,
   status,
   transcript,
-  transcriptSections,
   activityLines,
   detailStats,
   isTranscriptLoading = false,
-  queuedMessages,
-  needsResume = false,
-  onRecover,
-  onQueueResend,
-  onQueueDrop,
   onClose,
 }: SubagentDetailModalProps) {
   const { t } = useLanguage()
@@ -210,79 +192,10 @@ export function SubagentDetailModal({
             <div className="yolo-subagent-detail-prompt">{prompt}</div>
           )}
 
-          {needsResume && onRecover && (
-            <div className="yolo-subagent-detail-recover">
-              <span className="yolo-subagent-detail-recover-text">
-                {t(
-                  'chat.subagent.recoverSessionHint',
-                  'The session was interrupted and needs recovery before it can continue.',
-                )}
-              </span>
-              <button
-                type="button"
-                className="yolo-subagent-detail-recover-btn"
-                onClick={onRecover}
-              >
-                {t('chat.subagent.recoverSession', 'Recover session')}
-              </button>
-            </div>
-          )}
-
-          {queuedMessages && queuedMessages.length > 0 && (
-            <div className="yolo-subagent-detail-queued">
-              <div className="yolo-subagent-detail-queued-title">
-                {t('chat.subagent.queuedMessagesTitle', 'Queued messages')}
-              </div>
-              {queuedMessages.map((message) => (
-                <div
-                  key={message.messageId}
-                  className="yolo-subagent-detail-queued-item"
-                >
-                  <span
-                    className="yolo-subagent-detail-queued-text"
-                    title={message.text}
-                  >
-                    {formatQueuedIntentLine(message)}
-                  </span>
-                  {message.state === 'recovery_required' && (
-                    <span className="yolo-subagent-detail-queued-actions">
-                      <button
-                        type="button"
-                        className="yolo-subagent-detail-queued-btn yolo-subagent-detail-queued-btn--resend"
-                        onClick={() => onQueueResend?.(message.messageId)}
-                      >
-                        {t('chat.subagent.queueResend', 'Resend')}
-                      </button>
-                      <button
-                        type="button"
-                        className="yolo-subagent-detail-queued-btn yolo-subagent-detail-queued-btn--drop"
-                        onClick={() => onQueueDrop?.(message.messageId)}
-                      >
-                        {t('chat.subagent.queueDrop', 'Drop')}
-                      </button>
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
           {isTranscriptLoading ? (
             <div className="yolo-subagent-detail-empty">
               {t('chat.subagent.loadingActivity', 'Loading activity…')}
             </div>
-          ) : transcriptSections && transcriptSections.length > 0 ? (
-            // A2：历史已结算轮次（previous，上方分隔条）在上、当前 live 在下。
-            transcriptSections.map((section) => (
-              <Fragment key={section.kind}>
-                {section.kind === 'previous' && (
-                  <div className="yolo-subagent-detail-transcript-divider">
-                    {t('chat.subagent.previousRuns', 'Previous runs')}
-                  </div>
-                )}
-                {renderGroupedTranscript(section.messages)}
-              </Fragment>
-            ))
           ) : groupedTranscript ? (
             renderGroupedTranscript(transcript ?? [])
           ) : visibleActivityLines.length > 0 ? (

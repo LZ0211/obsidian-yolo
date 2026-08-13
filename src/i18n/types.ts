@@ -2573,24 +2573,8 @@ export type TranslationKeys = {
         rejectAll?: string
         viewDetails?: string
       }
-      sessionStatus?: {
-        idle?: string
-        running?: string
-        closing?: string
-        needsResume?: string
-        orphaned?: string
-        archived?: string
-      }
-      /** 会话状态行在等待审批时的优先文案（A3）。 */
+      /** 卡片状态区"等待审批"标签（A3 最小实现）。 */
       statusAwaitingApproval?: string
-      /** 详情弹窗历史 run transcript 分隔条文案（A2）。 */
-      previousRuns?: string
-      queuedCount?: string
-      queuedMessagesTitle?: string
-      recoverSession?: string
-      recoverSessionHint?: string
-      queueResend?: string
-      queueDrop?: string
     }
     // conversation settings popover
     conversationSettings?: {

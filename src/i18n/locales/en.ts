@@ -3029,23 +3029,7 @@ export const en: TranslationKeys = {
         rejectAll: 'Reject all',
         viewDetails: 'View parameters',
       },
-      sessionStatus: {
-        idle: 'Idle',
-        running: 'Running',
-        closing: 'Closing',
-        needsResume: 'Needs resume',
-        orphaned: 'Orphaned',
-        archived: 'Archived',
-      },
       statusAwaitingApproval: 'Awaiting approval',
-      previousRuns: 'Previous runs',
-      queuedCount: '{count} queued',
-      queuedMessagesTitle: 'Queued messages',
-      recoverSession: 'Recover session',
-      recoverSessionHint:
-        'The session was interrupted and needs recovery before it can continue.',
-      queueResend: 'Resend',
-      queueDrop: 'Drop',
     },
     conversationSettings: {
       openAria: 'Conversation settings',
