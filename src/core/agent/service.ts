@@ -1707,6 +1707,23 @@ export class AgentService {
       return false
     }
 
+    // The dispatch failed before a child was admitted (invalid
+    // delegatedRoleId / empty model pool / unregistered model all fail inside
+    // `callTool`, returning an Error response without spawning a subagent), so
+    // no child completion will ever land through the completion bus to clear
+    // the deadline registered above. Clear it here, mirroring the auto path's
+    // `NativeAgentRuntime.cleanupSettledSubagentDeadlines`: a terminal
+    // non-Success result means no live child, and leaving the timer armed
+    // would later inject a synthetic timeout into the settled call and
+    // increment the breaker (ghost timeout). `Success` keeps the deadline —
+    // the child runs in the background and its completion clears it.
+    if (
+      result.status !== ToolCallResponseStatus.Success &&
+      result.status !== ToolCallResponseStatus.Running
+    ) {
+      this.cleanupApprovedSubagentDeadline({ toolCallId, conversationId })
+    }
+
     if (isTrailingResolvedToolMessage(nextMessages, toolMessage.id)) {
       await this.run({
         conversationId,
@@ -1768,6 +1785,33 @@ export class AgentService {
         })
       },
     })
+  }
+
+  /**
+   * Approval-path mirror of `NativeAgentRuntime.cleanupSettledSubagentDeadlines`
+   * for the auto path: an approved `delegate_subagent` dispatch that settled to
+   * a terminal non-Success outcome admitted no child, so no completion will
+   * ever arrive through the bus to clear the deadline. Clear it (plus the
+   * teardown-set entry and any settled marker when no child task exists) so the
+   * timer cannot fire later into the settled call — synthetic timeout injection
+   * + breaker increment (ghost timeout).
+   */
+  private cleanupApprovedSubagentDeadline({
+    toolCallId,
+    conversationId,
+  }: {
+    toolCallId: string
+    conversationId: string
+  }): void {
+    clearParentSubagentDeadline(toolCallId)
+    // Keep the approval-path teardown set bounded like
+    // `handleBackgroundTaskCompleted` does for the success path.
+    this.approvedSubagentDeadlineToolCallIds
+      .get(conversationId)
+      ?.delete(toolCallId)
+    if (!findSubagentTaskByParentToolCall(toolCallId)) {
+      clearParentSubagentTimeoutSettled(toolCallId)
+    }
   }
 
   /**
