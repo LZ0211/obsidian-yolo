@@ -50,12 +50,11 @@ export const BUILTIN_TOOL_UI_META: Record<string, BuiltinToolUiMeta> = {
     descFallback:
       'Search indexed metadata and parsed file fields with a constrained query DSL and return matching files.',
   },
-  send_attachment: {
-    labelKey: 'settings.agent.builtinSendAttachmentLabel',
-    descKey: 'settings.agent.builtinSendAttachmentDesc',
-    labelFallback: 'Send Attachment',
-    descFallback: 'Send a vault file as an attachment to the current bot chat.',
-  },
+  // send_attachment deliberately has no UI meta: it is a bot-runtime-only
+  // capability (Bot Platform Phase 6.5), offered only by agent-runner.ts
+  // appending its FQN to a bot run's allowedToolNames, never enumerable in
+  // the Agent settings surface (see NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES
+  // in localFileToolNames.ts).
   fs_list: {
     labelKey: 'settings.agent.builtinFsListLabel',
     descKey: 'settings.agent.builtinFsListDesc',
@@ -157,44 +156,10 @@ export const BUILTIN_TOOL_UI_META: Record<string, BuiltinToolUiMeta> = {
     descFallback:
       'Grouped scheduled task operations: create, update, delete, list, get, and run tasks now.',
   },
-  scheduled_task_create: {
-    labelKey: 'settings.agent.builtinScheduledTaskCreateLabel',
-    descKey: 'settings.agent.builtinScheduledTaskCreateDesc',
-    labelFallback: 'Create Scheduled Task',
-    descFallback:
-      'Create a new scheduled agent task with a cron, interval, or one-time schedule.',
-  },
-  scheduled_task_update: {
-    labelKey: 'settings.agent.builtinScheduledTaskUpdateLabel',
-    descKey: 'settings.agent.builtinScheduledTaskUpdateDesc',
-    labelFallback: 'Update Scheduled Task',
-    descFallback: 'Update an existing scheduled task by id.',
-  },
-  scheduled_task_delete: {
-    labelKey: 'settings.agent.builtinScheduledTaskDeleteLabel',
-    descKey: 'settings.agent.builtinScheduledTaskDeleteDesc',
-    labelFallback: 'Delete Scheduled Task',
-    descFallback: 'Delete an existing scheduled task by id.',
-  },
-  scheduled_task_list: {
-    labelKey: 'settings.agent.builtinScheduledTaskListLabel',
-    descKey: 'settings.agent.builtinScheduledTaskListDesc',
-    labelFallback: 'List Scheduled Tasks',
-    descFallback:
-      'List scheduled tasks, optionally filtered by enabled status.',
-  },
-  scheduled_task_get: {
-    labelKey: 'settings.agent.builtinScheduledTaskGetLabel',
-    descKey: 'settings.agent.builtinScheduledTaskGetDesc',
-    labelFallback: 'Get Scheduled Task',
-    descFallback: 'Get a single scheduled task by id.',
-  },
-  scheduled_task_run_now: {
-    labelKey: 'settings.agent.builtinScheduledTaskRunNowLabel',
-    descKey: 'settings.agent.builtinScheduledTaskRunNowDesc',
-    labelFallback: 'Run Scheduled Task Now',
-    descFallback: 'Immediately enqueue a scheduled task for execution.',
-  },
+  // The legacy split names (scheduled_task_create/update/delete/list/get/
+  // run_now) intentionally have no UI meta: the consolidated scheduled_task_ops
+  // is registered, and the split names survive only in the historical
+  // LEGACY_TOOL_TO_CAPABILITY migration table.
   [WEB_OPS_GROUP_TOOL_NAME]: {
     labelKey: 'settings.agent.builtinWebOpsLabel',
     descKey: 'settings.agent.builtinWebOpsDesc',
@@ -287,14 +252,7 @@ const BUILTIN_TOOL_CATEGORY_MAP: Record<string, BuiltinToolCategory> = {
   ask_user_question: 'context',
   [MEMORY_OPS_GROUP_TOOL_NAME]: 'context',
   [SCHEDULED_TASK_OPS_GROUP_TOOL_NAME]: 'scheduling',
-  scheduled_task_create: 'scheduling',
-  scheduled_task_update: 'scheduling',
-  scheduled_task_delete: 'scheduling',
-  scheduled_task_list: 'scheduling',
-  scheduled_task_get: 'scheduling',
-  scheduled_task_run_now: 'scheduling',
   [WEB_OPS_GROUP_TOOL_NAME]: 'external',
-  send_attachment: 'external',
   js_eval: 'external',
   terminal_command: 'external',
   delegate_subagent: 'external',

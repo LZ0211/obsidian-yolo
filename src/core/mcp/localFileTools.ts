@@ -2836,7 +2836,14 @@ export async function callLocalFileTool({
               results.push({
                 path,
                 ok: false,
-                error: `No open web page with page_id "${pageId}" was found. The tab may have been closed or replaced.`,
+                // Distinguish the web runtime: its workspace has no webview
+                // leaves, so the probe always misses and "tab closed" would
+                // mislead. Desktop workspaces can hold webviews, so there the
+                // miss genuinely means the page is gone.
+                error:
+                  typeof app.workspace?.iterateAllLeaves === 'function'
+                    ? `No open web page with page_id "${pageId}" was found. The tab may have been closed or replaced.`
+                    : 'Reading open web pages via fs_read is not supported in this environment (no desktop webview tabs).',
               })
               continue
             }
@@ -3889,6 +3896,9 @@ export async function callLocalFileTool({
       }
 
       case 'meta_search': {
+        if (signal?.aborted) {
+          return { status: ToolCallResponseStatus.Aborted }
+        }
         const meta = getTextArg(args, 'meta').trim()
         const maxResults = getOptionalIntegerArg({
           args,
@@ -3906,6 +3916,11 @@ export async function callLocalFileTool({
           })
         } catch (error) {
           throw formatMetadataDslError(error)
+        }
+        // The DSL search is synchronous; check again so an abort observed
+        // during the search still surfaces as Aborted instead of a result.
+        if (signal?.aborted) {
+          return { status: ToolCallResponseStatus.Aborted }
         }
         const MAX_RESULT_CHARS = 12_000
         const zeroHints = buildZeroResultHints(meta)

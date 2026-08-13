@@ -35,6 +35,10 @@ jest.mock('../browser/activeWebviewReader', () => ({
   readActiveWebviewHtml: jest.fn(),
 }))
 
+jest.mock('../search/metadataSearch', () => ({
+  searchFilesByMetadataDsl: jest.fn(),
+}))
+
 import { App, TFile, TFolder } from 'obsidian'
 
 import type { YoloSettings } from '../../settings/schema/setting.types'
@@ -66,6 +70,7 @@ import {
 import { runSubagent } from '../agent/subagent/runner'
 import { findWebviewHandleByPageId } from '../browser/activeWebviewProbe'
 import { readActiveWebviewHtml } from '../browser/activeWebviewReader'
+import { searchFilesByMetadataDsl } from '../search/metadataSearch'
 import type {
   RuntimeComponentId,
   RuntimeComponentLease,
@@ -92,6 +97,7 @@ import {
 afterEach(() => {
   editUndoSnapshotStore.clear()
   ;(runSubagent as jest.Mock).mockClear()
+  ;(searchFilesByMetadataDsl as jest.Mock).mockClear()
   setRuntimeComponentAcquirerForTests(null)
 })
 
@@ -2496,6 +2502,96 @@ describe('fs_read wikilink resolution', () => {
     expect(results[0]).toEqual(
       expect.objectContaining({ path: 'Skills/pkg/reference.md', ok: true }),
     )
+  })
+})
+
+describe('meta_search abort handling', () => {
+  it('returns Aborted when the signal aborts during the DSL search', async () => {
+    const controller = new AbortController()
+    ;(searchFilesByMetadataDsl as jest.Mock).mockImplementation(() => {
+      controller.abort()
+      return []
+    })
+
+    const result = await callLocalFileTool({
+      app: {} as App,
+      toolName: 'meta_search',
+      args: { meta: 'select keys(*) from *' },
+      signal: controller.signal,
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Aborted)
+  })
+
+  it('does not call the DSL search when the signal is already aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+
+    const result = await callLocalFileTool({
+      app: {} as App,
+      toolName: 'meta_search',
+      args: { meta: 'select keys(*) from *' },
+      signal: controller.signal,
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Aborted)
+    expect(searchFilesByMetadataDsl).not.toHaveBeenCalled()
+  })
+})
+
+describe('fs_read browser:// error copy by platform', () => {
+  const pageId = 'page_abcdefgh_12345678'
+
+  const callBrowserRead = (workspace: unknown) =>
+    callLocalFileTool({
+      app: { workspace } as App,
+      toolName: 'fs_read',
+      args: { paths: [`browser://${pageId}`] },
+    })
+
+  beforeEach(() => {
+    jest.mocked(findWebviewHandleByPageId).mockReset()
+  })
+
+  it('keeps the closed/replaced tab copy on a workspace that can hold webviews', async () => {
+    jest.mocked(findWebviewHandleByPageId).mockReturnValue(null)
+    const result = await callBrowserRead({ iterateAllLeaves: jest.fn() })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    if (result.status !== ToolCallResponseStatus.Success) {
+      throw new Error('expected success')
+    }
+    const payload = JSON.parse(result.text) as {
+      results: Array<{ path: string; ok: boolean; error?: string }>
+    }
+    expect(payload.results).toEqual([
+      {
+        path: `browser://${pageId}`,
+        ok: false,
+        error: `No open web page with page_id "${pageId}" was found. The tab may have been closed or replaced.`,
+      },
+    ])
+  })
+
+  it('does not mislead with "tab closed" on a web runtime without webview leaves', async () => {
+    jest.mocked(findWebviewHandleByPageId).mockReturnValue(null)
+    const result = await callBrowserRead({})
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    if (result.status !== ToolCallResponseStatus.Success) {
+      throw new Error('expected success')
+    }
+    const payload = JSON.parse(result.text) as {
+      results: Array<{ path: string; ok: boolean; error?: string }>
+    }
+    expect(payload.results).toEqual([
+      {
+        path: `browser://${pageId}`,
+        ok: false,
+        error:
+          'Reading open web pages via fs_read is not supported in this environment (no desktop webview tabs).',
+      },
+    ])
   })
 })
 
