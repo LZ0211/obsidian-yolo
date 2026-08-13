@@ -1640,7 +1640,7 @@ export class AgentService {
     if (isDelegateSubagentToolName(toolCall.request.name)) {
       this.registerApprovedSubagentDeadline({
         toolCallId,
-        runKey: lastRunInput.runKey ?? conversationId,
+        runKey: conversationId,
         conversationId,
         mcpManager: lastRunInput.mcpManager,
       })

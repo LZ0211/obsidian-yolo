@@ -1,7 +1,5 @@
 import type { ChatMessage } from '../../../types/chat'
-import { AGENT_SESSION_MODE } from '../../state/contracts'
 
-import { makeSubagentRunKey } from './session-types'
 import type { SubagentTaskRecord, SubagentTaskSummary } from './types'
 
 const DEFAULT_MAX_COMPLETED_RECORDS = 50
@@ -26,8 +24,8 @@ export class SubagentTaskRegistry {
   private readonly tasks = new Map<string, SubagentTaskIndexRecord>()
   /**
    * Abort owners live outside the indexed summaries (which intentionally drop
-   * `abortController`). Keyed by the same session id used as the index key so
-   * `abort` can reach the runtime owner of a durable or legacy run.
+   * `abortController`). Keyed by the task id used as the index key so `abort`
+   * can reach the runtime owner of a run.
    */
   private readonly abortControllers = new Map<string, AbortController>()
   /**
@@ -35,7 +33,7 @@ export class SubagentTaskRegistry {
    * liveTranscript（Task 6 的 summary 形态，避免大数组随每次摘要拷贝），
    * 但运行中的实时消息仍经 `update(taskId, { liveTranscript })` 推送——存到
    * 侧 map 供 SubagentCard 的审批块/实时摘要/详情弹窗读取，与 abortControllers
-   * 同一旁路模式。按 sessionId 键控（与索引记录一致）。
+   * 同一旁路模式。按 taskId 键控（与索引记录一致）。
    */
   private readonly liveTranscripts = new Map<string, readonly ChatMessage[]>()
   private readonly compactedTaskIds = new Set<string>()
@@ -51,30 +49,21 @@ export class SubagentTaskRegistry {
   ) {}
 
   register(record: SubagentTaskRecord): void {
-    const sessionId = record.sessionId ?? record.taskId
-    const runSequence = record.runSequence ?? 1
-    const runKey = record.runKey ?? makeSubagentRunKey(sessionId, runSequence)
-    const mode = record.mode ?? AGENT_SESSION_MODE.EPHEMERAL
-
     const { liveTranscript, abortController, ...recordSummary } = record
     const indexedRecord: SubagentTaskIndexRecord = {
       ...recordSummary,
-      taskId: sessionId,
-      sessionId,
-      runSequence,
-      runKey,
-      mode,
+      taskId: record.taskId,
     }
 
-    this.tasks.set(sessionId, indexedRecord)
-    this.abortControllers.set(sessionId, abortController)
+    this.tasks.set(record.taskId, indexedRecord)
+    this.abortControllers.set(record.taskId, abortController)
     if (liveTranscript) {
-      this.liveTranscripts.set(sessionId, liveTranscript)
+      this.liveTranscripts.set(record.taskId, liveTranscript)
     }
-    this.compactedTaskIds.delete(sessionId)
-    this.emit([sessionId])
+    this.compactedTaskIds.delete(record.taskId)
+    this.emit([record.taskId])
     if (record.status !== 'running') {
-      this.scheduleCompaction(sessionId)
+      this.scheduleCompaction(record.taskId)
     }
   }
 

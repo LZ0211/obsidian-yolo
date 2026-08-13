@@ -52,47 +52,6 @@ const makeRecord = (
 }
 
 describe('SubagentTaskRegistry', () => {
-  it('normalizes identity without mutating the runtime record', () => {
-    const registry = new SubagentTaskRegistry()
-    const record = makeRecord('sub_identity', {
-      sessionId: undefined,
-      runSequence: undefined,
-      runKey: undefined,
-      mode: undefined,
-    })
-
-    registry.register(record)
-
-    expect(record.sessionId).toBeUndefined()
-    expect(registry.get('sub_identity')).toMatchObject({
-      taskId: 'sub_identity',
-      sessionId: 'sub_identity',
-      runSequence: 1,
-      runKey: 'sub_identity:1',
-      mode: 'ephemeral',
-    })
-  })
-
-  it('uses the stable session id as the index key', () => {
-    const registry = new SubagentTaskRegistry()
-    const record = makeRecord('legacy-task', {
-      sessionId: 'session-stable',
-      runSequence: 2,
-      runKey: 'session-stable:2',
-      mode: 'persistent',
-    })
-
-    registry.register(record)
-
-    expect(registry.get('session-stable')).toMatchObject({
-      taskId: 'session-stable',
-      sessionId: 'session-stable',
-      runSequence: 2,
-      runKey: 'session-stable:2',
-    })
-    expect(registry.get('legacy-task')).toBeUndefined()
-  })
-
   it('never stores streaming transcript arrays or abort owners in the index', () => {
     const registry = new SubagentTaskRegistry()
     const record = makeRecord('projection_task', { status: 'running' })

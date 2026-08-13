@@ -131,10 +131,6 @@ import {
 } from '../runtime-components/runtimeComponentAccess'
 import { getLiteSkillDocumentByPath } from '../skills/liteSkills'
 import {
-  AGENT_SESSION_MODE,
-  type AgentSessionMode,
-} from '../state/contracts'
-import {
   WEB_SCRAPE_TOOL_NAME,
   WEB_SEARCH_TOOL_NAME,
   runWebScrape,
@@ -1150,11 +1146,6 @@ export function getLocalFileTools(options?: {
             description:
               "Optional read-only parent-context fork for the sub-agent. Defaults to none (the child sees only the prompt, exactly as today). last_turns appends a read-only snapshot of the parent conversation's most recent turns to the child prompt; full appends a size-capped read-only snapshot of the whole parent history. The snapshot reflects the parent conversation as of the current parent run's start: the child cannot write to parent state.",
             default: 'none',
-          },
-          sessionId: {
-            type: 'string',
-            description:
-              'Optional id of an existing durable subagent session to continue (obtained from a previous delegate_subagent result). When set, the prompt is queued to that session instead of spawning a new one.',
           },
         },
         required: ['description', 'prompt'],
@@ -4271,9 +4262,6 @@ export async function callLocalFileTool({
         // 推导，不引入任何 subagent 模块的静态/type-only 导入边。
         const { runSubagent } = await import('../agent/subagent/runner')
         type LocalRunSubagentParams = Parameters<typeof runSubagent>[0]
-        type SubagentSessionGatewayLike = NonNullable<
-          LocalRunSubagentParams['sessionGateway']
-        >
 
         // 委托角色路径：delegatedRoleId → Task 2 的 profile 覆盖模型/工具/loop/
         // request context；解析失败（不存在/不可委托/模型不可用）由 resolver 抛错，
@@ -4302,9 +4290,8 @@ export async function callLocalFileTool({
           delegatedProfile = profile
           selectedModelId = profile.modelId
         } else {
-          // 通用路径：modelPreferenceId 是本次派发的模型偏好（等价会话层的
-          // session.modelPreferenceId 语义，authority-resolver.ts:161），优先于
-          // 既有的 modelId 参数，仍须在子代理模型池内。
+          // 通用路径：modelPreferenceId 是本次派发的模型偏好，优先于既有的
+          // modelId 参数，仍须在子代理模型池内。
           const requestedModelId =
             modelPreferenceId ||
             (getOptionalTextArg(args, 'modelId')?.trim() ?? '')
@@ -4353,127 +4340,9 @@ export async function callLocalFileTool({
           }
         }
 
-        // 会话服务网关（Task 5 单例）：settleRun/query/deliverQueuedIntents 供
-        // runSubagent 结算与 Task 9 续跑使用；无 service（未初始化）时保持纯
-        // ephemeral 路径（与迁移前逐字节一致）。
-        const { getSubagentSessionService } = await import(
-          '../agent/subagent/session-service'
-        )
-        const sessionService = getSubagentSessionService()
-        const sessionGateway = sessionService
-          ? ({
-              settleRun: sessionService.settleRun.bind(sessionService),
-              query: sessionService.query.bind(sessionService),
-              deliverQueuedIntents:
-                sessionService.deliverQueuedIntents.bind(sessionService),
-            } satisfies SubagentSessionGatewayLike)
-          : undefined
-
-        // sessionId 续接参数（工具层会话续跑）：非空时把 prompt 以 after_run 意图
-        // 排队到既有 durable 会话（send），不 spawn 新会话；IDLE/NEEDS_RESUME 时
-        // 立即投递成续跑（deliverQueuedIntents → onIntentRunRequested），RUNNING
-        // 时不投递——settleRun 结算时会自动投递 PENDING after_run 意图。状态常量
-        // 动态 import（localFileTools → state/statuses 不引静态边，与 4263 注释
-        // 同款约定）。本分支位于 profile/模型解析之后：续接会话复用会话已冻结的
-        // 角色/模型，父侧解析结果不参与续接（无 sessionId 时解析照常进行）。
-        const requestedSessionId = getOptionalTextArg(args, 'sessionId')?.trim()
-        if (requestedSessionId) {
-          if (!sessionService) {
-            throw new Error('Subagent sessions are not available.')
-          }
-          const existing = await sessionService.query(requestedSessionId)
-          if (!existing) {
-            throw new Error(`Unknown subagent session "${requestedSessionId}".`)
-          }
-          const { SUBAGENT_SESSION_STATUS: SESSION_STATUS } = await import(
-            '../state/statuses'
-          )
-          const existingStatus = existing.session.status
-          const continuable =
-            existingStatus === SESSION_STATUS.IDLE ||
-            existingStatus === SESSION_STATUS.RUNNING ||
-            existingStatus === SESSION_STATUS.NEEDS_RESUME
-          if (!continuable) {
-            // 文案带状态说明 + UI 恢复指引（B1）：closing 会在当前 run settle
-            // 后归档；archived/orphaned 不可再续跑，恢复走 UI 的 recover 决断。
-            throw new Error(
-              `Subagent session "${requestedSessionId}" is not continuable (status: ${existingStatus}). Recovery happens in the UI.`,
-            )
-          }
-          const sent = await sessionService.send({
-            sessionId: requestedSessionId,
-            messageId: uuidv4(),
-            text: taskPrompt,
-            delivery: 'after_run',
-            expectedSessionRevision: existing.session.revision,
-            requestId: uuidv4(),
-          })
-          if (!sent.accepted) {
-            throw new Error(
-              `Failed to queue message to subagent session "${requestedSessionId}": ${sent.errorCode}`,
-            )
-          }
-          if (
-            existingStatus === SESSION_STATUS.IDLE ||
-            existingStatus === SESSION_STATUS.NEEDS_RESUME
-          ) {
-            // fire-and-forget 投递续跑（subagentCardUtils.ts 同款 .catch 诊断）
-            void sessionService
-              .deliverQueuedIntents(requestedSessionId)
-              .catch((error: unknown) => {
-                console.warn('[YOLO] Subagent queued intent delivery failed', {
-                  sessionId: requestedSessionId,
-                  error,
-                })
-              })
-          }
-          return {
-            status: ToolCallResponseStatus.Success,
-            text: JSON.stringify({
-              accepted: true,
-              sessionId: requestedSessionId,
-              mode: AGENT_SESSION_MODE.PERSISTENT,
-              queued: true,
-              status: 'queued',
-              sessionRevision: sent.sessionRevision,
-              note: 'Prompt queued to the existing subagent session. The sub-agent continues asynchronously after its current run settles (or immediately when idle); the result arrives as a follow-up background event.',
-            }),
-          }
-        }
-
-        // 审查 Critical 修复（8b）：durable 委托场景（delegatedRoleId + gateway）
-        // 先 spawn 持久会话——否则 settleRun 对未 spawn 会话静默 no-op
-        // （session-service.ts:543），recover/deliverQueuedIntents/continuation
-        // 全链路无源可作用（backup 的 mode: 'persistent' 工具入口；master 以
-        // delegatedRoleId + gateway 判定）。无 gateway 或无 delegatedRoleId →
-        // 纯 ephemeral，行为与迁移前一致。requestId 每次新 uuid，不做去重
-        // （backup 的 request_id_reused 语义交 Task 9/11 重新审视）。
-        let sessionId: string | undefined
-        let sessionMode: AgentSessionMode | undefined
-        if (sessionService && delegatedProfile) {
-          const spawned = await sessionService.spawn({
-            title: description,
-            prompt: taskPrompt,
-            mode: AGENT_SESSION_MODE.PERSISTENT,
-            delegatedRoleId,
-            ...(modelPreferenceId ? { modelPreferenceId } : {}),
-            requestId: uuidv4(),
-            parentConversationId: conversationId,
-            originAssistantMessageId: assistantMessageId,
-            originToolCallId: toolCallId ?? '',
-            // 父 run 的 assistant id 即冻结的父记忆身份（profile 的
-            // memoryAssistantIdOverride 语义，delegated-assistant-profile.ts:76-93）；
-            // 取不到时以空串回退为委托角色自身身份（resolver 内 ?? assistant.id）。
-            memoryAssistantId: subagentParentContext.assistantId ?? '',
-          })
-          if (!spawned.accepted) {
-            throw new Error(
-              `Failed to spawn a durable subagent session: ${spawned.errorCode}`,
-            )
-          }
-          sessionId = spawned.sessionId
-          sessionMode = AGENT_SESSION_MODE.PERSISTENT
-        }
+        // 纯 ephemeral 派发（去 durable 化）：不再 spawn/续接持久会话——
+        // 每次 delegate_subagent 都启动一个全新子代理（Task 14 的 forkContext
+        // 仍把父上下文只读快照并入 child 初始 prompt）。
         const accepted = await runSubagent({
           description,
           prompt: taskPrompt,
@@ -4498,18 +4367,6 @@ export async function callLocalFileTool({
           },
           signal,
           ...(delegatedProfile ? { delegatedProfile } : {}),
-          // runSequence 1 对齐 spawn 已创建的 run 1（settleRun 按 runKey 定位）
-          ...(sessionId && sessionMode
-            ? { sessionId, runSequence: 1, mode: sessionMode }
-            : {}),
-          ...(sessionGateway
-            ? {
-                sessionGateway,
-                settleRun: sessionGateway.settleRun,
-                onSettleFailure: (err) =>
-                  console.error('[YOLO] subagent settle failure', err),
-              }
-            : {}),
         })
 
         return {

@@ -1,15 +1,4 @@
-import {
-  type SubagentQueueRecoveryResult,
-  type SubagentRecoverResult,
-  type SubagentResumeAfterRecoveryResult,
-  type SubagentSessionSnapshot,
-  type SubagentSessionStatus,
-} from '../../../core/agent/subagent/session-types'
 import type { SubagentTaskSummary } from '../../../core/agent/subagent/types'
-import {
-  SUBAGENT_MESSAGE_INTENT_STATE,
-  SUBAGENT_SESSION_STATUS,
-} from '../../../core/state/statuses'
 import type { LiveTaskViewSnapshot } from '../../../hooks/useLiveTaskStream'
 import type {
   ChatMessage,
@@ -166,91 +155,11 @@ export type SubagentQueuedMessage = {
   state: string
 }
 
-/** 卡片/弹窗的 session 数据（R12：映射全在纯函数，组件只消费 props）。 */
-export type SubagentCardSessionProps = {
-  /** i18n 会话状态标签（无 snapshot 时为 undefined）。 */
-  sessionStatus?: string
-  /** 排队中的意图数（pending + recovery_required）。 */
-  queuedCount?: number
-  /** 排队意图明细（按 createdAt 升序）。 */
-  queuedMessages?: SubagentQueuedMessage[]
-  /** 会话需要手动恢复（needs_resume）。 */
-  needsResume?: boolean
-  /** 存在 recovery_required 意图（需要 resend/drop 决断）。 */
-  recoveryRequired?: boolean
-  /** 子代理正等待工具审批（live transcript 含 PendingApproval）——状态行
-   *  优先显示"等待审批"而非 running。 */
-  awaitingApproval?: boolean
-}
-
 export function formatQueuedIntentLine({
   text,
   state,
 }: Pick<SubagentQueuedMessage, 'text' | 'state'>): string {
   return `${state} · ${text}`
-}
-
-export function formatSessionStatus(
-  status: SubagentSessionStatus,
-  t: (key: string, fallback?: string) => string,
-): string {
-  switch (status) {
-    case SUBAGENT_SESSION_STATUS.IDLE:
-      return t('chat.subagent.sessionStatus.idle', 'Idle')
-    case SUBAGENT_SESSION_STATUS.RUNNING:
-      return t('chat.subagent.sessionStatus.running', 'Running')
-    case SUBAGENT_SESSION_STATUS.CLOSING:
-      return t('chat.subagent.sessionStatus.closing', 'Closing')
-    case SUBAGENT_SESSION_STATUS.NEEDS_RESUME:
-      return t('chat.subagent.sessionStatus.needsResume', 'Needs resume')
-    case SUBAGENT_SESSION_STATUS.ORPHANED:
-      return t('chat.subagent.sessionStatus.orphaned', 'Orphaned')
-    case SUBAGENT_SESSION_STATUS.ARCHIVED:
-      return t('chat.subagent.sessionStatus.archived', 'Archived')
-  }
-}
-
-/**
- * session snapshot → 卡片/弹窗 props 的映射（R12）。快照缺失、task record
- * 无 sessionId 或快照 sessionId 与 record 不一致时返回空 props（组件保持
- * 无 session 的原有行为）。record 只消费 sessionId（runner.ts:1054 恒等
- * taskId === sessionId，宿主重载后 subagentResult.taskId 可作后备 record）。
- */
-export function buildSubagentCardSessionProps(
-  snapshot: SubagentSessionSnapshot | null | undefined,
-  taskRecord: Pick<SubagentTaskSummary, 'sessionId'> | null | undefined,
-  t: (key: string, fallback?: string) => string,
-  awaitingApproval = false,
-): SubagentCardSessionProps {
-  if (!snapshot || !taskRecord?.sessionId) return {}
-  if (snapshot.session.sessionId !== taskRecord.sessionId) return {}
-
-  const liveIntents = (snapshot.intents ?? [])
-    .filter(
-      (intent) =>
-        intent.state === SUBAGENT_MESSAGE_INTENT_STATE.PENDING ||
-        intent.state === SUBAGENT_MESSAGE_INTENT_STATE.RECOVERY_REQUIRED,
-    )
-    .sort((a, b) => a.createdAt - b.createdAt)
-
-  const props: SubagentCardSessionProps = {
-    sessionStatus: formatSessionStatus(snapshot.session.status, t),
-    queuedCount: liveIntents.length,
-    needsResume:
-      snapshot.session.status === SUBAGENT_SESSION_STATUS.NEEDS_RESUME,
-    ...(awaitingApproval ? { awaitingApproval: true } : {}),
-  }
-  if (liveIntents.length > 0) {
-    props.queuedMessages = liveIntents.map((intent) => ({
-      messageId: intent.messageId,
-      text: intent.text,
-      state: intent.state,
-    }))
-    props.recoveryRequired = liveIntents.some(
-      (intent) => intent.state === 'recovery_required',
-    )
-  }
-  return props
 }
 
 /** 详情弹窗的一段 transcript：历史已结算轮次（previous）或当前 live 轮次。 */
@@ -284,62 +193,6 @@ export function mergeSubagentTranscript(
     sections.push({ kind: 'live', messages: [...live] })
   }
   return sections.length > 0 ? sections : null
-}
-
-/**
- * 执行一次 session 动作并统一处理结果反馈（Task 10 审查 Important 修复）：
- * - 拒绝（revision_conflict / session_not_sendable 等）不静默——console.warn
- *   记录 errorCode/retryable；
- * - 调用本身抛错（store I/O 等）同样 warn，不产生 unhandled rejection；
- * - settle 后一律 onSettled（组件用它触发快照重查——恢复/resend/drop 只改
- *   store，registry 不感知，不重查 UI 不刷新）；
- * - resend 成功（drop 不触发）后调用
- *   `getSubagentSessionService()?.deliverQueuedIntents(sessionId)`——把
- *   PENDING after_run 意图投递成续跑（UI 续跑缺口修复）。recover 的一键恢复
- *   走 `service.resumeAfterRecovery`（R14：同一次 CAS 把 RECOVERY_REQUIRED 置
- *   PENDING + 内部投递），不在此二次投递——否则 onIntentRunRequested 在续跑
- *   beginRun 前的 IDLE 窗口会双触发，并发拉起两个续跑。session-service 以
- *   动态 import 获取（与 main.ts 同款），避免本工具模块新增对 session-service
- *   的静态边；service 未初始化时静默跳过。
- * 组件侧以 `void runSubagentSessionAction(...)` 包裹（React 异步 handler
- * 规范）。
- */
-export async function runSubagentSessionAction(
-  action: 'recover' | 'resend' | 'drop',
-  request: Promise<
-    | SubagentRecoverResult
-    | SubagentQueueRecoveryResult
-    | SubagentResumeAfterRecoveryResult
-  >,
-  onSettled: () => void,
-  sessionId: string,
-): Promise<void> {
-  try {
-    const result = await request
-    if (!result.accepted) {
-      console.warn('[YOLO] Subagent session action rejected', {
-        action,
-        errorCode: result.errorCode,
-        retryable: result.retryable,
-      })
-    } else if (action === 'resend') {
-      const { getSubagentSessionService } = await import(
-        '../../../core/agent/subagent/session-service'
-      )
-      getSubagentSessionService()
-        ?.deliverQueuedIntents(sessionId)
-        .catch((error: unknown) => {
-          console.warn('[YOLO] Subagent queued intent delivery failed', {
-            sessionId,
-            error,
-          })
-        })
-    }
-  } catch (error: unknown) {
-    console.warn('[YOLO] Subagent session action failed', { action, error })
-  } finally {
-    onSettled()
-  }
 }
 
 export function buildSubagentCompletionSummary({

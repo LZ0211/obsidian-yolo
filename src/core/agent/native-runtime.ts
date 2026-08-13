@@ -528,7 +528,7 @@ export class NativeAgentRuntime implements AgentRuntime {
                 // when the user approves them (see `AgentService.approveToolCall`).
                 await this.registerSubagentDeadlines({
                   toolMessage: initialToolMessage,
-                  runKey: input.runKey ?? input.conversationId,
+                  runKey: input.conversationId,
                   conversationId: input.conversationId,
                   toolGateway,
                 })
