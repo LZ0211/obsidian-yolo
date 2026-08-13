@@ -176,11 +176,7 @@ function isSharedWebSessionRoute(pathname: string): boolean {
     pathname.startsWith('/api/chat/') ||
     pathname.startsWith('/api/agent/') ||
     pathname.startsWith('/api/vault/') ||
-    pathname.startsWith('/api/citation/') ||
-    // Task 11 web 接线：subagent 会话控制面同样按 web session 鉴权（路由内
-    // resolveSubagentAccess 二次校验），非 loopback 绑定时经此白名单放行
-    // session header，否则 Bearer token 双门。
-    pathname.startsWith('/api/subagent/')
+    pathname.startsWith('/api/citation/')
   )
 }
 

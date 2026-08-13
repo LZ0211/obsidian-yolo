@@ -14,8 +14,6 @@ import { generateConversationTitleText } from '../../utils/chat/generateConversa
 import { loadDesktopNodeModuleSync } from '../../utils/platform/desktopNodeModule'
 import type { AgentEventStore } from '../agent/agentEventStore'
 import type { AgentConversationState, AgentService } from '../agent/service'
-import type { SubagentAuthorityResolverDependencies } from '../agent/subagent/authority-resolver'
-import { getSubagentSessionService } from '../agent/subagent/session-service'
 import { createCliChatRuntime } from '../chat-runtime/cli/createCliChatRuntime'
 import type { CliRuntimeScope } from '../cli-runtime/coordinator'
 import type { McpManager } from '../mcp/mcpManager'
@@ -33,7 +31,6 @@ import { apiError } from './routes/routeUtils'
 import { registerSettingsRoutes } from './routes/settingsRoutes'
 import { registerSkillRoutes } from './routes/skillRoutes'
 import { registerStaticWebRoutes } from './routes/staticWebRoutes'
-import { registerSubagentRoutes } from './routes/subagentRoutes'
 import { registerVaultRoutes } from './routes/vaultRoutes'
 import { loadOrCreateShareTokenPepper } from './shareTokenPepperStore'
 import { createWebAgentContextResolver } from './webAgentContextResolver'
@@ -86,13 +83,6 @@ export type RegisterWebServerRoutesOptions = {
 export type RegisteredWebServerRoutes = {
   bridge: WebAgentRunBridge
   lifecycleService: WebAgentLifecycleService
-  /**
-   * Task 11 web 接线：subagent durable session 运行时初始化（会话服务单例 +
-   * 恢复扫描 + after_run 续跑回调）的完成信号。失败已 .catch 记录，promise
-   * 总是 resolve——harness 用它保证 READY 握手前恢复扫描已跑完（e2e 场景 g
-   * 依赖重启进程内先完成扫描再断言 needs_resume UI）。
-   */
-  subagentSessionReady?: Promise<void>
 }
 
 const DEFAULT_WEB_AGENT_MAX_CONCURRENT = 12
@@ -828,179 +818,7 @@ export function registerWebServerRoutes(
     },
   })
 
-  // Task 11 web 接线：subagent durable session 控制面（浏览器 UI 的
-  // query/recover/queue-recovery/deliver-queued-intents）。鉴权 = 有效 web
-  // session + 父会话可被当前 binding 访问（canUseWebConversation 与
-  // /api/agent/* 同款，防止跨会话操作猜测的 sessionId）。
-  registerSubagentRoutes(options.server.router, {
-    getSessionService: () => getSubagentSessionService(),
-    resolveSubagentAccess: async (sessionId, parentConversationId) => {
-      if (!sessionId) {
-        return {
-          ok: false as const,
-          statusCode: 401,
-          body: apiError('unauthenticated', 'No active web session.'),
-        }
-      }
-      const resolved = resolver.resolve({ sessionId })
-      if (!resolved.ok) {
-        return {
-          ok: false as const,
-          statusCode: resolved.code === 'unauthenticated' ? 401 : 403,
-          body:
-            resolved.code === 'unauthenticated'
-              ? apiError('session_expired', 'The web session has expired.')
-              : apiError(resolved.code, resolved.message),
-        }
-      }
-      if (parentConversationId) {
-        const conversation = await getChat(parentConversationId)
-        if (
-          !canUseWebConversation(conversation, {
-            activeAgentId: resolved.context.activeAgent.id,
-            rootHash: resolved.context.rootHash,
-          })
-        ) {
-          return {
-            ok: false as const,
-            statusCode: 403,
-            body: apiError(
-              'forbidden',
-              'The subagent session is not accessible from this web session.',
-            ),
-          }
-        }
-      }
-      return { ok: true as const }
-    },
-  })
-
-  // Task 11 web 接线：镜像 main.ts initSubagentSessionRuntime——会话服务单例 +
-  // 恢复扫描 + after_run 意图续跑回调。initSubagentSessionService 是进程级
-  // 单例：桌面宿主（main.ts onload）已初始化时此处直接复用其既有接线
-  // （onIntentRunRequested 已绑定桌面 deps），仅 harness/无宿主环境由 web 侧
-  // 完成接线。失败只诊断不阻断（与桌面一致）。
-  const subagentSessionReady = initWebSubagentSessionRuntime({
-    app: options.app,
-    getSettings: options.getSettings,
-    chatManager: options.chatManager,
-    getMcpManager: options.getMcpManager,
-  }).catch((error) => {
-    console.error('[YOLO] Failed to recover web subagent sessions', error)
-  })
-
-  return { bridge, lifecycleService, subagentSessionReady }
-}
-
-/**
- * Task 11 web 接线：initSubagentSessionRuntime 的 web 形态（main.ts:4914 镜像）。
- * 差异点只有 deps 来源——web 侧 ChatManager 是 registerWebServerRoutes 的
- * options.chatManager（桌面 getChatManager 等价物），mcp manager 走
- * options.getMcpManager，settings/app 同为路由装配面。语义与桌面一致：
- * - isSessionActive 恒 false（装配时进程内注册表为空，恢复扫描处理全部残留
- *   RUNNING/NEEDS_RESUME 会话）；
- * - resolveDelegatedRole：角色仍可解析（未删除/仍可委托）即可，模型/工具等
- *   运行期校验留给续跑路径的 authority 解析；
- * - onIntentRunRequested：after_run 意图 settle 后 → runSubagentSessionContinuation
- *   （deps 缺省会直接抛错，fail-fast——续跑表现为"会话永不续跑"）。
- */
-async function initWebSubagentSessionRuntime({
-  app,
-  getSettings,
-  chatManager,
-  getMcpManager,
-}: {
-  app: App
-  getSettings: () => YoloSettings
-  chatManager: ChatManager
-  getMcpManager: () => Promise<McpManager>
-}): Promise<void> {
-  const [
-    { initSubagentSessionService, getSubagentSessionService },
-    { runSubagentSessionContinuation },
-    { resolveDelegatableAssistant },
-    { getProviderClient },
-  ] = await Promise.all([
-    import('../agent/subagent/session-service'),
-    import('../agent/subagent/runner'),
-    import('../agent/subagent/delegatable-assistant'),
-    import('../llm/manager'),
-  ])
-  const deps: SubagentAuthorityResolverDependencies = {
-    app,
-    getSettings,
-    // 注意：web 会话的归属 agent 落在 agentInstanceId / webBinding.activeAgentId
-    // （WebChatRuntimeAdapter.ensureConversation 不写 ChatManager 的 assistantId
-    // 字段）——authority 解析用 conversationMeta.assistantId 在 unified agent
-    // 列表里找父 assistant，缺了会报 "parent assistant is unavailable"。
-    loadConversationMeta: async (conversationId) => {
-      const chat = await chatManager.findById(conversationId)
-      return chat
-        ? {
-            conversationId: chat.id,
-            assistantId: resolveWebConversationAssistantId(chat),
-          }
-        : null
-    },
-    // 父会话消息时间线用于 origin 上下文校验（origin 消息存在性/delegate
-    // 工具调用归属/branch 匹配），与桌面 loadParentConversation 同构。
-    loadParentConversation: async (conversationId) => {
-      const chat = await chatManager.findById(conversationId)
-      return chat
-        ? {
-            conversationId: chat.id,
-            assistantId: resolveWebConversationAssistantId(chat),
-            messages: chat.messages,
-          }
-        : null
-    },
-    createProviderClient: ({ settings, model }) =>
-      getProviderClient({ settings, providerId: model.providerId }),
-    createMcpManager: async () => getMcpManager(),
-  }
-  initSubagentSessionService(app, getSettings, {
-    isSessionActive: () => false,
-    resolveDelegatedRole: (delegatedRoleId) => {
-      try {
-        resolveDelegatableAssistant(getSettings(), delegatedRoleId)
-        return true
-      } catch {
-        return false
-      }
-    },
-    onIntentRunRequested: (sessionId) => {
-      void runSubagentSessionContinuation(sessionId, deps).catch((error) => {
-        console.error(
-          '[YOLO][Web] Subagent session continuation failed',
-          { sessionId },
-          error,
-        )
-      })
-    },
-  })
-  const service = getSubagentSessionService()
-  await service?.recoverInterruptedSessions()
-}
-
-/**
- * web 会话的归属 agent id：assistantId（桌面 ChatManager 语义）→
- * agentInstanceId → webBinding.activeAgentId 依次回退。结构子集声明
- * （ChatManager.findById 返回基础 ChatConversation，web 扩展字段在运行时
- * 存在但不在基础类型上）。
- */
-function resolveWebConversationAssistantId(
-  chat: {
-    assistantId?: string | null
-    agentInstanceId?: string | null
-    webBinding?: { activeAgentId?: string } | null
-  },
-): string | undefined {
-  return (
-    chat.assistantId ??
-    chat.agentInstanceId ??
-    chat.webBinding?.activeAgentId ??
-    undefined
-  )
+  return { bridge, lifecycleService }
 }
 
 function canUseWebConversation(
