@@ -200,6 +200,82 @@ describe('RagIndexService', () => {
     })
   })
 
+  it('serializes in-flight progress writes before the terminal snapshot so the final localStorage value is completed', async () => {
+    // Simulates a slow progress localStorage write that resolves only after
+    // the run has finished. Without the serialization tail the progress
+    // snapshot ('running') would land LAST, so the next initialize() would
+    // misreport the finished run as interrupted (failed / retry_scheduled).
+    const saved: Record<string, string> = {}
+    let releaseProgressWrite: (() => void) | null = null
+    const progressWriteGate = new Promise<void>((resolve) => {
+      releaseProgressWrite = resolve
+    })
+    let writeCount = 0
+    const updateVaultIndex = jest.fn().mockImplementation(
+      async (
+        _options: unknown,
+        onProgress?: (progress: {
+          type: 'indexing'
+          indexProgress: {
+            completedChunks: number
+            totalChunks: number
+            totalFiles: number
+            completedFiles: number
+            currentFile: string
+          }
+        }) => void,
+      ) => {
+        onProgress?.({
+          type: 'indexing',
+          indexProgress: {
+            completedChunks: 3,
+            totalChunks: 10,
+            totalFiles: 1,
+            completedFiles: 0,
+            currentFile: 'foo.md',
+          },
+        })
+        return { permanentFailedPaths: [], chunkifyFailedPaths: [] }
+      },
+    )
+    const service = new RagIndexService({
+      app: {
+        loadLocalStorage: jest.fn().mockReturnValue(null),
+        saveLocalStorage: jest.fn((_key: string, value: string) => {
+          writeCount += 1
+          // Write 1 is the run-start snapshot; write 2 is the coalesced
+          // progress snapshot and is the one that lands late.
+          if (writeCount === 2) {
+            return progressWriteGate.then(() => {
+              saved.yolo_rag_index_run = value
+            })
+          }
+          saved.yolo_rag_index_run = value
+          return undefined
+        }),
+      } as never,
+      getRagEngine: jest.fn().mockResolvedValue({ updateVaultIndex }),
+      activityRegistry: new BackgroundActivityRegistry(),
+      isRagEnabled: () => true,
+      t: (_key, fallback) => fallback ?? '',
+    })
+
+    await service.initialize()
+    const runPromise = service.runIndex({
+      mode: 'sync',
+      scope: { kind: 'all' },
+      trigger: 'manual',
+      retryPolicy: 'none',
+    })
+    await waitForNextTick()
+    releaseProgressWrite!()
+    await runPromise
+
+    expect(JSON.parse(saved.yolo_rag_index_run)).toMatchObject({
+      status: 'completed',
+    })
+  })
+
   it('invokes onIndexCompleted only after a successful run', async () => {
     const onIndexCompleted = jest.fn()
     const updateVaultIndex = jest
