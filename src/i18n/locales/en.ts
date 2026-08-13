@@ -351,6 +351,13 @@ export const en: TranslationKeys = {
         feishuLabel: 'Feishu',
         feishuDesc: 'Lark Open Platform · socket mode',
       },
+      platformName: {
+        telegram: 'Telegram',
+        weixin: 'WeChat',
+        dingtalk: 'DingTalk',
+        feishu: 'Feishu',
+        qq: 'QQ',
+      },
     },
 
     supportYolo: {

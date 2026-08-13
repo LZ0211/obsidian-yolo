@@ -349,6 +349,13 @@ export const it: DeepPartial<TranslationKeys> = {
         feishuLabel: 'Feishu',
         feishuDesc: 'Lark Open Platform · modalità socket',
       },
+      platformName: {
+        telegram: 'Telegram',
+        weixin: 'WeChat',
+        dingtalk: 'DingTalk',
+        feishu: 'Feishu',
+        qq: 'QQ',
+      },
     },
 
     supportYolo: {

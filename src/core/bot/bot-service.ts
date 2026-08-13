@@ -77,7 +77,48 @@ export type BotServiceDeps = {
   getAgentService: () => AgentService
   getMcpManager: () => Promise<McpManager>
   notifyUser?: (message: string) => void
+  /** i18n resolver for user-visible strings — resolved at use time. */
+  translate?: (key: string, fallback: string) => string
   now?: () => number
+}
+
+/**
+ * Bot conversation title format: `{平台名} · {发送者名?} · {MM-DD HH:mm}`.
+ *
+ * The title is written once at conversation creation and shows up in the chat
+ * history list and the Bots settings Sessions list. The platform label is
+ * i18n-resolved by the caller (the raw platform type id, e.g. `weixin_oc`,
+ * reads like a random string); the sender name comes from the inbound event
+ * and is omitted when the platform could not provide one; the timestamp is the
+ * creation moment in local `MM-DD HH:mm` form. Compared with the pre-title
+ * convention (`platform:chatId`) the conversation is identifiable at a glance.
+ */
+export function formatBotConversationTitle(params: {
+  platformLabel: string
+  senderName?: string
+  createdAt: number
+}): string {
+  const parts = [params.platformLabel]
+  const senderName = params.senderName?.trim()
+  if (senderName) parts.push(senderName)
+  parts.push(formatBotConversationTimestamp(params.createdAt))
+  return parts.join(' · ')
+}
+
+/** Local `MM-DD HH:mm` form of a creation timestamp. */
+export function formatBotConversationTimestamp(timestamp: number): string {
+  const date = new Date(timestamp)
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+/** i18n key per platform type for the conversation-title platform segment. */
+const PLATFORM_LABEL_I18N_KEY: Record<string, string> = {
+  telegram: 'settings.bots.platformName.telegram',
+  weixin_oc: 'settings.bots.platformName.weixin',
+  dingtalk: 'settings.bots.platformName.dingtalk',
+  feishu: 'settings.bots.platformName.feishu',
+  qq_official: 'settings.bots.platformName.qq',
 }
 
 const HELP_TEXT = [
@@ -137,6 +178,26 @@ export class BotService {
    */
   get isCleanedUp(): boolean {
     return this.cleanupPromise !== null
+  }
+
+  private t(key: string, fallback: string): string {
+    return this.deps.translate?.(key, fallback) ?? fallback
+  }
+
+  /** Builds the creation-time conversation title for an inbound event. */
+  private botConversationTitle(
+    platformName: string,
+    senderName: string | undefined,
+    createdAt: number,
+  ): string {
+    return formatBotConversationTitle({
+      platformLabel: this.t(
+        PLATFORM_LABEL_I18N_KEY[platformName] ?? '',
+        platformName,
+      ),
+      senderName,
+      createdAt,
+    })
   }
 
   private loadConversation(
@@ -665,10 +726,13 @@ export class BotService {
       // messages into a conversation that the chat UI cannot load.
       const conversation = await this.loadConversation(existing.conversationId)
       if (!conversation) {
-        const replacement = await this.createConversation(
-          `${event.platformName}:${chatId}`,
-        )
         const now = this.now()
+        const title = this.botConversationTitle(
+          event.platformName,
+          event.senderName,
+          now,
+        )
+        const replacement = await this.createConversation(title)
         await this.sessionMapper.upsertSession({
           ...existing,
           platformName: event.platformName,
@@ -676,6 +740,7 @@ export class BotService {
           platformChatId: chatId,
           threadId,
           conversationId: replacement,
+          conversationTitle: title,
           lastActiveAt: now,
           archivedAt: undefined,
         })
@@ -697,10 +762,16 @@ export class BotService {
       return existing.conversationId
     }
 
-    const conversation = await this.createConversation(
-      `${event.platformName}:${chatId}`,
-    )
+    // First message of a brand-new session: the title is fixed at creation
+    // (`platform · sender · MM-DD HH:mm`) and never overwritten by later
+    // messages — `conversationTitle` carries it into the session mapping.
     const now = this.now()
+    const title = this.botConversationTitle(
+      event.platformName,
+      event.senderName,
+      now,
+    )
+    const conversation = await this.createConversation(title)
     const mapping: SessionMapping = {
       sessionKey: event.sessionKey,
       platformName: event.platformName,
@@ -708,6 +779,7 @@ export class BotService {
       platformChatId: chatId,
       threadId,
       conversationId: conversation,
+      conversationTitle: title,
       createdAt: now,
       lastActiveAt: now,
     }
@@ -745,10 +817,15 @@ export class BotService {
           return true
         }
         const decoded = decodeSessionKey(event.sessionKey)
-        const conversation = await this.createConversation(
-          `${event.platformName}:${decoded.chatId}`,
-        )
+        // A /reset starts a fresh conversation; the incoming text is just the
+        // command itself, so the title carries platform + sender + reset time.
         const now = this.now()
+        const title = this.botConversationTitle(
+          event.platformName,
+          event.senderName,
+          now,
+        )
+        const conversation = await this.createConversation(title)
         await this.sessionMapper.upsertSession({
           sessionKey: event.sessionKey,
           platformName: event.platformName,
@@ -756,6 +833,7 @@ export class BotService {
           platformChatId: decoded.chatId,
           threadId: decoded.threadId,
           conversationId: conversation,
+          conversationTitle: title,
           createdAt: now,
           lastActiveAt: now,
         })

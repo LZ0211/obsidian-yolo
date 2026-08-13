@@ -316,6 +316,13 @@ export type TranslationKeys = {
         feishuLabel?: string
         feishuDesc?: string
       }
+      platformName?: {
+        telegram?: string
+        weixin?: string
+        dingtalk?: string
+        feishu?: string
+        qq?: string
+      }
     }
 
     supportYolo: {

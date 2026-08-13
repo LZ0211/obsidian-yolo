@@ -23,7 +23,7 @@ import type { ChatMessage } from '../../types/chat'
 import type { McpManager } from '../mcp/mcpManager'
 
 import { runBotAgentTurn } from './agent-runner'
-import { BotService } from './bot-service'
+import { BotService, formatBotConversationTitle } from './bot-service'
 import type { BotServiceDeps } from './bot-service'
 import { encodeSessionKey } from './types'
 import type { PlatformAdapter, PlatformMessageEvent } from './types'
@@ -203,6 +203,15 @@ function makeHarness(botsSettingsOverrides: Partial<BotsSettings> = {}) {
     getAgentService,
     getMcpManager,
     notifyUser,
+    // English label resolution for the platform segments of bot conversation
+    // titles; every other key falls back to its fallback string.
+    translate: jest.fn((key: string, fallback: string) => {
+      const labels: Record<string, string> = {
+        'settings.bots.platformName.telegram': 'Telegram',
+        'settings.bots.platformName.weixin': 'WeChat',
+      }
+      return labels[key] ?? fallback
+    }),
   }
 
   const service = new BotService(deps)
@@ -802,5 +811,81 @@ describe('BotService disable aborts in-flight turns', () => {
     expect(abortSignal.aborted).toBe(true)
     expect(h.adaptersByPlatformId.get('bot-1')!.stop).toHaveBeenCalled()
     releaseTurn?.()
+  })
+})
+
+describe('Bot conversation titles', () => {
+  const TITLE_PATTERN = /^Telegram · User One · \d{2}-\d{2} \d{2}:\d{2}$/
+
+  it('titles new conversations `{platform} · {sender} · {MM-DD HH:mm}`', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    await h.service.handleIncoming(makeEvent({ messageId: 'm-title' }), makeTelegramConfig())
+    expect(h.createChat).toHaveBeenCalledWith(
+      expect.objectContaining({ title: expect.stringMatching(TITLE_PATTERN) }),
+    )
+    const mapping = h
+      .getCurrentSettings()
+      .bots.sessionMappings.find(
+        (m) => m.sessionKey === encodeSessionKey('telegram', 'private', 'u1'),
+      )
+    expect(mapping?.conversationTitle).toMatch(TITLE_PATTERN)
+  })
+
+  it('omits the sender segment when the inbound event has no sender name', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    await h.service.handleIncoming(
+      makeEvent({ messageId: 'm-anon', senderName: '  ' }),
+      makeTelegramConfig(),
+    )
+    expect(h.createChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: expect.stringMatching(
+          /^Telegram · \d{2}-\d{2} \d{2}:\d{2}$/,
+        ),
+      }),
+    )
+  })
+
+  it('uses the i18n platform label (localized) in the title', async () => {
+    const config = makeWeixinConfig({ id: 'bot-wx' })
+    const h = makeHarness({ platforms: [config] })
+    await h.service.initialize()
+    await h.service.handleIncoming(
+      makeEvent({
+        messageId: 'm-weixin',
+        platformName: 'weixin_oc',
+        sessionKey: encodeSessionKey('weixin_oc', 'private', 'u1'),
+      }),
+      config,
+    )
+    expect(h.createChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: expect.stringMatching(/^WeChat · User One · \d{2}-\d{2} \d{2}:\d{2}$/),
+      }),
+    )
+  })
+})
+
+describe('formatBotConversationTitle', () => {
+  it('joins platform label, sender name and local MM-DD HH:mm time', () => {
+    expect(
+      formatBotConversationTitle({
+        platformLabel: '微信',
+        senderName: '小明',
+        createdAt: new Date(2026, 7, 12, 9, 5).getTime(),
+      }),
+    ).toBe('微信 · 小明 · 08-12 09:05')
+  })
+
+  it('omits the sender segment when it is empty or whitespace-only', () => {
+    expect(
+      formatBotConversationTitle({
+        platformLabel: 'Telegram',
+        senderName: '',
+        createdAt: new Date(2026, 0, 2, 23, 59).getTime(),
+      }),
+    ).toBe('Telegram · 01-02 23:59')
   })
 })

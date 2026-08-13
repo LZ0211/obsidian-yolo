@@ -306,6 +306,13 @@ export const zh: TranslationKeys = {
         feishuLabel: '飞书',
         feishuDesc: '飞书开放平台 · 长连接模式',
       },
+      platformName: {
+        telegram: 'Telegram',
+        weixin: '微信',
+        dingtalk: '钉钉',
+        feishu: '飞书',
+        qq: 'QQ',
+      },
     },
 
     supportYolo: {
