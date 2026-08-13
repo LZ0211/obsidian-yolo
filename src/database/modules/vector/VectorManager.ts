@@ -185,7 +185,7 @@ export class VectorManager {
     if (!this.vectorStore) return
     if (embeddingModelOrId == null) {
       for (const ns of await this.listNamespaces()) {
-        await this.vectorStore.dropNamespaceById(ns)
+        await this.vectorStore.dropNamespaceById?.(ns)
       }
       return
     }
@@ -1020,7 +1020,7 @@ export class VectorManager {
   }
 
   private getVectorNamespace(
-    embeddingModel: EmbeddingModelClient,
+    embeddingModel: Pick<EmbeddingModelClient, 'id' | 'dimension'>,
   ): VectorNamespace {
     const configuredModel = this.settings?.embeddingModels?.find(
       (model) => model.id === embeddingModel.id,

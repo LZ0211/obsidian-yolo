@@ -49,8 +49,11 @@ const embeddingModel = {
   getEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3]),
 } as never
 
-type VectorStoreWithIndexedFiles = Omit<VectorStore, 'getIndexedFiles'> &
-  Required<Pick<VectorStore, 'getIndexedFiles'>>
+type VectorStoreWithIndexedFiles = Omit<
+  VectorStore,
+  'getIndexedFiles' | 'getFileReadiness'
+> &
+  Required<Pick<VectorStore, 'getIndexedFiles' | 'getFileReadiness'>>
 
 const fakeVectorStore = (): jest.Mocked<VectorStoreWithIndexedFiles> => ({
   open: jest.fn(),
@@ -338,7 +341,7 @@ describe('VectorManager.reconcile', () => {
         ],
       ]),
     )
-    ;(ragStore.getFileReadiness as jest.Mock).mockResolvedValue(
+    ;ragStore.getFileReadiness.mockResolvedValue(
       new Map([
         ['ready.md', { path: 'ready.md', vectorReady: true }],
         ['vector-only.md', { path: 'vector-only.md', vectorReady: true }],
@@ -382,7 +385,7 @@ describe('VectorManager.reconcile', () => {
         ],
       ]),
     )
-    ;(ragStore.getFileReadiness as jest.Mock).mockResolvedValue(
+    ;ragStore.getFileReadiness.mockResolvedValue(
       new Map([
         ['ready.md', { path: 'ready.md', vectorReady: true }],
         ['vector-only.md', { path: 'vector-only.md', vectorReady: true }],
