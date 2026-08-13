@@ -21,6 +21,7 @@ import { runWithLLMDebugTrace } from '../llm/debugCapture'
 import { composeAgentInjections } from './agent-injections'
 import { backgroundTaskCompletionBus } from './background-task/completion-bus'
 import {
+  type AutoContextCompactionNoticeTier,
   buildAutoContextCompactionNoticeMessage,
   buildCompactedConversationState,
   createConversationCompactionSummary,
@@ -28,6 +29,7 @@ import {
   findCompactToolCallId,
   getAutoContextCompactionPromptTrigger,
   getLastAssistantPromptTokens,
+  shouldPromptAutoContextCompactionTier,
 } from './compaction'
 import { AgentLlmTurnExecutor } from './llm-turn-executor'
 import { applyLoopPolicy } from './loop-policy'
@@ -278,7 +280,11 @@ export class NativeAgentRuntime implements AgentRuntime {
     let abortListener: (() => void) | null = null
     let repeatedReadCallGuardState = createRepeatedReadCallGuardState()
     let repeatedToolFailureGuardState = createRepeatedToolFailureGuardState()
-    const promptedAutoCompactionAssistantMessageIds = new Set<string>()
+    // Per-run auto-compaction notice dedup: the highest tier already injected
+    // this run. Only a strictly higher tier re-notifies while the model has
+    // not compacted; completing a compaction resets this (see below).
+    let promptedAutoCompactionTier: AutoContextCompactionNoticeTier | null =
+      null
     let pendingResumeAssistantMessage = resumeAssistantMessage
     // Per-run Responses continuation handle. Carries the prior response id and
     // the accumulated tool-output input items across turns; `undefined` for
@@ -350,13 +356,18 @@ export class NativeAgentRuntime implements AgentRuntime {
                     : ongoingRequestMessages),
                   ...this.messages,
                 ]
-                const autoContextCompactionNotice =
+                const autoContextCompactionNoticeResult =
                   this.buildAutoContextCompactionNotice({
                     input,
                     messages: conversationMessages,
-                    promptedAssistantMessageIds:
-                      promptedAutoCompactionAssistantMessageIds,
+                    promptedTier: promptedAutoCompactionTier,
                   })
+                if (autoContextCompactionNoticeResult) {
+                  promptedAutoCompactionTier =
+                    autoContextCompactionNoticeResult.tier
+                }
+                const autoContextCompactionNotice =
+                  autoContextCompactionNoticeResult?.message
                 const llmTurnExecutorInput: ConstructorParameters<
                   typeof AgentLlmTurnExecutor
                 >[0] = {
@@ -684,6 +695,9 @@ export class NativeAgentRuntime implements AgentRuntime {
                       ? [...this.compactionState, nextCompaction]
                       : this.compactionState
                     this.pendingCompactionAnchorMessageId = null
+                    // The model compacted: allow fresh auto-compaction
+                    // notices again (per-run tier dedup reset).
+                    promptedAutoCompactionTier = null
                     this.notifySubscribers()
                   } catch (error) {
                     this.pendingCompactionAnchorMessageId = null
@@ -815,12 +829,12 @@ export class NativeAgentRuntime implements AgentRuntime {
   private buildAutoContextCompactionNotice({
     input,
     messages,
-    promptedAssistantMessageIds,
+    promptedTier,
   }: {
     input: AgentRuntimeRunInput
     messages: ChatMessage[]
-    promptedAssistantMessageIds: Set<string>
-  }): RequestMessage | null {
+    promptedTier: AutoContextCompactionNoticeTier | null
+  }): { message: RequestMessage; tier: AutoContextCompactionNoticeTier } | null {
     if (!this.loopConfig.enableTools || !input.autoContextCompaction) {
       return null
     }
@@ -830,17 +844,29 @@ export class NativeAgentRuntime implements AgentRuntime {
       chatOptions: input.autoContextCompaction.chatOptions,
       maxContextTokens: input.autoContextCompaction.maxContextTokens,
       compactionState: this.compactionState,
-      promptedAssistantMessageIds,
     })
     if (!trigger) {
       return null
     }
 
-    promptedAssistantMessageIds.add(trigger.assistantMessage.id)
-    return buildAutoContextCompactionNoticeMessage({
-      trigger,
-      chatOptions: input.autoContextCompaction.chatOptions,
-    })
+    // Per-run dedup: equal/lower tiers already prompted stay silent until the
+    // model actually compacts (which resets `promptedAutoCompactionTier`).
+    if (
+      !shouldPromptAutoContextCompactionTier({
+        tier: trigger.tier,
+        promptedTier,
+      })
+    ) {
+      return null
+    }
+
+    return {
+      message: buildAutoContextCompactionNoticeMessage({
+        trigger,
+        chatOptions: input.autoContextCompaction.chatOptions,
+      }),
+      tier: trigger.tier,
+    }
   }
 
   private async runSingleTurnFastPath(

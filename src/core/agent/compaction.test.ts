@@ -19,6 +19,8 @@ import {
   createConversationCompactionSummary,
   getAutoContextCompactionPromptTrigger,
   getLatestAssistantContextUsage,
+  resolveAutoContextCompactionNoticeTier,
+  shouldPromptAutoContextCompactionTier,
   shouldTriggerAutoContextCompaction,
 } from './compaction'
 
@@ -643,6 +645,210 @@ describe('auto context compaction runtime notice', () => {
     })
 
     expect(trigger).toBeNull()
+  })
+
+  it('returns the resolved tier on the trigger', () => {
+    const trigger = getAutoContextCompactionPromptTrigger({
+      messages: [userMsg('u1'), assistantMsg('a1', { prompt_tokens: 80 })],
+      chatOptions: baseAutoOptions,
+      maxContextTokens: 1000,
+      compactionState: [],
+    })
+
+    expect(trigger?.tier).toBe('warn')
+  })
+})
+
+describe('resolveAutoContextCompactionNoticeTier', () => {
+  const usage = (promptTokens: number, ratio: number | null) => ({
+    assistantMessage: assistantMsg('a1', {
+      prompt_tokens: promptTokens,
+    }) as ChatMessage & { role: 'assistant' },
+    promptTokens,
+    maxContextTokens: ratio === null ? null : 1000,
+    ratio,
+  })
+
+  it('tokens mode: derives tiers proportionally from the configured threshold', () => {
+    const options = { ...baseAutoOptions }
+    expect(
+      resolveAutoContextCompactionNoticeTier({
+        latestContextUsage: usage(49, null),
+        chatOptions: options,
+      }),
+    ).toBeNull()
+    expect(
+      resolveAutoContextCompactionNoticeTier({
+        latestContextUsage: usage(50, null),
+        chatOptions: options,
+      }),
+    ).toBe('soft')
+    expect(
+      resolveAutoContextCompactionNoticeTier({
+        latestContextUsage: usage(74, null),
+        chatOptions: options,
+      }),
+    ).toBe('soft')
+    expect(
+      resolveAutoContextCompactionNoticeTier({
+        latestContextUsage: usage(75, null),
+        chatOptions: options,
+      }),
+    ).toBe('warn')
+    expect(
+      resolveAutoContextCompactionNoticeTier({
+        latestContextUsage: usage(99, null),
+        chatOptions: options,
+      }),
+    ).toBe('warn')
+    expect(
+      resolveAutoContextCompactionNoticeTier({
+        latestContextUsage: usage(100, null),
+        chatOptions: options,
+      }),
+    ).toBe('must')
+  })
+
+  it('ratio mode: derives tiers proportionally from the configured ratio', () => {
+    const options = {
+      ...baseAutoOptions,
+      autoContextCompactionThresholdMode: 'ratio' as const,
+      autoContextCompactionThresholdRatio: 0.8,
+    }
+    expect(
+      resolveAutoContextCompactionNoticeTier({
+        latestContextUsage: usage(0, 0.39),
+        chatOptions: options,
+      }),
+    ).toBeNull()
+    expect(
+      resolveAutoContextCompactionNoticeTier({
+        latestContextUsage: usage(0, 0.4),
+        chatOptions: options,
+      }),
+    ).toBe('soft')
+    expect(
+      resolveAutoContextCompactionNoticeTier({
+        latestContextUsage: usage(0, 0.6),
+        chatOptions: options,
+      }),
+    ).toBe('warn')
+    expect(
+      resolveAutoContextCompactionNoticeTier({
+        latestContextUsage: usage(0, 0.8),
+        chatOptions: options,
+      }),
+    ).toBe('must')
+  })
+
+  it('ratio mode: returns null when the context window is unknown', () => {
+    expect(
+      resolveAutoContextCompactionNoticeTier({
+        latestContextUsage: usage(120, null),
+        chatOptions: {
+          ...baseAutoOptions,
+          autoContextCompactionThresholdMode: 'ratio' as const,
+        },
+      }),
+    ).toBeNull()
+  })
+})
+
+describe('shouldPromptAutoContextCompactionTier per-run dedup', () => {
+  it('prompts when nothing was prompted yet', () => {
+    expect(
+      shouldPromptAutoContextCompactionTier({
+        tier: 'soft',
+        promptedTier: null,
+      }),
+    ).toBe(true)
+  })
+
+  it('does not re-prompt an equal or lower tier within the same run', () => {
+    expect(
+      shouldPromptAutoContextCompactionTier({
+        tier: 'soft',
+        promptedTier: 'soft',
+      }),
+    ).toBe(false)
+    expect(
+      shouldPromptAutoContextCompactionTier({
+        tier: 'warn',
+        promptedTier: 'warn',
+      }),
+    ).toBe(false)
+    expect(
+      shouldPromptAutoContextCompactionTier({
+        tier: 'must',
+        promptedTier: 'must',
+      }),
+    ).toBe(false)
+    expect(
+      shouldPromptAutoContextCompactionTier({
+        tier: 'soft',
+        promptedTier: 'must',
+      }),
+    ).toBe(false)
+  })
+
+  it('re-prompts when a strictly higher tier is reached', () => {
+    expect(
+      shouldPromptAutoContextCompactionTier({
+        tier: 'warn',
+        promptedTier: 'soft',
+      }),
+    ).toBe(true)
+    expect(
+      shouldPromptAutoContextCompactionTier({
+        tier: 'must',
+        promptedTier: 'soft',
+      }),
+    ).toBe(true)
+    expect(
+      shouldPromptAutoContextCompactionTier({
+        tier: 'must',
+        promptedTier: 'warn',
+      }),
+    ).toBe(true)
+  })
+})
+
+describe('auto context compaction notice tiers', () => {
+  const noticeFor = (promptTokens: number) => {
+    const trigger = getAutoContextCompactionPromptTrigger({
+      messages: [
+        userMsg('u1'),
+        assistantMsg('a1', { prompt_tokens: promptTokens }),
+      ],
+      chatOptions: baseAutoOptions,
+      maxContextTokens: 1000,
+      compactionState: [],
+    })
+    if (!trigger) {
+      throw new Error('Expected auto compaction prompt trigger')
+    }
+    return buildAutoContextCompactionNoticeMessage({
+      trigger,
+      chatOptions: baseAutoOptions,
+    }).content as string
+  }
+
+  it('soft tier wording suggests considering compaction', () => {
+    const content = noticeFor(50)
+    expect(content).toContain('Consider compacting in the near future')
+    expect(content).toContain('<auto_context_compaction_notice>')
+  })
+
+  it('warn tier wording strongly recommends compaction', () => {
+    const content = noticeFor(80)
+    expect(content).toContain('Compacting soon is strongly recommended')
+  })
+
+  it('must tier keeps the threshold-reached wording', () => {
+    const content = noticeFor(120)
+    expect(content).toContain(
+      'has reached the user\'s automatic context compaction threshold',
+    )
   })
 })
 

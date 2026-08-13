@@ -101,7 +101,108 @@ export type LatestAssistantContextUsage = {
   cacheHitRate?: number
 }
 
-export type AutoContextCompactionPromptTrigger = LatestAssistantContextUsage
+/**
+ * Notice strength tiers for automatic context compaction, derived as
+ * proportions of the user's configured threshold (ACP three-tier nudge):
+ * - `soft` — reached 50% of the threshold; consider compacting soon.
+ * - `warn` — reached 75% of the threshold; compacting is strongly advised.
+ * - `must` — reached the configured threshold; compact before substantial new
+ *   work (the historical single-threshold behavior).
+ */
+export type AutoContextCompactionNoticeTier = 'soft' | 'warn' | 'must'
+
+export const AUTO_COMPACTION_SOFT_TIER_RATIO = 0.5
+export const AUTO_COMPACTION_WARN_TIER_RATIO = 0.75
+
+/**
+ * Absorbs IEEE-754 drift when comparing `usage.ratio` against a multiplied
+ * threshold (e.g. 0.8 * 0.75 === 0.6000000000000001), so exact boundary hits
+ * resolve to the intended tier.
+ */
+const AUTO_COMPACTION_TIER_EPSILON = 1e-9
+
+export const AUTO_COMPACTION_TIER_RANK: Record<
+  AutoContextCompactionNoticeTier,
+  number
+> = {
+  soft: 1,
+  warn: 2,
+  must: 3,
+}
+
+export type AutoContextCompactionPromptTrigger = LatestAssistantContextUsage & {
+  tier: AutoContextCompactionNoticeTier
+}
+
+/**
+ * Resolve the notice tier for the latest assistant usage, derived
+ * proportionally from the user's configured threshold. Returns null below the
+ * soft tier.
+ */
+export const resolveAutoContextCompactionNoticeTier = ({
+  latestContextUsage,
+  chatOptions,
+}: {
+  latestContextUsage: LatestAssistantContextUsage
+  chatOptions: AutoContextCompactionChatOptions
+}): AutoContextCompactionNoticeTier | null => {
+  if (chatOptions.autoContextCompactionThresholdMode === 'tokens') {
+    const threshold = chatOptions.autoContextCompactionThresholdTokens
+    if (latestContextUsage.promptTokens >= threshold) return 'must'
+    if (
+      latestContextUsage.promptTokens >=
+      threshold * AUTO_COMPACTION_WARN_TIER_RATIO
+    ) {
+      return 'warn'
+    }
+    if (
+      latestContextUsage.promptTokens >=
+      threshold * AUTO_COMPACTION_SOFT_TIER_RATIO
+    ) {
+      return 'soft'
+    }
+    return null
+  }
+
+  if (latestContextUsage.ratio === null) {
+    return null
+  }
+
+  const ratio = chatOptions.autoContextCompactionThresholdRatio
+  if (latestContextUsage.ratio >= ratio) return 'must'
+  if (
+    latestContextUsage.ratio >=
+    ratio * AUTO_COMPACTION_WARN_TIER_RATIO - AUTO_COMPACTION_TIER_EPSILON
+  ) {
+    return 'warn'
+  }
+  if (
+    latestContextUsage.ratio >=
+    ratio * AUTO_COMPACTION_SOFT_TIER_RATIO - AUTO_COMPACTION_TIER_EPSILON
+  ) {
+    return 'soft'
+  }
+  return null
+}
+
+/**
+ * Per-run notice dedup: once a tier has been injected and the model has not
+ * compacted, only a strictly higher tier re-notifies; equal or lower tiers
+ * stay silent so the notice does not repeat on every LLM turn. Compaction
+ * completion resets the prompted tier (the caller owns that reset).
+ */
+export const shouldPromptAutoContextCompactionTier = ({
+  tier,
+  promptedTier,
+}: {
+  tier: AutoContextCompactionNoticeTier
+  promptedTier: AutoContextCompactionNoticeTier | null
+}): boolean => {
+  if (promptedTier === null) {
+    return true
+  }
+  return AUTO_COMPACTION_TIER_RANK[tier] > AUTO_COMPACTION_TIER_RANK[promptedTier]
+}
 
 export const getLatestAssistantContextUsage = ({
   messages,
@@ -152,29 +253,6 @@ export const getLatestAssistantContextUsage = ({
   return null
 }
 
-const isAutoContextCompactionThresholdReached = ({
-  latestContextUsage,
-  chatOptions,
-}: {
-  latestContextUsage: LatestAssistantContextUsage
-  chatOptions: AutoContextCompactionChatOptions
-}): boolean => {
-  if (chatOptions.autoContextCompactionThresholdMode === 'tokens') {
-    return (
-      latestContextUsage.promptTokens >=
-      chatOptions.autoContextCompactionThresholdTokens
-    )
-  }
-
-  if (latestContextUsage.ratio === null) {
-    return false
-  }
-
-  return (
-    latestContextUsage.ratio >= chatOptions.autoContextCompactionThresholdRatio
-  )
-}
-
 export const getAutoContextCompactionPromptTrigger = ({
   messages,
   chatOptions,
@@ -209,18 +287,22 @@ export const getAutoContextCompactionPromptTrigger = ({
     return null
   }
 
-  return isAutoContextCompactionThresholdReached({
+  const tier = resolveAutoContextCompactionNoticeTier({
     latestContextUsage,
     chatOptions,
   })
-    ? latestContextUsage
-    : null
+  if (tier === null) {
+    return null
+  }
+
+  return { ...latestContextUsage, tier }
 }
 
 /**
  * Whether the latest assistant usage crosses the automatic compaction
- * threshold. Keeps the submit-time active-run guard for callers that need the
- * old boolean shape.
+ * **must** tier (the configured threshold). Keeps the submit-time active-run
+ * guard for callers that need the old boolean shape; the softer nudge tiers
+ * (soft/warn) do not count as a must-compact guard.
  */
 export const shouldTriggerAutoContextCompaction = ({
   previousMessages,
@@ -237,14 +319,32 @@ export const shouldTriggerAutoContextCompaction = ({
     return false
   }
 
-  return (
-    getAutoContextCompactionPromptTrigger({
-      messages: previousMessages,
-      chatOptions,
-      maxContextTokens,
-      compactionState,
-    }) !== null
-  )
+  const trigger = getAutoContextCompactionPromptTrigger({
+    messages: previousMessages,
+    chatOptions,
+    maxContextTokens,
+    compactionState,
+  })
+  return trigger !== null && trigger.tier === 'must'
+}
+
+const buildTierLeadSentence = ({
+  tier,
+  currentUsageDescription,
+  thresholdDescription,
+}: {
+  tier: AutoContextCompactionNoticeTier
+  currentUsageDescription: string
+  thresholdDescription: string
+}): string => {
+  switch (tier) {
+    case 'soft':
+      return `The previous assistant turn reported ${currentUsageDescription}, which is at least 50% of the user's automatic context compaction threshold (${thresholdDescription}). Consider compacting in the near future to keep the context window healthy.`
+    case 'warn':
+      return `The previous assistant turn reported ${currentUsageDescription}, which is at least 75% of the user's automatic context compaction threshold (${thresholdDescription}). Compacting soon is strongly recommended — continuing without it may exhaust the context window mid-task.`
+    case 'must':
+      return `The previous assistant turn reported ${currentUsageDescription}, which has reached the user's automatic context compaction threshold (${thresholdDescription}). Please compact before starting substantial new work.`
+  }
 }
 
 export const buildAutoContextCompactionNoticeMessage = ({
@@ -270,9 +370,13 @@ export const buildAutoContextCompactionNoticeMessage = ({
     content: `<auto_context_compaction_notice>
 This is an internal runtime notice, not a user-authored message and not part of the task content.
 
-The previous assistant turn reported ${currentUsageDescription}, which has reached the user's automatic context compaction threshold (${thresholdDescription}).
+${buildTierLeadSentence({
+  tier: trigger.tier,
+  currentUsageDescription,
+  thresholdDescription,
+})}
 
-Please call \`${CONTEXT_COMPACT_TOOL_NAME}\` at the next appropriate point:
+You may call \`${CONTEXT_COMPACT_TOOL_NAME}\` at the next appropriate point:
 - If the user's current task is essentially complete, or you can finish it in the current response, first complete the task and report the result to the user. Only after reporting the result should you call \`${CONTEXT_COMPACT_TOOL_NAME}\` before starting substantial new work.
 - If completing the current task will still take more tool work or a longer continuation, briefly report the current progress to the user first, then call \`${CONTEXT_COMPACT_TOOL_NAME}\` before continuing.
 
