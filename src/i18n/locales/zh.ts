@@ -245,6 +245,13 @@ export const zh: TranslationKeys = {
       editPlatformTitle: '编辑机器人平台：{name}',
       defaultAssistant: '默认',
       pickerTitle: '添加机器人平台',
+      tokenConfigured: '已配置 Token',
+      noTokenSet: '未设置 Token',
+      whitelistOn: '开',
+      whitelistOff: '关',
+      unset: '（未设置）',
+      describeRobotCode: '机器人代码：{robotCode}',
+      describeAppId: '应用 ID：{appId}',
       form: {
         name: '名称',
         nameDesc: '用于标识此机器人配置的名称。',
@@ -295,6 +302,9 @@ export const zh: TranslationKeys = {
         appIdDesc: '来自飞书开放平台应用配置页面',
         appSecret: 'App Secret',
         appSecretDesc: '飞书应用的 App Secret，以明文存储在插件设置中。',
+        enableC2c: '私聊消息',
+        enableGroup: '群聊 @ 消息',
+        enableGuild: '频道 @ 消息',
       },
       picker: {
         telegramLabel: 'Telegram',

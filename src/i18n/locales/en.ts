@@ -282,6 +282,13 @@ export const en: TranslationKeys = {
       editPlatformTitle: 'Edit bot platform: {name}',
       defaultAssistant: 'Default',
       pickerTitle: 'Add bot platform',
+      tokenConfigured: 'Token configured',
+      noTokenSet: 'No token set',
+      whitelistOn: 'on',
+      whitelistOff: 'off',
+      unset: '(unset)',
+      describeRobotCode: 'Robot code: {robotCode}',
+      describeAppId: 'App ID: {appId}',
       form: {
         name: 'Name',
         nameDesc: 'A friendly label to identify this bot configuration.',
@@ -340,6 +347,9 @@ export const en: TranslationKeys = {
         appSecret: 'App Secret',
         appSecretDesc:
           'App Secret of the Feishu/Lark app. Stored as plaintext in plugin settings.',
+        enableC2c: 'Private messages',
+        enableGroup: 'Group @ messages',
+        enableGuild: 'Guild @ messages',
       },
       picker: {
         telegramLabel: 'Telegram',

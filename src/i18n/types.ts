@@ -257,6 +257,13 @@ export type TranslationKeys = {
       editPlatformTitle?: string
       defaultAssistant?: string
       pickerTitle?: string
+      tokenConfigured?: string
+      noTokenSet?: string
+      whitelistOn?: string
+      whitelistOff?: string
+      unset?: string
+      describeRobotCode?: string
+      describeAppId?: string
       form?: {
         name?: string
         nameDesc?: string
@@ -305,6 +312,9 @@ export type TranslationKeys = {
         appIdDesc?: string
         appSecret?: string
         appSecretDesc?: string
+        enableC2c?: string
+        enableGroup?: string
+        enableGuild?: string
       }
       picker?: {
         telegramLabel?: string

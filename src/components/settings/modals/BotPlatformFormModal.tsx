@@ -317,9 +317,16 @@ function QqOfficialFields({
   formData: BotPlatformQqOfficialConfig
   setFormData: Dispatch<SetStateAction<BotPlatformConfig>>
 }) {
+  const { t } = useLanguage()
   return (
     <>
-      <ObsidianSetting name="App ID">
+      <ObsidianSetting
+        name={t('settings.bots.form.appId', 'App ID')}
+        desc={t(
+          'settings.bots.form.appIdDesc',
+          'From the QQ official bot app configuration page',
+        )}
+      >
         <ObsidianTextInput
           value={formData.appId}
           onChange={(appId) =>
@@ -329,7 +336,13 @@ function QqOfficialFields({
           }
         />
       </ObsidianSetting>
-      <ObsidianSetting name="App Secret">
+      <ObsidianSetting
+        name={t('settings.bots.form.appSecret', 'App Secret')}
+        desc={t(
+          'settings.bots.form.appSecretDesc',
+          'App Secret of the QQ bot app. Stored as plaintext in plugin settings.',
+        )}
+      >
         <ObsidianSecretInput
           value={formData.appSecret}
           onChange={(appSecret) =>
@@ -339,7 +352,9 @@ function QqOfficialFields({
           }
         />
       </ObsidianSetting>
-      <ObsidianSetting name="Private messages">
+      <ObsidianSetting
+        name={t('settings.bots.form.enableC2c', 'Private messages')}
+      >
         <ObsidianToggle
           value={formData.enableC2c}
           onChange={(enableC2c) =>
@@ -349,7 +364,9 @@ function QqOfficialFields({
           }
         />
       </ObsidianSetting>
-      <ObsidianSetting name="Group @ messages">
+      <ObsidianSetting
+        name={t('settings.bots.form.enableGroup', 'Group @ messages')}
+      >
         <ObsidianToggle
           value={formData.enableGroup}
           onChange={(enableGroup) =>
@@ -360,7 +377,9 @@ function QqOfficialFields({
           }
         />
       </ObsidianSetting>
-      <ObsidianSetting name="Guild @ messages">
+      <ObsidianSetting
+        name={t('settings.bots.form.enableGuild', 'Guild @ messages')}
+      >
         <ObsidianToggle
           value={formData.enableGuild}
           onChange={(enableGuild) =>

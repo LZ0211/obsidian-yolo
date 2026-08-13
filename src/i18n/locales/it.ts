@@ -239,6 +239,7 @@ export const it: DeepPartial<TranslationKeys> = {
       agent: 'Agent',
       modules: 'Moduli',
       others: 'Altro',
+      bots: 'Bot',
       scheduledTasks: 'Attività pianificate',
     },
     bots: {
@@ -276,6 +277,13 @@ export const it: DeepPartial<TranslationKeys> = {
       editPlatformTitle: 'Modifica piattaforma bot: {name}',
       defaultAssistant: 'Predefinito',
       pickerTitle: 'Aggiungi piattaforma bot',
+      tokenConfigured: 'Token configurato',
+      noTokenSet: 'Nessun token impostato',
+      whitelistOn: 'attiva',
+      whitelistOff: 'disattiva',
+      unset: '(non impostato)',
+      describeRobotCode: 'Codice robot: {robotCode}',
+      describeAppId: 'ID app: {appId}',
       form: {
         name: 'Nome',
         nameDesc: 'Un’etichetta per identificare questa configurazione bot.',
@@ -338,6 +346,9 @@ export const it: DeepPartial<TranslationKeys> = {
         appSecret: 'App Secret',
         appSecretDesc:
           "App Secret dell'app Feishu/Lark. Salvato in chiaro nelle impostazioni del plugin.",
+        enableC2c: 'Messaggi privati',
+        enableGroup: 'Messaggi @ nel gruppo',
+        enableGuild: 'Messaggi @ nella guild',
       },
       picker: {
         telegramLabel: 'Telegram',
