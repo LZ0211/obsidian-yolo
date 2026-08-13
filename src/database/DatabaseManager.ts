@@ -61,6 +61,7 @@ export class DatabaseManager {
         baseDir,
         pluginDir: normalizedPluginDir,
         settings: settings ?? {},
+        app,
       })
       await dbManager.vectorStore.open()
     }
@@ -75,7 +76,6 @@ export class DatabaseManager {
     console.debug('YOLO database initialized.', dbManager)
     return dbManager
   }
-
 
   async save(): Promise<void> {
     await this.vectorStore?.save?.()

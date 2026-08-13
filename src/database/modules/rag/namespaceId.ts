@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { sha256HexSync } from '../../../utils/common/content-hash'
 
 import type { VectorNamespace } from './VectorStore'
 
@@ -43,5 +43,5 @@ export function vectorNamespaceId(namespace: VectorNamespace): string {
 }
 
 function sha256HexPrefix12(value: string): string {
-  return createHash('sha256').update(value).digest('hex').slice(0, 12)
+  return sha256HexSync(value).slice(0, 12)
 }

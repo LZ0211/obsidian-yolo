@@ -585,7 +585,7 @@ export class ShardedVectorStore implements VectorStore {
       for (const shard of manifest.shards) {
         if (shard.state !== 'ready' || shard.vectorCount === 0) continue
         try {
-          const runtime = this.openShardRuntime(namespaceId, shard.id)
+          const runtime = await this.openShardRuntime(namespaceId, shard.id)
           try {
             runtime.transaction(() => {
               for (const filePath of paths) {
@@ -833,7 +833,7 @@ export class ShardedVectorStore implements VectorStore {
         )
       }
       const shardRoot = getShardedShardRoot(this.baseDir, namespaceId, shard.id)
-      const runtime = this.openShardRuntime(namespaceId, shard.id)
+      const runtime = await this.openShardRuntime(namespaceId, shard.id)
       try {
         const shardRows = runtime.query<ChunkRow>(
           'select * from chunks order by rowid',
@@ -900,7 +900,7 @@ export class ShardedVectorStore implements VectorStore {
       runId,
       `vacuum-${batchIndex}`,
     )
-    const runtime = this.openShardSqliteAt(`${tempRoot}/chunks.sqlite`)
+    const runtime = await this.openShardSqliteAt(`${tempRoot}/chunks.sqlite`)
     try {
       runtime.transaction(() => {
         for (const row of rows) {
@@ -1143,7 +1143,7 @@ export class ShardedVectorStore implements VectorStore {
     }
     const coarseStart = Date.now()
     const shardRoot = getShardedShardRoot(this.baseDir, namespaceId, shard.id)
-    const runtime = this.openShardRuntime(namespaceId, shard.id)
+    const runtime = await this.openShardRuntime(namespaceId, shard.id)
     try {
       const rows = runtime.query<ChunkRow>(
         'select * from chunks order by rowid',
@@ -1293,7 +1293,7 @@ export class ShardedVectorStore implements VectorStore {
       }
       for (const shard of manifest.shards) {
         if (shard.state !== 'ready' || shard.vectorCount === 0) continue
-        const runtime = this.openShardRuntime(namespaceId, shard.id)
+        const runtime = await this.openShardRuntime(namespaceId, shard.id)
         try {
           const rows = runtime.query<{
             file_path: string
@@ -1344,7 +1344,7 @@ export class ShardedVectorStore implements VectorStore {
       const placeholders = uniquePaths.map(() => '?').join(', ')
       for (const shard of manifest.shards) {
         if (shard.state !== 'ready' || shard.vectorCount === 0) continue
-        const runtime = this.openShardRuntime(namespaceId, shard.id)
+        const runtime = await this.openShardRuntime(namespaceId, shard.id)
         try {
           const rows = runtime.query<{ file_path: string }>(
             `select distinct file_path from chunks
@@ -1584,7 +1584,7 @@ export class ShardedVectorStore implements VectorStore {
     if (chunkIds.length === 0) return found
     for (const shard of manifest.shards) {
       if (shard.state !== 'ready' || shard.vectorCount === 0) continue
-      const runtime = this.openShardRuntime(namespaceId, shard.id)
+      const runtime = await this.openShardRuntime(namespaceId, shard.id)
       try {
         for (let offset = 0; offset < chunkIds.length; offset += 500) {
           const batch = chunkIds.slice(offset, offset + 500)
@@ -1618,7 +1618,7 @@ export class ShardedVectorStore implements VectorStore {
     file: VectorFileWrite,
     chunk: VectorChunkWrite,
   ): Promise<void> {
-    const runtime = this.openShardRuntime(namespaceId, shard.id)
+    const runtime = await this.openShardRuntime(namespaceId, shard.id)
     try {
       runtime.exec(
         `update chunks set
@@ -1665,7 +1665,7 @@ export class ShardedVectorStore implements VectorStore {
       )
     }
     const shardRoot = getShardedShardRoot(this.baseDir, namespaceId, shard.id)
-    const runtime = this.openShardRuntime(namespaceId, shard.id)
+    const runtime = await this.openShardRuntime(namespaceId, shard.id)
     try {
       runtime.exec(INSERT_CHUNK_SQL, [
         chunk.chunkId,
@@ -1745,7 +1745,7 @@ export class ShardedVectorStore implements VectorStore {
   ): Promise<void> {
     for (const shard of manifest.shards) {
       if (shard.state !== 'ready' || shard.vectorCount === 0) continue
-      const runtime = this.openShardRuntime(namespaceId, shard.id)
+      const runtime = await this.openShardRuntime(namespaceId, shard.id)
       try {
         runtime.exec('update chunks set tombstone = 1 where file_path = ?', [
           filePath,
@@ -1785,7 +1785,7 @@ export class ShardedVectorStore implements VectorStore {
     for (const shard of manifest.shards) {
       if (shard.state !== 'ready' || shard.vectorCount === 0) continue
       const shardRoot = getShardedShardRoot(this.baseDir, namespaceId, shard.id)
-      const runtime = this.openShardRuntime(namespaceId, shard.id)
+      const runtime = await this.openShardRuntime(namespaceId, shard.id)
       try {
         const match = runtime.queryOne<{ n: number }>(
           'select count(*) as n from chunks where file_path = ?',
@@ -1915,18 +1915,24 @@ export class ShardedVectorStore implements VectorStore {
     }
   }
 
-  private openShardRuntime(
+  private async openShardRuntime(
     namespaceId: string,
     shardId: string,
-  ): SqliteNativeRuntimeFacade {
+  ): Promise<SqliteNativeRuntimeFacade> {
     return this.openShardSqliteAt(
       `${getShardedShardRoot(this.baseDir, namespaceId, shardId)}/chunks.sqlite`,
     )
   }
 
-  /** Opens a chunks.sqlite (any path — a shard root or a vacuum temp dir) and ensures the table. */
-  private openShardSqliteAt(dbPath: string): SqliteNativeRuntimeFacade {
-    const runtime = this.openShardSqlite(dbPath)
+  /**
+   * Opens a chunks.sqlite (any path — a shard root or a vacuum temp dir) and
+   * ensures the table. Async: the mobile `sqlite-engine` component opener
+   * must acquire the component and load sql.js before the facade exists.
+   */
+  private async openShardSqliteAt(
+    dbPath: string,
+  ): Promise<SqliteNativeRuntimeFacade> {
+    const runtime = await this.openShardSqlite(dbPath, { app: this.app })
     runtime.exec(CHUNKS_TABLE_SQL)
     return runtime
   }

@@ -2,6 +2,9 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { FileSystemAdapter } from 'obsidian'
+
+import { setRuntimeComponentAcquirerForTests } from '../../../../../core/runtime-components/runtimeComponentAccess'
 import {
   type VectorChunkWrite,
   type VectorNamespace,
@@ -641,7 +644,7 @@ describe('ShardedVectorStore write path', () => {
       })
 
       // chunks.sqlite readback via node:sqlite (tombstone === 0).
-      const runtime = openShardSqliteNode(
+      const runtime = await openShardSqliteNode(
         tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
       )
       try {
@@ -754,7 +757,7 @@ describe('ShardedVectorStore write path', () => {
         (await adapter.readBinary(`${secondRoot}/index.bin`)).byteLength,
       ).toBe(COARSE_DIMENSION * 4)
 
-      const runtime = openShardSqliteNode(
+      const runtime = await openShardSqliteNode(
         tempChunksDbPath(tempRoot, WRITE_NS_ID, '000002'),
       )
       try {
@@ -810,7 +813,7 @@ describe('ShardedVectorStore write path', () => {
       ).toBe(3 * COARSE_DIMENSION * 4)
 
       // Old rows remain tombstoned; the new chunk appends at rowid 3.
-      const runtime = openShardSqliteNode(
+      const runtime = await openShardSqliteNode(
         tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
       )
       try {
@@ -945,7 +948,7 @@ describe('ShardedVectorStore write path', () => {
         JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
       )
       expect(manifest.shards[0]?.vectorCount).toBe(2)
-      const runtime = openShardSqliteNode(
+      const runtime = await openShardSqliteNode(
         tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
       )
       try {
@@ -1020,7 +1023,7 @@ describe('ShardedVectorStore write path', () => {
       )
       expect(manifest.shards).toHaveLength(1)
       expect(manifest.shards[0]?.vectorCount).toBe(1)
-      const runtime = openShardSqliteNode(
+      const runtime = await openShardSqliteNode(
         tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
       )
       try {
@@ -1091,7 +1094,7 @@ describe('ShardedVectorStore write path', () => {
         JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
       )
       expect(manifest.shards[0]?.vectorCount).toBe(1)
-      const runtime = openShardSqliteNode(
+      const runtime = await openShardSqliteNode(
         tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
       )
       try {
@@ -1489,7 +1492,7 @@ describe('ShardedVectorStore tombstone deletes', () => {
       ).toBe(indexBefore.byteLength)
 
       // The chunk row remains, marked tombstone.
-      const runtime = openShardSqliteNode(
+      const runtime = await openShardSqliteNode(
         tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
       )
       try {
@@ -1563,7 +1566,7 @@ describe('ShardedVectorStore tombstone deletes', () => {
       expect(
         (await adapter.readBinary(`${shardRoot}/vectors.f32`)).byteLength,
       ).toBe(3 * writeNamespace.dimension * 4)
-      const runtime = openShardSqliteNode(
+      const runtime = await openShardSqliteNode(
         tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
       )
       try {
@@ -1683,7 +1686,7 @@ describe('ShardedVectorStore tombstone deletes', () => {
       expect(
         (await store.getIndexedFiles(writeNamespace)).has('notes/a.md'),
       ).toBe(true)
-      const runtime = openShardSqliteNode(
+      const runtime = await openShardSqliteNode(
         tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
       )
       try {
@@ -1755,7 +1758,7 @@ describe('ShardedVectorStore tombstone deletes', () => {
       ).toBe(3 * COARSE_DIMENSION * 4)
 
       // c1 revived at its original rowid 1; c2 stays tombstoned; c3 appended.
-      const runtime = openShardSqliteNode(
+      const runtime = await openShardSqliteNode(
         tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
       )
       try {
@@ -1836,7 +1839,7 @@ describe('ShardedVectorStore tombstone deletes', () => {
 
       // c0 is live in shard 1 at rowid 1; the rest of shard 1 is tombstoned.
       const shardOneRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
-      const runtimeOne = openShardSqliteNode(
+      const runtimeOne = await openShardSqliteNode(
         tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
       )
       try {
@@ -1856,7 +1859,7 @@ describe('ShardedVectorStore tombstone deletes', () => {
 
       // shard 2: old c1000 tombstoned, new c1001 live.
       const shardTwoRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000002')
-      const runtimeTwo = openShardSqliteNode(
+      const runtimeTwo = await openShardSqliteNode(
         tempChunksDbPath(tempRoot, WRITE_NS_ID, '000002'),
       )
       try {
@@ -1954,7 +1957,7 @@ describe('ShardedVectorStore vacuum', () => {
       expect(shardsListing.folders).toEqual(['000002'])
 
       // chunks.sqlite physically compacted: no tombstone rows remain.
-      const runtime = openShardSqliteNode(
+      const runtime = await openShardSqliteNode(
         tempChunksDbPath(tempRoot, WRITE_NS_ID, '000002'),
       )
       try {
@@ -2085,7 +2088,7 @@ describe('ShardedVectorStore vacuum', () => {
       expect(
         manifest.shards.reduce((sum, shard) => sum + shard.vectorCount, 0),
       ).toBe(2)
-      const runtime = openShardSqliteNode(
+      const runtime = await openShardSqliteNode(
         tempChunksDbPath(tempRoot, WRITE_NS_ID, '000002'),
       )
       try {
@@ -2490,11 +2493,11 @@ describe('ShardedVectorStore read-write locking', () => {
 })
 
 describe('shard sqlite openers', () => {
-  it('openShardSqliteNode opens a real sqlite database on disk', () => {
+  it('openShardSqliteNode opens a real sqlite database on disk', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-sqlite-'))
     try {
       const dbPath = path.join(dir, 'chunks.sqlite')
-      const runtime = openShardSqliteNode(dbPath)
+      const runtime = await openShardSqliteNode(dbPath)
       runtime.exec('create table chunks (chunk_id text primary key, text text)')
       runtime.exec('insert into chunks (chunk_id, text) values (?, ?)', [
         'c1',
@@ -2515,9 +2518,129 @@ describe('shard sqlite openers', () => {
     }
   })
 
-  it('openShardSqliteWasm throws until wired in Task 6', () => {
-    expect(() => openShardSqliteWasm('/vault/.yolo/shard.sqlite')).toThrow(
-      'openShardSqliteWasm is wired in Task 6',
-    )
+  it('openShardSqliteWasm maps dbPath to a vault-relative path and adapters to the vault adapter', async () => {
+    const adapter = {
+      exists: jest.fn(async () => false),
+      readBinary: jest.fn(async () => new ArrayBuffer(0)),
+      writeBinary: jest.fn(async () => undefined),
+      rename: jest.fn(async () => undefined),
+    }
+    const app = {
+      vault: { adapter },
+    }
+    const opened: Array<{
+      relativePath: string
+      adapter: unknown
+    }> = []
+    setRuntimeComponentAcquirerForTests(async (id) => {
+      expect(id).toBe('sqlite-engine')
+      return {
+        api: {
+          openSqliteJsRuntime: async (options: {
+            relativePath: string
+            adapter: unknown
+          }) => {
+            opened.push({
+              relativePath: options.relativePath,
+              adapter: options.adapter,
+            })
+            return {
+              exec: jest.fn(),
+              query: jest.fn(),
+              close: jest.fn(),
+            } as never
+          },
+          dispose: () => undefined,
+        },
+        release: () => undefined,
+      } as never
+    })
+    try {
+      const runtime = await openShardSqliteWasm(
+        '/vault/.yolo/rag-index/v1/models/m1-d256/shards/000001/chunks.sqlite',
+        { app: app as never },
+      )
+      expect(runtime).toBeDefined()
+      // dbPath has no vault-root prefix here (the test app has no
+      // FileSystemAdapter), so it is used as the vault-relative path as-is.
+      expect(opened).toEqual([
+        {
+          relativePath:
+            '/vault/.yolo/rag-index/v1/models/m1-d256/shards/000001/chunks.sqlite',
+          adapter,
+        },
+      ])
+    } finally {
+      // The Jest-wide acquirer (runtimeComponentTestSetup) throws for
+      // sqlite-engine anyway, and no later test in this file needs it.
+      setRuntimeComponentAcquirerForTests(null)
+    }
+  })
+
+  it('openShardSqliteWasm strips the vault root from an absolute dbPath on desktop-like adapters', async () => {
+    const adapter = {
+      exists: jest.fn(async () => false),
+      readBinary: jest.fn(async () => new ArrayBuffer(0)),
+      writeBinary: jest.fn(async () => undefined),
+      rename: jest.fn(async () => undefined),
+    }
+    const app = { vault: { adapter } }
+    let openedRelativePath: string | null = null
+    setRuntimeComponentAcquirerForTests(async () => {
+      return {
+        api: {
+          openSqliteJsRuntime: async (options: {
+            relativePath: string
+            adapter: unknown
+          }) => {
+            openedRelativePath = options.relativePath
+            return {
+              exec: jest.fn(),
+              query: jest.fn(),
+              close: jest.fn(),
+            } as never
+          },
+          dispose: () => undefined,
+        },
+        release: () => undefined,
+      } as never
+    })
+    try {
+      await openShardSqliteWasm(
+        '/vault/.yolo/rag-index/v1/models/m1-d256/shards/000001/chunks.sqlite',
+        {
+          app: {
+            vault: {
+              adapter: new (class extends FileSystemAdapter {
+                override getBasePath(): string {
+                  return '/vault'
+                }
+              })(),
+            },
+          } as never,
+        },
+      )
+      expect(openedRelativePath).toBe(
+        '.yolo/rag-index/v1/models/m1-d256/shards/000001/chunks.sqlite',
+      )
+    } finally {
+      // The Jest-wide acquirer (runtimeComponentTestSetup) throws for
+      // sqlite-engine anyway, and no later test in this file needs it.
+      setRuntimeComponentAcquirerForTests(null)
+    }
+  })
+
+  it('openShardSqliteWasm reports mobile_sqlite_unavailable when the component cannot be acquired', async () => {
+    // The Jest-wide runtime component acquirer throws for sqlite-engine, so
+    // the real component path is unavailable — mirroring a mobile install
+    // that has not downloaded/activated the component yet.
+    await expect(
+      openShardSqliteWasm('YOLO/rag-index/v1/x.sqlite', {
+        app: { vault: { adapter: {} } as never },
+      }),
+    ).rejects.toMatchObject({
+      name: 'VectorStoreError',
+      code: 'mobile_sqlite_unavailable',
+    })
   })
 })

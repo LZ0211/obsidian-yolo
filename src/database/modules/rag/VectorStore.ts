@@ -77,6 +77,7 @@ export type VectorStoreErrorCode =
   | 'operation_in_progress'
   | 'closing'
   | 'malformed_query'
+  | 'mobile_sqlite_unavailable'
 
 export type VectorRecoveryAction =
   | 'none'
