@@ -1,5 +1,5 @@
 import { Clock, Coins, Wrench, X } from 'lucide-react'
-import { useEffect, useId } from 'react'
+import { Fragment, useEffect, useId } from 'react'
 import { createPortal } from 'react-dom'
 
 import { useLanguage } from '../../../contexts/language-context'
@@ -10,6 +10,7 @@ import AssistantToolMessageGroupItem from '../AssistantToolMessageGroupItem'
 
 import {
   type SubagentQueuedMessage,
+  type SubagentTranscriptSection,
   formatDuration,
   formatQueuedIntentLine,
   formatSubagentActivityLine,
@@ -27,6 +28,8 @@ type SubagentDetailModalProps = {
   taskId?: string
   status: SubagentDisplayStatus
   transcript?: ChatMessage[]
+  /** 历史/live 分段 transcript（A2）：有值时代替 transcript 渲染。 */
+  transcriptSections?: SubagentTranscriptSection[] | null
   activityLines: string[]
   detailStats?: SubagentDetailStats
   isTranscriptLoading?: boolean
@@ -68,6 +71,7 @@ export function SubagentDetailModal({
   taskId,
   status,
   transcript,
+  transcriptSections,
   activityLines,
   detailStats,
   isTranscriptLoading = false,
@@ -98,6 +102,39 @@ export function SubagentDetailModal({
     transcript && transcript.length > 0
       ? groupAssistantAndToolMessages(transcript)
       : null
+
+  const renderGroupedTranscript = (messages: ChatMessage[]) =>
+    groupAssistantAndToolMessages(messages).map((messageOrGroup) =>
+      Array.isArray(messageOrGroup) ? (
+        <AssistantToolMessageGroupItem
+          key={messageOrGroup.at(0)?.id ?? taskId ?? title}
+          messages={messageOrGroup}
+          conversationId={taskId ?? 'subagent-transcript'}
+          suppressFooter
+          showInlineInfo={false}
+          showRetryAction={false}
+          showInsertAction={false}
+          showCopyAction={false}
+          showBranchAction={false}
+          showEditAction={false}
+          showDeleteAction={false}
+          showQuoteAction={false}
+          showRunningToolFooter={false}
+          isApplying={false}
+          activeApplyRequestKey={null}
+          onApply={() => {}}
+          onToolMessageUpdate={() => {}}
+          onEditStart={() => {}}
+          onEditCancel={() => {}}
+          onEditSave={() => {}}
+          onDeleteGroup={() => {}}
+          onRetryGroup={() => {}}
+          onBranchGroup={() => {}}
+          onOpenEditSummaryFile={() => {}}
+          onQuoteAssistantSelection={() => {}}
+        />
+      ) : null,
+    )
 
   const visibleActivityLines = activityLines.filter(
     (line) =>
@@ -234,38 +271,20 @@ export function SubagentDetailModal({
             <div className="yolo-subagent-detail-empty">
               {t('chat.subagent.loadingActivity', 'Loading activity…')}
             </div>
+          ) : transcriptSections && transcriptSections.length > 0 ? (
+            // A2：历史已结算轮次（previous，上方分隔条）在上、当前 live 在下。
+            transcriptSections.map((section) => (
+              <Fragment key={section.kind}>
+                {section.kind === 'previous' && (
+                  <div className="yolo-subagent-detail-transcript-divider">
+                    {t('chat.subagent.previousRuns', 'Previous runs')}
+                  </div>
+                )}
+                {renderGroupedTranscript(section.messages)}
+              </Fragment>
+            ))
           ) : groupedTranscript ? (
-            groupedTranscript.map((messageOrGroup) =>
-              Array.isArray(messageOrGroup) ? (
-                <AssistantToolMessageGroupItem
-                  key={messageOrGroup.at(0)?.id ?? taskId ?? title}
-                  messages={messageOrGroup}
-                  conversationId={taskId ?? 'subagent-transcript'}
-                  suppressFooter
-                  showInlineInfo={false}
-                  showRetryAction={false}
-                  showInsertAction={false}
-                  showCopyAction={false}
-                  showBranchAction={false}
-                  showEditAction={false}
-                  showDeleteAction={false}
-                  showQuoteAction={false}
-                  showRunningToolFooter={false}
-                  isApplying={false}
-                  activeApplyRequestKey={null}
-                  onApply={() => {}}
-                  onToolMessageUpdate={() => {}}
-                  onEditStart={() => {}}
-                  onEditCancel={() => {}}
-                  onEditSave={() => {}}
-                  onDeleteGroup={() => {}}
-                  onRetryGroup={() => {}}
-                  onBranchGroup={() => {}}
-                  onOpenEditSummaryFile={() => {}}
-                  onQuoteAssistantSelection={() => {}}
-                />
-              ) : null,
-            )
+            renderGroupedTranscript(transcript ?? [])
           ) : visibleActivityLines.length > 0 ? (
             <div className="yolo-subagent-detail-activity">
               {visibleActivityLines

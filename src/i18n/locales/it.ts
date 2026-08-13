@@ -2779,6 +2779,8 @@ export const it: DeepPartial<TranslationKeys> = {
         orphaned: 'Orfana',
         archived: 'Archiviata',
       },
+      statusAwaitingApproval: 'In attesa di approvazione',
+      previousRuns: 'Turni precedenti',
       queuedCount: '{count} in coda',
       queuedMessagesTitle: 'Messaggi in coda',
       recoverSession: 'Riprendi sessione',

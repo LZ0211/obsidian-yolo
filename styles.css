@@ -22717,6 +22717,26 @@ button.yolo-subagent-detail-recover-btn:focus-visible {
   color: var(--text-accent-hover);
 }
 
+/* ── 详情弹窗：历史 run transcript 分隔条（A2：历史已结算轮次回看） ── */
+
+.yolo-subagent-detail-transcript-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-3);
+  margin: var(--size-4-3) 0;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+}
+
+.yolo-subagent-detail-transcript-divider::before,
+.yolo-subagent-detail-transcript-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--background-modifier-border);
+}
+
 /* ── 详情弹窗：queued 消息块 ── */
 
 .yolo-subagent-detail-queued {

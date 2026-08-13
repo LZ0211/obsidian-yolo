@@ -9,6 +9,7 @@ import {
   buildSubagentCardSessionProps,
   formatQueuedIntentLine,
   formatSessionStatus,
+  mergeSubagentTranscript,
   runSubagentSessionAction,
 } from './subagentCardUtils'
 import { SubagentCardView } from './SubagentCardView'
@@ -213,6 +214,80 @@ describe('buildSubagentCardSessionProps', () => {
     expect(props.needsResume).toBe(true)
     expect(props.sessionStatus).toBe('Needs resume')
   })
+
+  it('flags awaitingApproval when pending approvals are present (A3)', () => {
+    const props = buildSubagentCardSessionProps(
+      snapshot(),
+      taskRecord(),
+      t,
+      true,
+    )
+    expect(props.awaitingApproval).toBe(true)
+  })
+
+  it('omits awaitingApproval when there are no pending approvals (A3)', () => {
+    const props = buildSubagentCardSessionProps(
+      snapshot(),
+      taskRecord(),
+      t,
+      false,
+    )
+    expect(props.awaitingApproval).toBeUndefined()
+  })
+})
+
+describe('mergeSubagentTranscript (A2 历史 run transcript 回看)', () => {
+  const message = (id: string) =>
+    ({
+      id,
+      role: 'assistant',
+      content: `message ${id}`,
+    }) as never
+
+  it('merges history above the live transcript', () => {
+    const sections = mergeSubagentTranscript(
+      [message('h1'), message('h2')],
+      [message('l1')],
+    )
+    expect(sections?.map((section) => section.kind)).toEqual([
+      'previous',
+      'live',
+    ])
+    expect(sections?.[0]?.messages.map((m) => m.id)).toEqual(['h1', 'h2'])
+    expect(sections?.[1]?.messages.map((m) => m.id)).toEqual(['l1'])
+  })
+
+  it('drops history messages already present in the live transcript (settled round de-dup)', () => {
+    // 已结算轮次：snapshot.transcriptPage 与结果消息 transcript 同源——
+    // 与 live 重合的消息（l1）从 previous 段剔除，避免整段重复
+    const sections = mergeSubagentTranscript(
+      [message('h1'), message('l1')],
+      [message('l1')],
+    )
+    expect(sections?.map((section) => section.kind)).toEqual([
+      'previous',
+      'live',
+    ])
+    expect(sections?.[0]?.messages.map((m) => m.id)).toEqual(['h1'])
+    expect(sections?.[1]?.messages.map((m) => m.id)).toEqual(['l1'])
+    // 全量重合（同一轮次）时 previous 段为空，只保留 live——行为与未接
+    // snapshot 前一致
+    const fullOverlap = mergeSubagentTranscript(
+      [message('l1')],
+      [message('l1')],
+    )
+    expect(fullOverlap?.map((section) => section.kind)).toEqual(['live'])
+  })
+
+  it('returns null when both transcript sources are empty', () => {
+    expect(mergeSubagentTranscript(undefined, undefined)).toBeNull()
+    expect(mergeSubagentTranscript([], [])).toBeNull()
+  })
+
+  it('keeps only the live transcript when there is no settled history', () => {
+    const sections = mergeSubagentTranscript(undefined, [message('l1')])
+    expect(sections?.map((section) => section.kind)).toEqual(['live'])
+  })
 })
 
 describe('runSubagentSessionAction', () => {
@@ -380,5 +455,22 @@ describe('SubagentCardView session line smoke', () => {
       }),
     )
     expect(markup).not.toContain('yolo-subagent-card__session')
+  })
+
+  it('shows the awaiting-approval status before the session status (A3)', () => {
+    const markup = renderToStaticMarkup(
+      React.createElement(SubagentCardView, {
+        title: 'Count files',
+        subtitle: 'Planning next moves',
+        status: 'running',
+        sessionStatus: 'Running',
+        awaitingApproval: true,
+        onRecover: () => {},
+        onQueueResend: () => {},
+        onQueueDrop: () => {},
+      }),
+    )
+    expect(markup).toContain('Awaiting approval')
+    expect(markup).not.toContain('>Running<')
   })
 })

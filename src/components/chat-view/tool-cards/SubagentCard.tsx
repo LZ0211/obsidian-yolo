@@ -27,6 +27,7 @@ import {
   buildSubagentCompletionSummary,
   collectSubagentActivityText,
   getLatestActivityLine,
+  mergeSubagentTranscript,
   normalizeActivityLines,
   parseAcceptedSubagentResponse,
   resolveSubagentEffectiveStatus,
@@ -147,11 +148,6 @@ export function SubagentCard({
           : null),
     [liveTask, subagentResult, accepted.taskId],
   )
-  const sessionProps = useMemo(
-    () => buildSubagentCardSessionProps(sessionSnapshot, sessionTaskRecord, t),
-    [sessionSnapshot, sessionTaskRecord, t],
-  )
-
   const fallbackError =
     response.status === ToolCallResponseStatus.Error
       ? response.error
@@ -172,6 +168,18 @@ export function SubagentCard({
   const activityLines = useMemo(
     () => normalizeActivityLines(activityText),
     [activityText],
+  )
+
+  // A2 历史 run transcript 回看：snapshot.transcriptPage（已 settle 的轮次，
+  // session-service 每轮结算写入）在上、当前 live 在下；同一轮次（settled 结果
+  // 消息的 transcript 与 transcriptPage 同源）按 messageId 去重避免整段重复。
+  const transcriptSections = useMemo(
+    () =>
+      mergeSubagentTranscript(
+        sessionSnapshot?.transcriptPage,
+        subagentResult?.transcript ?? liveTranscript,
+      ),
+    [sessionSnapshot, subagentResult, liveTranscript],
   )
 
   const liveAssistantSummary = useMemo(() => {
@@ -204,6 +212,18 @@ export function SubagentCard({
     [liveTranscript],
   )
   const isAwaitingApproval = pendingApprovals.length > 0
+  // A3：等待审批时状态行优先显示"等待审批"（session 状态此时为 RUNNING）。
+  // 依赖 isAwaitingApproval，故在 pendingApprovals 之后计算。
+  const sessionProps = useMemo(
+    () =>
+      buildSubagentCardSessionProps(
+        sessionSnapshot,
+        sessionTaskRecord,
+        t,
+        isAwaitingApproval,
+      ),
+    [sessionSnapshot, sessionTaskRecord, t, isAwaitingApproval],
+  )
   const subtitle = isAwaitingApproval
     ? pendingApprovals.length > 1
       ? t(
@@ -281,7 +301,7 @@ export function SubagentCard({
       status={toDisplayStatus(effectiveStatus)}
       prompt={prompt}
       taskId={taskId}
-      transcript={subagentResult?.transcript ?? liveTranscript}
+      transcriptSections={transcriptSections}
       activityLines={activityLines}
       detailStats={
         subagentResult
@@ -293,6 +313,7 @@ export function SubagentCard({
           : undefined
       }
       sessionStatus={sessionProps.sessionStatus}
+      awaitingApproval={sessionProps.awaitingApproval}
       queuedCount={sessionProps.queuedCount}
       queuedMessages={sessionProps.queuedMessages}
       needsResume={sessionProps.needsResume}

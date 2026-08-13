@@ -2841,6 +2841,8 @@ export const zh: TranslationKeys = {
         orphaned: '孤儿',
         archived: '已归档',
       },
+      statusAwaitingApproval: '等待审批',
+      previousRuns: '历史轮次',
       queuedCount: '{count} 条排队',
       queuedMessagesTitle: '排队消息',
       recoverSession: '恢复会话',

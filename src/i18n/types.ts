@@ -2581,6 +2581,10 @@ export type TranslationKeys = {
         orphaned?: string
         archived?: string
       }
+      /** 会话状态行在等待审批时的优先文案（A3）。 */
+      statusAwaitingApproval?: string
+      /** 详情弹窗历史 run transcript 分隔条文案（A2）。 */
+      previousRuns?: string
       queuedCount?: string
       queuedMessagesTitle?: string
       recoverSession?: string

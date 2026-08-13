@@ -3037,6 +3037,8 @@ export const en: TranslationKeys = {
         orphaned: 'Orphaned',
         archived: 'Archived',
       },
+      statusAwaitingApproval: 'Awaiting approval',
+      previousRuns: 'Previous runs',
       queuedCount: '{count} queued',
       queuedMessagesTitle: 'Queued messages',
       recoverSession: 'Recover session',
