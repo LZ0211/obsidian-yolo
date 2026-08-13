@@ -50,11 +50,18 @@ export const BUILTIN_TOOL_UI_META: Record<string, BuiltinToolUiMeta> = {
     descFallback:
       'Search indexed metadata and parsed file fields with a constrained query DSL and return matching files.',
   },
-  // send_attachment deliberately has no UI meta: it is a bot-runtime-only
-  // capability (Bot Platform Phase 6.5), offered only by agent-runner.ts
-  // appending its FQN to a bot run's allowedToolNames, never enumerable in
-  // the Agent settings surface (see NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES
-  // in localFileToolNames.ts).
+  // send_attachment: bot-runtime-only capability (Bot Platform Phase 6.5),
+  // offered by agent-runner.ts appending its FQN to a bot run's
+  // allowedToolNames. The USER_FACING exclusion in localFileToolNames.ts
+  // keeps it out of AgentSection / the per-assistant editor, but the Manage
+  // tools modal renders every getLocalFileTools() tool, so this entry is
+  // live UI — keep it (removing it would degrade the modal to a raw name).
+  send_attachment: {
+    labelKey: 'settings.agent.builtinSendAttachmentLabel',
+    descKey: 'settings.agent.builtinSendAttachmentDesc',
+    labelFallback: 'Send Attachment',
+    descFallback: 'Send a vault file as an attachment to the current bot chat.',
+  },
   fs_list: {
     labelKey: 'settings.agent.builtinFsListLabel',
     descKey: 'settings.agent.builtinFsListDesc',
@@ -253,6 +260,7 @@ const BUILTIN_TOOL_CATEGORY_MAP: Record<string, BuiltinToolCategory> = {
   [MEMORY_OPS_GROUP_TOOL_NAME]: 'context',
   [SCHEDULED_TASK_OPS_GROUP_TOOL_NAME]: 'scheduling',
   [WEB_OPS_GROUP_TOOL_NAME]: 'external',
+  send_attachment: 'external',
   js_eval: 'external',
   terminal_command: 'external',
   delegate_subagent: 'external',
