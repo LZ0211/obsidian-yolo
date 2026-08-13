@@ -146,6 +146,7 @@ describe('mcpRoutes', () => {
       getMcpManager: async () =>
         ({
           callTool,
+          isToolExecutionAllowed: jest.fn().mockReturnValue(true),
         }) as never,
       resolveMcpAccess: createAuthorizedResolve(),
     })
@@ -191,6 +192,56 @@ describe('mcpRoutes', () => {
     expect(res.jsonBody).toEqual({
       status: ToolCallResponseStatus.Success,
       data: { type: 'text', text: 'ok' },
+    })
+  })
+
+  it('rejects tool calls that are not allowed for the conversation', async () => {
+    const router = new WebRouter()
+    const callTool = jest.fn().mockResolvedValue({
+      status: ToolCallResponseStatus.Success,
+      data: { type: 'text', text: 'ok' },
+    })
+    const isToolExecutionAllowed = jest.fn().mockReturnValue(false)
+    registerMcpRoutes(router, {
+      app: createMockApp(),
+      getSettings: () => parseYoloSettings({}),
+      getMcpManager: async () =>
+        ({
+          callTool,
+          isToolExecutionAllowed,
+        }) as never,
+      resolveMcpAccess: createAuthorizedResolve(),
+    })
+
+    const resolved = router.resolve('POST', '/api/mcp/call-tool')
+    const req = createRequest({
+      method: 'POST',
+      url: '/api/mcp/call-tool',
+      body: {
+        name: 'builtin__fs_write',
+        args: { path: 'A.md', content: 'x' },
+        id: 'tool-1',
+        conversationId: 'chat-1',
+      },
+    })
+    const res = createResponse()
+
+    await resolved?.handler(req as never, res as never, {})
+
+    // The route re-verifies the conversation-level allowance server-side —
+    // a client that never approved the tool must not reach execution.
+    expect(isToolExecutionAllowed).toHaveBeenCalledWith({
+      requestToolName: 'builtin__fs_write',
+      conversationId: 'chat-1',
+      requestArgs: { path: 'A.md', content: 'x' },
+      requireAutoExecution: false,
+    })
+    expect(callTool).not.toHaveBeenCalled()
+    expect(res.statusCode).toBe(200)
+    expect(res.jsonBody).toEqual({
+      status: ToolCallResponseStatus.Rejected,
+      reason:
+        'Tool "builtin__fs_write" has not been approved for this conversation. Approve it in the chat first.',
     })
   })
 
@@ -286,6 +337,7 @@ describe('mcpRoutes', () => {
       getMcpManager: async () =>
         ({
           callTool,
+          isToolExecutionAllowed: jest.fn().mockReturnValue(true),
         }) as never,
       resolveMcpAccess: createAuthorizedResolve(),
     })

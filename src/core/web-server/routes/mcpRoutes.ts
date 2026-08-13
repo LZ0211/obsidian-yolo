@@ -6,6 +6,7 @@ import type { Assistant } from '../../../types/assistant.types'
 import type { McpManager } from '../../mcp/mcpManager'
 import { listLiteSkillEntries } from '../../skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../../skills/skillPolicy'
+import { ToolCallResponseStatus } from '../../../types/tool-call.types'
 import type { ResolvedWebAgentContext } from '../webAgentTypes'
 import { workspaceAgentPolicyToRuntimeAccessPolicy } from '../WebChatRuntimeAdapter'
 import { writeJson } from '../WebHttpServer'
@@ -98,6 +99,31 @@ export function registerMcpRoutes(
       return
     }
     const manager = await context.getMcpManager()
+
+    // The route must not trust the client's self-reported "approved" state.
+    // Re-verify the conversation-level allowance with the same gate the
+    // AgentToolGateway consults before dispatch (see
+    // `AgentToolGateway.shouldAutoExecuteTool` → `McpManager.isToolExecutionAllowed`).
+    // This endpoint is the manual approval/execution path, so auto-execution
+    // is never implied: an explicit per-conversation allowance (via
+    // /api/mcp/allow-tool-for-conversation) is required.
+    const allowed = manager.isToolExecutionAllowed({
+      requestToolName: parsed.value.name,
+      conversationId: parsed.value.conversationId,
+      requestArgs: parsed.value.args,
+      requireAutoExecution: false,
+    })
+    if (!allowed) {
+      // 拒绝响应协议与 tool-gateway 的 refusal shape 保持一致：
+      // ToolCallResponse Rejected + reason（200 透传，客户端按既有
+      // ToolCallResponse 契约消费）。
+      writeJson(res, 200, {
+        status: ToolCallResponseStatus.Rejected,
+        reason: `Tool "${parsed.value.name}" has not been approved for this conversation. Approve it in the chat first.`,
+      })
+      return
+    }
+
     writeJson(
       res,
       200,
