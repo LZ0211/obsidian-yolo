@@ -323,6 +323,7 @@ export type TranslationKeys = {
         feishu?: string
         qq?: string
       }
+      desktopOnly?: string
       testConnection?: string
       connectionTestResult?: string
       connectionFailed?: string

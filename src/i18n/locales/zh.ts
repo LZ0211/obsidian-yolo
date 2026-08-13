@@ -313,6 +313,7 @@ export const zh: TranslationKeys = {
         feishu: '飞书',
         qq: 'QQ',
       },
+      desktopOnly: 'Bot 平台仅支持桌面端。',
       testConnection: '测试连接',
       connectionTestResult: '连接状态：{status}',
       connectionFailed: '连接失败：{error}',

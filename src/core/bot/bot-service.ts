@@ -355,18 +355,6 @@ export class BotService {
     return { status: adapter.health(), started: true }
   }
 
-  getSessionMapper(): SessionMapper {
-    return this.sessionMapper
-  }
-
-  getDedupeStore(): DedupeStore {
-    return this.dedupeStore
-  }
-
-  getSentMessageRegistry(): BotSentMessageRegistry {
-    return this.sentRegistry
-  }
-
   /**
    * Incoming handler — registered on each adapter's `onMessage`. Takes the
    * originating platform's config as an explicit second argument: unlike

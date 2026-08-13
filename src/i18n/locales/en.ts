@@ -358,6 +358,7 @@ export const en: TranslationKeys = {
         feishu: 'Feishu',
         qq: 'QQ',
       },
+      desktopOnly: 'Bot Platform is only supported on desktop.',
       testConnection: 'Test Connection',
       connectionTestResult: 'Connection: {status}',
       connectionFailed: 'Connection failed: {error}',

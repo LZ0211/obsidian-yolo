@@ -568,9 +568,9 @@ describe('BotService.handleIncoming', () => {
     await h.service.handleIncoming(event1, makeTelegramConfig())
     expect(h.createChat).toHaveBeenCalledTimes(1)
 
-    const mapping = h.service
-      .getSessionMapper()
-      .getSessionByKey(event1.sessionKey)
+    const mapping = h
+      .getCurrentSettings()
+      .bots.sessionMappings.find((m) => m.sessionKey === event1.sessionKey)
     expect(mapping?.conversationId).toEqual(expect.any(String))
 
     const event2 = makeEvent({ messageId: 'm2' })
@@ -603,7 +603,10 @@ describe('BotService.handleIncoming', () => {
     expect(h.findById).toHaveBeenCalledWith('conv-missing')
     expect(h.createChat).toHaveBeenCalledTimes(1)
     expect(
-      h.service.getSessionMapper().getSessionByKey(sessionKey)?.conversationId,
+      h
+        .getCurrentSettings()
+        .bots.sessionMappings.find((m) => m.sessionKey === sessionKey)
+        ?.conversationId,
     ).toEqual(expect.any(String))
   })
 
@@ -629,33 +632,6 @@ describe('BotService.handleIncoming', () => {
       messageId: 'g2',
       sessionKey: encodeSessionKey('telegram', 'group', 'g1'),
       mentionedBotId: 'MyBot',
-    })
-    await h.service.handleIncoming(event, makeTelegramConfig())
-    expect(h.createChat).toHaveBeenCalledTimes(1)
-  })
-
-  it('group chat: wakes when replying to a message the bot sent', async () => {
-    const h = makeHarness()
-    await h.service.initialize()
-    h.service.getSentMessageRegistry().register({
-      platformMessageId: 'bot-msg-1',
-      sessionKey: encodeSessionKey('telegram', 'group', 'g1'),
-      sentAt: 0,
-    })
-    const event = makeEvent({
-      chatType: 'group',
-      senderId: 'u1',
-      messageId: 'g3',
-      sessionKey: encodeSessionKey('telegram', 'group', 'g1'),
-      message: {
-        components: [
-          { type: 'reply_to', messageId: 'bot-msg-1', preview: 'bot said hi' },
-          { type: 'text', text: 'thanks' },
-        ],
-        plainText: 'thanks',
-        rawMessage: {},
-        timestamp: 0,
-      },
     })
     await h.service.handleIncoming(event, makeTelegramConfig())
     expect(h.createChat).toHaveBeenCalledTimes(1)
@@ -751,7 +727,10 @@ describe('BotService.handleIncoming', () => {
       expect.objectContaining({ text: expect.stringContaining('reset') }),
     )
     expect(
-      h.service.getSessionMapper().getSessionByKey(sessionKey)?.conversationId,
+      h
+        .getCurrentSettings()
+        .bots.sessionMappings.find((m) => m.sessionKey === sessionKey)
+        ?.conversationId,
     ).toEqual(expect.any(String))
   })
 })

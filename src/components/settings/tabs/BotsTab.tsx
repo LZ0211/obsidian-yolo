@@ -1,4 +1,4 @@
-import { App, Notice } from 'obsidian'
+import { App, Notice, Platform } from 'obsidian'
 import React, { useEffect, useState } from 'react'
 
 import { useLanguage } from '../../../contexts/language-context'
@@ -147,6 +147,27 @@ export function BotsTab({ app, plugin }: BotsTabProps) {
         '{status}',
         healthStatusLabel(health.status),
       ),
+    )
+  }
+
+  // Desktop-only: the adapters long-poll over node HTTP / child processes
+  // (see `startBotService`'s `Platform.isDesktop` gate; the web server has no
+  // bot routes). On mobile the whole tab is replaced by a notice instead of
+  // silently no-op'ing.
+  if (!Platform.isDesktop) {
+    return (
+      <div className="yolo-settings-section">
+        <section className="yolo-settings-block">
+          <div className="yolo-settings-block-content">
+            <div className="yolo-settings-desc">
+              {t(
+                'settings.bots.desktopOnly',
+                'Bot Platform is only supported on desktop.',
+              )}
+            </div>
+          </div>
+        </section>
+      </div>
     )
   }
 
