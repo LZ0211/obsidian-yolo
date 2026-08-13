@@ -890,9 +890,7 @@ export class BotService {
     const command = event.command
     if (!command) return false
     if (command.targetBotId === undefined) return true
-    const botUsername = this.adapters
-      .get(platformConfig.id)
-      ?.getBotUsername?.()
+    const botUsername = this.adapters.get(platformConfig.id)?.getBotUsername?.()
     if (!botUsername) return false
     return command.targetBotId.toLowerCase() === botUsername.toLowerCase()
   }
@@ -965,10 +963,7 @@ export class BotService {
             'WeChat bot login expired. Open Bot settings, scan the QR code again, and click Save.',
           ),
         )
-      } else if (
-        context.operation === 'send' &&
-        context.retryable === false
-      ) {
+      } else if (context.operation === 'send' && context.retryable === false) {
         // Send-side credential failure (e.g. WeChat session expired between
         // polls): without this the user sees neither a platform reply nor a
         // local notice — the turn just vanishes into the console.

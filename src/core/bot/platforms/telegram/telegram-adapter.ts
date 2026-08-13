@@ -172,7 +172,10 @@ export class TelegramAdapter implements PlatformAdapter {
       try {
         await bot.stopPolling()
       } catch (stopError) {
-        this.emitError(toError(stopError), { operation: 'stop', raw: stopError })
+        this.emitError(toError(stopError), {
+          operation: 'stop',
+          raw: stopError,
+        })
       }
       throw err
     }
