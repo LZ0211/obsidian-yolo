@@ -36,6 +36,8 @@ describe('task transitions', () => {
     expect(canTransitionTask('rework', 'in_progress')).toBe(true)
     expect(canTransitionTask('pending', 'blocked')).toBe(true)
     expect(canTransitionTask('pending', 'cancelled')).toBe(true)
+    // Delivery without a prior claim lands a completed run directly in review.
+    expect(canTransitionTask('pending', 'awaiting_review')).toBe(true)
   })
 
   it('rejects invalid transitions', () => {

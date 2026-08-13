@@ -214,6 +214,10 @@ describe('ingest outcomes', () => {
     })
     expect(result.kind).toBe('fresh')
     const after = await store.readTask('p1', 't1')
+    // An unclaimed completed run still lands the task in review: pending ->
+    // awaiting_review is a legal transition (regression guard — the task used
+    // to stay pending forever because the transition was missing).
+    expect(after?.task.status).toBe('awaiting_review')
     expect(after?.task.attempts).toHaveLength(1)
     expect(after?.task.attempts[0].runKey).toBe('run-1')
     expect(after?.task.attempts[0].status).toBe('done')

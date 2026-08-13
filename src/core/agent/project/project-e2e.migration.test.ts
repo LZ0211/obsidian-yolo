@@ -102,7 +102,12 @@ const seedProject = async (projectId: string, taskId: string) => {
   return { adapter, settings, store }
 }
 
-/** pending -> in_progress (implementer claims the task) and re-reads binding. */
+/**
+ * pending -> in_progress without a claim (the parent marks the task as being
+ * worked on; the runner never claims — claiming is a separate project_ops
+ * `update` the parent may or may not issue before dispatch) and re-reads the
+ * binding.
+ */
 const advanceToInProgress = async (
   store: ProjectStore,
   projectId: string,
@@ -239,10 +244,15 @@ describe('project e2e — tool chain (callLocalFileTool -> delegate_subagent)', 
 })
 
 describe('project e2e — bridge chain (completion bus -> ProjectDeliveryBridge)', () => {
-  it('delivers a completed subagent run: pending -> awaiting_review + artifact', async () => {
+  it('delivers an unclaimed completed run: pending -> awaiting_review + artifact', async () => {
+    // Production shape: the parent dispatched an implementer run WITHOUT
+    // claiming the task (claiming is optional pre-dispatch). The ingest must
+    // still land the completed run in review instead of leaving the task
+    // stuck in pending forever (regression: pending->awaiting_review was not
+    // in the transition table, so ingest kept the status).
     const { adapter, settings, store } = await seedProject('e2e-proj', 'T-001')
-    await advanceToInProgress(store, 'e2e-proj', 'T-001')
     const bound = (await store.readTask('e2e-proj', 'T-001'))!
+    expect(bound.task.status).toBe('pending')
 
     const bridge = new ProjectDeliveryBridge({
       getSettings: () => settings,

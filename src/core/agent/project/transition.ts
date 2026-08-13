@@ -10,7 +10,16 @@ export const ALLOWED_TASK_TRANSITIONS: Record<
   ProjectTaskStatus,
   readonly ProjectTaskStatus[]
 > = {
-  pending: ['in_progress', 'running', 'blocked', 'cancelled'],
+  pending: [
+    'in_progress',
+    'running',
+    'blocked',
+    'cancelled',
+    // Delivery without a prior claim (the parent dispatched an implementer run
+    // without claiming the task) lands a completed run directly in review; the
+    // ingester appends the terminal attempt so the run's outcome is not lost.
+    'awaiting_review',
+  ],
   in_progress: ['running', 'awaiting_review', 'blocked', 'cancelled', 'pending'],
   running: ['in_progress', 'awaiting_review', 'blocked', 'pending', 'cancelled', 'running'],
   blocked: ['pending', 'in_progress', 'running', 'cancelled'],
