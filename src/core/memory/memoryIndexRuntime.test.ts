@@ -1033,3 +1033,116 @@ describe('memory salience decay', () => {
     }
   })
 })
+
+describe('cold memory archive', () => {
+  const makeEntry = (
+    localId: string,
+    content: string,
+    keywords: string[],
+    category: 'profile' | 'preferences' | 'other',
+    partition: MemoryPartition,
+  ) => ({
+    localId,
+    content,
+    keywords,
+    category,
+    partition,
+    sourcePath: 'global.md',
+    entryFingerprint: `${localId}-v1`,
+  })
+
+  it('excludes stale low-salience entries from recall and drops their vectors', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-cold-'))
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const fingerprint = 'file-v1'
+    const entries = [
+      makeEntry('Memory_cold', '很久没用的记忆', ['cold'], 'other', partition),
+      makeEntry('Memory_fresh', '新的记忆', ['fresh'], 'other', partition),
+      makeEntry('Memory_hot', '经常命中的记忆', ['hot'], 'preferences', partition),
+    ]
+    const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
+    const store = await openMemoryIndexStore({
+      app,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot: async () => ({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: fingerprint,
+        parserVersion: 'p',
+        entries,
+        valid: true,
+      }),
+    })
+    try {
+      await store.reconcilePartition({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: fingerprint,
+        parserVersion: 'p',
+        entries,
+      })
+      const runtime = await store.getRuntime()
+      const now = Date.now()
+      runtime.exec(
+        'update memory_index set salience = ?, last_recalled_at = ? where partition_key = ? and local_id = ?',
+        [0.08, now - 40 * 86_400_000, partition.partitionKey, 'Memory_cold'],
+      )
+      runtime.exec(
+        'update memory_index set last_recalled_at = ? where partition_key = ? and local_id = ?',
+        [now - 2 * 86_400_000, partition.partitionKey, 'Memory_hot'],
+      )
+
+      const embeddings = new MemoryEmbeddingStore(runtime)
+      embeddings.upsert(
+        { partitionKey: partition.partitionKey, memoryKey: 'global::Memory_cold', localId: 1 },
+        Array(4).fill(0.1),
+      )
+      embeddings.upsert(
+        { partitionKey: partition.partitionKey, memoryKey: 'global::Memory_fresh', localId: 2 },
+        Array(4).fill(0.2),
+      )
+
+      const results = await store.query({
+        partition,
+        sourceFileFingerprint: fingerprint,
+        target: {
+          query: '记忆',
+          keywords: ['记忆'],
+          entities: [],
+          categories: ['profile', 'preferences', 'other'],
+          scopes: ['global'],
+          sector: null,
+          confidence: 1,
+          isReferential: false,
+          source: 'lexical',
+        } as never,
+        maxEntries: 8,
+        maxChars: 3000,
+      })
+      const keys = results.map((entry) => entry.memoryKey)
+      expect(keys).not.toContain('global::Memory_cold')
+      expect(keys).toEqual(expect.arrayContaining(['global::Memory_fresh', 'global::Memory_hot']))
+
+      await (
+        store as MemoryIndexMaintenanceStore & {
+          archiveColdEntries(input: { partition: MemoryPartition }): Promise<void>
+        }
+      ).archiveColdEntries({ partition })
+
+      const coldVector = runtime.queryOne<{ memory_key: string }>(
+        'select memory_key from memory_embeddings where partition_key = ? and memory_key = ?',
+        [partition.partitionKey, 'global::Memory_cold'],
+      )
+      const freshVector = runtime.queryOne<{ memory_key: string }>(
+        'select memory_key from memory_embeddings where partition_key = ? and memory_key = ?',
+        [partition.partitionKey, 'global::Memory_fresh'],
+      )
+      expect(coldVector).toBeUndefined()
+      expect(freshVector).not.toBeUndefined()
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+})

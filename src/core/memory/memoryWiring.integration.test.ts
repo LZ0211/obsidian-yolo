@@ -262,6 +262,82 @@ describe('memory wiring integration (extract → persist → reconcile → recal
     )
   })
 
+  it('hidden extraction persists an optional reason annotation on added memory', async () => {
+    executeSingleTurnMock.mockResolvedValue({
+      content: JSON.stringify({
+        operations: [
+          {
+            op: 'add',
+            category: 'preferences',
+            scope: 'global',
+            content: '用户偏好先看结论',
+            keywords: ['结论'],
+            reason: '用户多次纠正回答结构',
+          },
+        ],
+      }),
+      toolCalls: [],
+    })
+
+    const builder = new RequestContextBuilder(app, settings as never, {
+      memoryIndexRuntime: getMemoryIndexRuntimeHandle(app, () => settings),
+    })
+    const providerClient = {} as never
+    const model = { id: 'test-model', model: 'test-model' } as never
+    await builder.processMemoryTurn({
+      messages: [
+        {
+          role: 'user',
+          id: 'u1',
+          content: {
+            root: {
+              children: [
+                {
+                  children: [
+                    {
+                      detail: 0,
+                      format: 0,
+                      mode: 'normal',
+                      style: '',
+                      text: '先给我结论，我喜欢这样',
+                      type: 'text',
+                      version: 1,
+                    },
+                  ],
+                  direction: 'ltr',
+                  format: '',
+                  indent: 0,
+                  type: 'paragraph',
+                  version: 1,
+                },
+              ],
+              direction: 'ltr',
+              format: '',
+              indent: 0,
+              type: 'root',
+              version: 1,
+            },
+          },
+          mtime: Date.now(),
+        },
+        {
+          role: 'assistant',
+          id: 'a1',
+          content: '好的，先给结论。',
+          mtime: Date.now(),
+        },
+      ] as never,
+      providerClient,
+      model,
+      signal: new AbortController().signal,
+    })
+
+    const fileContent = await app.vault.read({
+      path: 'YOLO/memory/global.md',
+    } as never)
+    expect(fileContent).toContain('<!-- reason: 用户多次纠正回答结构 -->')
+  })
+
   describe('memory recall embedding query cache', () => {
     it('embeds the same recall query only once across request builds', async () => {
     const memoryFile = 'YOLO/memory/global.md'

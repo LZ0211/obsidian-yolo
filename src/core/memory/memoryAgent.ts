@@ -33,6 +33,7 @@ export type MemoryAgentOperation =
       scope?: MemoryScope
       keywords?: string[]
       sector?: AutomaticMemorySector
+      reason?: string
     }
   | {
       op: 'update'
@@ -41,6 +42,7 @@ export type MemoryAgentOperation =
       scope?: MemoryScope
       keywords?: string[]
       sector?: AutomaticMemorySector
+      reason?: string
     }
   | {
       op: 'delete'
@@ -298,6 +300,13 @@ export const parseMemoryAgentOperations = (
       ) {
         return []
       }
+      const reason =
+        value.reason === undefined
+          ? undefined
+          : typeof value.reason === 'string' && value.reason.trim()
+            ? value.reason.trim()
+            : null
+      if (reason === null) return []
       return [
         {
           op: 'add',
@@ -305,6 +314,7 @@ export const parseMemoryAgentOperations = (
           ...(value.category === undefined ? {} : { category: value.category }),
           ...(scope === undefined ? {} : { scope }),
           ...(keywords === undefined ? {} : { keywords }),
+          ...(reason === undefined ? {} : { reason }),
           sector:
             value.sector === undefined
               ? defaultSectorForCategory(value.category)
@@ -327,6 +337,13 @@ export const parseMemoryAgentOperations = (
       ) {
         return []
       }
+      const reason =
+        value.reason === undefined
+          ? undefined
+          : typeof value.reason === 'string' && value.reason.trim()
+            ? value.reason.trim()
+            : null
+      if (reason === null) return []
       return [
         {
           op: 'update',
@@ -335,6 +352,7 @@ export const parseMemoryAgentOperations = (
           ...(scope === undefined ? {} : { scope }),
           ...(keywords === undefined ? {} : { keywords }),
           ...(value.sector === undefined ? {} : { sector: value.sector }),
+          ...(reason === undefined ? {} : { reason }),
         },
       ]
     }
@@ -722,6 +740,7 @@ export const runMemoryAgentAfterTurn = async ({
           category: operation.category,
           scope: operation.scope,
           keywords: operation.keywords,
+          reason: operation.reason,
           shouldWrite,
         })
       } else if (operation.op === 'update') {
@@ -733,6 +752,7 @@ export const runMemoryAgentAfterTurn = async ({
           newContent: operation.new_content,
           scope: operation.scope,
           keywords: operation.keywords,
+          reason: operation.reason,
           shouldWrite,
         })
       } else {

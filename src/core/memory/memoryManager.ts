@@ -54,6 +54,7 @@ type MemoryEntryOccurrence = {
   id: string
   content: string
   keywords: string[]
+  reason?: string
   lineIndex: number
   sectionKey: MemorySectionKey
 }
@@ -68,6 +69,7 @@ const GLOBAL_MEMORY_FILE_NAME = 'global.md'
 const MEMORY_PARSER_VERSION = 'memory-markdown-v1'
 const ENTRY_LINE_REGEX = /^\s*[-*]\s+([^:：]+)\s*[:：]\s*(.*)$/
 const ENTRY_KEYWORDS_REGEX = /\s*<!--\s*keywords:\s*(.*?)\s*-->\s*$/i
+const ENTRY_REASON_REGEX = /\s*<!--\s*reason:\s*(.*?)\s*-->\s*$/i
 const MEMORY_MARKDOWN_ESCAPED_CHARACTERS = new Set([
   '\\',
   '`',
@@ -316,7 +318,7 @@ const getPrimarySectionBlock = (
 
 const parseEntryLine = (
   line: string,
-): { id: string; content: string; keywords: string[] } | null => {
+): { id: string; content: string; keywords: string[]; reason?: string } | null => {
   const match = line.match(ENTRY_LINE_REGEX)
   if (!match) {
     return null
@@ -325,8 +327,16 @@ const parseEntryLine = (
   if (!id) {
     return null
   }
+  // Strip the trailing reason annotation first (it sits after keywords).
   const rawContent = match[2] ?? ''
-  const keywordMatch = rawContent.match(ENTRY_KEYWORDS_REGEX)
+  const reasonMatch = rawContent.match(ENTRY_REASON_REGEX)
+  const reason = reasonMatch
+    ? unescapeMemoryMarkdownValue(reasonMatch[1]?.trim() ?? '')
+    : undefined
+  const contentWithKeywords = reasonMatch
+    ? rawContent.replace(reasonMatch[0], '')
+    : rawContent
+  const keywordMatch = contentWithKeywords.match(ENTRY_KEYWORDS_REGEX)
   const keywords = keywordMatch
     ? keywordMatch[1]
         .split(',')
@@ -334,12 +344,13 @@ const parseEntryLine = (
         .filter(Boolean)
     : []
   const content = keywordMatch
-    ? rawContent.replace(keywordMatch[0], '')
-    : rawContent
+    ? contentWithKeywords.replace(keywordMatch[0], '')
+    : contentWithKeywords
   return {
     id,
     content: unescapeMemoryMarkdownValue(content).trim(),
     keywords,
+    ...(reason ? { reason } : {}),
   }
 }
 
@@ -453,6 +464,7 @@ const parseMemorySourceEntries = async ({
         partition,
         sourcePath,
         entryFingerprint,
+        ...(parsed.reason ? { reason: parsed.reason } : {}),
       })
     }
   }
@@ -481,6 +493,7 @@ const getEntryOccurrencesInBlock = ({
       id: parsed.id,
       content: parsed.content,
       keywords: parsed.keywords,
+      ...(parsed.reason ? { reason: parsed.reason } : {}),
       lineIndex: index,
       sectionKey: block.key,
     })
@@ -784,16 +797,21 @@ const renderMemoryEntryLine = ({
   id,
   content,
   keywords,
+  reason,
 }: {
   id: string
   content: string
   keywords: string[]
+  reason?: string
 }): string => {
   const metadata =
     keywords.length > 0
       ? ` <!-- keywords: ${keywords.map(escapeMemoryMarkdownValue).join(', ')} -->`
       : ''
-  return `- ${id}: ${escapeMemoryMarkdownValue(content)}${metadata}`
+  const reasonMetadata = reason
+    ? ` <!-- reason: ${escapeMemoryMarkdownValue(reason)} -->`
+    : ''
+  return `- ${id}: ${escapeMemoryMarkdownValue(content)}${metadata}${reasonMetadata}`
 }
 
 type MemoryWriteResult = {
@@ -1154,6 +1172,7 @@ export async function memoryAdd({
   keywords,
   category,
   scope,
+  reason,
   assistantId,
   onInternalWrite,
   onSourceCommitted,
@@ -1165,6 +1184,8 @@ export async function memoryAdd({
   keywords?: unknown
   category?: unknown
   scope?: unknown
+  /** Why this memory matters / when to apply it — kept in the md source for maintenance & white-box edits. */
+  reason?: unknown
   assistantId?: string
   onInternalWrite?: (path: string) => void
   onSourceCommitted?: SourceCommittedCallback
@@ -1172,6 +1193,8 @@ export async function memoryAdd({
 }): Promise<MemoryWriteResult> {
   const normalizedContent = normalizeMemoryContent(content, 'content')
   const normalizedKeywords = normalizeMemoryKeywords(keywords)
+  const normalizedReason =
+    typeof reason === 'string' && reason.trim() ? reason.trim().slice(0, 200) : undefined
   const normalizedCategory = normalizeMemoryCategory(category)
   const normalizedScope = normalizeMemoryScope(scope)
   const {
@@ -1239,6 +1262,7 @@ export async function memoryAdd({
           id,
           content: normalizedContent,
           keywords: normalizedKeywords,
+          reason: normalizedReason,
         }),
       )
       if (!((await shouldWrite?.()) ?? true)) {
@@ -1267,6 +1291,7 @@ export async function memoryUpdate({
   newContent,
   keywords,
   scope,
+  reason,
   assistantId,
   onInternalWrite,
   onSourceCommitted,
@@ -1278,6 +1303,7 @@ export async function memoryUpdate({
   newContent: unknown
   keywords?: unknown
   scope?: unknown
+  reason?: unknown
   assistantId?: string
   onInternalWrite?: (path: string) => void
   onSourceCommitted?: SourceCommittedCallback
@@ -1335,6 +1361,12 @@ export async function memoryUpdate({
         content: normalizedContent,
         keywords:
           keywords === undefined ? matchedEntry.keywords : normalizedKeywords,
+        reason:
+          reason === undefined
+            ? matchedEntry.reason
+            : typeof reason === 'string' && reason.trim()
+              ? reason.trim().slice(0, 200)
+              : undefined,
       })
       if (!((await shouldWrite?.()) ?? true)) {
         return {

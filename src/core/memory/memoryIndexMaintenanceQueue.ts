@@ -250,6 +250,7 @@ export class MemoryIndexMaintenanceQueue {
         partition: task.partition,
         nowMs: this.options.clock?.() ?? Date.now(),
       })
+      await this.options.store.archiveColdEntries({ partition: task.partition })
       return
     }
 

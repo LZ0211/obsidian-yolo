@@ -35,6 +35,8 @@ export type MemorySourceEntry = Readonly<{
   partition: MemoryPartition
   sourcePath: string
   entryFingerprint: string
+  /** Why this memory matters / when to apply it (md `<!-- reason: -->` annotation). */
+  reason?: string
 }>
 
 export type MemoryIndexQuery = Readonly<{

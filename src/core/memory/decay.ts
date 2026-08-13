@@ -1,6 +1,14 @@
 export const DAY_MS = 86_400_000
 export const RECENCY_DECAY_LAMBDA = 0.015
 export const SALIENCE_DECAY_LAMBDA = 0.05
+/**
+ * Cold-archive threshold. Stored salience never drops below the 0.08 decay
+ * floor, so the cutoff sits just above the floor; a cold entry also needs a
+ * long gap since its last recall (no reinforcement for 30 days).
+ */
+export const COLD_ARCHIVE_SALIENCE = 0.1
+export const COLD_ARCHIVE_DAYS = 30
+export const COLD_ARCHIVE_MS = COLD_ARCHIVE_DAYS * DAY_MS
 
 export type EffectiveSalienceParams = Readonly<{
   storedSalience: number

@@ -487,6 +487,58 @@ describe('memoryManager', () => {
     expect(profileIndex).toBeLessThan(otherIndex)
   })
 
+  it('writes and round-trips an optional reason annotation', async () => {
+    const { app, readByPath } = createMockVaultApp()
+    const settings = {
+      yolo: { baseDir: 'YOLO' },
+      currentAssistantId: 'helper',
+      assistants: [{ id: 'helper', systemPrompt: 'assistant' }],
+    }
+    const created = await memoryAdd({
+      app,
+      settings,
+      content: '用户是前端工程师',
+      category: 'profile',
+      scope: 'global',
+      reason: '避免重复询问技术栈',
+    })
+    expect(readByPath(created.filePath)).toContain(
+      '<!-- reason: 避免重复询问技术栈 -->',
+    )
+
+    const snapshot = await loadMemorySourceSnapshot({
+      app,
+      settings,
+      scope: 'global',
+    })
+    const entry = snapshot.entries.find(
+      (candidate) => candidate.localId === created.id,
+    )
+    expect(entry?.reason).toBe('避免重复询问技术栈')
+
+    const plain = await memoryAdd({
+      app,
+      settings,
+      content: '无原因条目',
+      category: 'other',
+      scope: 'global',
+    })
+    expect(
+      readByPath(plain.filePath)
+        .split('\n')
+        .find((line) => line.includes(plain.id)),
+    ).not.toContain('<!-- reason:')
+    const plainSnapshot = await loadMemorySourceSnapshot({
+      app,
+      settings,
+      scope: 'global',
+    })
+    const plainEntry = plainSnapshot.entries.find(
+      (candidate) => candidate.localId === plain.id,
+    )
+    expect(plainEntry?.reason).toBeUndefined()
+  })
+
   it('keeps raw content and parsed snapshot reads of the same file isolated in cache', async () => {
     const { app } = createMockVaultApp()
     const settings = {

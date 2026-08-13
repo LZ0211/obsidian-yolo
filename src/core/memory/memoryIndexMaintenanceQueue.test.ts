@@ -36,6 +36,7 @@ const makeStore = (
     isPartitionReady: jest.fn(async () => true),
     reinforce: jest.fn(async () => undefined),
     applyDecay: jest.fn(async () => undefined),
+    archiveColdEntries: jest.fn(async () => undefined),
     markDirty: jest.fn(async () => undefined),
     rebuildEdges: jest.fn(async () => undefined),
     expandViaEdges: jest.fn(async ({ seeds }) => seeds),
@@ -91,6 +92,8 @@ describe('MemoryIndexMaintenanceQueue', () => {
       nowMs: 1_000_000,
     })
     expect(store.applyDecay).toHaveBeenCalledTimes(1)
+    expect(store.archiveColdEntries).toHaveBeenCalledWith({ partition })
+    expect(store.archiveColdEntries).toHaveBeenCalledTimes(1)
   })
 
   it('runs at most two partition lanes concurrently', async () => {

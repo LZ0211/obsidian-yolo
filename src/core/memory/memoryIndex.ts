@@ -6,6 +6,8 @@ import { getAbsoluteYoloMemoryIndexPath } from '../paths/yoloPaths'
 import { acquireRuntimeComponent } from '../runtime-components/runtimeComponentAccess'
 
 import {
+  COLD_ARCHIVE_MS,
+  COLD_ARCHIVE_SALIENCE,
   SALIENCE_DECAY_LAMBDA,
   calcEffectiveSalience,
 } from './decay'
@@ -134,6 +136,8 @@ export type MemoryIndexMaintenanceStore = {
     partition: MemoryPartition
     nowMs: number
   }): Promise<void>
+  /** Drop vectors/edges of cold entries so every recall path excludes them. */
+  archiveColdEntries(input: { partition: MemoryPartition }): Promise<void>
   rebuildEdges(input: {
     partition: MemoryPartition
     localIds: readonly string[]
@@ -824,6 +828,7 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
       const rows = runtime.query<MemoryIndexRow>(
         `select * from memory_index where partition_key = ? and source_file_fingerprint = ?
          and category in (${categories.map(() => '?').join(',')}) and scope in (${scopes.map(() => '?').join(',')})
+         and not (salience <= ? and (last_recalled_at is null or last_recalled_at < strftime('%s','now')*1000 - ?))
          order by case category when 'preferences' then 0 when 'profile' then 1 else 2 end,
          ${queryMatchOrder} desc, salience desc, updated_at desc limit ?`,
         [
@@ -831,6 +836,8 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
           input.sourceFileFingerprint,
           ...categories,
           ...scopes,
+          COLD_ARCHIVE_SALIENCE,
+          COLD_ARCHIVE_MS,
           ...queryKeywords,
           ...queryKeywords,
           maxEntries,
@@ -934,6 +941,44 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
             [salience, partitionKey, localId],
           )
         }
+      })
+    })
+  }
+
+  async archiveColdEntries(input: {
+    partition: MemoryPartition
+  }): Promise<void> {
+    return this.enqueue(async () => {
+      const runtime = await this.getRuntime()
+      const partitionKey = input.partition.partitionKey
+      runtime.transaction(() => {
+        runtime.exec(
+          `delete from memory_embeddings where partition_key = ? and memory_key in (
+             select memory_key from memory_index
+             where partition_key = ? and salience <= ?
+               and (last_recalled_at is null or last_recalled_at < strftime('%s','now')*1000 - ?))`,
+          [partitionKey, partitionKey, COLD_ARCHIVE_SALIENCE, COLD_ARCHIVE_MS],
+        )
+        runtime.exec(
+          `delete from memory_edges where partition_key = ? and (
+             src_local_id in (
+               select local_id from memory_index
+               where partition_key = ? and salience <= ?
+                 and (last_recalled_at is null or last_recalled_at < strftime('%s','now')*1000 - ?)) or
+             dst_local_id in (
+               select local_id from memory_index
+               where partition_key = ? and salience <= ?
+                 and (last_recalled_at is null or last_recalled_at < strftime('%s','now')*1000 - ?)))`,
+          [
+            partitionKey,
+            partitionKey,
+            COLD_ARCHIVE_SALIENCE,
+            COLD_ARCHIVE_MS,
+            partitionKey,
+            COLD_ARCHIVE_SALIENCE,
+            COLD_ARCHIVE_MS,
+          ],
+        )
       })
     })
   }
@@ -1146,6 +1191,7 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
            and edge.src_local_id in (${sourceIds.map(() => '?').join(',')})
            and target.scope in (${scopes.map(() => '?').join(',')})
            and target.category in (${categories.map(() => '?').join(',')})
+           and not (target.salience <= ? and (target.last_recalled_at is null or target.last_recalled_at < strftime('%s','now')*1000 - ?))
          order by edge.weight desc, target.salience desc, target.updated_at desc
          limit ?`,
         [
@@ -1153,6 +1199,8 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
           ...sourceIds,
           ...scopes,
           ...categories,
+          COLD_ARCHIVE_SALIENCE,
+          COLD_ARCHIVE_MS,
           DEFAULT_MAX_ENTRIES * MAX_GRAPH_DEGREE,
         ],
       )
@@ -1432,6 +1480,9 @@ class UnavailableMemoryIndexStore implements MemoryIndexMaintenanceStore {
     return
   }
   async applyDecay(): Promise<void> {
+    return
+  }
+  async archiveColdEntries(): Promise<void> {
     return
   }
   async markDirty(): Promise<void> {
