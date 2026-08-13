@@ -157,6 +157,11 @@ type DingTalkChatbotMessage = {
   text?: { content: string }
   content?: DingTalkMessageContent
   atUsers?: DingTalkAtUser[]
+  /**
+   * Whether the sender @'d the robot in this message (documented optional
+   * field of the robot message callback; absent on some versions/tenants).
+   */
+  isInAtList?: boolean
   sessionWebhook: string
   sessionWebhookExpiredTime: number
 }
@@ -621,6 +626,15 @@ export class DingTalkAdapter implements PlatformAdapter {
       })
     }
 
+    // Group wake signal: DingTalk only pushes the group message callback for
+    // messages that @ the robot, and `isInAtList` is the per-message
+    // confirmation carried by newer versions — when it is explicitly false
+    // the message was pushed for another reason and must not wake the bot.
+    const mentionedBotId =
+      chatType === 'group' && message.isInAtList !== false
+        ? 'dingtalk'
+        : undefined
+
     return {
       platformName: 'dingtalk',
       messageId: message.msgId,
@@ -634,6 +648,10 @@ export class DingTalkAdapter implements PlatformAdapter {
         rawMessage: message,
         timestamp: message.createAt,
       },
+      mentionedBotId,
+      // DingTalk never echoes the robot's own messages back through the
+      // message callback (replies go out via webhook/REST), so there is no
+      // self-echo loop to guard against.
       isFromBot: false,
     }
   }

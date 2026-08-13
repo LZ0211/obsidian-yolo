@@ -411,11 +411,10 @@ export class BotService {
     // Step 6: group wakeCheck.
     if (event.chatType === 'group') {
       if (!this.getBotsSettings().groupChatEnabled) return
-      const isCommandForThisBot =
-        event.command?.targetBotId !== undefined &&
-        event.command.targetBotId === platformConfig.name
       const shouldWake =
-        Boolean(event.mentionedBotId) || isReplyToBot || isCommandForThisBot
+        Boolean(event.mentionedBotId) ||
+        isReplyToBot ||
+        this.isCommandForThisBot(event, platformConfig)
       if (!shouldWake) {
         // MVP: no groupContextBuffer persistence yet (Phase 5/6 concern per
         // the design doc's "群聊上下文策略") — silently drop non-wake traffic.
@@ -873,6 +872,29 @@ export class BotService {
 
   private isAdmin(event: PlatformMessageEvent): boolean {
     return this.getBotsSettings().adminUsers.includes(event.senderId)
+  }
+
+  /**
+   * Group wakeCheck for commands. A command belongs to this bot when it has
+   * no explicit target (a bare `/help` in a group is delivered to every bot,
+   * and any of them may answer), or when the explicit target is this bot's
+   * own platform identity. Telegram's `targetBotId` is the bot *username*
+   * (`/help@username`), which the adapter exposes via `getBotUsername` —
+   * the free-form `config.name` label is a user-facing tag, not the
+   * protocol identity, so it must not be used for attribution.
+   */
+  private isCommandForThisBot(
+    event: PlatformMessageEvent,
+    platformConfig: BotPlatformConfig,
+  ): boolean {
+    const command = event.command
+    if (!command) return false
+    if (command.targetBotId === undefined) return true
+    const botUsername = this.adapters
+      .get(platformConfig.id)
+      ?.getBotUsername?.()
+    if (!botUsername) return false
+    return command.targetBotId.toLowerCase() === botUsername.toLowerCase()
   }
 
   /**

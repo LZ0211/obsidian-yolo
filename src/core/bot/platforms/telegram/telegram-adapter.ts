@@ -199,6 +199,12 @@ export class TelegramAdapter implements PlatformAdapter {
     return this.status
   }
 
+  /** The bot username (`me.username`) that `targetBotId` in `/cmd@username`
+   * commands refers to — resolved during `start()`, undefined before then. */
+  getBotUsername(): string | undefined {
+    return this.botUsername
+  }
+
   async sendMessage(
     sessionKey: string,
     content: ReplyContent,
@@ -386,7 +392,13 @@ export class TelegramAdapter implements PlatformAdapter {
     if (!bot) return
     try {
       await bot.stopPolling()
+      // A stop() (or a replacement start) that landed while the polling
+      // teardown was in flight must not resurrect a dead bot: `this.bot`
+      // is nulled by stop() and replaced by a new start(), so the identity
+      // check below is the stopped/destroyed guard.
+      if (this.bot !== bot) return
       await bot.startPolling({ restart: true })
+      if (this.bot !== bot) return
       this.status = 'running'
     } catch (error) {
       const err = toError(error)

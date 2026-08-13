@@ -109,6 +109,7 @@ function makeFakeAdapter(): PlatformAdapter & {
     downloadFile: jest.fn(),
     onMessage: jest.fn().mockReturnValue(jest.fn()),
     onError: jest.fn().mockReturnValue(jest.fn()),
+    getBotUsername: jest.fn().mockReturnValue(undefined),
   }
 }
 
@@ -649,6 +650,50 @@ describe('BotService.handleIncoming', () => {
     })
     await h.service.handleIncoming(event, makeTelegramConfig())
     expect(h.createChat).not.toHaveBeenCalled()
+    expect(
+      h.adaptersByPlatformId.get('bot-1')!.sendMessage,
+    ).not.toHaveBeenCalled()
+  })
+
+  it('group chat: wakes on a bare command without an explicit target bot', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+    const event = makeEvent({
+      chatType: 'group',
+      senderId: 'u1',
+      messageId: 'g6',
+      sessionKey: encodeSessionKey('telegram', 'group', 'g1'),
+      command: { name: 'help' },
+    })
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(adapter.sendMessage).toHaveBeenCalledWith(
+      event.sessionKey,
+      expect.objectContaining({
+        text: expect.stringContaining('Available commands'),
+      }),
+    )
+  })
+
+  it('group chat: wakes on a command targeted at this bot by its username', async () => {
+    const h = makeHarness()
+    await h.service.initialize()
+    const adapter = h.adaptersByPlatformId.get('bot-1')!
+    ;(adapter.getBotUsername as jest.Mock).mockReturnValue('mybot_username')
+    const event = makeEvent({
+      chatType: 'group',
+      senderId: 'u1',
+      messageId: 'g7',
+      sessionKey: encodeSessionKey('telegram', 'group', 'g1'),
+      command: { name: 'help', targetBotId: 'MyBot_Username' },
+    })
+    await h.service.handleIncoming(event, makeTelegramConfig())
+    expect(adapter.sendMessage).toHaveBeenCalledWith(
+      event.sessionKey,
+      expect.objectContaining({
+        text: expect.stringContaining('Available commands'),
+      }),
+    )
   })
 
   it('group chat: drops everything when groupChatEnabled is false', async () => {

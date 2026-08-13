@@ -184,6 +184,14 @@ export type PlatformAdapter = {
     options?: { progress?: (percent: number) => void },
   ): Promise<SentMessageRef[]>
 
+  /**
+   * The bot's platform-side identity, as used by command-target semantics
+   * (`/cmd@username` on Telegram). `undefined` when the platform has no such
+   * identity or the adapter has not started. Consumed by BotService's group
+   * wakeCheck to attribute `targetBotId`-bearing commands to this bot.
+   */
+  getBotUsername?(): string | undefined
+
   /** MVP: throws when `capabilities.supportsStreaming` is false. */
   sendStreamingMessage(sessionKey: string): StreamReplyHandle
 

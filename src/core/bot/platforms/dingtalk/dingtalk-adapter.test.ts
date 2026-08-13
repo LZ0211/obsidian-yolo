@@ -352,6 +352,55 @@ describe('DingTalkAdapter — WS frame handling', () => {
       headers: { messageId: 'evt-1' },
     })
   })
+
+  it('sets mentionedBotId for a group message that @s the robot (isInAtList)', async () => {
+    const { adapter, ws } = await startAdapter()
+    const messagePromise = waitForNextMessage(adapter)
+
+    sendFrame(ws, {
+      type: 'CALLBACK',
+      headers: { topic: '/v1.0/im/bot/messages/get', messageId: 'cb-g1' },
+      data: JSON.stringify(
+        makeChatbotMessage({ conversationType: '2', isInAtList: true }),
+      ),
+    })
+
+    const event = await messagePromise
+    expect(event.chatType).toBe('group')
+    expect(event.mentionedBotId).toBe('dingtalk')
+  })
+
+  it('keeps mentionedBotId unset for a group message that explicitly did not @ the robot', async () => {
+    const { adapter, ws } = await startAdapter()
+    const messagePromise = waitForNextMessage(adapter)
+
+    sendFrame(ws, {
+      type: 'CALLBACK',
+      headers: { topic: '/v1.0/im/bot/messages/get', messageId: 'cb-g2' },
+      data: JSON.stringify(
+        makeChatbotMessage({ conversationType: '2', isInAtList: false }),
+      ),
+    })
+
+    const event = await messagePromise
+    expect(event.chatType).toBe('group')
+    expect(event.mentionedBotId).toBeUndefined()
+  })
+
+  it('keeps mentionedBotId unset for private-chat messages', async () => {
+    const { adapter, ws } = await startAdapter()
+    const messagePromise = waitForNextMessage(adapter)
+
+    sendFrame(ws, {
+      type: 'CALLBACK',
+      headers: { topic: '/v1.0/im/bot/messages/get', messageId: 'cb-p1' },
+      data: JSON.stringify(makeChatbotMessage({ isInAtList: true })),
+    })
+
+    const event = await messagePromise
+    expect(event.chatType).toBe('private')
+    expect(event.mentionedBotId).toBeUndefined()
+  })
 })
 
 describe('DingTalkAdapter — reconnect backoff', () => {
