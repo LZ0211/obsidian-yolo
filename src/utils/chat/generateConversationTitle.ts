@@ -8,6 +8,7 @@ import {
   registerLLMDebugTraceForTurn,
   updateLLMDebugTrace,
 } from '../../core/llm/debugCapture'
+import { LLMAPIKeyNotSetException } from '../../core/llm/exception'
 import { getChatModelClient } from '../../core/llm/manager'
 import type { AutoPromotedTransportMode } from '../../core/llm/requestTransport'
 import type { YoloSettings } from '../../settings/schema/setting.types'
@@ -20,6 +21,9 @@ import type {
 export const AUTO_TITLE_TIMEOUT_MS = 10000
 export const AUTO_TITLE_MAX_RETRIES = 2
 export const AUTO_TITLE_FAILURE_COOLDOWN_MS = 5 * 60 * 1000
+
+/** API key 缺失兜底标题的截断长度。 */
+const FALLBACK_TITLE_MAX_LENGTH = 40
 
 const formatSelectedSkillsForTitleInput = (
   selectedSkills: ChatSelectedSkill[],
@@ -204,7 +208,10 @@ export const generateConversationTitleText = async ({
       lastGenerationError = error
       if (
         retryCount < AUTO_TITLE_MAX_RETRIES &&
-        !isRequestErrorNonRetryable(error)
+        !isRequestErrorNonRetryable(error) &&
+        // API key 缺失（web 端脱敏 settings）在同一重试窗口内不会自愈，
+        // 直接走 A4 截断兜底，省掉无意义的重试退避
+        !(error instanceof LLMAPIKeyNotSetException)
       ) {
         const backoffMs = 300 * (retryCount + 1)
         await new Promise((resolve) => setTimeout(resolve, backoffMs))
@@ -218,6 +225,18 @@ export const generateConversationTitleText = async ({
 
   const generatedTitle = await attemptGenerateTitle()
   if (!generatedTitle) {
+    // A4 web 回归：浏览器运行的自动标题路径拿到的 settings 来自 /api/settings
+    // 脱敏副本（providers apiKey 置空）——getChatModelClient 抛
+    // LLMAPIKeyNotSetException，web 会话标题停在 "New chat"。服务端
+    // /api/chat/generate-title 路由用完整 settings（registerWebServerRoutes
+    // options.getSettings）不受影响；此处兜底让 key 缺失时降级为首条消息
+    // 截断标题，而不是静默失败（桌面真配置缺失时同样受益，不再无标题）。
+    if (lastGenerationError instanceof LLMAPIKeyNotSetException) {
+      const fallbackTitle = buildFallbackTitle(firstUserMessage)
+      if (fallbackTitle) {
+        return { ok: true, title: fallbackTitle }
+      }
+    }
     return {
       ok: false,
       reason: 'llm_generation_failed',
@@ -225,4 +244,19 @@ export const generateConversationTitleText = async ({
     }
   }
   return { ok: true, title: generatedTitle }
+}
+
+/** API key 缺失时的兜底标题：首条用户消息文本截断（A4）。 */
+export function buildFallbackTitle(
+  firstUserMessage: ChatUserMessage,
+): string | null {
+  const userText = firstUserMessage.content
+    ? editorStateToPlainText(firstUserMessage.content).trim()
+    : ''
+  const fallback = userText.trim() || extractTextFromPromptContent(
+    firstUserMessage.promptContent,
+  ).trim()
+  if (fallback.length === 0) return null
+  if (fallback.length <= FALLBACK_TITLE_MAX_LENGTH) return fallback
+  return `${fallback.slice(0, FALLBACK_TITLE_MAX_LENGTH)}…`
 }
