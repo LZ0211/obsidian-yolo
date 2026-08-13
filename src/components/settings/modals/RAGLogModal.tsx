@@ -2,6 +2,7 @@ import { App, Notice } from 'obsidian'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { useLanguage } from '../../../contexts/language-context'
+import { subscribeRetrievalTraceArrival } from '../../../core/rag/retrievalTraceBus'
 import type {
   RetrievalInspectStatus,
   RetrievalTrace,
@@ -131,7 +132,15 @@ function RAGLogModalComponent({
     isMountedRef.current = true
     void refreshData({ preserveSelection: false })
 
+    // Auto-refresh when a new retrieval trace is persisted (any RAGEngine
+    // instance). The request-id guard inside refreshData discards stale
+    // refreshes if the modal closed or a newer refresh started meanwhile.
+    const unsubscribe = subscribeRetrievalTraceArrival(() => {
+      void refreshData({ preserveSelection: true })
+    })
+
     return () => {
+      unsubscribe()
       isMountedRef.current = false
       refreshRequestIdRef.current += 1
     }

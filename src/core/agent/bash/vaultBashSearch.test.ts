@@ -1,7 +1,9 @@
 import type { App } from 'obsidian'
 
 import type { AssistantWorkspaceScope } from '../../../types/assistant.types'
+import type { QueryProgressState } from '../../../components/chat-view/QueryProgress'
 import type { VaultSearchStructuredOutcome } from '../../mcp/vaultSearchService'
+import { subscribeQueryProgress } from '../../rag/queryProgressBus'
 import type { AggregatedSearchResult } from '../../search/searchResultAggregation'
 import { CitationRegistry } from '../citationRegistry'
 
@@ -214,7 +216,9 @@ describe('createVaultBashSearch', () => {
           source: 'hybrid',
           score: 1,
           hitCount: 1,
-          snippets: [{ startLine: 3, endLine: 5, snippet: 'one', source: 'rag' }],
+          snippets: [
+            { startLine: 3, endLine: 5, snippet: 'one', source: 'rag' },
+          ],
         },
       ]),
     )
@@ -257,6 +261,38 @@ describe('createVaultBashSearch', () => {
         },
       ],
     })
+  })
+
+  it('publishes querying progress around the search and forwards states to the engine', async () => {
+    mockRunVaultSearchStructured.mockImplementation(
+      async (options: {
+        onQueryProgressChange?: (state: QueryProgressState) => void
+      }) => {
+        options.onQueryProgressChange?.({
+          type: 'querying-done',
+          queryResult: [],
+        })
+        return successOutcome([])
+      },
+    )
+    const received: QueryProgressState[] = []
+    const unsubscribe = subscribeQueryProgress((state) => {
+      received.push(state)
+    })
+    const search = createVaultBashSearch({ app })
+
+    try {
+      const outcome = await search({ query: 'q', maxResults: 20 })
+      expect(outcome.status).toBe('success')
+    } finally {
+      unsubscribe()
+    }
+
+    expect(received).toEqual([
+      { type: 'querying' },
+      { type: 'querying-done', queryResult: [] },
+      { type: 'idle' },
+    ])
   })
 
   it('maps aborted and error outcomes to search errors', async () => {

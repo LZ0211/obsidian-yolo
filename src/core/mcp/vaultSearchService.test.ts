@@ -5,7 +5,7 @@ import { App, TFile, TFolder } from 'obsidian'
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import type { RAGEngine } from '../rag/ragEngine'
 
-import { runVaultSearch } from './vaultSearchService'
+import { runVaultSearch, runVaultSearchStructured } from './vaultSearchService'
 
 describe('runVaultSearch', () => {
   it('defaults to hybrid and falls back to keyword with an explicit reason', async () => {
@@ -357,6 +357,26 @@ describe('runVaultSearch', () => {
         },
       ],
     })
+  })
+
+  it('forwards onQueryProgressChange into ragEngine.processQuery', async () => {
+    const onQueryProgressChange = jest.fn()
+    const processQuery = jest.fn().mockResolvedValue([])
+    const result = await runVaultSearchStructured({
+      app: { vault: {} } as unknown as App,
+      settings: {
+        ragOptions: { enabled: true, limit: 10 },
+        embeddingModelId: 'test-embedding',
+      } as unknown as YoloSettings,
+      getRagEngine: async () => ({ processQuery }) as unknown as RAGEngine,
+      args: { mode: 'rag', query: 'note' },
+      onQueryProgressChange,
+    })
+
+    expect(result.status).toBe('success')
+    expect(processQuery).toHaveBeenCalledWith(
+      expect.objectContaining({ query: 'note', onQueryProgressChange }),
+    )
   })
 
   it('returns aborted immediately when the signal is already aborted', async () => {

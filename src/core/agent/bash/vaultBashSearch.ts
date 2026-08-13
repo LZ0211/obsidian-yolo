@@ -8,6 +8,7 @@ import type {
   BashSearchCallback,
   BashSearchResultEntry,
 } from '../../runtime-components/contracts'
+import { publishQueryProgress } from '../../rag/queryProgressBus'
 import { superSearchDedupKey } from '../../search/hybridSearch'
 import type { CitationRegistry } from '../citationRegistry'
 import { isPathAllowedByScope } from '../workspaceScope'
@@ -55,18 +56,28 @@ export function createVaultBashSearch({
       }
     }
 
-    const outcome = await runVaultSearchStructured({
-      app,
-      settings,
-      getRagEngine,
-      args: {
-        query,
-        path: scopePath,
-        maxResults,
-        mode: 'hybrid',
-      },
-      signal,
-    })
+    publishQueryProgress({ type: 'querying' })
+    let outcome: Awaited<ReturnType<typeof runVaultSearchStructured>>
+    try {
+      outcome = await runVaultSearchStructured({
+        app,
+        settings,
+        getRagEngine,
+        args: {
+          query,
+          path: scopePath,
+          maxResults,
+          mode: 'hybrid',
+        },
+        signal,
+        // Forward retrieval states (querying/querying-done/querying-error)
+        // onto the shared bus so chat surfaces show the progress banner.
+        onQueryProgressChange: publishQueryProgress,
+      })
+    } finally {
+      // The banner must never stay stuck on the last retrieval state.
+      publishQueryProgress({ type: 'idle' })
+    }
     if (outcome.status === 'aborted') {
       return { status: 'error', message: 'aborted' }
     }

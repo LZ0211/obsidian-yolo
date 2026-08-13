@@ -120,6 +120,7 @@ import {
 import { useSnippetEntries } from './hooks/useSnippetEntries'
 import { getInputOverlayReserveHeight } from './inputOverlayReserve'
 import type { QueryProgressState } from './QueryProgress'
+import { subscribeQueryProgress } from '../../core/rag/queryProgressBus'
 import { TodoListPanel } from './TodoListPanel'
 import { useChatDomainActions } from './useChatDomainActions'
 import { useChatInputController } from './useChatInputController'
@@ -815,6 +816,13 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
   const [queryProgress, setQueryProgress] = useState<QueryProgressState>({
     type: 'idle',
   })
+
+  // Agent-run retrieval (bash `search` command, sandbox dbQuery) publishes
+  // querying states on the shared bus; forward them to this surface so the
+  // "Querying the vault" banner appears while the agent searches the index.
+  useEffect(() => {
+    return subscribeQueryProgress(setQueryProgress)
+  }, [])
 
   const isSidebarPlacement = props.placement === 'sidebar'
   const activeView = isSidebarPlacement ? (props.activeView ?? 'chat') : 'chat'

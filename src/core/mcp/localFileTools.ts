@@ -119,6 +119,7 @@ import {
 } from '../memory/memoryManager'
 import { isWithinYoloUserDataRoot } from '../paths/yoloPaths'
 import type { RAGEngine } from '../rag/ragEngine'
+import { publishQueryProgress } from '../rag/queryProgressBus'
 import { MetadataFilterDslError } from '../search/metadataFilterDsl'
 import {
   type MetadataFileSearchHit,
@@ -1133,7 +1134,7 @@ export function getLocalFileTools(options?: {
           delegatedRoleId: {
             type: 'string',
             description:
-              'Optional delegated role id from the available roles listed in the request context. When set, the sub-agent runs with that role\'s model, tools, and loop configuration.',
+              "Optional delegated role id from the available roles listed in the request context. When set, the sub-agent runs with that role's model, tools, and loop configuration.",
           },
           modelPreferenceId: {
             type: 'string',
@@ -1830,7 +1831,10 @@ const sliceToByteBudget = (
   if (available <= 0) {
     return {
       text: TRUNCATION_SUFFIX.trim(),
-      truncated: { totalBytes: utf8ByteLength(full), omittedBytes: utf8ByteLength(full) },
+      truncated: {
+        totalBytes: utf8ByteLength(full),
+        omittedBytes: utf8ByteLength(full),
+      },
     }
   }
 
@@ -1838,10 +1842,7 @@ const sliceToByteBudget = (
   if (sliceEnd > full.length) {
     sliceEnd = full.length
   }
-  while (
-    sliceEnd > 0 &&
-    utf8ByteLength(full.slice(0, sliceEnd)) > available
-  ) {
+  while (sliceEnd > 0 && utf8ByteLength(full.slice(0, sliceEnd)) > available) {
     sliceEnd -= 1
   }
 
@@ -4248,11 +4249,16 @@ export async function callLocalFileTool({
           requestedForkContext !== undefined &&
           !['none', 'last_turns', 'full'].includes(requestedForkContext)
         ) {
-          throw new Error('forkContext must be "none", "last_turns", or "full".')
+          throw new Error(
+            'forkContext must be "none", "last_turns", or "full".',
+          )
         }
         const forkContext: 'none' | 'last_turns' | 'full' =
-          (requestedForkContext as 'none' | 'last_turns' | 'full' | undefined) ??
-          'none'
+          (requestedForkContext as
+            | 'none'
+            | 'last_turns'
+            | 'full'
+            | undefined) ?? 'none'
 
         // 全部 subagent 依赖走动态 import——madge 对静态与 type-only 导入都计边，
         // localFileTools → subagent/* 会经 tool-preferences 回流成环（deps:check
@@ -4970,8 +4976,18 @@ export function buildJsSandboxProxyHandlers(
         const engine = await getRagEngine()
         const query = typeof params.query === 'string' ? params.query : ''
         const limit = clampLimit(params.limit)
-        const results = await engine.processQuery({ query, limit })
-        return results
+        publishQueryProgress({ type: 'querying' })
+        try {
+          return await engine.processQuery({
+            query,
+            limit,
+            // Forward retrieval states onto the shared bus so chat surfaces
+            // show the "Querying the vault" banner during sandbox searches.
+            onQueryProgressChange: publishQueryProgress,
+          })
+        } finally {
+          publishQueryProgress({ type: 'idle' })
+        }
       }
 
       throw new Error(`unknown db method: ${method}`)

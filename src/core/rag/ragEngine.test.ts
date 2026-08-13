@@ -6,6 +6,10 @@ import {
 
 import { RAGEngine, dedupeRagQueryResults } from './ragEngine'
 import type { RetrievalTrace } from './retrievalTraceTypes'
+import {
+  publishRetrievalTraceArrival,
+  subscribeRetrievalTraceArrival,
+} from './retrievalTraceBus'
 
 jest.mock('./embedding', () => ({
   getEmbeddingModelClient: jest.fn(() => ({
@@ -455,6 +459,62 @@ describe('RAGEngine', () => {
         score: 0.91,
       },
     ])
+  })
+
+  it('publishes a trace arrival after the trace row is persisted', async () => {
+    const { traces, store } = createTraceStore()
+    const vectorManager = {
+      reconcile: jest.fn(),
+      performSimilaritySearch: jest.fn().mockResolvedValue([]),
+    }
+    const engine = new RAGEngine(
+      {} as never,
+      baseSettings as never,
+      vectorManager as never,
+      (_key, fallback) => fallback ?? '',
+      store,
+    )
+
+    const arrivals: RetrievalTrace[] = []
+    const unsubscribe = subscribeRetrievalTraceArrival((trace) => {
+      arrivals.push(trace)
+    })
+    try {
+      await engine.processQuery({ query: 'match me' })
+      await engine.flushPendingTraceWritesForTest()
+    } finally {
+      unsubscribe()
+    }
+
+    expect(arrivals).toHaveLength(1)
+    expect(arrivals[0]?.queryId).toBe(traces[0]?.queryId)
+    expect(arrivals[0]?.queryText).toBe('match me')
+  })
+
+  it('does not publish a trace arrival without a trace store', async () => {
+    const vectorManager = {
+      reconcile: jest.fn(),
+      performSimilaritySearch: jest.fn().mockResolvedValue([]),
+    }
+    const engine = new RAGEngine(
+      {} as never,
+      baseSettings as never,
+      vectorManager as never,
+      (_key, fallback) => fallback ?? '',
+    )
+
+    const arrivals: RetrievalTrace[] = []
+    const unsubscribe = subscribeRetrievalTraceArrival((trace) => {
+      arrivals.push(trace)
+    })
+    try {
+      await engine.processQuery({ query: 'match me' })
+      await engine.flushPendingTraceWritesForTest()
+    } finally {
+      unsubscribe()
+    }
+
+    expect(arrivals).toHaveLength(0)
   })
 
   it('retries transient query embedding failures before searching', async () => {

@@ -3,6 +3,7 @@ import { App, TFile, TFolder } from 'obsidian'
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import { isWithinYoloUserDataRoot } from '../paths/yoloPaths'
 import type { RAGEngine } from '../rag/ragEngine'
+import type { QueryProgressState } from '../../components/chat-view/QueryProgress'
 import { type SuperSearchResult, fuseRrfHybrid } from '../search/hybridSearch'
 import {
   type AggregatedSearchResult,
@@ -623,12 +624,19 @@ export async function runVaultSearchStructured({
   getRagEngine,
   args,
   signal,
+  onQueryProgressChange,
 }: {
   app: App
   settings?: YoloSettings
   getRagEngine?: () => Promise<RAGEngine>
   args: Record<string, unknown>
   signal?: AbortSignal
+  /**
+   * Forwarded into `ragEngine.processQuery` so in-run callers (the bash
+   * `search` command) can surface the "Querying the vault" progress banner.
+   * The external `vault_search` MCP server has no UI consumer and omits it.
+   */
+  onQueryProgressChange?: (queryProgress: QueryProgressState) => void
 }): Promise<VaultSearchStructuredOutcome> {
   if (signal?.aborted) {
     return { status: 'aborted' }
@@ -733,6 +741,7 @@ export async function runVaultSearchStructured({
       scope: ragScope,
       minSimilarity: ragMinSimilarity,
       limit: effectiveRagLimit,
+      onQueryProgressChange,
     })
 
     const ragMapped = mapRagRowsToSuper(ragRows as RagEmbeddingRow[], 'rag')

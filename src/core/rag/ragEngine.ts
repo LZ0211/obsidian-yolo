@@ -28,6 +28,7 @@ import {
 import { getEmbeddingModelClient } from './embedding'
 import { QueryEmbeddingMemoryCache } from './queryEmbeddingMemoryCache'
 import { isAbortLikeError, isTransientRagIndexError } from './ragIndexErrors'
+import { publishRetrievalTraceArrival } from './retrievalTraceBus'
 import type { ReconcileScope } from './reconciler'
 import { applyLegacyRerankResponse, getRerankModelClient } from './rerank'
 import {
@@ -557,13 +558,19 @@ export class RAGEngine {
       return
     }
 
+    const persistedTrace: RetrievalTrace = {
+      queryId: this.createQueryId(trace.startedAt),
+      backend: 'sqlite',
+      modelId: this.embeddingModel.id,
+      namespaceId: this.buildNamespaceId(this.embeddingModel),
+      ...trace,
+    }
     const pendingWrite = this.traceStore
-      .insertTrace({
-        queryId: this.createQueryId(trace.startedAt),
-        backend: 'sqlite',
-        modelId: this.embeddingModel.id,
-        namespaceId: this.buildNamespaceId(this.embeddingModel),
-        ...trace,
+      .insertTrace(persistedTrace)
+      .then(() => {
+        // Announce after the row is durable so subscribers (RAGLogModal's
+        // auto-refresh) always find the new trace when they list traces.
+        publishRetrievalTraceArrival(persistedTrace)
       })
       .catch((error) => {
         console.warn('[YOLO] Failed to persist retrieval trace', error)
