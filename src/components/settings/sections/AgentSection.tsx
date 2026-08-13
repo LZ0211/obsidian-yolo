@@ -47,6 +47,7 @@ import { AgentAutoContextCompactionSection } from './AgentAutoContextCompactionS
 import { AgentCliPathSection } from './AgentCliPathSection'
 import { AgentImageReadingSection } from './AgentImageReadingSection'
 import { AgentMcpServerSection } from './AgentMcpServerSection'
+import { computeMcpStatusCounts } from './mcpStatusCounts'
 import { NotificationSettingsSection } from './NotificationSettingsSection'
 
 type AgentSectionProps = {
@@ -431,14 +432,13 @@ export function AgentSection({ app }: AgentSectionProps) {
   const enabledConfiguredMcpServerCount = settings.mcp.servers.filter(
     (server) => server.enabled,
   ).length
-  const mcpLoadingCount = mcpManagerLoading
-    ? enabledConfiguredMcpServerCount
-    : mcpServers.filter(
-        (server) => server.status === McpServerStatus.Connecting,
-      ).length
-  const mcpErrorCount = mcpServers.filter(
-    (server) => server.status === McpServerStatus.Error,
-  ).length
+  const mcpStatusCounts = computeMcpStatusCounts({
+    servers: mcpServers,
+    loading: mcpManagerLoading,
+    enabledConfiguredCount: enabledConfiguredMcpServerCount,
+  })
+  const mcpLoadingCount = mcpStatusCounts.loading
+  const mcpErrorCount = mcpStatusCounts.error
   const mcpToolStatusLabels = [
     mcpLoadingCount > 0
       ? t('settings.agent.mcpLoadingStatus', 'Loading {count} MCP...').replace(
@@ -457,7 +457,7 @@ export function AgentSection({ app }: AgentSectionProps) {
   const mcpCountLabel = t(
     'settings.agent.mcpServerCount',
     '{count} MCP servers connected',
-  ).replace('{count}', String(settings.mcp.servers.length))
+  ).replace('{count}', String(mcpStatusCounts.labelCount))
 
   const toolTags = [
     ...builtinTools.map((tool) => ({
