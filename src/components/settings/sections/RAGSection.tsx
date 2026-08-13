@@ -1,4 +1,4 @@
-import { App, Notice } from 'obsidian'
+import { App, Notice, Platform } from 'obsidian'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { RECOMMENDED_MODELS_FOR_EMBEDDING } from '../../../constants'
@@ -242,7 +242,6 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
   const lastFileSwitchAtRef = useRef(0)
   const settingsRef = useRef(settings)
   const settingsUpdateQueueRef = useRef<Promise<void>>(Promise.resolve())
-  const didCheckBackendRef = useRef(false)
 
   useEffect(() => {
     settingsRef.current = settings
@@ -322,11 +321,9 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
   }, [plugin, settings.ragBackendSettings.rebuildRequired])
 
   useEffect(() => {
-    // Skip the initial mount to avoid an eager DB connection.
-    if (!didCheckBackendRef.current) {
-      didCheckBackendRef.current = true
-      return
-    }
+    // Check on first open too: skipping the initial mount left the backend
+    // status unknown (null) until some later status change, so a freshly
+    // opened RAG section never ran the backend check.
     if (indexRunSnapshot.status === 'running') {
       return
     }
@@ -623,7 +620,6 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
 
   const ensureBackendChecked = useCallback(async (): Promise<boolean> => {
     if (ragBackendStatus !== null) return ragBackendStatus.readiness === 'ready'
-    didCheckBackendRef.current = true
     await refreshRagBackendStatus()
     // After refresh, ragBackendStatus is updated via setState, but the closure
     // captures the old value. Return a best-effort signal; the re-render will
@@ -809,28 +805,33 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
             />
           </ObsidianSetting>
 
-          <ObsidianSetting
-            name={t(
-              'settings.rag.log.showRibbonIcon',
-              '显示 RAG 日志侧边栏图标',
-            )}
-            desc={t(
-              'settings.rag.log.showRibbonIconDesc',
-              '在左侧边栏显示 RAG 日志快捷入口。',
-            )}
-            className="yolo-settings-card"
-          >
-            <ObsidianToggle
-              value={isRagLogRibbonEnabled}
-              onChange={(value) => {
-                applySettingsUpdate({
-                  ragOptions: {
-                    showRagLogRibbonIcon: value,
-                  },
-                })
-              }}
-            />
-          </ObsidianSetting>
+          {/* The ribbon icon only exists on desktop (syncRagLogRibbonIcon
+              gates on Platform.isDesktop); hide the toggle elsewhere instead
+              of showing a control that does nothing. */}
+          {Platform.isDesktop && (
+            <ObsidianSetting
+              name={t(
+                'settings.rag.log.showRibbonIcon',
+                '显示 RAG 日志侧边栏图标',
+              )}
+              desc={t(
+                'settings.rag.log.showRibbonIconDesc',
+                '在左侧边栏显示 RAG 日志快捷入口。',
+              )}
+              className="yolo-settings-card"
+            >
+              <ObsidianToggle
+                value={isRagLogRibbonEnabled}
+                onChange={(value) => {
+                  applySettingsUpdate({
+                    ragOptions: {
+                      showRagLogRibbonIcon: value,
+                    },
+                  })
+                }}
+              />
+            </ObsidianSetting>
+          )}
         </RAGCard>
 
         <RAGCard

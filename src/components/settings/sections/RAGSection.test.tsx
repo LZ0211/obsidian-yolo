@@ -8,8 +8,12 @@ const mockObsidianDropdown = jest.fn()
 const mockObsidianToggle = jest.fn()
 const mockObsidianButton = jest.fn()
 
+// Mutable holder so tests can flip the platform: the RAG log ribbon toggle
+// must be hidden on mobile (the ribbon itself only exists on desktop).
+const mockPlatform = { isDesktop: true }
 jest.mock('obsidian', () => ({
   Notice: jest.fn(),
+  Platform: mockPlatform,
 }))
 
 jest.mock('../../../contexts/settings-context', () => ({
@@ -254,6 +258,31 @@ describe('RAG log settings entry points', () => {
         name: '显示 RAG 日志侧边栏图标',
       }),
     )
+  })
+
+  it('hides the RAG log ribbon toggle on mobile where no ribbon exists', () => {
+    mockPlatform.isDesktop = false
+    try {
+      mockObsidianSetting.mockClear()
+      renderToStaticMarkup(
+        <RAGSection app={{} as never} plugin={plugin as never} />,
+      )
+
+      expect(
+        mockObsidianSetting.mock.calls.some(
+          ([props]) =>
+            (props as { name?: string }).name === '显示 RAG 日志侧边栏图标',
+        ),
+      ).toBe(false)
+      // The RAG log modal itself is still reachable from settings.
+      expect(
+        mockObsidianSetting.mock.calls.some(
+          ([props]) => (props as { name?: string }).name === 'RAG 日志',
+        ),
+      ).toBe(true)
+    } finally {
+      mockPlatform.isDesktop = true
+    }
   })
 
   it('renders the auto-update toggle and last-sync row', () => {

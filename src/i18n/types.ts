@@ -459,7 +459,6 @@ export type TranslationKeys = {
         description: string
         tokenizer: { name: string; description: string; impact: string }
         pdfEngine: { name: string; description: string; impact: string }
-        pgliteEngine: { name: string; description: string; impact: string }
         bashEngine: { name: string; description: string; impact: string }
         jiebaEngine?: { name: string; description: string; impact: string }
         sqliteEngine?: { name: string; description: string; impact: string }
@@ -1353,65 +1352,13 @@ export type TranslationKeys = {
       advanced?: string
       basicCardTitle?: string
       basicCardDesc?: string
-      resourceCardTitle?: string
-      resourceCardDesc?: string
       scopeCardTitle?: string
       scopeCardDesc?: string
-      maintenanceCardTitle?: string
-      maintenanceCardDesc?: string
       maintenanceUnavailableHint?: string
-      currentStatus?: string
-      currentStatusDesc?: string
       lastIndexedAt?: string
       lastIndexedAtDesc?: string
       maintenanceActions?: string
-      deleteIndex?: string
-      deleteIndexConfirm?: string
-      deleteIndexSuccess?: string
-      deleteIndexFailed?: string
-      statusDisabled?: string
-      statusSyncing?: string
-      statusRuntimeRequired?: string
-      statusReady?: string
-      statusEmpty?: string
       selectEmbeddingModelFirst?: string
-      openKnowledgeSettings?: string
-      openKnowledgeSettingsDesc?: string
-      composerEntryDesc?: string
-      pgliteStatusCurrent?: string
-      pgliteStatusSource?: string
-      pgliteStatusPath?: string
-      pgliteStatusCheckedAt?: string
-      pgliteStatusVersion?: string
-      pgliteStatusReadyAt?: string
-      pgliteStatusReason?: string
-      pgliteStateUnchecked?: string
-      pgliteStateChecking?: string
-      pgliteStateMissing?: string
-      pgliteStateDownloading?: string
-      pgliteStateUnavailable?: string
-      pgliteStateFailed?: string
-      pgliteStateReady?: string
-      pgliteSourceRemote?: string
-      pgliteSourceBundled?: string
-      pgliteSourceLocalCache?: string
-      pgliteDeliveryManual?: string
-      pgliteDownload?: string
-      pgliteRedownload?: string
-      pgliteRecheck?: string
-      pgliteDeleteLocal?: string
-      pgliteDownloadPlaceholder?: string
-      pgliteDeletePlaceholder?: string
-      pgliteDownloadingUnknownFile?: string
-      pgliteInlineErrorTitle?: string
-      pgliteSummaryReadyRemote?: string
-      pgliteSummaryReadyBundled?: string
-      pgliteSummaryUnavailable?: string
-      pgliteSummaryReady?: string
-      pgliteSummaryDownloading?: string
-      pgliteSummaryFailed?: string
-      pgliteSummaryMissing?: string
-      pgliteDownloadingFile?: string
       // Index progress header/status
       indexProgressTitle?: string
       indexing?: string
@@ -2678,8 +2625,6 @@ export type TranslationKeys = {
     continueComplete?: string
     continueFailed?: string
     openYoloNewChatFailed: string
-    pgliteUnavailable: string
-    downloadingPglite: string
     updatingIndex: string
     indexUpdated: string
     indexUpdateFailed: string
