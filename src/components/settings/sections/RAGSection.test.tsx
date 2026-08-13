@@ -108,6 +108,7 @@ import {
   getProgressPercent,
   isRagLogRibbonVisible,
   mergeRagSettingsPatch,
+  rebuildRequiredLabel,
 } from './RAGSection'
 
 const t = (_key: string, fallback?: string) => fallback ?? ''
@@ -450,6 +451,14 @@ describe('RAG log settings entry points', () => {
     expect(mockObsidianToggle).toHaveBeenCalledWith(
       expect.objectContaining({ value: false }),
     )
+  })
+
+  it('labels scope-change rebuilds as "Rebuild required", empty indexes as "Not indexed yet"', () => {
+    const t = (key: string, fallback?: string) => fallback ?? ''
+    // Persisted scope-change flag set → rebuild demanded by changed options.
+    expect(rebuildRequiredLabel(true, t)).toBe('Rebuild required')
+    // Store-derived only (empty index, no scope change) → not-indexed state.
+    expect(rebuildRequiredLabel(false, t)).toBe('Not indexed yet')
   })
 
   it('routes an explicit update action through the maintenance controller', async () => {

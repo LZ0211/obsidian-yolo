@@ -362,8 +362,7 @@ export const en: TranslationKeys = {
       testConnection: 'Test Connection',
       connectionTestResult: 'Connection: {status}',
       connectionFailed: 'Connection failed: {error}',
-      botServiceNotRunning:
-        'Bot Platform is not running. Enable it first.',
+      botServiceNotRunning: 'Bot Platform is not running. Enable it first.',
       notifySessionExpired:
         'WeChat bot login expired. Open Bot settings, scan the QR code again, and click Save.',
       notifySendFailed:
@@ -1794,6 +1793,7 @@ export const en: TranslationKeys = {
       waitingRateLimit: 'Waiting for rate limit to reset...',
       preparingProgress: 'Preparing index...',
       notIndexedYet: 'Not indexed yet',
+      rebuildRequired: 'Rebuild required',
       indexComplete: 'Index complete',
       indexIncomplete: 'Last index did not finish',
       retryNow: 'Retry now',

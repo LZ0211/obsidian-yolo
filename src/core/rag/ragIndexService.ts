@@ -81,6 +81,13 @@ type RagIndexServiceDeps = {
   activityRegistry: BackgroundActivityRegistry
   isRagEnabled: () => boolean
   t: (key: string, fallback?: string) => string
+  /**
+   * Fired after a successful reconcile, regardless of trigger (manual/auto).
+   * Lets the host record the index-scope options snapshot the index was built
+   * with (and clear any rebuild-required flag). Fire-and-forget: the run is
+   * not delayed by the callback.
+   */
+  onIndexCompleted?: (result: ReconcileResult) => void
 }
 
 type RagIndexSubscriber = (snapshot: RagIndexRunSnapshot) => void
@@ -159,6 +166,7 @@ export class RagIndexService {
   private readonly activityRegistry: BackgroundActivityRegistry
   private readonly isRagEnabled: () => boolean
   private readonly t: (key: string, fallback?: string) => string
+  private readonly onIndexCompleted?: (result: ReconcileResult) => void
 
   private snapshot: RagIndexRunSnapshot = defaultSnapshot()
   private readonly subscribers = new Set<RagIndexSubscriber>()
@@ -176,6 +184,7 @@ export class RagIndexService {
     this.activityRegistry = deps.activityRegistry
     this.isRagEnabled = deps.isRagEnabled
     this.t = deps.t
+    this.onIndexCompleted = deps.onIndexCompleted
   }
 
   async initialize(): Promise<void> {
@@ -315,10 +324,8 @@ export class RagIndexService {
       if (await this.isIndexLockHeld(lockName)) {
         throw new RagIndexBusyError()
       }
-      return navigator.locks.request(
-        lockName,
-        { mode: 'exclusive' },
-        () => this.runIndexLocked(options, attempt),
+      return navigator.locks.request(lockName, { mode: 'exclusive' }, () =>
+        this.runIndexLocked(options, attempt),
       )
     }
     // No Web Locks (older runtimes, Jest node env): instance-scoped mutual
@@ -431,6 +438,15 @@ export class RagIndexService {
             : undefined,
       }
       await this.persistSnapshot()
+      // The index content now matches the current scope options: the host
+      // records the options snapshot and clears any rebuild-required flag.
+      // Fire-and-forget so the run completion is not delayed by a settings
+      // write (the callback's failures are caught by the host).
+      try {
+        this.onIndexCompleted?.(result)
+      } catch (error) {
+        console.error('[YOLO] onIndexCompleted hook failed', error)
+      }
       return result
     } catch (error) {
       const failure = describeRagIndexError(error)
@@ -455,8 +471,7 @@ export class RagIndexService {
         // A user-initiated cancel is not a failure: clear the stale failure
         // fields so an idle snapshot doesn't keep showing the last error.
         failureKind: failureKind === 'aborted' ? undefined : failureKind,
-        failureMessage:
-          failureKind === 'aborted' ? undefined : failure.message,
+        failureMessage: failureKind === 'aborted' ? undefined : failure.message,
         failureHttpStatus:
           failureKind === 'aborted' ? undefined : failure.httpStatus,
         waitingForRateLimit: false,

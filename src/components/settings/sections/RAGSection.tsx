@@ -35,7 +35,6 @@ import { IncludedFilesModal } from '../modals/IncludedFilesModal'
 
 const RAG_UPDATE_ERROR = 'Failed to update RAG settings.'
 
-
 type RAGSectionProps = {
   app: App
   plugin: YoloPlugin
@@ -199,6 +198,21 @@ export const getProgressPercent = (progress: IndexProgress | null): number => {
 
 export const formatProgressPercent = (percent: number): string =>
   Math.max(0, Math.min(100, percent)).toFixed(2)
+
+/**
+ * Ring label for the rebuild-required state. The persisted scope-change flag
+ * (`ragBackendSettings.rebuildRequired`) means the configured index scope no
+ * longer matches the stored index ("Rebuild required"); a store-derived
+ * rebuildRequired without that flag means the index is empty/missing ("Not
+ * indexed yet"). Exported for direct unit testing.
+ */
+export const rebuildRequiredLabel = (
+  scopeChangeFlag: boolean,
+  t: (key: string, fallback?: string) => string,
+): string =>
+  scopeChangeFlag
+    ? t('settings.rag.rebuildRequired', 'Rebuild required')
+    : t('settings.rag.notIndexedYet', 'Not indexed yet')
 
 const getProgressSummary = (
   progress: IndexProgress | null,
@@ -548,7 +562,12 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
       return `${formatProgressPercent(ringPercent)}% ${t('settings.rag.indexing', 'Indexing...')}`
     }
     if (ragBackendStatus?.rebuildRequired) {
-      return t('settings.rag.notIndexedYet', 'Not indexed yet')
+      // The persisted flag means scope options changed since the last run; a
+      // store-derived rebuildRequired means the index is empty/missing.
+      return rebuildRequiredLabel(
+        settings.ragBackendSettings.rebuildRequired === true,
+        t,
+      )
     }
     if (indexRunSnapshot.status === 'failed') {
       if (indexRunSnapshot.failureKind === 'aborted') {
@@ -591,6 +610,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
     indexRunSnapshot.status,
     isIndexing,
     ragBackendStatus?.rebuildRequired,
+    settings.ragBackendSettings.rebuildRequired,
     displayedCurrentFile,
     progressSource,
     ringPercent,
@@ -1572,7 +1592,10 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                   </ObsidianSetting>
 
                   <ObsidianSetting
-                    name={t('settings.rag.autoUpdateInterval', '最小间隔(小时)')}
+                    name={t(
+                      'settings.rag.autoUpdateInterval',
+                      '最小间隔(小时)',
+                    )}
                     desc={t(
                       'settings.rag.autoUpdateIntervalDesc',
                       '到达该间隔才会触发自动更新；用于避免频繁重建。',

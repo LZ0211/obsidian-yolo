@@ -1419,6 +1419,7 @@ export type TranslationKeys = {
       waitingRateLimit?: string
       preparingProgress?: string
       notIndexedYet?: string
+      rebuildRequired?: string
       indexComplete?: string
       indexIncomplete?: string
       retryNow?: string

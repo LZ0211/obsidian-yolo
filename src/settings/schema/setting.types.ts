@@ -556,6 +556,28 @@ export const botsSettingsSchema = z.object({
 })
 export type BotsSettings = z.infer<typeof botsSettingsSchema>
 
+/**
+ * ragOptions scope snapshot the index was last built with (see
+ * `src/core/rag/ragIndexScope.ts`). Absent until the first successful run;
+ * any non-object value (legacy data, corruption) parses to undefined.
+ */
+const ragIndexedOptionsSchema = z.preprocess(
+  (value) =>
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? value
+      : undefined,
+  z
+    .object({
+      chunkSize: z.number().catch(0),
+      chunkOverlap: z.number().catch(0),
+      indexPdf: z.boolean().catch(false),
+      includePatterns: z.array(z.string()).catch([]),
+      excludePatterns: z.array(z.string()).catch([]),
+      excludeYoloBaseDir: z.boolean().catch(false),
+    })
+    .optional(),
+)
+
 export const ragBackendSettingsSchema = z.preprocess(
   (value) =>
     typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -564,6 +586,7 @@ export const ragBackendSettingsSchema = z.preprocess(
   z.object({
     indexedNamespaceId: z.string().optional(),
     rebuildRequired: z.boolean().catch(false),
+    indexedOptions: ragIndexedOptionsSchema,
   }),
 )
 

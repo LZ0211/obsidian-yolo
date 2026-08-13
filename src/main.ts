@@ -149,6 +149,10 @@ import {
   RagIndexService,
 } from './core/rag/ragIndexService'
 import {
+  captureRagIndexScope,
+  ragIndexScopeChanged,
+} from './core/rag/ragIndexScope'
+import {
   BAKED_RUNTIME_COMPONENT_REGISTRY,
   RuntimeComponentDeviceStateStore,
   RuntimeComponentInstaller,
@@ -977,9 +981,33 @@ export default class YoloPlugin extends Plugin {
         activityRegistry: this.getBackgroundActivityRegistry(),
         isRagEnabled: () => !!this.settings?.ragOptions?.enabled,
         t: (key, fallback) => this.t(key, fallback),
+        onIndexCompleted: () => {
+          void this.recordRagIndexCompleted()
+        },
       })
     }
     return this.ragIndexService
+  }
+
+  /**
+   * After a successful reconcile the stored index matches the current scope
+   * options: persist the snapshot (baseline for future scope-change diffs) and
+   * clear any rebuild-required flag. Failures are logged, never surfaced.
+   */
+  private async recordRagIndexCompleted(): Promise<void> {
+    try {
+      const settings = this.settings
+      await this.setSettings({
+        ...settings,
+        ragBackendSettings: {
+          ...settings.ragBackendSettings,
+          indexedOptions: captureRagIndexScope(settings.ragOptions),
+          rebuildRequired: false,
+        },
+      })
+    } catch (error) {
+      console.error('[YOLO] Failed to record RAG indexed options', error)
+    }
   }
 
   private getBackgroundActivityRegistry(): BackgroundActivityRegistry {
@@ -2374,6 +2402,38 @@ export default class YoloPlugin extends Plugin {
       }
       previousBotsEnabled = nextBotsEnabled
       previousHasEnabledPlatform = nextHasEnabledPlatform
+    })
+    // RAG 索引范围变更 → 置 rebuildRequired：include/exclude/chunkSize/
+    // chunkOverlap/indexPdf 变了，存量索引内容与当前范围不再一致（脏标记），
+    // UI ring 显示 rebuild-required 而非 healthy。基线（indexedOptions）来自
+    // 最近一次成功索引（recordRagIndexCompleted 写入）；无基线（新装/旧数据）
+    // 不标记。只标记不自动重建——重建仍由用户触发或 auto 服务按现有节奏，
+    // 避免未经同意烧 embedding 预算。标志位本身经 setSettings 持久化，
+    // 写回后 diff 相等，不会循环触发。
+    this.addSettingsChangeListener((settings) => {
+      if (settings.ragBackendSettings.rebuildRequired === true) {
+        return
+      }
+      if (
+        !ragIndexScopeChanged(
+          captureRagIndexScope(settings.ragOptions),
+          settings.ragBackendSettings.indexedOptions,
+        )
+      ) {
+        return
+      }
+      void this.setSettings({
+        ...settings,
+        ragBackendSettings: {
+          ...settings.ragBackendSettings,
+          rebuildRequired: true,
+        },
+      }).catch((error: unknown) => {
+        console.error(
+          '[YOLO] Failed to mark RAG index as rebuild-required',
+          error,
+        )
+      })
     })
     // 启动 reconcile：无条件构建服务（desktop + vault 路径门控），enabled 决定是否启动调度循环。
     this.reconcileScheduledTasks()
@@ -4219,7 +4279,14 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
     const stats = await store.getStats(namespace).catch(() => null)
     return {
       ...status,
-      rebuildRequired: !stats || stats.chunkCount <= 0,
+      // Store-derived staleness (empty index) OR scope-options staleness: when
+      // include/exclude/chunkSize/etc. changed since the last successful run,
+      // the stored index no longer matches the configured scope even though it
+      // is populated — surface rebuild-required instead of a healthy 100%.
+      rebuildRequired:
+        !stats ||
+        stats.chunkCount <= 0 ||
+        this.settings.ragBackendSettings.rebuildRequired === true,
     }
   }
 

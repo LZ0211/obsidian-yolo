@@ -1658,6 +1658,7 @@ export const zh: TranslationKeys = {
       waitingRateLimit: '等待速率限制重置...',
       preparingProgress: '正在准备索引...',
       notIndexedYet: '尚未索引',
+      rebuildRequired: '索引范围已变更，需重建',
       indexComplete: '索引已完成',
       indexIncomplete: '上次索引未完成',
       retryNow: '立即重试',

@@ -200,6 +200,68 @@ describe('RagIndexService', () => {
     })
   })
 
+  it('invokes onIndexCompleted only after a successful run', async () => {
+    const onIndexCompleted = jest.fn()
+    const updateVaultIndex = jest
+      .fn()
+      .mockResolvedValue({ permanentFailedPaths: [], chunkifyFailedPaths: [] })
+    const service = new RagIndexService({
+      app: {
+        loadLocalStorage: jest.fn().mockReturnValue(null),
+        saveLocalStorage: jest.fn(),
+      } as never,
+      getRagEngine: jest.fn().mockResolvedValue({ updateVaultIndex }),
+      activityRegistry: new BackgroundActivityRegistry(),
+      isRagEnabled: () => true,
+      t: (_key, fallback) => fallback ?? '',
+      onIndexCompleted,
+    })
+    await service.initialize()
+
+    await service.runIndex({
+      mode: 'sync',
+      scope: { kind: 'all' },
+      trigger: 'manual',
+      retryPolicy: 'none',
+    })
+
+    expect(onIndexCompleted).toHaveBeenCalledTimes(1)
+    expect(onIndexCompleted).toHaveBeenCalledWith({
+      permanentFailedPaths: [],
+      chunkifyFailedPaths: [],
+    })
+  })
+
+  it('does not invoke onIndexCompleted when the run fails', async () => {
+    const onIndexCompleted = jest.fn()
+    const updateVaultIndex = jest
+      .fn()
+      .mockRejectedValue(new Error('network timeout'))
+    const service = new RagIndexService({
+      app: {
+        loadLocalStorage: jest.fn().mockReturnValue(null),
+        saveLocalStorage: jest.fn(),
+      } as never,
+      getRagEngine: jest.fn().mockResolvedValue({ updateVaultIndex }),
+      activityRegistry: new BackgroundActivityRegistry(),
+      isRagEnabled: () => true,
+      t: (_key, fallback) => fallback ?? '',
+      onIndexCompleted,
+    })
+    await service.initialize()
+
+    await expect(
+      service.runIndex({
+        mode: 'sync',
+        scope: { kind: 'all' },
+        trigger: 'manual',
+        retryPolicy: 'none',
+      }),
+    ).rejects.toThrow('network timeout')
+
+    expect(onIndexCompleted).not.toHaveBeenCalled()
+  })
+
   describe('cross-window index lock', () => {
     const vaultName = 'Test Vault'
     const makeService = (updateVaultIndex: jest.Mock) =>
@@ -228,20 +290,18 @@ describe('RagIndexService', () => {
     it('acquires the vault-scoped web lock and runs the reconcile inside it', async () => {
       const updateVaultIndex = jest
         .fn()
-        .mockResolvedValue({ permanentFailedPaths: [], chunkifyFailedPaths: [] })
+        .mockResolvedValue({
+          permanentFailedPaths: [],
+          chunkifyFailedPaths: [],
+        })
       const request = jest.fn(
-        (
-          _name: string,
-          _options: unknown,
-          callback: () => Promise<unknown>,
-        ) => callback(),
+        (_name: string, _options: unknown, callback: () => Promise<unknown>) =>
+          callback(),
       )
       ;(globalThis as { navigator?: unknown }).navigator = {
         locks: {
           request,
-          query: jest
-            .fn()
-            .mockResolvedValue({ held: [], pending: [] }),
+          query: jest.fn().mockResolvedValue({ held: [], pending: [] }),
         },
       }
       const service = makeService(updateVaultIndex)
@@ -275,7 +335,10 @@ describe('RagIndexService', () => {
       }
       const updateVaultIndex = jest
         .fn()
-        .mockResolvedValue({ permanentFailedPaths: [], chunkifyFailedPaths: [] })
+        .mockResolvedValue({
+          permanentFailedPaths: [],
+          chunkifyFailedPaths: [],
+        })
       const service = makeService(updateVaultIndex)
       await service.initialize()
 
@@ -289,7 +352,10 @@ describe('RagIndexService', () => {
     it('falls back to unguarded runs when navigator.locks is unavailable', async () => {
       const updateVaultIndex = jest
         .fn()
-        .mockResolvedValue({ permanentFailedPaths: [], chunkifyFailedPaths: [] })
+        .mockResolvedValue({
+          permanentFailedPaths: [],
+          chunkifyFailedPaths: [],
+        })
       const service = makeService(updateVaultIndex)
       await service.initialize()
 
@@ -685,8 +751,7 @@ describe('ragIndexService consecutive runs', () => {
       )
     const service = buildService(updateVaultIndex)
 
-    const seenSnapshots: Array<{ status: string; completedFiles?: number }> =
-      []
+    const seenSnapshots: Array<{ status: string; completedFiles?: number }> = []
     service.subscribe((snapshot) => {
       seenSnapshots.push({
         status: snapshot.status,

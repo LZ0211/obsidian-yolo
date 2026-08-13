@@ -356,8 +356,7 @@ export const it: DeepPartial<TranslationKeys> = {
         feishu: 'Feishu',
         qq: 'QQ',
       },
-      desktopOnly:
-        'La piattaforma bot è supportata solo su desktop.',
+      desktopOnly: 'La piattaforma bot è supportata solo su desktop.',
       testConnection: 'Test connessione',
       connectionTestResult: 'Connessione: {status}',
       connectionFailed: 'Connessione non riuscita: {error}',
@@ -1663,6 +1662,7 @@ export const it: DeepPartial<TranslationKeys> = {
       waitingRateLimit: 'In attesa del reset del limite di frequenza...',
       preparingProgress: 'Preparazione indicizzazione...',
       notIndexedYet: 'Non ancora indicizzato',
+      rebuildRequired: 'Ricostruzione richiesta',
       indexComplete: 'Indicizzazione completata',
       indexIncomplete: 'Ultima indicizzazione non completata',
       retryNow: 'Riprova ora',
