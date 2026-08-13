@@ -47,7 +47,12 @@ export const dedupeRagQueryResults = (
   const deduped = new Map<string, SimilaritySearchResult>()
 
   for (const row of rows) {
-    const key = `${row.path}:${row.metadata.page ?? ''}:${row.metadata.startLine}:${row.metadata.endLine}`
+    // content_hash is part of the identity: sub-chunks of oversized code
+    // blocks and tables share one line range (the splitter's subSplit*
+    // deliberately keeps the full block range), so keying on the range alone
+    // would collapse them to the single highest-similarity slice and silently
+    // drop content.
+    const key = `${row.path}:${row.metadata.page ?? ''}:${row.metadata.startLine}:${row.metadata.endLine}:${row.content_hash ?? ''}`
     const existing = deduped.get(key)
     if (!existing || row.similarity > existing.similarity) {
       deduped.set(key, row)
@@ -360,6 +365,13 @@ export class RAGEngine {
           queryDiagnostic,
           this.getTraceDiagnostic(error),
         ),
+      })
+      // A failed/aborted query must land on a terminal progress state —
+      // without this the chat UI stays stuck on "Querying the vault...".
+      onQueryProgressChange?.({
+        type: 'querying-error',
+        message:
+          error instanceof Error ? error.message : 'Query failed unexpectedly',
       })
       throw error
     }

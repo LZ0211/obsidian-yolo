@@ -1,0 +1,42 @@
+/* eslint-disable import/no-nodejs-modules -- 测试在 Node 环境运行，用 node:crypto 做纯 JS SHA-256 的交叉校验基准 */
+import { createHash } from 'node:crypto'
+
+import { sha256Hex, sha256HexPrefix16, sha256HexSync } from './content-hash'
+
+describe('sha256HexSync (pure-JS, mobile-safe)', () => {
+  const reference = (value: string): string =>
+    createHash('sha256').update(value, 'utf8').digest('hex')
+
+  it.each([
+    '',
+    'abc',
+    'float32',
+    'int8',
+    '中文编码测试',
+    'a'.repeat(1000),
+    'a'.repeat(100000),
+    'model-id\u0000query text',
+  ])('matches node:crypto for %j', (input) => {
+    expect(sha256HexSync(input)).toBe(reference(input))
+  })
+
+  it('matches the standard SHA-256 test vectors', () => {
+    expect(sha256HexSync('abc')).toBe(
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    )
+    expect(sha256HexSync('')).toBe(
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    )
+    expect(
+      sha256HexSync('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq'),
+    ).toBe('248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1')
+  })
+
+  it('stays consistent with the async WebCrypto path', async () => {
+    const input = 'cross-check between the two implementations'
+    expect(sha256HexSync(input)).toBe(await sha256Hex(input))
+    expect(sha256HexSync(input).slice(0, 16)).toBe(
+      await sha256HexPrefix16(input),
+    )
+  })
+})

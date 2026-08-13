@@ -34,6 +34,7 @@ import {
   type VectorSearchOptions,
   type VectorSearchResult,
   type VectorStore,
+  type VectorVacuumResult,
   VectorStoreError,
 } from './VectorStore'
 
@@ -627,12 +628,16 @@ export class SqliteVectorStore
     })
   }
 
-  async vacuum(namespace?: VectorNamespace): Promise<void> {
+  async vacuum(namespace?: VectorNamespace): Promise<VectorVacuumResult> {
     this.assertOpen()
     if (this.isClosing) {
       throw new VectorStoreError('closing', 'sqlite', 'retry_close')
     }
-    if (namespace == null) return
+    if (namespace == null) {
+      // Desktop VACUUM is a per-namespace SQLite command; the sharded
+      // backend's "all namespaces" mode has no desktop equivalent.
+      return { removedFiles: 0, removedChunks: 0 }
+    }
     await this.enqueueWrite(async () => {
       const state = this.getNamespaceState(namespace)
       const release = await this.acquireNamespaceWriteLease(state)
@@ -642,6 +647,9 @@ export class SqliteVectorStore
         release()
       }
     })
+    // The desktop store keeps no tombstone accounting: rows are deleted
+    // physically at write time, so compaction removes nothing extra.
+    return { removedFiles: 0, removedChunks: 0 }
   }
 
   async getStatus(namespace?: VectorNamespace): Promise<VectorBackendStatus> {
@@ -834,6 +842,19 @@ export class SqliteVectorStore
       const maxCandidates = await this.countSearchCandidates(state, options)
       throwIfVectorSearchAborted(options.signal)
       if (maxCandidates === 0) {
+        // An empty namespace still needs a rebuild, but an empty *scope*
+        // inside a populated namespace is a legitimate empty result — a query
+        // scoped to a folder that has no indexed chunks must return nothing,
+        // not fail with "rebuild the index".
+        if (options.scope != null) {
+          const totalChunks =
+            state.runtime.queryOne<CountRow>(
+              'select count(*) as count from rag_chunks',
+            )?.count ?? 0
+          if (totalChunks > 0) {
+            return { hits: [], timingsMs: undefined }
+          }
+        }
         throw new VectorStoreError(
           'rebuild_required',
           'sqlite',

@@ -77,6 +77,7 @@ export type VectorStoreErrorCode =
   | 'operation_in_progress'
   | 'closing'
   | 'malformed_query'
+  | 'mobile_sqlite_unavailable'
 
 export type VectorRecoveryAction =
   | 'none'
@@ -153,6 +154,16 @@ export type StoredVectorFile = {
   chunks: StoredVectorChunk[]
 }
 
+/**
+ * Outcome of a `vacuum` compaction: `removedFiles` counts the files whose
+ * every chunk was tombstoned (and is thus physically removed by the
+ * rebuild); `removedChunks` counts the tombstoned chunk rows dropped.
+ */
+export type VectorVacuumResult = {
+  removedFiles: number
+  removedChunks: number
+}
+
 export class VectorStoreError extends Error {
   readonly code: VectorStoreErrorCode
   readonly backend: VectorBackend
@@ -185,10 +196,7 @@ export type VectorStore = {
   getIndexedFiles?(
     namespace: VectorNamespace,
   ): Promise<
-    Map<
-      string,
-      { mtime: number; contentHash?: string; updatedAt?: number }
-    >
+    Map<string, { mtime: number; contentHash?: string; updatedAt?: number }>
   >
   replaceFile(namespace: VectorNamespace, file: VectorFileWrite): Promise<void>
   replaceFiles?(
@@ -199,7 +207,7 @@ export type VectorStore = {
   deleteFiles?(namespace: VectorNamespace, paths: string[]): Promise<void>
   clearNamespace(namespace: VectorNamespace): Promise<void>
   save?(namespace?: VectorNamespace): Promise<void>
-  vacuum(namespace?: VectorNamespace): Promise<void>
+  vacuum(namespace?: VectorNamespace): Promise<VectorVacuumResult>
   getStatus(namespace?: VectorNamespace): Promise<VectorBackendStatus>
   /** Status for a concrete namespace directory id (see `listNamespaces`). */
   getStatusByNamespaceId?(namespaceId: string): Promise<VectorBackendStatus>

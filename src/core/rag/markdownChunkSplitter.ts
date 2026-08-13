@@ -47,7 +47,10 @@ const TABLE_ROW_RE = /^\s{0,3}.*\|.*$/
 const TABLE_ALIGN_RE = /^\s*[:|\s-]+$/
 
 function isTableAlignment(line: string): boolean {
-  return TABLE_ALIGN_RE.test(line) && line.includes('-')
+  // A bare `---` is a horizontal rule, not a GFM table separator — requiring a
+  // pipe keeps `text | with pipes` followed by `---` from being misparsed as a
+  // table (which would swallow subsequent pipe-containing lines as rows).
+  return TABLE_ALIGN_RE.test(line) && line.includes('-') && line.includes('|')
 }
 
 const JOIN_SEP = '\n\n'

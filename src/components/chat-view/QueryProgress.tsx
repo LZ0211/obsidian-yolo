@@ -17,6 +17,12 @@ export type QueryProgressState =
       queryResult: SimilaritySearchResult[]
     }
   | {
+      // A failed/aborted query must leave the UI on a terminal state instead
+      // of staying stuck on "Querying the vault..." forever.
+      type: 'querying-error'
+      message: string
+    }
+  | {
       type: 'idle'
     }
 
@@ -70,7 +76,9 @@ export default function QueryProgress({
             {`Indexing ${state.indexProgress.totalFiles} file`}
             <DotLoader variant="dots" />
           </p>
-          <p className="yolo-query-progress-detail">{`${state.indexProgress.completedChunks}/${state.indexProgress.totalChunks} chunks indexed`}</p>
+          {state.indexProgress.totalChunks > 0 && (
+            <p className="yolo-query-progress-detail">{`${state.indexProgress.completedChunks}/${state.indexProgress.totalChunks} chunks indexed`}</p>
+          )}
           {state.indexProgress.waitingForRateLimit && (
             <p className="yolo-query-progress-detail">
               Waiting for rate limit to reset...
@@ -100,6 +108,12 @@ export default function QueryProgress({
               <p>{result.similarity}</p>
             </div>
           ))}
+        </div>
+      )
+    case 'querying-error':
+      return (
+        <div className="yolo-query-progress">
+          <p className="yolo-query-progress-detail">{state.message}</p>
         </div>
       )
   }

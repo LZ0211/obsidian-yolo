@@ -88,6 +88,19 @@ describe('splitMarkdownIntoChunks', () => {
 
   // ----- Real-world edge cases -----
 
+  it('does not treat a pipe-containing prose line followed by a horizontal rule as a table', async () => {
+    const text = ['Some prose | with pipes', '---', 'More prose follows.'].join(
+      '\n',
+    )
+    const chunks = await splitMarkdownIntoChunks(text, 500, 0)
+    const allContent = chunks.map((c) => c.content).join('\n\n')
+
+    // A bare `---` is a horizontal rule, not a GFM table separator: the prose
+    // must survive intact instead of being consumed as a bogus table header.
+    expect(allContent).toContain('Some prose | with pipes')
+    expect(allContent).toContain('More prose follows.')
+  })
+
   it('handles a realistic mixed Obsidian note (frontmatter + H1/H2 + code + table + prose)', async () => {
     const text = [
       '---',

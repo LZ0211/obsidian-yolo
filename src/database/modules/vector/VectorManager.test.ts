@@ -49,8 +49,11 @@ const embeddingModel = {
   getEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3]),
 } as never
 
-type VectorStoreWithIndexedFiles = Omit<VectorStore, 'getIndexedFiles'> &
-  Required<Pick<VectorStore, 'getIndexedFiles'>>
+type VectorStoreWithIndexedFiles = Omit<
+  VectorStore,
+  'getIndexedFiles' | 'getFileReadiness'
+> &
+  Required<Pick<VectorStore, 'getIndexedFiles' | 'getFileReadiness'>>
 
 const fakeVectorStore = (): jest.Mocked<VectorStoreWithIndexedFiles> => ({
   open: jest.fn(),
@@ -68,6 +71,8 @@ const fakeVectorStore = (): jest.Mocked<VectorStoreWithIndexedFiles> => ({
   searchDetailed: jest.fn(),
   getStats: jest.fn(),
   getFileReadiness: jest.fn(),
+  dropNamespace: jest.fn(),
+  dropNamespaceById: jest.fn(),
 })
 
 const baseConfig = {
@@ -336,7 +341,7 @@ describe('VectorManager.reconcile', () => {
         ],
       ]),
     )
-    ;(ragStore.getFileReadiness as jest.Mock).mockResolvedValue(
+    ;ragStore.getFileReadiness.mockResolvedValue(
       new Map([
         ['ready.md', { path: 'ready.md', vectorReady: true }],
         ['vector-only.md', { path: 'vector-only.md', vectorReady: true }],
@@ -380,7 +385,7 @@ describe('VectorManager.reconcile', () => {
         ],
       ]),
     )
-    ;(ragStore.getFileReadiness as jest.Mock).mockResolvedValue(
+    ;ragStore.getFileReadiness.mockResolvedValue(
       new Map([
         ['ready.md', { path: 'ready.md', vectorReady: true }],
         ['vector-only.md', { path: 'vector-only.md', vectorReady: true }],
@@ -723,5 +728,139 @@ describe('VectorManager.reconcile', () => {
       loadFullVectorsMs: 8,
       rerankSimilarityMs: 3,
     })
+  })
+})
+
+describe('VectorManager.clearAllVectors / clearVectorsByModelIds / getEmbeddingStats', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+
+  it('clears vectors for a model via the derived namespace, not the model id', async () => {
+    const vectorStore = fakeVectorStore()
+    const { manager } = createVectorStoreManager(vectorStore, [])
+
+    await manager.clearAllVectors(embeddingModel as never)
+
+    // Namespace keys are `<model>-d<dimension>`; comparing the model id
+    // against them never matched, so the previous implementation dropped
+    // nothing. The fix derives the namespace from settings and drops it.
+    expect(vectorStore.dropNamespace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'embedding',
+        model: 'text-embedding-3-large',
+        dimension: 3,
+      }),
+    )
+    expect(vectorStore.dropNamespaceById).not.toHaveBeenCalled()
+  })
+
+  it('clears all namespaces when no model is given', async () => {
+    const vectorStore = fakeVectorStore()
+    vectorStore.listNamespaces.mockResolvedValue(['a-d3', 'b-d768'])
+    const { manager } = createVectorStoreManager(vectorStore, [])
+
+    await manager.clearAllVectors()
+
+    expect(vectorStore.dropNamespaceById).toHaveBeenCalledWith('a-d3')
+    expect(vectorStore.dropNamespaceById).toHaveBeenCalledWith('b-d768')
+  })
+
+  it('clears vectors by model ids resolved through settings', async () => {
+    const vectorStore = fakeVectorStore()
+    const { manager } = createVectorStoreManager(vectorStore, [])
+
+    await manager.clearVectorsByModelIds(['test-model'])
+
+    expect(vectorStore.dropNamespace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'text-embedding-3-large',
+        dimension: 3,
+      }),
+    )
+  })
+
+  it('reports per-namespace stats from the real namespace object', async () => {
+    const vectorStore = fakeVectorStore()
+    vectorStore.listNamespaces.mockResolvedValue(['text-embedding-3-large-d3'])
+    vectorStore.getStats.mockResolvedValue({
+      backend: 'sqlite',
+      storagePath: '/db',
+      fileCount: 5,
+      chunkCount: 42,
+      fileSizeBytes: 12345,
+      namespaceCount: 1,
+      executionMode: 'plugin-host',
+      persistenceMode: 'native-sqlite-file',
+      usesWholeDatabaseSnapshot: false,
+      ready: true,
+    } as never)
+    const { manager } = createVectorStoreManager(vectorStore, [])
+
+    const stats = await manager.getEmbeddingStats()
+
+    // getStats() without a namespace returns zeroed aggregate stats; the fix
+    // derives the namespace from the id so counters are real.
+    expect(vectorStore.getStats).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'text-embedding-3-large', dimension: 3 }),
+    )
+    expect(stats).toEqual([
+      { model: 'text-embedding-3-large-d3', rowCount: 42, totalDataBytes: 12345 },
+    ])
+  })
+})
+
+describe('VectorManager incremental mtime and empty-file handling', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    ;(embeddingModel as unknown as { getEmbedding: jest.Mock }).getEmbedding =
+      jest.fn().mockResolvedValue([0.1, 0.2, 0.3])
+  })
+
+  it('re-indexes a file modified during the previous index run (window-internal change)', async () => {
+    const ragStore = fakeVectorStore()
+    // The file was indexed at mtime 100, but the index WRITE finished much
+    // later (updatedAt = 200s): comparing against updated_at would judge the
+    // file (now mtime 150) as "unchanged" and skip it forever.
+    ragStore.getIndexedFiles.mockResolvedValue(
+      new Map([['notes/a.md', { mtime: 100, contentHash: 'old-hash', updatedAt: 200 }]]),
+    )
+    ragStore.getFileReadiness.mockResolvedValue(
+      new Map([['notes/a.md', { path: 'notes/a.md', vectorReady: true }]]),
+    )
+    const { manager } = createVectorStoreManager(ragStore, [
+      { path: 'notes/a.md', mtime: 150, content: 'changed during run' },
+    ])
+
+    await manager.reconcile(embeddingModel as never, baseConfig, {
+      scope: { kind: 'all' },
+    })
+
+    expect(ragStore.replaceFile).toHaveBeenCalledTimes(1)
+  })
+
+  it('deletes stale index rows for a file that was emptied', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(
+      new Map([['notes/empty.md', { mtime: 100, contentHash: 'old-hash' }]]),
+    )
+    ragStore.getFileReadiness.mockResolvedValue(new Map())
+    const { manager } = createVectorStoreManager(ragStore, [
+      { path: 'notes/empty.md', mtime: 100, content: '', size: 0 },
+    ])
+
+    await manager.reconcile(embeddingModel as never, baseConfig, {
+      scope: { kind: 'all' },
+    })
+
+    // An emptied file cannot be chunkified, but its old rows must be removed
+    // so retrieval stops returning content that no longer exists.
+    expect(ragStore.deleteFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'embedding',
+        model: 'text-embedding-3-large',
+      }),
+      'notes/empty.md',
+    )
   })
 })
