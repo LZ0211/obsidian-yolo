@@ -63,8 +63,13 @@ export function textTurn(chunks: string[]): MockStreamTurn {
   return turn
 }
 
-/** tool_call 流：一个 tool_calls delta chunk + finish_reason:'tool_calls'。 */
+/**
+ * tool_call 流：一个 tool_calls delta chunk + finish_reason:'tool_calls'。
+ * name 参数化：既有场景默认 'harness__echo' 保持不变；durable delegate 场景
+ * 传 'yolo_local__delegate_subagent'。
+ */
 export function toolCallTurn(
+  name: string = HARNESS_TOOL_NAME,
   args: Record<string, unknown> = {},
 ): MockStreamTurn {
   return [
@@ -80,7 +85,7 @@ export function toolCallTurn(
                 id: `tool-call-${Math.random().toString(36).slice(2)}`,
                 type: 'function',
                 function: {
-                  name: HARNESS_TOOL_NAME,
+                  name,
                   arguments: JSON.stringify(args),
                 },
               },

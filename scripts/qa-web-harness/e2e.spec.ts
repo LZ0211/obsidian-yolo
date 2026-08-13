@@ -10,6 +10,13 @@
  *  c) mock LLM tool_call → 工具审批 UI → 批准 → 工具结果 → 续答
  *  d) 重启 harness-server（同临时目录）→ 会话仍在（JSON 落盘持久化）
  *  e) 会话过滤（不同 agent 不可见）——装配复杂，跳过（见 e2e-report）
+ *  f) durable delegate 全链：父 mock 发 delegate_subagent（delegatedRoleId）→
+ *     真实 callLocalFileTool 路径 spawn 持久会话 → 子代理 mock 完成 → 卡片
+ *     完成态 + 父会话结果 → after_run 意图（harness 测试入口投递）→ 续跑
+ *     run 2 结算（session JSON 落盘断言）
+ *  g) 崩溃重启 → needs_resume → 恢复 UI：after_run 续跑 run 2 运行中
+ *     （慢速 mock 回合）kill harness → 同 TMPDIR 重启 → 恢复扫描置
+ *     NEEDS_RESUME → 卡片状态行 + 恢复按钮 → 恢复/重投 → run 3 续跑完成
  */
 import { expect, test } from '@playwright/test'
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -224,7 +231,282 @@ test.describe('web e2e harness', () => {
   test('e: 会话过滤（不同 agent 隔离）', async () => {
     test.skip(true, '装配复杂：需要第二个 workspace agent 的 share token 会话与不同 rootHash 会话；harness 目前只装配单 agent，见 e2e-report.md')
   })
+
+  test('f: durable delegate 全链（spawn 持久会话 → 完成 → after_run 续跑 run 2）', async ({ page }) => {
+    const { child, ready } = startHarness()
+    const info = await ready
+    try {
+      await loginAndWaitReady(page, info)
+
+      // 父 mock 回合：delegate_subagent 工具调用 → 真实 callLocalFileTool →
+      // spawn 持久会话（durable）→ 续答文本。mock 的 isToolExecutionAllowed
+      // 要求显式允许（既有 harness 契约，场景 c 同款）→ 先点审批按钮。
+      await sendMessage(page, 'delegate a subagent please')
+
+      // 0) 审批 UI（PendingApproval 走 .yolo-toolcall 通用卡片）→ 批准
+      const toolcard = page.locator('.yolo-toolcall')
+      await toolcard.first().waitFor({ state: 'visible', timeout: 45_000 })
+      const approval = toolcard
+        .locator('button:has-text("允许"), button:has-text("Allow")')
+        .first()
+      await approval.waitFor({ state: 'visible', timeout: 45_000 })
+      await approval.click()
+
+      // 1) 卡片出现（delegate_subagent 且非 PendingApproval → SubagentCard）
+      const card = page.locator('.yolo-subagent-card')
+      await card.first().waitFor({ state: 'visible', timeout: 45_000 })
+
+      // 2) 父会话出现派发后结果文本（工具执行完成 → 父回合续答）
+      const assistant = page.locator('.yolo-chat-messages-assistant')
+      await expect(
+        assistant.filter({ hasText: 'Delegation accepted, task delegated!' }).first(),
+      ).toBeVisible({ timeout: 45_000 })
+
+      // 3) 子代理 mock 完成 → 卡片完成态 + session JSON 落盘（run 1 结算）
+      const sessionRow = await waitForSessionJson(
+        info.baseDir,
+        (row) =>
+          Array.isArray(row.runs) &&
+          row.runs.length >= 1 &&
+          row.runs[0].status === 'completed' &&
+          row.session?.status === 'idle',
+        60_000,
+      )
+      const sessionId = sessionRow.session.sessionId
+      expect(typeof sessionId).toBe('string')
+      await expect(
+        page.locator('.yolo-subagent-card--success').first(),
+      ).toBeVisible({ timeout: 45_000 })
+
+      // 4) after_run 意图（harness 测试入口：真实 service.send + deliver）→
+      //    续跑 run 2（IDLE 续跑：beginRun 创建 run 2 并原子 claim 意图）
+      const sent = await harnessApiPost(info.port, '/api/harness/subagent/send-and-deliver', {
+        sessionId,
+        text: 'Follow up with the risk section',
+      })
+      expect(sent.ok).toBe(true)
+
+      // 5) run 2 结算：runs[1].status completed + 意图 COMMITTED + session 回 idle
+      const finalRow = await waitForSessionJson(
+        info.baseDir,
+        (row) =>
+          Array.isArray(row.runs) &&
+          row.runs.length >= 2 &&
+          row.runs[1].status === 'completed' &&
+          row.runs[1].result?.content?.includes('risk section added') &&
+          row.session?.status === 'idle' &&
+          row.session?.nextRunSequence === 3,
+        60_000,
+      )
+      expect(finalRow.intents?.[0]?.state).toBe('committed')
+    } finally {
+      await stopHarness(child)
+    }
+  })
+
+  test('g: 崩溃重启 → needs_resume → 恢复/重投 → 续跑 run 3', async () => {
+    const tmpdir = process.env.E2E_HARNESS_TMPDIR ?? fs.mkdtempSync(path.join(os.tmpdir(), 'yolo-web-e2e-delegate-'))
+
+    // ── 阶段 1：delegate run 1 完成 → after_run 意图 → 续跑 run 2 运行中 kill
+    const first = startHarnessWithTmpdir(tmpdir)
+    const info1 = await first.ready
+    const { chromium } = await import('@playwright/test')
+    const browser = await chromium.launch({ headless: true })
+    let phase1SessionId = ''
+    try {
+      const page = await browser.newPage()
+      await loginAndWaitReady(page, info1)
+      await sendMessage(page, 'delegate a subagent please')
+
+      // delegate 审批（mock 要求显式允许，与场景 c/f 同款）
+      const toolcard = page.locator('.yolo-toolcall')
+      await toolcard.first().waitFor({ state: 'visible', timeout: 45_000 })
+      const approval = toolcard
+        .locator('button:has-text("允许"), button:has-text("Allow")')
+        .first()
+      await approval.waitFor({ state: 'visible', timeout: 45_000 })
+      await approval.click()
+
+      // run 1 完成（父会话结果文本出现）
+      const assistant = page.locator('.yolo-chat-messages-assistant')
+      await expect(
+        assistant.filter({ hasText: 'Delegation accepted, task delegated!' }).first(),
+      ).toBeVisible({ timeout: 45_000 })
+
+      // run 1 结算落盘
+      const row1 = await waitForSessionJson(
+        info1.baseDir,
+        (row) => row.runs?.[0]?.status === 'completed' && row.session?.status === 'idle',
+        60_000,
+      )
+      phase1SessionId = row1.session.sessionId
+
+      // after_run 意图 → 续跑 run 2（场景 g：慢速 mock 回合保持未结算）
+      const sent = await harnessApiPost(info1.port, '/api/harness/subagent/send-and-deliver', {
+        sessionId: phase1SessionId,
+        text: 'Follow up with the compliance review',
+      })
+      expect(sent.ok).toBe(true)
+
+      // run 2 已开始（session RUNNING + currentRunSequence 2）→ 立即 kill：
+      // 崩溃发生在结算之前，重启进程的恢复扫描必须把它标记为中断
+      await waitForSessionJson(
+        info1.baseDir,
+        (row) => row.session?.status === 'running' && row.session?.currentRunSequence === 2,
+        30_000,
+      )
+      await page.close()
+    } finally {
+      await browser.close()
+      await stopHarness(first.child)
+    }
+    expect(phase1SessionId.length).toBeGreaterThan(0)
+
+    // ── 阶段 2：同 TMPDIR 重启 → 恢复扫描 → needs_resume UI → 恢复/重投 → 续跑
+    const second = startHarnessWithTmpdir(tmpdir)
+    const info2 = await second.ready
+    const browser2 = await chromium.launch({ headless: true })
+    try {
+      const page = await browser2.newPage()
+      await loginAndWaitReady(page, info2)
+
+      // 打开历史会话（父会话工具消息持久化 → 卡片重建，sessionId 经
+      // accepted 响应兜底解析）
+      const historyItem = page
+        .locator('.yolo-web-history-pane li.yolo-chat-list-dropdown-item')
+        .first()
+      await historyItem.waitFor({ state: 'visible', timeout: 30_000 })
+      await historyItem.click()
+
+      // 卡片 + needs_resume 状态行（恢复扫描已完成：run 2 INTERRUPTED +
+      // session NEEDS_RESUME；i18n 文案中/英双匹配）
+      const card = page.locator('.yolo-subagent-card')
+      await card.first().waitFor({ state: 'visible', timeout: 45_000 })
+      const statusLine = card.locator('.yolo-subagent-card__session-status').first()
+      await statusLine.waitFor({ state: 'visible', timeout: 45_000 })
+      await expect(statusLine).toContainText(/需要恢复|Needs resume/, { timeout: 15_000 })
+
+      // 打开详情弹窗 → 恢复按钮可见 → 点击恢复（run 2 → ABORTED，session → idle）
+      await card.first().locator('.yolo-subagent-card__main').click()
+      const modal = page.locator('.yolo-subagent-detail-overlay')
+      await modal.waitFor({ state: 'visible', timeout: 30_000 })
+      const recoverBtn = modal.locator('.yolo-subagent-detail-recover-btn')
+      await recoverBtn.waitFor({ state: 'visible', timeout: 30_000 })
+      await recoverBtn.click()
+
+      // 被中断 run 已 claim 的 after_run 意图经扫描置 RECOVERY_REQUIRED →
+      // 弹窗出现重投按钮 → 点击重投（意图 PENDING → deliver → 续跑 run 3）
+      const resendBtn = modal.locator('.yolo-subagent-detail-queued-btn--resend')
+      await resendBtn.waitFor({ state: 'visible', timeout: 30_000 })
+      await resendBtn.click()
+
+      // run 3 续跑完成：runs[2] completed（恢复路径沿用被中断 runKey？不——
+      // 先 recover 置 ABORTED 再 resend 走 IDLE beginRun 新建 run 3）
+      const finalRow = await waitForSessionJson(
+        info2.baseDir,
+        (row) =>
+          Array.isArray(row.runs) &&
+          row.runs.length >= 3 &&
+          row.runs[2].status === 'completed' &&
+          row.runs[2].result?.content?.includes('Compliance follow-up completed') &&
+          row.session?.status === 'idle',
+        60_000,
+      )
+      expect(finalRow.session.sessionId).toBe(phase1SessionId)
+      expect(finalRow.runs.map((run) => run.status)).toEqual([
+        'completed',
+        'aborted',
+        'completed',
+      ])
+      expect(finalRow.intents?.[0]?.state).toBe('committed')
+    } finally {
+      await browser2.close()
+      await stopHarness(second.child)
+    }
+  })
 })
+
+/**
+ * 读取 baseDir 下唯一的 durable session JSON（`YOLO/data/subagents/v1_*.json`），
+ * 轮询直到 predicate 满足（Playwright 侧直读 fs——会话落盘即 durable 语义）。
+ */
+async function waitForSessionJson(
+  baseDir: string,
+  predicate: (row: StoredSessionRow) => boolean,
+  timeoutMs = 60_000,
+): Promise<StoredSessionRow> {
+  const dir = path.join(baseDir, 'YOLO', 'data', 'subagents')
+  const deadline = Date.now() + timeoutMs
+  let lastRows: StoredSessionRow[] = []
+  while (Date.now() < deadline) {
+    lastRows = readSessionRows(dir)
+    if (lastRows.length > 0 && predicate(lastRows[0])) {
+      return lastRows[0]
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+  throw new Error(
+    `timed out waiting for subagent session JSON at ${dir}; last rows: ${JSON.stringify(
+      lastRows.map((row) => ({
+        session: row.session,
+        runs: row.runs?.map((run) => ({
+          runSequence: run.runSequence,
+          status: run.status,
+          result: run.result,
+        })),
+      })),
+    )}`,
+  )
+}
+
+type StoredSessionRow = {
+  session?: {
+    sessionId: string
+    status: string
+    currentRunSequence?: number
+    nextRunSequence?: number
+  }
+  runs?: Array<{
+    runSequence: number
+    runKey?: string
+    status: string
+    result?: { status?: string; content?: string }
+  }>
+  intents?: Array<{ state: string }>
+}
+
+function readSessionRows(dir: string): StoredSessionRow[] {
+  if (!fs.existsSync(dir)) return []
+  const rows: StoredSessionRow[] = []
+  for (const name of fs.readdirSync(dir)) {
+    if (!/^v\d+_.+\.json$/.test(name)) continue
+    try {
+      rows.push(JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')) as StoredSessionRow)
+    } catch {
+      // 半写文件（kill 竞态）：跳过，下一轮轮询
+    }
+  }
+  return rows
+}
+
+async function harnessApiPost(
+  port: number,
+  route: string,
+  body: Record<string, unknown>,
+): Promise<{ ok: boolean; status: number; body: unknown }> {
+  const response = await fetch(`http://127.0.0.1:${port}${route}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  let parsed: unknown = null
+  try {
+    parsed = await response.json()
+  } catch {
+    // 空响应体
+  }
+  return { ok: response.ok, status: response.status, body: parsed }
+}
 
 function startHarnessWithTmpdir(tmpdir: string): { child: ChildProcess; ready: Promise<HarnessInfo> } {
   const previous = process.env.E2E_HARNESS_TMPDIR

@@ -27,6 +27,11 @@ import type { Server as HttpServer } from 'node:http'
 import { AgentService } from '../../src/core/agent/service'
 import { createAgentConversationPersistence } from '../../src/core/agent/conversationPersistence'
 import { createAgentEventStore } from '../../src/core/agent/agentEventStore'
+import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from '../../src/core/agent/subagent/tool-name-utils'
+import { callLocalFileTool } from '../../src/core/mcp/localFileTools'
+import { getLocalFileToolServerName } from '../../src/core/mcp/localFileToolNames'
+import type { McpManager } from '../../src/core/mcp/mcpManager'
+import { getToolName, parseToolName } from '../../src/core/mcp/tool-name-utils'
 import { getYoloBaseDir } from '../../src/core/paths/yoloPaths'
 import {
   hashShareToken,
@@ -36,14 +41,14 @@ import {
 } from '../../src/core/web-server/shareTokenCrypto'
 import { loadOrCreateShareTokenPepper } from '../../src/core/web-server/shareTokenPepperStore'
 import { registerWebServerRoutes } from '../../src/core/web-server/registerWebServerRoutes'
-import { WebHttpServer } from '../../src/core/web-server/WebHttpServer'
+import { apiError, readJsonBody } from '../../src/core/web-server/routes/routeUtils'
+import { WebHttpServer, writeJson } from '../../src/core/web-server/WebHttpServer'
 import { WebServerLifecycle } from '../../src/core/web-server/WebServerLifecycle'
 import { WebSseHub } from '../../src/core/web-server/WebSseHub'
 import { ChatManager } from '../../src/database/json/chat/ChatManager'
 import { SETTINGS_SCHEMA_VERSION } from '../../src/settings/schema/migrations'
 import { parseYoloSettings } from '../../src/settings/schema/settings'
 import type { YoloSettings } from '../../src/settings/schema/setting.types'
-import type { McpManager } from '../../src/core/mcp/mcpManager'
 import { ToolCallResponseStatus } from '../../src/types/tool-call.types'
 import type { McpTool } from '../../src/types/mcp.types'
 
@@ -55,6 +60,10 @@ jest.mock('../../src/core/llm/manager', () => {
       providerClient: getHarnessMockProvider(),
       model: TEST_MODEL,
     })),
+    // durable 续跑路径（authority-resolver → deps.createProviderClient →
+    // getProviderClient）也走 mock provider——缺了续跑 authority 解析直接崩
+    // （"getProviderClient is not a function"）。
+    getProviderClient: jest.fn(() => getHarnessMockProvider()),
   }
 })
 
@@ -64,7 +73,7 @@ import {
   textTurn,
   toolCallTurn,
 } from './llm-mock-provider'
-import { createAppMock } from './fs-vault-mock'
+import { createAppMock, type AppMock } from './fs-vault-mock'
 
 // conversationPersistence 会 `window.dispatchEvent(...)`——Node/jest 环境没有
 // window，补一个最小事件分发替身。
@@ -100,7 +109,26 @@ function findFreePort(): Promise<number> {
   })
 }
 
-function createMockMcpManager(): McpManager {
+const DELEGATE_SUBAGENT_TOOL_NAME = getToolName(
+  getLocalFileToolServerName(),
+  DELEGATE_SUBAGENT_TOOL_SHORT_NAME,
+)
+
+/**
+ * mock McpManager：远程工具（harness__echo）保持桩响应；本地工具
+ * （yolo_local__*，含 delegate_subagent）转发到真实 callLocalFileTool——
+ * 与生产 mcpManager.callTool 的本地分支同构（app/settings/conversationId/
+ * conversationMessages/subagentParentContext 等参数全部来自真实 tool-gateway
+ * 的透传），durable spawn 全链（spawn → runSubagent → settle → 恢复扫描）
+ * 由此在 harness 里走真实代码。
+ */
+function createMockMcpManager({
+  app,
+  getSettings,
+}: {
+  app: AppMock
+  getSettings: () => YoloSettings
+}): McpManager {
   const allowedByConversation = new Set<string>()
   return {
     TOOL_NAME_DELIMITER: '__',
@@ -114,27 +142,126 @@ function createMockMcpManager(): McpManager {
           additionalProperties: false,
         },
       },
+      {
+        name: DELEGATE_SUBAGENT_TOOL_NAME,
+        description:
+          'Delegate a task to a subagent (durable session when delegatedRoleId is provided).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            description: { type: 'string' },
+            prompt: { type: 'string' },
+            delegatedRoleId: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      },
     ]),
     getJsSandboxSettings: jest.fn(() => ({})),
-    getSettingsSnapshot: jest.fn(() => ({})),
+    // 真实 settings 快照：selectAllowedTools → applyDynamicToolDescriptions 对
+    // delegate_subagent 工具调 resolveSubagentModelConfig（读 settings.chatModels），
+    // 空对象会崩（TypeError: reading 'map'）——mock 必须与真实 manager 一致。
+    getSettingsSnapshot: jest.fn(() => getSettings()),
     allowToolForConversation: jest.fn(
       (toolName: string, conversationId: string) => {
         allowedByConversation.add(`${conversationId}:${toolName}`)
       },
     ),
+    // 保持既有 harness 契约（场景 c 依赖）：未经 allowToolForConversation
+    // 显式允许的工具一律挂起审批——web 会话的 YOLO 模式带 bypassToolApproval
+    // （真实 manager 会 honor requireAutoExecution 直接放行），mock 若也放行
+    // 则审批 UI 永不出现在 harness 里。显式 allow 后放行（审批点击路径）。
+    // ⚠️ 必须同步返回 boolean：真实 manager 的 isToolExecutionAllowed 是同步
+    // 方法，gateway 的 shouldAutoExecuteTool 直接 `if (this.mcpManager
+    // .isToolExecutionAllowed(...))` 判定——async mock 返回 Promise 会被当
+    // truthy 恒真（工具全部自动执行，审批 UI 永不出现）。
     isToolExecutionAllowed: jest.fn(
-      ({ requestToolName, conversationId }: { requestToolName: string; conversationId?: string }) =>
+      ({
+        requestToolName,
+        conversationId,
+      }: {
+        requestToolName: string
+        conversationId?: string
+      }) =>
         conversationId != null &&
         allowedByConversation.has(`${conversationId}:${requestToolName}`),
     ),
     callTool: jest.fn(
-      async ({ name, args }: { name: string; args?: Record<string, unknown> }) => ({
-        status: ToolCallResponseStatus.Success,
-        data: {
-          type: 'text',
-          text: `[harness] ${name} called with ${JSON.stringify(args ?? {})}`,
-        },
-      }),
+      async (params: {
+        name: string
+        args?: Record<string, unknown>
+        id?: string
+        conversationId?: string
+        roundId?: string
+        conversationMessages?: unknown[]
+        signal?: AbortSignal
+        requireReview?: boolean
+        chatModelId?: string
+        workspaceAccessPolicy?: unknown
+        allowedSkillPaths?: readonly string[]
+        runContext?: unknown
+        subagentParentContext?: unknown
+      }) => {
+        const { name, args } = params
+        let serverName = ''
+        let toolName = ''
+        try {
+          const parsed = parseToolName(name)
+          serverName = parsed.serverName
+          toolName = parsed.toolName
+        } catch {
+          // 保留空串：非本地工具走桩响应
+        }
+        if (serverName === getLocalFileToolServerName()) {
+          // 与生产 mcpManager.callTool 的本地分支逐字段同构（mcpManager.ts
+          // :1201-1242）：Success 包 data.text，Aborted 透传 data，其余状态
+          // 原样返回（PendingApproval 不在此路径出现——审批在 gateway 前置）。
+          const localResult = await callLocalFileTool({
+            app: app as never,
+            settings: getSettings(),
+            conversationId: params.conversationId,
+            conversationMessages: params.conversationMessages as never,
+            roundId: params.roundId,
+            toolCallId: params.id,
+            toolName,
+            args: (args ?? {}) as Record<string, unknown>,
+            requireReview: params.requireReview,
+            signal: params.signal,
+            chatModelId: params.chatModelId,
+            workspaceAccessPolicy: params.workspaceAccessPolicy as never,
+            allowedSkillPaths: params.allowedSkillPaths,
+            runContext: params.runContext as never,
+            subagentParentContext: params.subagentParentContext as never,
+          })
+          if (localResult.status === ToolCallResponseStatus.Success) {
+            return {
+              status: ToolCallResponseStatus.Success,
+              data: {
+                type: 'text',
+                text: localResult.text,
+                contentParts: localResult.contentParts,
+                metadata: localResult.metadata,
+              },
+            }
+          }
+          if (localResult.status === ToolCallResponseStatus.Aborted) {
+            return {
+              status: ToolCallResponseStatus.Aborted,
+              ...(localResult.data !== undefined && {
+                data: localResult.data,
+              }),
+            }
+          }
+          return localResult
+        }
+        return {
+          status: ToolCallResponseStatus.Success,
+          data: {
+            type: 'text',
+            text: `[harness] ${name} called with ${JSON.stringify(args ?? {})}`,
+          },
+        }
+      },
     ),
     abortToolCall: jest.fn(() => true),
   } as unknown as McpManager
@@ -203,14 +330,52 @@ async function startHarnessServer(): Promise<{
   // 按 user 消息内容路由的脚本流（e2e 用例依赖）：
   // - 含 'hello harness' → 文本流（三段增量，用于流式过程断言）
   // - 含 'use tool:echo' → 先 tool_call 流，随后一段文本流（审批通过后的续答）
+  // - 含 'delegate a subagent please' → 父回合 delegate_subagent 工具调用
+  //   （durable：delegatedRoleId 命中 settings 的 delegatable assistant）→
+  //   续答文本；子代理回合按 delegate prompt 文本匹配
+  // - after_run 意图文本 → 续跑 run 的回合（场景 f 快 / 场景 g 首进程慢、
+  //   重启进程快——慢速制造"运行中被杀"窗口，isReuse 区分进程代次）
   mockProvider.chunkDelayMs = 60
   mockProvider.script(/hello harness/i, [
     textTurn(['Hello from ', 'the mock LLM', '!']),
   ])
   mockProvider.script(/use tool:echo/i, [
-    toolCallTurn({ text: 'hello' }),
+    toolCallTurn(undefined, { text: 'hello' }),
     textTurn(['Tool executed', ', answer follows', '!']),
   ])
+  mockProvider.script(/delegate a subagent please/i, [
+    toolCallTurn(DELEGATE_SUBAGENT_TOOL_NAME, {
+      description: 'Summarize the quarterly report',
+      prompt: 'Summarize the quarterly report and return a concise bullet list.',
+      delegatedRoleId: 'delegated-1',
+    }),
+    textTurn(['Delegation accepted', ', task delegated!']),
+  ])
+  // after_run 意图（场景 f）：续跑 run 快速完成。⚠️ 注册顺序有讲究：
+  // 续跑 run 的 user 消息 = 上个 run 的 transcriptPage（含 run 1 的 delegate
+  // prompt）+ 意图文本，pickTurn 按注册序取首个命中——意图规则必须排在
+  // run 1 prompt 规则之前，否则续跑请求会命中 run 1 的（快）回合。
+  mockProvider.script(/Follow up with the risk section/i, [
+    textTurn(['Follow-up: ', 'risk section added']),
+  ])
+  // after_run 意图（场景 g）：首进程慢速（长 chunk 序列 × 60ms ≈ 10s 窗口，
+  // spec 在 session 置 RUNNING 后 kill），重启进程（isReuse）快速完成
+  mockProvider.script(/Follow up with the compliance review/i, [
+    isReuse
+      ? textTurn(['Compliance follow-up ', 'completed'])
+      : textTurn(
+          Array.from(
+            { length: 160 },
+            (_, index) => `compliance chunk ${index}; `,
+          ),
+        ),
+  ])
+  // 子代理 run 1（delegate prompt 即子会话首条 user 消息）；排在意图规则
+  // 之后——续跑请求若未命中意图规则（异常路径）才会落到这里
+  mockProvider.script(
+    /Summarize the quarterly report and return a concise bullet list/i,
+    [textTurn(['Delegated result: ', 'quarterly summary done'])],
+  )
 
   const chatManager = new ChatManager(app, settings)
   const persistence = createAgentConversationPersistence(
@@ -254,7 +419,10 @@ async function startHarnessServer(): Promise<{
   const agentEventStore = createAgentEventStore(
     path.join(baseDir, yoloBaseDir),
   )
-  const mcpManager = createMockMcpManager()
+  const mcpManager = createMockMcpManager({
+    app,
+    getSettings: () => settings,
+  })
 
   const plugin = {
     app: app as never,
@@ -267,6 +435,7 @@ async function startHarnessServer(): Promise<{
   }
 
   let boundServer: WebHttpServer | null = null
+  let subagentSessionReady: Promise<void> | undefined
   const lifecycle = new WebServerLifecycle<YoloSettings>({
     getSettings: () => settings,
     saveSettings: async (next) => {
@@ -278,7 +447,7 @@ async function startHarnessServer(): Promise<{
         port: runtime.port,
         token: runtime.token,
       })
-      registerWebServerRoutes({
+      const registered = registerWebServerRoutes({
         server,
         app: app as never,
         plugin,
@@ -291,6 +460,72 @@ async function startHarnessServer(): Promise<{
         getAgentService: () => agentService,
         getMcpManager: async () => mcpManager,
       })
+      subagentSessionReady = registered.subagentSessionReady
+
+      // harness 专用测试入口（仅本测试进程；生产面不暴露 send——web 无
+      // subagent chat UI，after_run 意图由 e2e spec 经此触发真实
+      // SubagentSessionService.send + deliverQueuedIntents，检验 Part 1 的
+      // onIntentRunRequested → runSubagentSessionContinuation 接线）。
+      server.router.post(
+        '/api/harness/subagent/send-and-deliver',
+        async (req, res) => {
+          const { getSubagentSessionService } = await import(
+            '../../src/core/agent/subagent/session-service'
+          )
+          const service = getSubagentSessionService()
+          if (!service) {
+            writeJson(
+              res,
+              503,
+              apiError(
+                'subagent_unavailable',
+                'The subagent session service is unavailable.',
+              ),
+            )
+            return
+          }
+          const body = await readJsonBody(req)
+          if (!body.ok) {
+            writeJson(res, body.statusCode, body.body)
+            return
+          }
+          const { sessionId, text } = body.value
+          if (typeof sessionId !== 'string' || typeof text !== 'string') {
+            writeJson(
+              res,
+              400,
+              apiError('invalid_request', 'sessionId and text are required'),
+            )
+            return
+          }
+          const snapshot = await service.query(sessionId)
+          if (!snapshot) {
+            writeJson(
+              res,
+              404,
+              apiError('session_not_found', 'The subagent session was not found.'),
+            )
+            return
+          }
+          const sent = await service.send({
+            sessionId,
+            messageId: `e2e-after-run-${Date.now()}`,
+            text,
+            delivery: 'after_run',
+            expectedSessionRevision: snapshot.session.revision,
+            requestId: `e2e-send-${Date.now()}`,
+          })
+          if (!sent.accepted) {
+            writeJson(res, 409, {
+              error: { code: sent.errorCode, message: 'send rejected' },
+            })
+            return
+          }
+          await service.deliverQueuedIntents(sessionId)
+          writeJson(res, 200, { ok: true, sessionRevision: sent.sessionRevision })
+        },
+      )
+
       boundServer = server
       return server
     },
@@ -300,6 +535,10 @@ async function startHarnessServer(): Promise<{
   if (!boundServer) {
     throw new Error('harness: web server did not start')
   }
+  // 生产接线的 subagent 运行时初始化（会话服务 + 恢复扫描）必须在 READY
+  // 握手前完成：场景 g 的重启进程依赖扫描先把 RUNNING 会话置 NEEDS_RESUME，
+  // 浏览器 UI 才能断言 needs_resume 状态行。
+  await subagentSessionReady
   const httpServer = (
     boundServer as unknown as { server: HttpServer }
   ).server
@@ -358,7 +597,22 @@ function buildSettings(input: {
         agentModeAllowed: true,
         toolPreferences: {
           [HARNESS_TOOL_NAME]: { enabled: true },
+          // durable delegate：full_access 免审批自动执行（mock 侧预允许），
+          // enabled 使父 run 的 allowedToolNames 含该工具（gateway isToolAllowed）
+          [DELEGATE_SUBAGENT_TOOL_NAME]: {
+            enabled: true,
+            approvalMode: 'full_access',
+          },
         },
+      },
+      // Task 2 resolveDelegatableAssistantRoles 判定条件：settings.assistants
+      // 中 delegatable === true 的角色可被 delegate_subagent 解析（无
+      // modelId 时回落 preferredModelId = chatModelId = harness-model）。
+      {
+        id: 'delegated-1',
+        name: 'Delegated One',
+        agentModeAllowed: true,
+        delegatable: true,
       },
     ],
     workspaceAgents: [
