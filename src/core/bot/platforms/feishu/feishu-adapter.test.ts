@@ -159,6 +159,7 @@ async function startAdapter(
   configOverrides: Partial<BotPlatformFeishuConfig> = {},
 ): Promise<{ adapter: FeishuAdapter; ws: MockWebSocket }> {
   const adapter = new FeishuAdapter(makeApp())
+  liveAdapters.push(adapter)
   await adapter.start(makeConfig(configOverrides))
   const ws = latestSocket()
   ws.onopen?.()
@@ -245,6 +246,11 @@ function sendEventFrame(
 
 let originalWebSocket: typeof WebSocket | undefined
 
+/** Adapters started during this file — stopped in `afterEach` so their
+ * stable-connection/ping/reconnect timers (real timers, up to 300s) never
+ * keep jest's worker alive and force it to exit. */
+const liveAdapters: FeishuAdapter[] = []
+
 beforeEach(() => {
   mockedRequestUrl.mockReset()
   mockRoutes({})
@@ -254,7 +260,9 @@ beforeEach(() => {
   Platform.isMobile = false
 })
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.allSettled(liveAdapters.map((adapter) => adapter.stop()))
+  liveAdapters.length = 0
   ;(global as { WebSocket: unknown }).WebSocket = originalWebSocket
   jest.useRealTimers()
 })

@@ -144,6 +144,7 @@ async function startAdapter(
   configOverrides: Partial<BotPlatformDingtalkConfig> = {},
 ): Promise<{ adapter: DingTalkAdapter; ws: MockWebSocket }> {
   const adapter = new DingTalkAdapter(makeApp())
+  liveAdapters.push(adapter)
   await adapter.start(makeConfig(configOverrides))
   const ws = latestSocket()
   ws.onopen?.()
@@ -182,6 +183,11 @@ function makeChatbotMessage(
 
 let originalWebSocket: typeof WebSocket | undefined
 
+/** Adapters started during this file — stopped in `afterEach` so their
+ * stable-connection/reconnect timers (real timers, up to 300s) never keep
+ * jest's worker alive and force it to exit. */
+const liveAdapters: DingTalkAdapter[] = []
+
 beforeEach(() => {
   mockedRequestUrl.mockReset()
   mockRoutes({})
@@ -191,7 +197,9 @@ beforeEach(() => {
   Platform.isMobile = false
 })
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.allSettled(liveAdapters.map((adapter) => adapter.stop()))
+  liveAdapters.length = 0
   ;(global as { WebSocket: unknown }).WebSocket = originalWebSocket
   jest.useRealTimers()
 })
