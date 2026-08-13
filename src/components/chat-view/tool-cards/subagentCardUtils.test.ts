@@ -277,6 +277,30 @@ describe('runSubagentSessionAction', () => {
     expect(mockedDeliverQueuedIntents).not.toHaveBeenCalled()
   })
 
+  it('does not throw when queued intent delivery itself fails', async () => {
+    mockedDeliverQueuedIntents.mockRejectedValueOnce(new Error('read failed'))
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const onSettled = jest.fn()
+    await expect(
+      runSubagentSessionAction(
+        'resend',
+        Promise.resolve({
+          accepted: true,
+          state: 'pending',
+          sessionRevision: 2,
+        }),
+        onSettled,
+        'sub_abc123',
+      ),
+    ).resolves.toBeUndefined()
+    expect(onSettled).toHaveBeenCalled()
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[YOLO] Subagent queued intent delivery failed',
+      expect.objectContaining({ sessionId: 'sub_abc123' }),
+    )
+    warnSpy.mockRestore()
+  })
+
   it('warns with the errorCode on rejection and still refreshes', async () => {
     const onSettled = jest.fn()
     await runSubagentSessionAction(

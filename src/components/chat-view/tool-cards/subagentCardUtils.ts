@@ -279,7 +279,14 @@ export async function runSubagentSessionAction(
       const { getSubagentSessionService } = await import(
         '../../../core/agent/subagent/session-service'
       )
-      void getSubagentSessionService()?.deliverQueuedIntents(sessionId)
+      getSubagentSessionService()
+        ?.deliverQueuedIntents(sessionId)
+        .catch((error: unknown) => {
+          console.warn('[YOLO] Subagent queued intent delivery failed', {
+            sessionId,
+            error,
+          })
+        })
     }
   } catch (error: unknown) {
     console.warn('[YOLO] Subagent session action failed', { action, error })
