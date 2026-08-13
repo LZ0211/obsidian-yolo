@@ -227,6 +227,16 @@ function TaskEditorModalComponent({
         errors.push(
           t('settings.scheduledTasks.errorOnceRequired', 'Pick a run time'),
         )
+      } else if (formData.oneTimeDateTime <= Date.now()) {
+        // A past time would fire at the very next poll tick with no warning;
+        // the catch-up pass deliberately skips 'once' schedules, so the run
+        // would also be silently lost if the process was down at that moment.
+        errors.push(
+          t(
+            'settings.scheduledTasks.errorOnceInPast',
+            'The run time must be in the future',
+          ),
+        )
       }
     }
     if (formData.timeoutSeconds <= 0) {
@@ -431,11 +441,17 @@ function TaskEditorModalComponent({
               'settings.scheduledTasks.fieldCronExpression',
               'Cron expression',
             )}
-            desc="* * * * * (minute hour day month weekday)"
+            desc={t(
+              'settings.scheduledTasks.cronFormatHint',
+              '* * * * * (minute hour day month weekday)',
+            )}
           >
             <ObsidianTextInput
               value={formData.cronExpression ?? ''}
-              placeholder="0 9 * * *"
+              placeholder={t(
+                'settings.scheduledTasks.cronPlaceholder',
+                '0 9 * * *',
+              )}
               onChange={(value) =>
                 setFormData((prev) => ({ ...prev, cronExpression: value }))
               }
@@ -450,7 +466,10 @@ function TaskEditorModalComponent({
           >
             <ObsidianTextInput
               value={formData.timezone ?? ''}
-              placeholder="Asia/Shanghai"
+              placeholder={t(
+                'settings.scheduledTasks.timezonePlaceholder',
+                'Asia/Shanghai',
+              )}
               onChange={(value) =>
                 setFormData((prev) => ({
                   ...prev,

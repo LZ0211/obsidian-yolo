@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useLanguage } from '../../contexts/language-context'
 import {
   type TaskRun,
+  type TaskTriggeredBy,
   TaskRunStatus,
 } from '../../core/scheduler/scheduledTasksStore'
 import YoloPlugin from '../../main'
@@ -44,25 +45,60 @@ function TaskRunDetailsComponent({
   const { t } = useLanguage()
   const [run, setRun] = useState<TaskRun | null>(null)
   const [retrying, setRetrying] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [retryInfo, setRetryInfo] = useState<{
+    attempt: number
+    nextAttemptAtMs: number
+  } | null>(null)
   const service = plugin.getScheduledTasksService()
   const runRef = useRef(run)
   runRef.current = run
+  const loadErrorRef = useRef(loadError)
+  loadErrorRef.current = loadError
 
   useEffect(() => {
     if (!service) return
     let cancelled = false
     const load = () => {
-      void service.getTaskRun(runId).then((next) => {
-        if (!cancelled) setRun(next)
-      })
+      void service
+        .getTaskRun(runId)
+        .then((next) => {
+          if (!cancelled) {
+            setRun(next)
+            setLoadError(null)
+          }
+        })
+        .catch(() => {
+          // The run may have been pruned by run-history retention after the
+          // history list rendered — surface that instead of hanging on
+          // "Loading..." forever with an unhandled rejection every poll.
+          if (!cancelled) {
+            setLoadError(
+              t(
+                'settings.scheduledTasks.runNotFound',
+                'Run record not found (it may have been pruned by retention).',
+              ),
+            )
+          }
+        })
     }
     load()
 
-    const unsubscribe = service.subscribeToTaskRun(runId, () => load())
+    const unsubscribe = service.subscribeToTaskRun(runId, (event) => {
+      if (event.type === 'retry_scheduled' && event.runId === runId) {
+        setRetryInfo({
+          attempt: event.attempt,
+          nextAttemptAtMs: event.nextAttemptAtMs,
+        })
+      }
+      load()
+    })
 
-    // Only polls while the run hasn't reached a terminal state — event-driven updates via
-    // subscribeToTaskRun cover the rest, this is just a safety net for the "running" gap.
+    // Only polls while the run hasn't reached a terminal state (and never
+    // after a load error) — event-driven updates via subscribeToTaskRun cover
+    // the rest, this is just a safety net for the "running" gap.
     const interval = setInterval(() => {
+      if (loadErrorRef.current) return
       const current = runRef.current
       if (
         !current ||
@@ -92,7 +128,7 @@ function TaskRunDetailsComponent({
   }
 
   if (!run) {
-    return <div>{t('common.loading', 'Loading...')}</div>
+    return <div>{loadError ?? t('common.loading', 'Loading...')}</div>
   }
 
   const canRetry = [
@@ -128,6 +164,39 @@ function TaskRunDetailsComponent({
       .finally(() => setRetrying(false))
   }
 
+  const statusLabels: Record<TaskRunStatus, string> = {
+    [TaskRunStatus.PENDING]: t(
+      'settings.scheduledTasks.runStatusPending',
+      'Pending',
+    ),
+    [TaskRunStatus.RUNNING]: t(
+      'settings.scheduledTasks.runStatusRunning',
+      'Running',
+    ),
+    [TaskRunStatus.COMPLETED]: t(
+      'settings.scheduledTasks.runStatusCompleted',
+      'Completed',
+    ),
+    [TaskRunStatus.FAILED]: t(
+      'settings.scheduledTasks.runStatusFailed',
+      'Failed',
+    ),
+    [TaskRunStatus.CANCELLED]: t(
+      'settings.scheduledTasks.runStatusCancelled',
+      'Cancelled',
+    ),
+    [TaskRunStatus.TIMED_OUT]: t(
+      'settings.scheduledTasks.runStatusTimedOut',
+      'Timed out',
+    ),
+  }
+  const triggeredByLabels: Record<TaskTriggeredBy, string> = {
+    schedule: t('settings.scheduledTasks.runTriggeredBySchedule', 'Schedule'),
+    manual: t('settings.scheduledTasks.runTriggeredByManual', 'Manual'),
+    agent: t('settings.scheduledTasks.runTriggeredByAgent', 'Agent'),
+    retry: t('settings.scheduledTasks.runTriggeredByRetry', 'Retry'),
+  }
+
   return (
     <div className="yolo-prewrap">
       <div
@@ -139,8 +208,21 @@ function TaskRunDetailsComponent({
         }}
       >
         {getStatusIcon(run.status)}
-        <strong>{run.status}</strong>
+        <strong>{statusLabels[run.status]}</strong>
       </div>
+      {retryInfo && (
+        <div className="setting-item-description">
+          {t(
+            'settings.scheduledTasks.runRetryScheduled',
+            'Retry #{attempt} scheduled at {time}',
+          )
+            .replace('{attempt}', String(retryInfo.attempt))
+            .replace(
+              '{time}',
+              new Date(retryInfo.nextAttemptAtMs).toLocaleString(),
+            )}
+        </div>
+      )}
       {canRetry && (
         <ObsidianSetting>
           <ObsidianButton
@@ -152,7 +234,7 @@ function TaskRunDetailsComponent({
       )}
       <div>
         {t('settings.scheduledTasks.runTriggeredBy', 'Triggered by')}:{' '}
-        {run.triggeredBy}
+        {triggeredByLabels[run.triggeredBy]}
       </div>
       <div>
         {t('settings.scheduledTasks.runScheduledFor', 'Scheduled for')}:{' '}

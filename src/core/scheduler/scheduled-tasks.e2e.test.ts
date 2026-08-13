@@ -198,13 +198,10 @@ describe('scheduled-tasks e2e smoke (real assembly)', () => {
           e.type === 'task_started',
       )
       if (!started) throw new Error('unreachable')
-      await pollUntil(
-        () => {
-          const run = store?.getRun(started.runId)
-          return run != null && TERMINAL_STATUSES.has(run.status)
-        },
-        'scheduled run to reach a terminal status',
-      )
+      await pollUntil(() => {
+        const run = store?.getRun(started.runId)
+        return run != null && TERMINAL_STATUSES.has(run.status)
+      }, 'scheduled run to reach a terminal status')
 
       const run = store?.getRun(started.runId)
       expect(run?.status).toBe(TaskRunStatus.COMPLETED)
@@ -214,7 +211,8 @@ describe('scheduled-tasks e2e smoke (real assembly)', () => {
       expect(
         run?.logs?.some(
           (l) =>
-            l.level === 'info' && l.message.includes('scheduled tick from e2e smoke'),
+            l.level === 'info' &&
+            l.message.includes('scheduled tick from e2e smoke'),
         ),
       ).toBe(true)
 
@@ -264,13 +262,10 @@ describe('scheduled-tasks e2e smoke (real assembly)', () => {
       expect(result.outcome).toBe('started')
       if (result.outcome !== 'started') throw new Error('unreachable')
 
-      await pollUntil(
-        () => {
-          const run = store?.getRun(result.runId)
-          return run != null && TERMINAL_STATUSES.has(run.status)
-        },
-        'manual run to reach a terminal status',
-      )
+      await pollUntil(() => {
+        const run = store?.getRun(result.runId)
+        return run != null && TERMINAL_STATUSES.has(run.status)
+      }, 'manual run to reach a terminal status')
 
       const run = store?.getRun(result.runId)
       expect(run?.status).toBe(TaskRunStatus.COMPLETED)
@@ -326,13 +321,10 @@ describe('scheduled-tasks e2e smoke (real assembly)', () => {
       expect(result.outcome).toBe('started')
       if (result.outcome !== 'started') throw new Error('unreachable')
 
-      await pollUntil(
-        () => {
-          const run = store?.getRun(result.runId)
-          return run != null && TERMINAL_STATUSES.has(run.status)
-        },
-        'exit-1 run to settle',
-      )
+      await pollUntil(() => {
+        const run = store?.getRun(result.runId)
+        return run != null && TERMINAL_STATUSES.has(run.status)
+      }, 'exit-1 run to settle')
 
       const run = store?.getRun(result.runId)
       expect(run?.status).toBe(TaskRunStatus.FAILED)
@@ -414,16 +406,13 @@ describe('scheduled-tasks e2e smoke (real assembly)', () => {
       // The next poll tick drains the due retry (attempt 2); it fails again and
       // maxRetries (2) is exhausted — no further retry is scheduled.
       await jest.advanceTimersByTimeAsync(30_000)
-      await pollUntil(
-        () => {
-          const runs = store?.listRunsByTask(task.id).runs ?? []
-          return (
-            runs.length === 2 &&
-            runs.every((r) => TERMINAL_STATUSES.has(r.status))
-          )
-        },
-        'attempt 2 to settle',
-      )
+      await pollUntil(() => {
+        const runs = store?.listRunsByTask(task.id).runs ?? []
+        return (
+          runs.length === 2 &&
+          runs.every((r) => TERMINAL_STATUSES.has(r.status))
+        )
+      }, 'attempt 2 to settle')
 
       const runs = [...(store?.listRunsByTask(task.id).runs ?? [])].sort(
         (a, b) => a.attempt - b.attempt,
@@ -467,7 +456,11 @@ describe('scheduled-tasks e2e smoke (real assembly)', () => {
       store = assembly.store
 
       const ragTask = await service.createTask(
-        makeTaskConfig({ name: 'rag-index', type: 'ragIndex', agentPrompt: null }),
+        makeTaskConfig({
+          name: 'rag-index',
+          type: 'ragIndex',
+          agentPrompt: null,
+        }),
       )
       const autoTask = await service.createTask(
         makeTaskConfig({
@@ -485,24 +478,18 @@ describe('scheduled-tasks e2e smoke (real assembly)', () => {
       const manual = await service.executeTaskNow(ragTask.id)
       expect(manual.outcome).toBe('started')
       if (manual.outcome !== 'started') throw new Error('unreachable')
-      await pollUntil(
-        () => {
-          const run = store?.getRun(manual.runId)
-          return run != null && TERMINAL_STATUSES.has(run.status)
-        },
-        'ragIndex run to settle',
-      )
+      await pollUntil(() => {
+        const run = store?.getRun(manual.runId)
+        return run != null && TERMINAL_STATUSES.has(run.status)
+      }, 'ragIndex run to settle')
 
       const auto = await service.executeTaskNow(autoTask.id)
       expect(auto.outcome).toBe('started')
       if (auto.outcome !== 'started') throw new Error('unreachable')
-      await pollUntil(
-        () => {
-          const run = store?.getRun(auto.runId)
-          return run != null && TERMINAL_STATUSES.has(run.status)
-        },
-        'ragAutoUpdate run to settle',
-      )
+      await pollUntil(() => {
+        const run = store?.getRun(auto.runId)
+        return run != null && TERMINAL_STATUSES.has(run.status)
+      }, 'ragAutoUpdate run to settle')
 
       const manualRun = store?.getRun(manual.runId)
       const autoRun = store?.getRun(auto.runId)

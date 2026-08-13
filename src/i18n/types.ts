@@ -1909,6 +1909,22 @@ export type TranslationKeys = {
       runError?: string
       runLogs?: string
       runRetry?: string
+      runStatusPending?: string
+      runStatusRunning?: string
+      runStatusCompleted?: string
+      runStatusFailed?: string
+      runStatusCancelled?: string
+      runStatusTimedOut?: string
+      runTriggeredBySchedule?: string
+      runTriggeredByManual?: string
+      runTriggeredByAgent?: string
+      runTriggeredByRetry?: string
+      runNotFound?: string
+      runRetryScheduled?: string
+      errorOnceInPast?: string
+      cronFormatHint?: string
+      cronPlaceholder?: string
+      timezonePlaceholder?: string
       describeOnce?: string
       describeOnceUnset?: string
       describeInterval?: string

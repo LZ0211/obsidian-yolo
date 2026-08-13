@@ -147,8 +147,14 @@ export class TaskQueue {
     )
   }
 
+  /** Latest priority set via updatePendingPriority; applied to retry items so a
+   * priority bump while the task is executing still carries into its retry
+   * (the retry item is copied from the executing entry, which predates the bump). */
+  private latestPriority = new Map<string, number>()
+
   /** Updates the priority of a still-queued (not yet dequeued) task and re-sorts. Returns false if not found (already executing/finished). */
   updatePendingPriority(taskId: string, priority: number): boolean {
+    this.latestPriority.set(taskId, priority)
     const item = this.items.find((i) => i.taskId === taskId)
     if (!item) return false
     item.priority = priority
@@ -205,6 +211,7 @@ export class TaskQueue {
         attempt: item.attempt + 1,
         source: 'retry',
         scheduleTime: nextAttemptAtMs,
+        priority: this.latestPriority.get(taskId) ?? item.priority,
       })
       this.items.sort((a, b) =>
         a.priority !== b.priority
@@ -329,10 +336,23 @@ export class TaskQueue {
 
   private isDependencyReady(item: TaskQueueItem): boolean {
     const { completed, failed } = this.getBatchState(item.batchId)
+    const batchScoped = this.batchMembers.has(item.batchId)
     return item.dependency!.dependsOn.every((depId) => {
       if (completed.has(depId)) return true
       if (failed.has(depId)) return item.dependency!.continueOnDependencyFailure
-      return false // dependency still queued/executing in this batch — keep waiting
+      if (batchScoped) {
+        return false // dependency still queued/executing in this batch — keep waiting
+      }
+      // Manual trigger (no batch membership registered): the dependency's
+      // completion is recorded in ITS own batch, which this run can never
+      // observe, so batch-scoped readiness would wait forever. Judge globally
+      // instead — satisfied once the dependency is no longer queued or
+      // executing anywhere (a manual "run now" is an explicit instruction to
+      // run; it only waits for a dependency that is actually in flight).
+      return (
+        !this.executing.has(depId) &&
+        !this.items.some((item) => item.taskId === depId)
+      )
     })
   }
 

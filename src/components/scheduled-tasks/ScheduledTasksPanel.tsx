@@ -1,4 +1,5 @@
 import { App } from 'obsidian'
+import { useEffect, useState } from 'react'
 
 import { useLanguage } from '../../contexts/language-context'
 import { useSettings } from '../../contexts/settings-context'
@@ -21,8 +22,25 @@ type ScheduledTasksPanelProps = {
 export function ScheduledTasksPanel({ app, plugin }: ScheduledTasksPanelProps) {
   const { t } = useLanguage()
   const { settings, setSettings } = useSettings()
-  const service = plugin.getScheduledTasksService()
+  // The service is built asynchronously on plugin load (dynamic import + store
+  // open); if this panel mounts before that finishes, a plain getter read
+  // would show the "unavailable" message forever with no way to re-render.
+  const [service, setService] = useState(() =>
+    plugin.getScheduledTasksService(),
+  )
   const { tasks, executingTaskIds, reload } = useScheduledTasks(service)
+
+  useEffect(() => {
+    if (service) return
+    const interval = setInterval(() => {
+      const next = plugin.getScheduledTasksService()
+      if (next) {
+        setService(next)
+        clearInterval(interval)
+      }
+    }, 500)
+    return () => clearInterval(interval)
+  }, [service, plugin])
 
   if (!service) {
     return (

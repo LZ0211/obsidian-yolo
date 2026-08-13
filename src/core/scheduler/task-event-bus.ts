@@ -1,11 +1,5 @@
 export type TaskEvent =
   | { type: 'task_started'; taskId: string; runId: string }
-  | {
-      type: 'task_running'
-      runId: string
-      message: string
-      progress?: { current: number; total: number }
-    }
   | { type: 'task_completed'; runId: string; result: string }
   | { type: 'task_failed'; runId: string; error: string }
   | { type: 'task_timed_out'; runId: string }
@@ -21,6 +15,13 @@ export type TaskEvent =
       nextAttemptAtMs: number
     }
   | { type: 'tasks_batch_updated'; taskIds: string[] }
+  | {
+      // Emitted after queue-control operations (pause/resume/clear/priority
+      // bump) that change queue state without starting or ending any run —
+      // UI queue monitors refresh on this event, otherwise they would show
+      // stale state until an unrelated task event happens to fire.
+      type: 'queue_changed'
+    }
 
 type TaskEventSubscriber = (event: TaskEvent) => void
 

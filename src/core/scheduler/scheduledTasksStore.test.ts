@@ -608,7 +608,43 @@ describe('ScheduledTasksStore', () => {
         id: 'run-1',
         taskId: 'task-1',
       })
+      // The rebuild must leave task_runs's FK pointing at scheduled_tasks:
+      // the previous rename-old-first order made SQLite rewrite the FK to
+      // reference the dropped table, failing every run insert/update with
+      // "no such table".
+      store.insertRun(
+        makeRunInsert({
+          id: 'run-2',
+          taskId: 'task-2',
+          status: TaskRunStatus.RUNNING,
+        }),
+      )
+      store.updateRun('run-2', {
+        status: TaskRunStatus.COMPLETED,
+        completedAt: 3000,
+      })
+      expect(store.getRun('run-2')).toMatchObject({
+        id: 'run-2',
+        status: TaskRunStatus.COMPLETED,
+      })
       store.close()
+
+      // The rebuilt table must carry its indexes (rename-first order left
+      // the new table index-less: create index if not exists was skipped
+      // while the old table still owned the names).
+      const verify = openSqliteRuntime({
+        dbPath: path.join(dir, 'scheduled-tasks.sqlite'),
+      })
+      const indexes = verify.query<{ name: string }>(
+        "select name from sqlite_master where type = 'index' and tbl_name = 'scheduled_tasks'",
+      )
+      expect(indexes.map((r) => r.name)).toEqual(
+        expect.arrayContaining([
+          'idx_scheduled_tasks_next_run_time',
+          'idx_scheduled_tasks_queue_group',
+        ]),
+      )
+      verify.close()
     } finally {
       cleanup(dir)
     }

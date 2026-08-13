@@ -529,6 +529,125 @@ describe('ScheduledTaskScheduler', () => {
     }
   })
 
+  it('executeTaskNow runs immediately when the dependency is not in flight', async () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const { agentApi, resolveRun } = makeDeferredAgentApi()
+      const scheduler = new ScheduledTaskScheduler({
+        store,
+        executor: new TaskExecutor({ getAgentApi: () => agentApi }),
+        eventBus: new TaskEventBus(),
+        queuePolicy: { maxConcurrent: 1, defaultMode: 'concurrent' },
+      })
+      store.createTask('dep', makeTaskConfig({ name: 'Dependency' }), 1000)
+      store.createTask(
+        'task-1',
+        makeTaskConfig({ name: 'Depends', dependsOn: ['dep'] }),
+        1000,
+      )
+
+      // The dependency is idle, so the manual trigger must run right away —
+      // it must NOT wait forever on the dependency's never-observed batch.
+      const result = scheduler.executeTaskNow('task-1')
+      expect(result.outcome).toBe('started')
+
+      resolveRun({
+        conversationId: 'conv-1',
+        text: 'done',
+        status: 'completed',
+      })
+      await flushPromises()
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  it('executeTaskNow waits for an executing dependency, then runs once it completes', async () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const { agentApi, resolveRun } = makeDeferredAgentApi()
+      const scheduler = new ScheduledTaskScheduler({
+        store,
+        executor: new TaskExecutor({ getAgentApi: () => agentApi }),
+        eventBus: new TaskEventBus(),
+        queuePolicy: { maxConcurrent: 1, defaultMode: 'concurrent' },
+      })
+      store.createTask('dep', makeTaskConfig({ name: 'Dependency' }), 1000)
+      store.createTask(
+        'task-1',
+        makeTaskConfig({ name: 'Depends', dependsOn: ['dep'] }),
+        1000,
+      )
+
+      // The dependency is already running: the manual trigger queues up…
+      expect(scheduler.executeTaskNow('dep').outcome).toBe('started')
+      const result = scheduler.executeTaskNow('task-1')
+      expect(result).toEqual({
+        outcome: 'queued',
+        reason: 'waiting_dependency',
+        batchId: expect.any(String),
+      })
+
+      // …and once the dependency settles, the queued run must actually start
+      // (previously it waited forever: batch-scoped readiness never observes
+      // the dependency's completion in its own batch, and isTaskQueued then
+      // blocked every future scheduled trigger of the task).
+      resolveRun({
+        conversationId: 'conv-1',
+        text: 'dep done',
+        status: 'completed',
+      })
+      await flushPromises()
+      await flushPromises()
+
+      const running = scheduler.getExecutingTasks()
+      expect(running.some((run) => run.taskId === 'task-1')).toBe(true)
+
+      resolveRun({
+        conversationId: 'conv-2',
+        text: 'done',
+        status: 'completed',
+      })
+      await flushPromises()
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  it('emits queue_changed after pause/resume/clear/priority operations', () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const { agentApi } = makeDeferredAgentApi()
+      const eventBus = new TaskEventBus()
+      const scheduler = new ScheduledTaskScheduler({
+        store,
+        executor: new TaskExecutor({ getAgentApi: () => agentApi }),
+        eventBus,
+      })
+      const events: TaskEvent[] = []
+      eventBus.subscribeAll((event) => events.push(event))
+      store.createTask('task-1', makeTaskConfig(), 1000)
+
+      scheduler.pauseQueue()
+      scheduler.resumeQueue()
+      scheduler.clearQueue()
+      scheduler.changePriority('task-1', 9)
+
+      // UI queue monitors refresh only on bus events; without these emits the
+      // Pause/Resume buttons would stay stale (and Pause would even disable
+      // Resume until some unrelated task event happened to fire).
+      expect(events.filter((e) => e.type === 'queue_changed')).toHaveLength(4)
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
   it('does not write to the store when shutdown closes it before an in-flight run settles', async () => {
     const dir = makeTempDir()
     try {

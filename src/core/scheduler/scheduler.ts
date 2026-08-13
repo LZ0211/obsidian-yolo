@@ -397,7 +397,6 @@ export class ScheduledTaskScheduler {
       return { outcome: 'rejected', reason: 'already_queued' }
 
     const batchId = crypto.randomUUID()
-    const queueStatusBefore = this.queue.getQueueStatus()
 
     this.queue.enqueue({
       taskId: task.id,
@@ -425,11 +424,15 @@ export class ScheduledTaskScheduler {
       .find((r) => r.taskId === task.id && r.batchId === batchId)
     if (started) return { outcome: 'started', runId: started.runId, batchId }
 
-    const reason = queueStatusBefore.paused
+    // Reason is derived from the post-enqueue state (enqueue already ran
+    // tryProcessNext synchronously), not a pre-enqueue snapshot that can be
+    // stale the moment the call returns.
+    const queueStatus = this.queue.getQueueStatus()
+    const reason = queueStatus.paused
       ? 'queue_paused'
       : task.dependsOn?.length
         ? 'waiting_dependency'
-        : queueStatusBefore.executing >= queueStatusBefore.policy.maxConcurrent
+        : queueStatus.executing >= queueStatus.policy.maxConcurrent
           ? 'concurrency_limit'
           : 'group_busy'
     return { outcome: 'queued', batchId, reason }
@@ -451,18 +454,22 @@ export class ScheduledTaskScheduler {
   changePriority(taskId: string, priority: number): void {
     this.deps.store.updateTask(taskId, { priority }, Date.now())
     this.queue.updatePendingPriority(taskId, priority)
+    this.deps.eventBus.emit({ type: 'queue_changed' })
   }
 
   pauseQueue(): void {
     this.queue.pause()
+    this.deps.eventBus.emit({ type: 'queue_changed' })
   }
 
   resumeQueue(): void {
     this.queue.resume()
+    this.deps.eventBus.emit({ type: 'queue_changed' })
   }
 
   clearQueue(): void {
     this.queue.clear()
+    this.deps.eventBus.emit({ type: 'queue_changed' })
   }
 
   getQueueStatus(): ReturnType<TaskQueue['getQueueStatus']> {
@@ -801,6 +808,13 @@ export class ScheduledTaskScheduler {
         this.queue.markFailed(item.taskId, item.batchId, false)
         return
       }
+      if (this.deps.store.getRun(runId)?.status === TaskRunStatus.CANCELLED) {
+        // The user cancelled while this run was racing to completion; the
+        // cancel already wrote the terminal state — do not overwrite it with
+        // COMPLETED, just advance the queue without emitting success.
+        this.queue.markCompleted(item.taskId, item.batchId)
+        return
+      }
 
       run.status = TaskRunStatus.COMPLETED
       run.completedAt = Date.now()
@@ -912,12 +926,14 @@ export class ScheduledTaskScheduler {
   private maybePruneRuns(): void {
     const now = Date.now()
     if (now - this.lastPruneAt < PRUNE_INTERVAL_MS) return
-    this.lastPruneAt = now
     try {
       this.deps.store.pruneRuns({
         olderThanMs: RUNS_MAX_AGE_MS,
         keepLastNPerTask: RUNS_KEEP_LAST_N_PER_TASK,
       })
+      // Only a successful prune arms the next interval; a failure leaves
+      // lastPruneAt stale so the next tick retries instead of waiting 6h.
+      this.lastPruneAt = now
     } catch (error) {
       console.error('[YOLO][ScheduledTasks] run-history prune failed', error)
     }

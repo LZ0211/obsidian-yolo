@@ -380,13 +380,28 @@ export class ScheduledTasksStore {
   /**
    * Widens the tasks-table type CHECK for databases created before the RAG
    * action types (`ragIndex`/`ragAutoUpdate`). SQLite cannot alter a CHECK
-   * constraint, so the table is rebuilt in place (rename → recreate → copy →
-   * drop) using the standard FK-safe rebuild pattern: FK enforcement is
-   * suspended around the rebuild and restored afterwards — it cannot be
-   * toggled inside a transaction. Runs only when the existing table SQL still
-   * carries the original two-value constraint; databases created from
-   * `CREATE_SCHEMA_SQL` already have the widened one and are skipped. The
-   * table is small (one row per task) and the rebuild is transactional.
+   * constraint, so the table is rebuilt in place using the standard FK-safe
+   * rebuild pattern: FK enforcement is suspended around the rebuild and
+   * restored afterwards — it cannot be toggled inside a transaction.
+   *
+   * The rebuild order is load-bearing: the new table is created under a
+   * distinct name, data is copied, the OLD table is dropped, and only then is
+   * the new one renamed into place. Renaming the old table out of the way
+   * first would make SQLite rewrite `task_runs`'s FK to reference
+   * `scheduled_tasks_old`, and dropping that table would leave `task_runs`
+   * pointing at a table that no longer exists — every run insert/update would
+   * then fail with "no such table". Renaming a *newly created* table into the
+   * canonical name rewrites nothing (no FK references the temp name), and the
+   * existing FK string `references scheduled_tasks(id)` matches the recreated
+   * table again. The same ordering keeps the indexes: they are dropped with
+   * the old table and re-created explicitly on the new one (the
+   * `create index if not exists` in CREATE_SCHEMA_SQL would be skipped while
+   * the old table still owns the names).
+   *
+   * Runs only when the existing table SQL still carries the original
+   * two-value constraint; databases created from `CREATE_SCHEMA_SQL` already
+   * have the widened one and are skipped. The table is small (one row per
+   * task) and the rebuild is transactional.
    */
   private migrateTaskTypeConstraint(): void {
     const row = this.db.queryOne<{ sql: string | null }>(
@@ -397,14 +412,45 @@ export class ScheduledTasksStore {
     this.db.exec('pragma foreign_keys = off;')
     try {
       this.db.transaction(() => {
-        this.db.exec(
-          'alter table scheduled_tasks rename to scheduled_tasks_old',
-        )
-        // Recreates the table (with the widened constraint) plus its indexes;
-        // the task_runs table and its indexes already exist and are skipped.
-        this.db.exec(CREATE_SCHEMA_SQL)
         this.db.exec(`
-          insert into scheduled_tasks (
+          create table scheduled_tasks_new (
+            id text primary key,
+            name text not null,
+            type text not null check (type in ('script', 'agent', 'ragIndex', 'ragAutoUpdate')),
+            created_by text not null default 'user' check (created_by in ('user', 'agent')),
+
+            schedule_type text not null check (schedule_type in ('once', 'cron', 'interval')),
+            timezone text,
+            cron_expression text,
+            interval_seconds integer,
+            one_time_date_time integer,
+            next_run_time integer,
+
+            script_path text,
+            agent_prompt text,
+            agent_config text,
+
+            queue_group text,
+            depends_on text,
+            continue_on_dependency_failure integer not null default 0,
+            priority integer not null default 5,
+
+            timeout_seconds integer not null default 300,
+            max_retries integer not null default 3,
+
+            enabled integer not null default 1,
+            notify_on text not null default '[]',
+            created_at integer not null,
+            updated_at integer not null,
+            last_run_at integer,
+            last_run_status text check (
+              last_run_status in ('pending', 'running', 'completed', 'failed', 'cancelled', 'timed_out')
+            ),
+            last_error text
+          )
+        `)
+        this.db.exec(`
+          insert into scheduled_tasks_new (
             id, name, type, created_by,
             schedule_type, timezone, cron_expression, interval_seconds, one_time_date_time, next_run_time,
             script_path, agent_prompt, agent_config,
@@ -421,9 +467,20 @@ export class ScheduledTasksStore {
             timeout_seconds, max_retries,
             enabled, notify_on, created_at, updated_at,
             last_run_at, last_run_status, last_error
-          from scheduled_tasks_old
+          from scheduled_tasks
         `)
-        this.db.exec('drop table scheduled_tasks_old')
+        this.db.exec('drop table scheduled_tasks')
+        this.db.exec(
+          'alter table scheduled_tasks_new rename to scheduled_tasks',
+        )
+        // The old indexes were dropped with the old table; re-create them on
+        // the rebuilt table (names are free again now).
+        this.db.exec(
+          'create index if not exists idx_scheduled_tasks_next_run_time on scheduled_tasks(next_run_time)',
+        )
+        this.db.exec(
+          'create index if not exists idx_scheduled_tasks_queue_group on scheduled_tasks(queue_group)',
+        )
       })
     } finally {
       this.db.exec('pragma foreign_keys = on;')

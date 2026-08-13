@@ -1,10 +1,11 @@
 import { App } from 'obsidian'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useLanguage } from '../../contexts/language-context'
 import type { ScheduledTask } from '../../core/scheduler/scheduledTasksStore'
 import {
   type TaskRun,
+  type TaskTriggeredBy,
   TaskRunStatus,
   type TaskStatistics,
 } from '../../core/scheduler/scheduledTasksStore'
@@ -56,9 +57,13 @@ function TaskRunsHistoryComponent({
   const [runs, setRuns] = useState<TaskRun[]>([])
   const [total, setTotal] = useState(0)
   const [stats, setStats] = useState<TaskStatistics | null>(null)
+  // Guards against a slow earlier response overwriting the state of a newer
+  // page/filter: only the response for the latest request is applied.
+  const loadSeq = useRef(0)
 
   const load = useCallback(() => {
     if (!service) return
+    const seq = ++loadSeq.current
     void service
       .listTaskRuns(task.id, {
         filter: filter === FILTER_ALL ? undefined : (filter as TaskRunStatus),
@@ -66,10 +71,14 @@ function TaskRunsHistoryComponent({
         offset: page * RUNS_PAGE_SIZE,
       })
       .then((result) => {
+        if (seq !== loadSeq.current) return
         setRuns(result.runs)
         setTotal(result.total)
       })
-    void service.getTaskStatistics(task.id).then(setStats)
+    void service.getTaskStatistics(task.id).then((nextStats) => {
+      if (seq !== loadSeq.current) return
+      setStats(nextStats)
+    })
   }, [service, task.id, filter, page])
 
   useEffect(() => {
@@ -101,6 +110,13 @@ function TaskRunsHistoryComponent({
       'settings.scheduledTasks.filterTimedOut',
       'Timed out',
     ),
+  }
+
+  const triggeredByLabels: Record<TaskTriggeredBy, string> = {
+    schedule: t('settings.scheduledTasks.runTriggeredBySchedule', 'Schedule'),
+    manual: t('settings.scheduledTasks.runTriggeredByManual', 'Manual'),
+    agent: t('settings.scheduledTasks.runTriggeredByAgent', 'Agent'),
+    retry: t('settings.scheduledTasks.runTriggeredByRetry', 'Retry'),
   }
 
   const totalPages = Math.max(1, Math.ceil(total / RUNS_PAGE_SIZE))
@@ -161,7 +177,9 @@ function TaskRunsHistoryComponent({
           onClick={() =>
             new TaskRunDetailsModal(app, plugin, run.id, task.name).open()
           }
-          style={{ cursor: 'pointer' }}
+          ref={(el) => {
+            if (el) el.setCssProps({ cursor: 'pointer' })
+          }}
         >
           <div className="setting-item-info">
             <div
@@ -172,7 +190,7 @@ function TaskRunsHistoryComponent({
               {new Date(run.scheduledFor).toLocaleString()}
             </div>
             <div className="setting-item-description">
-              {run.triggeredBy}
+              {triggeredByLabels[run.triggeredBy]}
               {run.durationMs != null ? ` · ${run.durationMs}ms` : ''}
               {run.error ? ` · ${run.error}` : ''}
             </div>
