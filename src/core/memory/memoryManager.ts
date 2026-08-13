@@ -865,39 +865,122 @@ const writeLinesToFile = async ({
   await app.vault.modify(file, `${lines.join('\n')}\n`)
 }
 
+/**
+ * Always-loaded memory budget per scope. Stays deliberately small (mempalace
+ * L0-style identity, not full recall): dynamic recall still runs through the
+ * SQLite index, so a long memory file no longer inflates every request.
+ */
+export const MAX_ALWAYS_LOADED_MEMORY_CHARS = 2000
+
+const MEMORY_SECTION_WEIGHT: Record<MemorySectionKey, number> = {
+  preferences: 0,
+  profile: 1,
+  other: 2,
+}
+
+const renderBoundedMemoryContext = async ({
+  content,
+  partition,
+  maxChars,
+  salienceByMemoryKey,
+}: {
+  content: string
+  partition: MemoryPartition
+  maxChars: number
+  salienceByMemoryKey?: Record<string, number>
+}): Promise<string> => {
+  if (!content.trim()) return content
+  const parsed = await parseMemorySourceEntries({
+    content,
+    partition,
+    sourcePath: partition.partitionKey,
+  })
+  if (!parsed.valid || parsed.entries.length === 0) return content
+  const ordered = [...parsed.entries].sort((left, right) => {
+    const weightDiff =
+      MEMORY_SECTION_WEIGHT[left.category] - MEMORY_SECTION_WEIGHT[right.category]
+    if (weightDiff !== 0) return weightDiff
+    const leftSalience =
+      salienceByMemoryKey?.[buildMemoryKey(partition.partitionKey, left.localId)] ??
+      0
+    const rightSalience =
+      salienceByMemoryKey?.[
+        buildMemoryKey(partition.partitionKey, right.localId)
+      ] ?? 0
+    if (rightSalience !== leftSalience) return rightSalience - leftSalience
+    return left.localId.localeCompare(right.localId)
+  })
+  const lines: string[] = []
+  let budget = maxChars
+  for (const entry of ordered) {
+    const line = `- ${entry.localId}: ${entry.content}`
+    if (lines.length > 0 && line.length > budget) break
+    lines.push(line)
+    budget -= line.length
+  }
+  return lines.join('\n')
+}
+
 export async function getMemoryPromptContext({
   app,
   settings,
   assistantId,
+  maxCharsPerScope = MAX_ALWAYS_LOADED_MEMORY_CHARS,
+  salienceByMemoryKey,
 }: {
   app: App
   settings?: MemorySettingsLike
   assistantId?: string
+  /** Character budget per scope; entries beyond it are dropped (salience-aware). */
+  maxCharsPerScope?: number
+  /** memoryKey (partitionKey::localId) → salience from the SQLite index. */
+  salienceByMemoryKey?: Record<string, number>
 }): Promise<MemoryPromptContext> {
+  const globalPath = getGlobalMemoryPath(settings)
   const global = await readMemoryContentIfExists({
     app,
-    filePath: getGlobalMemoryPath(settings),
+    filePath: globalPath,
   })
+  const boundedGlobal = global
+    ? await renderBoundedMemoryContext({
+        content: global,
+        partition: buildMemoryPartition({ scope: 'global' }),
+        maxChars: maxCharsPerScope,
+        salienceByMemoryKey,
+      })
+    : global
 
   const assistant = getAssistantById(settings, assistantId)
   if (!assistant) {
     return {
-      global,
+      global: boundedGlobal,
       assistant: null,
     }
   }
 
+  const assistantPath = getAssistantMemoryPath({
+    settings,
+    assistant,
+  })
   const assistantContent = await readMemoryContentIfExists({
     app,
-    filePath: getAssistantMemoryPath({
-      settings,
-      assistant,
-    }),
+    filePath: assistantPath,
   })
+  const boundedAssistant = assistantContent
+    ? await renderBoundedMemoryContext({
+        content: assistantContent,
+        partition: buildMemoryPartition({
+          scope: 'assistant',
+          assistantId: assistant.id,
+        }),
+        maxChars: maxCharsPerScope,
+        salienceByMemoryKey,
+      })
+    : assistantContent
 
   return {
-    global,
-    assistant: assistantContent,
+    global: boundedGlobal,
+    assistant: boundedAssistant,
   }
 }
 

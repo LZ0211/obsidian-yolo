@@ -406,6 +406,87 @@ describe('memoryManager', () => {
     expect(context.assistant).toContain('Memory_1: 当前在实现 YOLO 记忆机制')
   })
 
+  it('truncates always-loaded memory to the per-scope character budget', async () => {
+    const { app, readByPath } = createMockVaultApp()
+    const settings = {
+      yolo: { baseDir: 'YOLO' },
+      currentAssistantId: 'helper',
+      assistants: [{ id: 'helper', systemPrompt: 'assistant' }],
+    }
+    for (let index = 0; index < 30; index += 1) {
+      await memoryAdd({
+        app,
+        settings,
+        content: `填充条目 ${index} `.padEnd(60, 'x'),
+        category: 'other',
+        scope: 'global',
+      })
+    }
+    const filePath = 'YOLO/memory/global.md'
+    const raw = readByPath(filePath)
+    expect(raw.length).toBeGreaterThan(1000)
+
+    const context = await getMemoryPromptContext({
+      app,
+      settings,
+      maxCharsPerScope: 300,
+    })
+
+    expect(context.global?.length ?? 0).toBeLessThanOrEqual(320)
+    expect(context.global).toContain('Memory_1:')
+    expect(context.global).not.toContain('Memory_30:')
+  })
+
+  it('orders always-loaded memory by section priority and salience within budget', async () => {
+    const { app } = createMockVaultApp()
+    const settings = {
+      yolo: { baseDir: 'YOLO' },
+      currentAssistantId: 'helper',
+      assistants: [{ id: 'helper', systemPrompt: 'assistant' }],
+    }
+    await memoryAdd({
+      app,
+      settings,
+      content: '其他记忆条目',
+      category: 'other',
+      scope: 'global',
+    })
+    await memoryAdd({
+      app,
+      settings,
+      content: '用户画像条目',
+      category: 'profile',
+      scope: 'global',
+    })
+    await memoryAdd({
+      app,
+      settings,
+      content: '偏好条目',
+      category: 'preferences',
+      scope: 'global',
+    })
+
+    const context = await getMemoryPromptContext({
+      app,
+      settings,
+      maxCharsPerScope: 100,
+      salienceByMemoryKey: {
+        'global::Memory_1': 0.9,
+        'global::Preference_1': 0.2,
+        'global::Profile_1': 0.7,
+      },
+    })
+
+    const global = context.global ?? ''
+    const preferenceIndex = global.indexOf('Preference_1')
+    const profileIndex = global.indexOf('Profile_1')
+    const otherIndex = global.indexOf('Memory_1')
+    expect(preferenceIndex).toBeGreaterThanOrEqual(0)
+    expect(profileIndex).toBeGreaterThanOrEqual(0)
+    expect(preferenceIndex).toBeLessThan(profileIndex)
+    expect(profileIndex).toBeLessThan(otherIndex)
+  })
+
   it('keeps raw content and parsed snapshot reads of the same file isolated in cache', async () => {
     const { app } = createMockVaultApp()
     const settings = {

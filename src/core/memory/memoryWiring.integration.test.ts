@@ -350,11 +350,11 @@ describe('memory wiring integration (extract → persist → reconcile → recal
     // the embedding model client is only created once.
     expect(getEmbeddingModelClient).toHaveBeenCalledTimes(1)
 
-    await builder.generateRequestSections({
+    const secondRequestArgs = {
       ...requestArgs,
       messages: [
         {
-          ...userMessage,
+          ...(userMessage as object),
           content: {
             root: {
               children: [
@@ -386,7 +386,8 @@ describe('memory wiring integration (extract → persist → reconcile → recal
           } as never,
         },
       ],
-    })
+    } as unknown as Parameters<typeof builder.generateRequestSections>[0]
+    await builder.generateRequestSections(secondRequestArgs)
     expect(getEmbeddingModelClient).toHaveBeenCalledTimes(2)
   })
   })

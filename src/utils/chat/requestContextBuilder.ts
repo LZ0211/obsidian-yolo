@@ -2150,13 +2150,17 @@ ${modePersonaPrompt.trim()}
     }
 
     // Memory block — bucket: memory. Stable profile/preferences come from the
-    // full markdown snapshot; dynamic recall comes from the SQLite memory
-    // index (jieba keywords → three-path RRF fusion) so the migrated memory
-    // subsystem actually feeds production conversations.
+    // markdown snapshot (bounded to the always-loaded budget, salience-ordered
+    // via the SQLite index); dynamic recall comes from the index too (jieba
+    // keywords → three-path RRF fusion).
+    const salienceByMemoryKey = await this.loadMemorySalience(
+      currentAssistant?.id,
+    )
     const memoryContext = await getMemoryPromptContext({
       app: this.app,
       settings: this.settings,
       assistantId: currentAssistant?.id,
+      salienceByMemoryKey,
     })
     const memoryParts: string[] = []
     if (memoryContext.global) {
@@ -2698,6 +2702,42 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
       fallback:
         memoryModel.id === model.id ? undefined : { providerClient, model },
     })
+  }
+
+  /**
+   * Snapshot of stored salience per memory key for the always-loaded memory
+   * block (lets the bounded markdown render order by reinforcement/decay).
+   * Undefined when the index is unavailable — callers then inject the full
+   * markdown as before.
+   */
+  private async loadMemorySalience(
+    assistantId: string | undefined,
+  ): Promise<Record<string, number> | undefined> {
+    if (!this.memoryIndexRuntime) return undefined
+    try {
+      const store = await this.memoryIndexRuntime.getStore()
+      if (store.capability !== 'sqlite') return undefined
+      const partition = buildMemoryPartition({
+        scope: assistantId ? 'assistant' : 'global',
+        ...(assistantId ? { assistantId } : {}),
+      })
+      const runtime = await (
+        store as unknown as MemoryIndexMaintenanceStore
+      ).getRuntime()
+      const rows = runtime.query<{ memory_key: string; salience: number }>(
+        'select memory_key, salience from memory_index where partition_key = ?',
+        [partition.partitionKey],
+      )
+      const byKey: Record<string, number> = {}
+      for (const row of rows) byKey[row.memory_key] = row.salience
+      return byKey
+    } catch (error) {
+      console.warn(
+        '[YOLO][Memory] salience snapshot unavailable; injecting unbounded memory',
+        error,
+      )
+      return undefined
+    }
   }
 
   /**
