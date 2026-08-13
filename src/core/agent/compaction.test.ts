@@ -12,6 +12,7 @@ import type { BaseLLMProvider } from '../llm/base'
 
 import {
   buildAutoContextCompactionNoticeMessage,
+  buildCompactionInstructionMessage,
   buildManualCompactionState,
   createConversationCompactionSummary,
   getAutoContextCompactionPromptTrigger,
@@ -323,6 +324,32 @@ const assistantMsg = (
           : undefined,
       }
     : undefined,
+})
+
+describe('buildCompactionInstructionMessage selective retention rules', () => {
+  const instruction = buildCompactionInstructionMessage(null).content
+  expect(typeof instruction).toBe('string')
+  const text = instruction as string
+
+  it('keeps the most recent user messages verbatim and distills earlier ones', () => {
+    expect(text).toContain('最近 3 条 user 消息按时间逐字保留')
+    expect(text).toContain('更早的 user 消息提炼意图')
+  })
+
+  it('states the KEEP list for verbatim key sentences', () => {
+    expect(text).toContain('KEEP 清单')
+    expect(text).toContain('显式约束、硬性要求、拍板决定')
+  })
+
+  it('states the DROP rule: repeated reads / polling / logs keep only the conclusion plus a reference', () => {
+    expect(text).toContain('可丢弃 (DROP)')
+    expect(text).toContain('只留结论 + 引用')
+    expect(text).toContain('工具再读原文')
+  })
+
+  it('states the space-constrained priority order', () => {
+    expect(text).toContain('用户约束 > 决策与理由 > 错误与失败 > 路径与实体 > 过程细节')
+  })
 })
 
 describe('shouldTriggerAutoContextCompaction', () => {

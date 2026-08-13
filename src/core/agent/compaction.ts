@@ -507,11 +507,22 @@ export const buildManualCompactionState = async ({
 }
 
 /**
+ * How many of the most recent user messages must be kept verbatim in the
+ * summary. Earlier user messages are distilled to intent with only KEEP-list
+ * sentences preserved verbatim (see the instruction below).
+ */
+const VERBATIM_RECENT_USER_MESSAGE_COUNT = 3
+
+/**
  * Build the structured compaction instruction appended after the cache-warm
  * prefix. The model is told to pause the task and emit a fixed-section summary
  * wrapped in `<summary>`. Only model-facing instructions live here.
+ *
+ * User-message retention is selective (ACP "HOW TO COMPRESS" style): the most
+ * recent messages stay verbatim, older ones are distilled with explicit
+ * KEEP/DROP rules and a space-constrained priority order.
  */
-const buildCompactionInstructionMessage = (
+export const buildCompactionInstructionMessage = (
   focusInstruction: string | null,
 ): RequestMessage => {
   const focusBlock = focusInstruction
@@ -531,11 +542,16 @@ Produce a high-signal summary that loses nothing needed to resume. Sections:
 1. 当前目标 (Current Goal) — 用户最新的显式意图，逐字引用关键句。
 2. 已做决策与理由 (Decisions & Rationale) — 拍板了什么、为什么。
 3. 尝试与失败记录 (Trial & Error Log) — 每个试过的方案 + 失败/放弃的具体原因。不得省略。
-4. 所有 user 消息 (All User Messages) — 按时间逐字列出全部非 tool-result 的 user 消息，原文保留，尤其中途的更正、偏好覆盖、意图变化。
+4. 用户消息 (User Messages) — 选择性保留：
+   - 最近 ${VERBATIM_RECENT_USER_MESSAGE_COUNT} 条 user 消息按时间逐字保留（含中途的更正、偏好覆盖、意图变化）。
+   - 更早的 user 消息提炼意图；仅对 KEEP 清单关键句逐字保留：显式约束、硬性要求、拍板决定、不可重述的数字/版本/名称。
+   - 可丢弃 (DROP)：重复读取、状态轮询、已提取结论的日志——只留结论 + 引用（路径/文件名），模型需要时可用工具再读原文。
 5. 关键实体 (Key Entities) — 文件路径、版本号、ID、关键工具结果，精确。
 6. 已完成工作 (Work Completed)
 7. 未解决项 (Unresolved) — 悬而未决、待确认、已知风险。
 8. 下一步 (Next Step) — 与最近显式请求直接对齐；附最近对话的逐字引用以防漂移。
+
+空间不足时按优先级取舍：用户约束 > 决策与理由 > 错误与失败 > 路径与实体 > 过程细节。
 ${focusBlock}
 Output format: <summary> ... </summary>`,
   }
