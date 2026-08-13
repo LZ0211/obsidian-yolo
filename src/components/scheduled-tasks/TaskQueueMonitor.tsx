@@ -1,5 +1,5 @@
 import { App } from 'obsidian'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { useLanguage } from '../../contexts/language-context'
 import { TaskRunStatus } from '../../core/scheduler/scheduledTasksStore'
@@ -45,6 +45,15 @@ function TaskQueueMonitorComponent({
   const service = plugin.getScheduledTasksService()
   const { status, pending, executing } = useTaskQueueStatus(service)
   const { tasks } = useScheduledTasks(service)
+  // 1s local tick so the executing "Elapsed" counters keep counting between
+  // queue events (they are computed from Date.now() at render time, which
+  // would otherwise freeze until the next event or poll).
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(interval)
+  }, [])
 
   const taskNameById = useMemo(
     () => new Map(tasks.map((task) => [task.id, task.name])),
@@ -144,7 +153,7 @@ function TaskQueueMonitorComponent({
               <div className="setting-item-description">
                 {run.startedAt
                   ? `${t('settings.scheduledTasks.queueElapsed', 'Elapsed')}: ${Math.round(
-                      (Date.now() - run.startedAt) / 1000,
+                      (now - run.startedAt) / 1000,
                     )}s`
                   : ''}
               </div>
@@ -185,7 +194,11 @@ function TaskQueueMonitorComponent({
                   'settings.scheduledTasks.queueBumpPriority',
                   'Move to front',
                 )}
-                onClick={() => void service.changePriority(item.taskId, 10)}
+                tooltip={t(
+                  'settings.scheduledTasks.queueBumpPriorityTooltip',
+                  'Only affects the currently queued run. To change the task priority permanently, edit the task.',
+                )}
+                onClick={() => void service.promoteTaskToFront(item.taskId)}
                 disabled={index === 0}
               />
             </div>

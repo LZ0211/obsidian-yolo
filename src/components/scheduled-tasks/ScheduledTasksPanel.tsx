@@ -13,6 +13,7 @@ import { StringListInput } from '../settings/inputs/StringListInput'
 import { ScheduledTaskCard } from './ScheduledTaskCard'
 import { AddScheduledTaskModal } from './TaskEditorModal'
 import { TaskQueueMonitorModal } from './TaskQueueMonitor'
+import { AllRunsHistoryModal } from './TaskRunsHistory'
 
 type ScheduledTasksPanelProps = {
   app: App
@@ -75,6 +76,10 @@ export function ScheduledTasksPanel({ app, plugin }: ScheduledTasksPanelProps) {
                 'Queue Monitor',
               )}
               onClick={() => new TaskQueueMonitorModal(app, plugin).open()}
+            />
+            <ObsidianButton
+              text={t('settings.scheduledTasks.allRunsHistory', 'All runs')}
+              onClick={() => new AllRunsHistoryModal(app, plugin).open()}
             />
             <ObsidianButton
               cta
@@ -166,7 +171,10 @@ export function ScheduledTasksPanel({ app, plugin }: ScheduledTasksPanelProps) {
           )}
           {tasks.length === 0 && (
             <div className="yolo-settings-desc">
-              {t('settings.scheduledTasks.noTasks', 'No scheduled tasks yet.')}
+              {t(
+                'settings.scheduledTasks.noTasks',
+                'No scheduled tasks yet. Click "+ Add Task" to create your first one.',
+              )}
             </div>
           )}
           {tasks.map((task) => (
