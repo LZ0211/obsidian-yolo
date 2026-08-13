@@ -13,6 +13,8 @@ import type { BaseLLMProvider } from '../llm/base'
 import {
   buildAutoContextCompactionNoticeMessage,
   buildCompactionInstructionMessage,
+  buildCompactionResumeMessage,
+  buildCompactionSummaryMessage,
   buildManualCompactionState,
   createConversationCompactionSummary,
   getAutoContextCompactionPromptTrigger,
@@ -349,6 +351,32 @@ describe('buildCompactionInstructionMessage selective retention rules', () => {
 
   it('states the space-constrained priority order', () => {
     expect(text).toContain('用户约束 > 决策与理由 > 错误与失败 > 路径与实体 > 过程细节')
+  })
+})
+
+describe('compaction summary/resume reference-only semantics', () => {
+  it('injects the summary as background reference, not active instructions', () => {
+    const message = buildCompactionSummaryMessage({
+      anchorMessageId: 'a1',
+      summary: 'SUMMARY BODY',
+      compactedAt: 1,
+    })
+    const text = message.content as string
+    expect(text).toContain('background reference only')
+    expect(text).toContain('historical snapshot, not active instructions')
+    expect(text).toContain(
+      'The most recent user message is the sole authority for the current task',
+    )
+    expect(text).toContain('SUMMARY BODY')
+  })
+
+  it('resume message keeps the summary reference-only and names the latest user message as the single authority', () => {
+    const text = buildCompactionResumeMessage().content as string
+    expect(text).toContain('background reference only')
+    expect(text).toContain('not an active instruction set')
+    expect(text).toContain(
+      'is the single authoritative statement of the current task',
+    )
   })
 })
 

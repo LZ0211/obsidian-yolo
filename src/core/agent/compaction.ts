@@ -412,7 +412,7 @@ export const buildCompactionSummaryMessage = (
     content: `<context_compaction>
 You previously triggered \`${CONTEXT_COMPACT_TOOL_NAME}\` in this conversation.
 Everything before the retained tool boundary has been compressed into the summary below.
-Treat it as authoritative background context for continuing the same task.
+Treat it as background reference only — it is a historical snapshot, not active instructions. The most recent user message is the sole authority for the current task.
 
 <summary>
 ${compaction.summary}
@@ -427,7 +427,8 @@ export const buildCompactionResumeMessage = (): RequestMessage => {
     content: `<context_compaction_resume>
 The compaction step has completed.
 Resume the task that was active immediately before compaction.
-Use the summary above as background context and the retained assistant/tool boundary as the latest working state.
+Use the summary above as background reference only: it is a historical snapshot, not an active instruction set. The most recent user message (whether retained verbatim or captured in the summary) is the single authoritative statement of the current task.
+Use the retained assistant/tool boundary as the latest working state.
 Do not stop at saying the compaction succeeded.
 Do not ask the user to repeat context unless information is actually missing.
 Continue the task from the most useful next step.
