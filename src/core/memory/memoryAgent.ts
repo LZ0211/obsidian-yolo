@@ -96,13 +96,6 @@ const defaultSectorForCategory = (
 ): AutomaticMemorySector =>
   category === 'profile' || category === 'preferences' ? 'semantic' : 'episodic'
 
-export const MAX_RECALL_ENTRIES = 8
-export const MAX_RECALL_CHARS = 3000
-
-const MEMORY_RECALL_HEADER =
-  '<memory_context>\nHistorical memory only. Current user request wins conflicts.\n'
-const MEMORY_RECALL_FOOTER = '\n</memory_context>'
-
 const escapeMemoryValue = (value: string): string =>
   value
     .replace(/&/g, '&amp;')
@@ -110,35 +103,6 @@ const escapeMemoryValue = (value: string): string =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
-
-const renderMemoryRecallEntry = (entry: MemoryAgentEntry): string =>
-  `- [${entry.scope}/${entry.category}/${escapeMemoryValue(entry.id)}] ${escapeMemoryValue(entry.content)}`
-
-const fitMemoryRecallEntries = ({
-  entries,
-  maxEntries,
-  maxChars,
-}: {
-  entries: MemoryAgentEntry[]
-  maxEntries: number
-  maxChars: number
-}): MemoryAgentEntry[] => {
-  if (maxChars < MEMORY_RECALL_HEADER.length + MEMORY_RECALL_FOOTER.length) {
-    return []
-  }
-
-  const selected: MemoryAgentEntry[] = []
-  let usedChars = MEMORY_RECALL_HEADER.length + MEMORY_RECALL_FOOTER.length
-  for (const entry of entries) {
-    if (selected.length >= Math.max(0, maxEntries)) break
-    const separatorChars = selected.length > 0 ? 1 : 0
-    const entryChars = separatorChars + renderMemoryRecallEntry(entry).length
-    if (usedChars + entryChars > maxChars) continue
-    selected.push(entry)
-    usedChars += entryChars
-  }
-  return selected
-}
 
 const scoreEntry = (entry: MemoryAgentEntry, query: string): number => {
   const normalizedQuery = normalizeText(query)
@@ -187,58 +151,6 @@ export const rankMemoryEntries = (
       return left.index - right.index
     })
     .map(({ entry }) => entry)
-}
-
-export const selectAlwaysLoadedMemoryEntries = (
-  entries: MemoryAgentEntry[],
-): MemoryAgentEntry[] =>
-  entries.filter((entry) => entry.category === 'preferences')
-
-const hasMatchingTargetScopeAndCategory = (
-  entry: MemoryAgentEntry,
-  target: MemoryRecallTarget,
-): boolean =>
-  target.categories.includes(entry.category) &&
-  target.scopes.includes(entry.scope)
-
-const deduplicateMemoryEntries = (
-  entries: MemoryAgentEntry[],
-): MemoryAgentEntry[] => {
-  const preferred = [...entries].sort((left, right) => {
-    if (left.scope !== right.scope) return left.scope === 'assistant' ? -1 : 1
-    return 0
-  })
-  const seenContent = new Set<string>()
-  return preferred.filter((entry) => {
-    const key = normalizeText(entry.content)
-    if (seenContent.has(key)) return false
-    seenContent.add(key)
-    return true
-  })
-}
-
-/** Select one bounded recall set; preferences lead, but share the same limits as facts. */
-export const selectMemoryRecallEntries = (
-  entries: MemoryAgentEntry[],
-  target: MemoryRecallTarget,
-  maxEntries = MAX_RECALL_ENTRIES,
-  maxChars = MAX_RECALL_CHARS,
-): MemoryAgentEntry[] => {
-  const candidates = deduplicateMemoryEntries(
-    entries.filter((entry) => hasMatchingTargetScopeAndCategory(entry, target)),
-  )
-  const preferences = candidates.filter(
-    (entry) => entry.category === 'preferences',
-  )
-  const facts = rankMemoryEntries(
-    candidates.filter((entry) => entry.category !== 'preferences'),
-    target,
-  )
-  return fitMemoryRecallEntries({
-    entries: [...preferences, ...facts],
-    maxEntries,
-    maxChars,
-  })
 }
 
 export const shouldProcessMemoryTurn = (userText: string): boolean =>
@@ -575,54 +487,6 @@ export const filterMemoryAgentOperationsForLatestState = ({
   })
 }
 
-export const selectRelevantMemoryEntries = (
-  entries: MemoryAgentEntry[],
-  target: string | MemoryRecallTarget,
-  maxEntries = 8,
-  maxChars = 3000,
-): MemoryAgentEntry[] => {
-  const query = typeof target === 'string' ? target : target.query
-  if (!query.trim()) return []
-  const selected: MemoryAgentEntry[] = []
-  let usedChars = 0
-
-  for (const entry of rankMemoryEntries(
-    entries.filter((candidate) => candidate.category !== 'preferences'),
-    target,
-  )) {
-    const entryChars = entry.id.length + entry.content.length + 8
-    if (selected.length >= Math.max(1, maxEntries)) break
-    if (selected.length > 0 && usedChars + entryChars > maxChars) break
-    selected.push(entry)
-    usedChars += entryChars
-  }
-
-  return selected
-}
-
-export const recallMemoryEntries = async ({
-  app,
-  settings,
-  assistantId,
-  query,
-  maxEntries = 8,
-  maxChars = 3000,
-}: {
-  app: App
-  settings?: Parameters<typeof getMemoryPromptContext>[0]['settings']
-  assistantId?: string
-  query: string
-  maxEntries?: number
-  maxChars?: number
-}): Promise<MemoryAgentEntry[]> => {
-  return selectRelevantMemoryEntries(
-    await loadMemoryAgentEntries({ app, settings, assistantId }),
-    query,
-    maxEntries,
-    maxChars,
-  )
-}
-
 const buildMemoryAgentPrompt = ({
   currentMemory,
   userText,
@@ -821,19 +685,4 @@ export const runMemoryAgentWithFallback = async ({
       return []
     }
   }
-}
-
-export const renderMemoryRecall = (
-  entries: MemoryAgentEntry[],
-  maxChars = MAX_RECALL_CHARS,
-): string => {
-  const boundedEntries = fitMemoryRecallEntries({
-    entries,
-    maxEntries: entries.length,
-    maxChars,
-  })
-  if (boundedEntries.length === 0) return ''
-  return `${MEMORY_RECALL_HEADER}${boundedEntries
-    .map(renderMemoryRecallEntry)
-    .join('\n')}${MEMORY_RECALL_FOOTER}`
 }
