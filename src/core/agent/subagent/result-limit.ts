@@ -83,9 +83,9 @@ export function truncateSubagentResult(
  * subscribers can keep referential-equality short-circuits.
  */
 export function truncateLiveTranscriptMessages(
-  messages: readonly ChatMessage[],
+  messages: ChatMessage[],
   maxChars: number = getSubagentResultMaxChars(),
-): readonly ChatMessage[] {
+): ChatMessage[] {
   if (messages.length === 0) return messages
   let changed = false
   const result = messages.map((message) => {

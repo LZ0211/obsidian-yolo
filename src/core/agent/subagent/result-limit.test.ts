@@ -76,7 +76,9 @@ describe('truncateLiveTranscriptMessages (S4)', () => {
     const tool = truncated[2]
     expect(tool.role).toBe('tool')
     if (tool.role !== 'tool') return
-    const text = tool.toolCalls[0].response.data.text
+    const toolResponse = tool.toolCalls[0].response
+    if (toolResponse.status !== ToolCallResponseStatus.Success) return
+    const text = toolResponse.data.text
     expect(text.length).toBeLessThan(huge.length)
     expect(text).toContain('…[truncated]…')
 

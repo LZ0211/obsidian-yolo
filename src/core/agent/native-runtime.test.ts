@@ -296,7 +296,6 @@ describe('NativeAgentRuntime parent subagent deadline wiring', () => {
     runtime as unknown as {
       registerSubagentDeadlines: (input: {
         toolMessage: ChatMessage
-        runKey: string
         conversationId: string
         toolGateway: AgentToolGateway
       }) => Promise<void>
