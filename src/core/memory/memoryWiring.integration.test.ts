@@ -369,6 +369,9 @@ describe('memory wiring integration (extract → persist → reconcile → recal
       parserVersion: snapshot.parserVersion,
       entries: snapshot.entries,
     } as never)
+    // Reconcile embeds entry content with the same model client; reset the
+    // counter so this test isolates the request-side query embedding cache.
+    ;(getEmbeddingModelClient as jest.Mock).mockClear()
 
     const builder = new RequestContextBuilder(
       app,

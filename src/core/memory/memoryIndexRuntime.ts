@@ -1,5 +1,7 @@
 import type { App, EventRef, TAbstractFile, Vault } from 'obsidian'
 
+import { getEmbeddingModelClient } from '../rag/embedding'
+
 import {
   type MemoryIndexMaintenanceStore,
   type MemoryIndexStore,
@@ -19,6 +21,8 @@ import type { MemoryPartition, MemorySector } from './memoryTypes'
 type MemoryIndexSettings = MemorySettingsLike & {
   advancedMemoryIndexEnabled?: boolean
   memoryReflectionEnabled?: boolean
+  /** RAG embedding model id; reconciles write memory_embeddings with it. */
+  embeddingModelId?: string
 }
 
 export type MemoryIndexRuntimeHandle = {
@@ -130,6 +134,7 @@ export class MemoryIndexRuntime {
         app: this.app,
         getSettings: () => this.settingsGetter(),
         getSourceSnapshot: (partition) => this.getSourceSnapshot(partition),
+        embedContent: (content) => this.embedContent(content),
       })
     }
     const pendingStore = this.storePromise
@@ -223,6 +228,31 @@ export class MemoryIndexRuntime {
       })
     }
     this.queue.enqueueReconcile(input)
+  }
+
+  /**
+   * Embed one memory entry with the vault's configured RAG embedding model.
+   * Resolves the model per call so settings changes apply without restart.
+   * Returns null when no model is configured or the call fails — the vector
+   * path then stays empty (lexical/graph recall continue to work).
+   */
+  private async embedContent(content: string): Promise<number[] | null> {
+    const settings = this.settingsGetter()
+    const embeddingModelId = settings?.embeddingModelId?.trim()
+    if (!embeddingModelId) return null
+    try {
+      const client = getEmbeddingModelClient({
+        settings: settings as never,
+        embeddingModelId,
+      })
+      return await client.getEmbedding(content)
+    } catch (error) {
+      console.warn(
+        '[YOLO][Memory] embedding unavailable during reconcile',
+        error,
+      )
+      return null
+    }
   }
 
   private async getSourceSnapshot(

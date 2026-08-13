@@ -854,6 +854,152 @@ describe('memory index runtime adapter', () => {
   })
 })
 
+describe('vector recall path write-through', () => {
+  const makeEntry = (
+    localId: string,
+    content: string,
+    partition: MemoryPartition,
+    fingerprint = `${localId}-v1`,
+  ) => ({
+    localId,
+    content,
+    keywords: [],
+    category: 'other' as const,
+    partition,
+    sourcePath: 'global.md',
+    entryFingerprint: fingerprint,
+  })
+
+  it('persists embeddings during reconcile and returns vector recall hits', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-vector-write-'))
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const fingerprint = 'file-v1'
+    const entries = [
+      makeEntry('Memory_minimal', '用户偏好极简风格的设计', partition),
+      makeEntry('Memory_unrelated', '一段与查询无关的记忆', partition),
+    ]
+    const embedContent = jest.fn(async (content: string): Promise<number[]> =>
+      content.includes('极简') ? [1, 0, 0, 0] : [0, 1, 0, 0],
+    )
+    const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
+    const store = await openMemoryIndexStore({
+      app,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot: async () => ({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: fingerprint,
+        parserVersion: 'p',
+        entries,
+        valid: true,
+      }),
+      embedContent,
+    })
+    try {
+      await store.reconcilePartition({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: fingerprint,
+        parserVersion: 'p',
+        entries,
+      })
+      const runtime = await store.getRuntime()
+      const rows = runtime.query<{ memory_key: string }>(
+        'select memory_key from memory_embeddings where partition_key = ? order by memory_key',
+        [partition.partitionKey],
+      )
+      expect(rows.map(({ memory_key }) => memory_key)).toEqual([
+        'global::Memory_minimal',
+        'global::Memory_unrelated',
+      ])
+      expect(embedContent).toHaveBeenCalledWith('用户偏好极简风格的设计')
+
+      const orchestrator = new MemoryRecallOrchestrator(
+        store as never,
+        new MemoryEmbeddingStore(runtime),
+        async () => [1, 0, 0, 0],
+      )
+      const context = await orchestrator.recall(
+        { latestQuery: '极简', recentUserMessages: ['极简'] },
+        partition,
+        fingerprint,
+      )
+      expect(context.paths).toContain('vector')
+      expect(context.entries.map(({ memoryKey }) => memoryKey)).toContain(
+        'global::Memory_minimal',
+      )
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('drops vectors of removed entries and keeps embeddings of unchanged entries', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-vector-remove-'))
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const first = makeEntry('Memory_keep', 'keep me', partition, 'keep-v1')
+    const second = makeEntry('Memory_gone', 'remove me', partition, 'gone-v1')
+    const embedContent = jest.fn(async (content: string): Promise<number[]> => {
+      const buffer = new ArrayBuffer(4)
+      new Float32Array(buffer).set([content.length])
+      return Array.from(new Float32Array(buffer))
+    })
+    const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
+    let snapshot: MemorySourceSnapshot = {
+      partition,
+      sourcePath: 'global.md',
+      sourceFileFingerprint: 'file-v1',
+      parserVersion: 'p',
+      entries: [first, second],
+      valid: true,
+    }
+    const store = await openMemoryIndexStore({
+      app,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot: async () => snapshot,
+      embedContent,
+    })
+    const memoryKeys = (): Promise<string[]> =>
+      store
+        .getRuntime()
+        .then((runtime) =>
+          runtime
+            .query<{ memory_key: string }>(
+              'select memory_key from memory_embeddings where partition_key = ? order by memory_key',
+              [partition.partitionKey],
+            )
+            .map(({ memory_key }) => memory_key),
+        )
+    try {
+      await store.reconcilePartition({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: 'file-v1',
+        parserVersion: 'p',
+        entries: [first, second],
+      })
+      snapshot = {
+        ...snapshot,
+        sourceFileFingerprint: 'file-v2',
+        entries: [first],
+      }
+      await store.reconcilePartition({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: 'file-v2',
+        parserVersion: 'p',
+        entries: [first],
+      })
+      expect(await memoryKeys()).toEqual(['global::Memory_keep'])
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('recall reinforce wiring', () => {
   const waitFor = async (
     predicate: () => Promise<boolean>,

@@ -28,6 +28,7 @@ import {
   initializeMemoryIndexSchema,
   trimMemoryMaintenanceLog,
 } from './memoryIndexSchema'
+import { MemoryEmbeddingStore } from './memoryEmbeddings'
 import type { MemorySettingsLike, MemorySourceSnapshot } from './memoryManager'
 import { normalizeMemoryText } from './memoryTokenizer'
 import type {
@@ -164,6 +165,13 @@ type MemoryIndexStoreOptions = {
   getSourceSnapshot: (
     partition: MemoryPartition,
   ) => Promise<MemorySourceSnapshot>
+  /**
+   * Produces the dense embedding for one memory entry during reconcile;
+   * null disables the vector path (no memory_embeddings rows are written).
+   * Injected by the runtime from the configured embedding model so the
+   * semantic recall path has data to search.
+   */
+  embedContent?: (content: string) => Promise<number[] | null>
   clock?: () => number
 }
 
@@ -536,6 +544,63 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
           )),
         )
       }
+      // Pre-compute dense embeddings for new/changed entries before the
+      // transaction (embedding calls are async network/model work). The same
+      // changed set is recomputed inside the transaction from identical
+      // inputs; entries whose embedding is unavailable drop any stale vector.
+      const changedLocalIds = new Set<string>()
+      const priorFingerprintById = new Map(
+        runtime
+          .query<{ local_id: string; entry_fingerprint: string }>(
+            'select local_id, entry_fingerprint from memory_index where partition_key = ?',
+            [input.partition.partitionKey],
+          )
+          .map(({ local_id, entry_fingerprint }) => [
+            local_id,
+            entry_fingerprint,
+          ]),
+      )
+      const priorParserVersion = runtime.queryOne<{ parser_version: string }>(
+        'select parser_version from memory_partition_state where partition_key = ?',
+        [input.partition.partitionKey],
+      )?.parser_version
+      for (const entry of snapshot.entries) {
+        const priorFingerprint = priorFingerprintById.get(entry.localId)
+        if (
+          !priorFingerprint ||
+          priorFingerprint !== entry.entryFingerprint ||
+          priorParserVersion !== snapshot.parserVersion
+        ) {
+          changedLocalIds.add(entry.localId)
+        }
+      }
+      const embeddingsByLocalId = new Map<string, number[]>()
+      const embedContent = this.options.embedContent
+      if (embedContent) {
+        for (
+          let start = 0;
+          start < snapshot.entries.length;
+          start += RECONCILE_HASH_BATCH_SIZE
+        ) {
+          throwIfMemoryIndexAborted(input.signal)
+          const batch = snapshot.entries.slice(
+            start,
+            start + RECONCILE_HASH_BATCH_SIZE,
+          )
+          const embedded = await Promise.all(
+            batch.map(async (entry): Promise<[string, number[]] | null> => {
+              if (!changedLocalIds.has(entry.localId)) return null
+              const embedding = await embedContent(entry.content)
+              return embedding && embedding.length > 0
+                ? [entry.localId, embedding]
+                : null
+            }),
+          )
+          for (const result of embedded) {
+            if (result) embeddingsByLocalId.set(result[0], result[1])
+          }
+        }
+      }
       try {
         runtime.transaction(() => {
           const timestamp = nowFrom(this.options.clock)
@@ -577,6 +642,7 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
             'delete from memory_reflections where partition_key = ? and source_fingerprint <> ?',
             [input.partition.partitionKey, snapshot.sourceFileFingerprint],
           )
+          const embeddingStore = new MemoryEmbeddingStore(runtime)
           for (let index = 0; index < preparedEntries.length; index += 1) {
             if (index % 100 === 0) {
               throwIfMemoryIndexAborted(input.signal)
@@ -680,15 +746,34 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
                 [input.partition.partitionKey, entry.localId, keyword],
               )
             }
+            const embedding = embeddingsByLocalId.get(entry.localId)
+            if (embedding) {
+              embeddingStore.upsert(
+                {
+                  partitionKey: input.partition.partitionKey,
+                  memoryKey,
+                  localId: 0,
+                },
+                embedding,
+              )
+            } else if (changedLocalIds.has(entry.localId)) {
+              // Changed entry with no fresh embedding (model unavailable):
+              // drop the stale vector so recall never serves outdated content.
+              embeddingStore.delete(input.partition.partitionKey, [memoryKey])
+            }
           }
           throwIfMemoryIndexAborted(input.signal)
-          for (const localId of priorRows
+          const removedLocalIds = priorRows
             .map((row) => row.local_id)
-            .filter((id) => !incomingIds.has(id))) {
+            .filter((id) => !incomingIds.has(id))
+          for (const localId of removedLocalIds) {
             runtime.exec(
               'delete from memory_index where partition_key = ? and local_id = ?',
               [input.partition.partitionKey, localId],
             )
+            embeddingStore.delete(input.partition.partitionKey, [
+              buildMemoryKey(input.partition.partitionKey, localId),
+            ])
           }
           runtime.exec(
             `insert into memory_partition_state
