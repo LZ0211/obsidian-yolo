@@ -69,6 +69,7 @@ import {
   getDefaultReasoningLevel,
   normalizeStoredReasoningLevel,
 } from '../../types/reasoning'
+import { deriveChatCompactionStatus } from '../../utils/chat/chatCompactionStatus'
 import {
   getMentionableKey,
   serializeMentionable,
@@ -960,6 +961,15 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     [chatMessages, compactionState],
   )
 
+  const headerCompactionStatus = useMemo(
+    () =>
+      deriveChatCompactionStatus({
+        compactionState: effectiveCompactionState,
+        pendingCompactionAnchorMessageId,
+      }),
+    [effectiveCompactionState, pendingCompactionAnchorMessageId],
+  )
+
   useEffect(() => {
     setQueuedMessageEditState(null)
   }, [currentConversationId])
@@ -1742,6 +1752,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       toggleConversationPinned={toggleConversationPinned}
       generateConversationTitle={generateConversationTitle}
       historyOpenHandleRef={historyDropdownOpenRef}
+      compactionStatus={headerCompactionStatus}
     />
   )
 

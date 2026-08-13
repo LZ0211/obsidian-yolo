@@ -2745,6 +2745,8 @@ export const en: TranslationKeys = {
         '{messageCount} messages compacted, saved about {tokens} tokens',
       pendingStatus:
         'Organizing context now. The conversation will continue in a fresh context shortly.',
+      headerCompacting: 'Compacting context…',
+      headerCompacted: '{count} messages compacted',
       success:
         'Earlier context has been compressed. Future replies will continue from the summary.',
       failed: 'Context compaction failed. Please try again shortly.',

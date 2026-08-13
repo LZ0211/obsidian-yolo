@@ -2579,6 +2579,8 @@ export const zh: TranslationKeys = {
       dividerDescriptionWithSavings:
         '{messageCount} 条消息已压缩，节省约 {tokens} tokens',
       pendingStatus: '正在整理上下文，稍后将从新的上下文继续。',
+      headerCompacting: '正在压缩上下文…',
+      headerCompacted: '已压缩 {count} 条消息',
       success: '已压缩较早上下文，后续回复将基于摘要继续。',
       failed: '上下文压缩失败，请稍后重试。',
       empty: '当前还没有可压缩的对话内容。',

@@ -23602,6 +23602,20 @@ button.yolo-todo-panel__icon-button svg {
   background: color-mix(in srgb, var(--color-cyan) 14%, transparent);
   color: color-mix(in srgb, var(--color-cyan) 82%, var(--text-normal));
 }
+/*
+ * Chat-header compaction status line (compacting… / last compacted count).
+ * A transient, non-interactive indicator — muted small text, no animation.
+ */
+
+.yolo-chat-header-compaction-status {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* The Smart Space floating panel itself was removed (superseded by Quick
  * Ask's "continue" mode). What remains here is CSS that other live

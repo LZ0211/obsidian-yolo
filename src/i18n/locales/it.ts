@@ -2492,6 +2492,8 @@ export const it: DeepPartial<TranslationKeys> = {
         '{messageCount} messaggi compressi, risparmiati circa {tokens} token',
       pendingStatus:
         'Sto riorganizzando il contesto. La conversazione continuera tra poco in un nuovo contesto.',
+      headerCompacting: 'Compattazione del contesto in corso…',
+      headerCompacted: '{count} messaggi compattati',
       success:
         'Il contesto precedente e stato compresso. Le prossime risposte continueranno dal riassunto.',
       failed: 'Compattazione del contesto non riuscita. Riprova tra poco.',

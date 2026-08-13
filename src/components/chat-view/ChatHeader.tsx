@@ -19,6 +19,7 @@ import type {
 } from '../../types/chat'
 import type { ConversationOverrideSettings } from '../../types/conversation-settings.types'
 import type { MentionableBlockData } from '../../types/mentionable'
+import type { ChatCompactionStatus } from '../../utils/chat/chatCompactionStatus'
 
 import { AssistantSelector } from './AssistantSelector'
 import { type ChatMode, isModuleChatMode } from './chat-input/ChatModeSelect'
@@ -86,6 +87,8 @@ export type ChatHeaderProps = {
   ) => Promise<string | null>
   /** 见 `ChatListDropdown` 的 `openHandleRef` 文档注释。 */
   historyOpenHandleRef: MutableRefObject<(() => void) | null>
+  /** Derived compaction status line (compacting / last compacted count). */
+  compactionStatus: ChatCompactionStatus | null
 }
 
 export function ChatHeader({
@@ -117,6 +120,7 @@ export function ChatHeader({
   toggleConversationPinned,
   generateConversationTitle,
   historyOpenHandleRef,
+  compactionStatus,
 }: ChatHeaderProps) {
   const { t } = useLanguage()
   const headerRef = useRef<HTMLDivElement | null>(null)
@@ -212,6 +216,16 @@ export function ChatHeader({
           </h1>
         )}
       </div>
+      {compactionStatus ? (
+        <div className="yolo-chat-header-compaction-status" role="status">
+          {compactionStatus.kind === 'compacting'
+            ? t('chat.compaction.headerCompacting', 'Compacting context…')
+            : t(
+                'chat.compaction.headerCompacted',
+                '{count} messages compacted',
+              ).replace('{count}', String(compactionStatus.messageCount))}
+        </div>
+      ) : null}
       {activeView === 'chat' && (
         <div className="yolo-chat-header-right">
           {RUNTIME_CAPABILITIES[activeRuntimeId].hasAssistants &&

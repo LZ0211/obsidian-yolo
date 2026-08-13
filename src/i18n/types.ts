@@ -2354,6 +2354,8 @@ export type TranslationKeys = {
       dividerDescriptionWithEstimate?: string
       dividerDescriptionWithSavings?: string
       pendingStatus?: string
+      headerCompacting?: string
+      headerCompacted?: string
       success?: string
       failed?: string
       empty?: string
