@@ -54,7 +54,9 @@ function createPlainTextEditorState(text: string): SerializedEditorState {
 
 import { getMemoryIndexRuntimeHandle } from '../memory/memoryIndexRuntime'
 import { resolveChatModeRuntime } from '../../components/chat-view/chat-runtime-profiles'
+import { resolveWorkspaceAccessPolicyForRuntimeInput } from '../../components/chat-view/chat-runtime-inputs'
 import { findUnifiedAgentById } from '../agent/workspaceAgentResolver'
+import { augmentWorkspacePolicyWithProtectedPaths } from '../paths/protectedPaths'
 import type {
   BotPlatformConfig,
   YoloSettings,
@@ -275,8 +277,15 @@ export async function runBotAgentTurn(
     toolServerPreferences: chatModeRuntime.toolServerPreferences,
     toolCapabilityMode: chatModeRuntime.toolCapabilityMode,
     bypassToolApproval: chatModeRuntime.bypassToolApproval,
-    workspaceAccessPolicy:
-      assistant?.workspaceAccessPolicy,
+    // Resolve the assistant's workspace policy the same way the chat
+    // runtime does (conversation-file-scope semantics), then attach the
+    // host-managed protected-path deny rules — bot turns must never reach
+    // the plugin's own data through fs/git-diff tools, no matter what the
+    // bound assistant's policy says.
+    workspaceAccessPolicy: augmentWorkspacePolicyWithProtectedPaths(
+      resolveWorkspaceAccessPolicyForRuntimeInput(assistant),
+      settings,
+    ),
     allowedSkillPaths,
     requestParams: {
       deliveryMode: 'incremental',

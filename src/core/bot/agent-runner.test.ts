@@ -1,5 +1,7 @@
 jest.mock('../../components/chat-view/chat-runtime-inputs', () => ({
-  resolveWorkspaceAccessPolicyForRuntimeInput: jest.fn(() => undefined),
+  resolveWorkspaceAccessPolicyForRuntimeInput: jest.fn(() => ({
+    workspaceRoot: 'assistant-root',
+  })),
 }))
 
 jest.mock('../../components/chat-view/chat-runtime-profiles', () => ({
@@ -51,6 +53,7 @@ import {
   runBotAgentTurn,
 } from './agent-runner'
 import { BotSentMessageRegistry } from './bot-sent-registry'
+import { getProtectedVaultPathRules } from '../paths/protectedPaths'
 import type {
   PlatformAdapter,
   SentMessageRef,
@@ -138,6 +141,7 @@ type RunCallArgs = {
     messages: unknown[]
     allowedToolNames?: string[]
     toolCapabilityMode?: string
+    workspaceAccessPolicy?: unknown
   }
 }
 
@@ -564,6 +568,39 @@ describe('runBotAgentTurn', () => {
     })
 
     expect(runCalls[0].input.toolCapabilityMode).toBe('agent')
+  })
+
+  it('augments the resolved workspace policy with host-managed protected paths', async () => {
+    const { agentService, runCalls } = makeFakeAgentService(
+      (sourceUserMessageId, emit) => {
+        emit(buildCompletedState('conv-1', sourceUserMessageId, 'Hi there'))
+      },
+    )
+    const adapter = makeFakeAdapter()
+    const settings = makeSettings()
+
+    await runBotAgentTurn({
+      app,
+      settings,
+      agentService,
+      mcpManager,
+      loadConversation: makeConversationLoader(null),
+      adapter,
+      sentMessageRegistry: new BotSentMessageRegistry(),
+      conversationId: 'conv-1',
+      sessionKey: 'telegram:private:u1',
+      chatType: 'private',
+      platformConfig: { id: 'bot-1' } as unknown as Parameters<
+        typeof runBotAgentTurn
+      >[0]['platformConfig'],
+      promptContent: 'hello bot',
+      mentionables: [],
+    })
+
+    expect(runCalls[0].input.workspaceAccessPolicy).toEqual({
+      workspaceRoot: 'assistant-root',
+      protectedPaths: getProtectedVaultPathRules(settings),
+    })
   })
 
   it('streams progressive updates through a streaming-capable adapter and finalizes once', async () => {
