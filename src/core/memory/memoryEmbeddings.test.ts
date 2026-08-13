@@ -51,6 +51,18 @@ describe('MemoryEmbeddingStore', () => {
     )
   })
 
+  it('filters search hits to the query embedding dimension', () => {
+    const store = new MemoryEmbeddingStore(runtime)
+    store.upsert(key(1), [1, 0, 0])
+    store.upsert(key(2), [0, 1, 0, 0])
+    store.upsert(key(3), [0, 0, 1])
+
+    const hits = store.search('global', [1, 0, 0], 3)
+    expect(hits.map((h) => h.localId)).toEqual([1, 3])
+    // The 4-dimensional row never enters the cosine math (no garbage scores).
+    expect(hits.every((h) => h.score >= 0 && h.score <= 1)).toBe(true)
+  })
+
   it('deletes by memory key and clears a partition', () => {
     const store = new MemoryEmbeddingStore(runtime)
     store.upsert(key(1), [1, 0, 0])

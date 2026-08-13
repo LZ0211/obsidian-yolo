@@ -91,19 +91,24 @@ export class MemoryEmbeddingStore {
   /**
    * Brute-force cosine search over one partition. Returns hits sorted by
    * descending similarity, capped at `topN`.
+   *
+   * Rows are filtered by the query embedding's dimension: after an embedding
+   * model switch, unchanged entries keep vectors from the old model, and
+   * comparing vectors of different lengths would produce garbage scores.
    */
   search(
     partitionKey: string,
     queryEmbedding: number[],
     topN: number,
   ): MemoryEmbeddingHit[] {
+    const dimension = queryEmbedding.length
     const rows = this.runtime.query<{
       memory_key: string
       local_id: number
       embedding: Uint8Array
     }>(
-      'select memory_key, local_id, embedding from memory_embeddings where partition_key = ?',
-      [partitionKey],
+      'select memory_key, local_id, embedding from memory_embeddings where partition_key = ? and dimension = ?',
+      [partitionKey, dimension],
     )
     const scored: MemoryEmbeddingHit[] = []
     for (const row of rows) {
