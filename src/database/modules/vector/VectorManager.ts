@@ -33,6 +33,7 @@ import {
   type VectorNamespace,
   type VectorSearchTimings,
   type VectorStore,
+  type VectorVacuumResult,
 } from '../rag/VectorStore'
 
 import type {
@@ -164,6 +165,17 @@ export class VectorManager {
 
   setVacuumCallback(_callback: () => Promise<void>) {}
 
+  /**
+   * 碎片整理入口：转发到底层向量存储。移动端分片后端按命名空间重建压缩并
+   * 清理墓碑行；桌面后端跑 SQLite VACUUM（无墓碑计数，返回 0/0）。
+   */
+  async vacuum(): Promise<VectorVacuumResult> {
+    if (!this.vectorStore) {
+      throw new Error('SQLite vector store is not available.')
+    }
+    return this.vectorStore.vacuum()
+  }
+
   setSettings(
     settings: {
       embeddingModels?: EmbeddingModel[]
@@ -175,13 +187,14 @@ export class VectorManager {
     this.settings = settings
   }
 
-
   async listNamespaces(): Promise<string[]> {
     return this.vectorStore?.listNamespaces?.() ?? []
   }
 
   /** 兼容上游 UI：清空全部向量（不传参数）或指定模型的向量。 */
-  async clearAllVectors(embeddingModelOrId?: string | EmbeddingModelClient): Promise<void> {
+  async clearAllVectors(
+    embeddingModelOrId?: string | EmbeddingModelClient,
+  ): Promise<void> {
     if (!this.vectorStore) return
     if (embeddingModelOrId == null) {
       for (const ns of await this.listNamespaces()) {
@@ -260,7 +273,11 @@ export class VectorManager {
     Array<{ model: string; rowCount: number; totalDataBytes: number }>
   > {
     const namespaces = await this.listNamespaces()
-    const stats: Array<{ model: string; rowCount: number; totalDataBytes: number }> = []
+    const stats: Array<{
+      model: string
+      rowCount: number
+      totalDataBytes: number
+    }> = []
     for (const nsId of namespaces) {
       // getStats() without a namespace returns the aggregate placeholder with
       // zeroed counters — derive the namespace object from the id so the per-
@@ -804,7 +821,6 @@ export class VectorManager {
 
     return { permanentFailedPaths, chunkifyFailedPaths }
   }
-
 
   /**
    * 实时文件系统 mtime（app.vault.adapter.stat），替代 Obsidian TFile.stat

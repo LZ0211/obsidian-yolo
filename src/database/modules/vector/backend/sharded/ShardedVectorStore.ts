@@ -13,6 +13,7 @@ import {
   type VectorSearchResult,
   type VectorStore,
   VectorStoreError,
+  type VectorVacuumResult,
 } from '../../../rag/VectorStore'
 
 import { parseShardedManifest } from './shardedManifest'
@@ -22,6 +23,7 @@ import {
   getShardedModelRoot,
   getShardedShardRoot,
   getShardedStagedManifestPath,
+  getShardedTempShardRoot,
 } from './shardedPaths'
 import { type ShardSqliteOpener, openShardSqliteNode } from './shardedSqlite'
 import type { ShardedManifest, ShardedManifestShard } from './types'
@@ -44,7 +46,8 @@ const COARSE_CANDIDATE_MULTIPLIER = 50
 
 /**
  * Zod requires checksums even for freshly created/building shards (upstream
- * behavior). Real hashes land in Task 5 (vacuum); fixed placeholder for now.
+ * behavior). Fixed placeholder for now: no consumer validates the hashes,
+ * and the vacuum rebuild reuses the same placeholder.
  */
 const CHECKSUM_PLACEHOLDER = 'sha256:pending'
 
@@ -125,6 +128,15 @@ type ShardScopeSql = {
 type ShardSearchHit = {
   row: ChunkRow
   score: number
+}
+
+/** Live rows + vectors gathered by `collectLiveChunks` for a vacuum rebuild. */
+type VacuumCollection = {
+  rows: ChunkRow[]
+  vectors: Float32Array[]
+  dimension: number
+  removedFiles: number
+  removedChunks: number
 }
 
 /** Per-shard outcome of a search, aggregated by the caller. */
@@ -409,8 +421,9 @@ export type ShardedVectorStoreOptions = {
  * listNamespaces/dropNamespace/getStatus); Task 2 the write path; Task 3 the
  * search path (parallel coarse + full rerank + scope prefilter); Task 4
  * tombstone deletes (`UPDATE ... SET tombstone = 1`, full read-path
- * `tombstone = 0` filtering, rewrite-revive); vacuum lands in Task 5 and
- * currently throws.
+ * `tombstone = 0` filtering, rewrite-revive); Task 5's vacuum rebuilds a
+ * namespace's live rows into a fresh shard sequence and drops the old shard
+ * dirs (see `vacuum`/`vacuumNamespaceById`).
  */
 export class ShardedVectorStore implements VectorStore {
   private readonly baseDir: string
@@ -616,8 +629,301 @@ export class ShardedVectorStore implements VectorStore {
     throw new Error('not implemented yet')
   }
 
-  async vacuum(_namespace?: VectorNamespace): Promise<void> {
-    throw new Error('not implemented yet')
+  /**
+   * Vacuum/compaction: collect the live (tombstone = 0) chunk rows and their
+   * vectors from every ready shard of the target namespace (all namespaces
+   * when omitted), rebuild a fresh shard sequence at MAX_VECTORS_PER_SHARD
+   * in temp dirs (`.build-<runId>-vacuum-<n>`), publish a staged manifest
+   * atomically, then delete the old shard dirs. Returns how much garbage was
+   * dropped: files whose every chunk was tombstoned, and tombstoned chunks.
+   *
+   * The rebuild preserves the rowid↔offset invariant search depends on:
+   * rows are collected in rowid order per source shard and re-inserted in
+   * that same order into the new chunks.sqlite, with vectors.f32 written in
+   * the identical sequence.
+   */
+  async vacuum(namespace?: VectorNamespace): Promise<VectorVacuumResult> {
+    this.assertOpen()
+    this.assertNotClosing()
+    if (namespace == null) {
+      // All namespaces: compact each model root under its own write lease.
+      // A namespace whose shards are not tracked by the manifest is a no-op.
+      let removedFiles = 0
+      let removedChunks = 0
+      for (const namespaceId of await this.listNamespaces()) {
+        const result = await this.vacuumNamespaceById(namespaceId)
+        removedFiles += result.removedFiles
+        removedChunks += result.removedChunks
+      }
+      return { removedFiles, removedChunks }
+    }
+    return this.vacuumNamespaceById(
+      validateShardedNamespaceId(vectorNamespaceId(namespace)),
+    )
+  }
+
+  /**
+   * Exclusive-lease body of `vacuum` for one namespace id. Acquires the
+   * per-namespace write lease so the rebuild (fresh manifest publish + old
+   * shard dir removal) is never observed mid-flight by a search or a write.
+   * A namespace with no manifest — or a manifest active for another model —
+   * is a no-op, mirroring `deleteFiles`.
+   */
+  private async vacuumNamespaceById(
+    namespaceId: string,
+  ): Promise<VectorVacuumResult> {
+    const release = await this.acquireNamespaceWriteLease(namespaceId)
+    try {
+      const manifest = await this.readManifest()
+      if (manifest == null || manifest.activeModel !== namespaceId) {
+        return { removedFiles: 0, removedChunks: 0 }
+      }
+      const collection = await this.collectLiveChunks(
+        namespaceId,
+        manifest.shards.filter((shard) => shard.state === 'ready'),
+      )
+      const runId = `${Date.now().toString(36)}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`
+      const nextShards: ShardedManifestShard[] = []
+      const tempRoots: string[] = []
+      const createdRoots: string[] = []
+      try {
+        for (
+          let offset = 0;
+          offset < collection.rows.length;
+          offset += MAX_VECTORS_PER_SHARD
+        ) {
+          const shard = await this.buildVacuumShard(
+            namespaceId,
+            runId,
+            nextShards.length,
+            collection.rows.slice(offset, offset + MAX_VECTORS_PER_SHARD),
+            collection.vectors.slice(offset, offset + MAX_VECTORS_PER_SHARD),
+            collection.dimension,
+          )
+          nextShards.push(shard)
+          tempRoots.push(
+            getShardedTempShardRoot(
+              this.baseDir,
+              namespaceId,
+              runId,
+              `vacuum-${nextShards.length - 1}`,
+            ),
+          )
+          createdRoots.push(
+            getShardedShardRoot(this.baseDir, namespaceId, shard.id),
+          )
+        }
+      } catch (error) {
+        // Best-effort cleanup of temp dirs and of any final dirs already
+        // moved into place, then surface the original failure. The old
+        // manifest is untouched, so a failed vacuum leaves the previous
+        // state searchable (a re-run rebuilds from the still-present rows).
+        for (const root of [...tempRoots, ...createdRoots]) {
+          try {
+            await this.adapter.remove(root, { recursive: true })
+          } catch {
+            // Cleanup is best-effort; the original error is what matters.
+          }
+        }
+        throw error
+      }
+
+      const nextManifest: ShardedManifest = {
+        schemaVersion: manifest.schemaVersion,
+        formatVersion: manifest.formatVersion,
+        activeModel: manifest.activeModel,
+        updatedAt: 0,
+        shards: nextShards,
+      }
+      await this.publishManifest(nextManifest)
+
+      // Old shard dirs are removed only after the manifest switched over, so
+      // a crash mid-cleanup leaves consistent state plus deletable garbage.
+      const removeFailures: string[] = []
+      for (const shard of manifest.shards) {
+        const shardRoot = getShardedShardRoot(
+          this.baseDir,
+          namespaceId,
+          shard.id,
+        )
+        if (createdRoots.includes(shardRoot)) continue
+        try {
+          await this.adapter.remove(shardRoot, { recursive: true })
+        } catch (error) {
+          removeFailures.push(`${shard.id} (${String(error)})`)
+        }
+      }
+      if (removeFailures.length > 0) {
+        throw new VectorStoreError(
+          'transaction_failed',
+          'sqlite',
+          'none',
+          `vacuum compacted the index but could not remove old shard dirs: ${removeFailures.join(', ')}`,
+        )
+      }
+      return {
+        removedFiles: collection.removedFiles,
+        removedChunks: collection.removedChunks,
+      }
+    } finally {
+      release()
+    }
+  }
+
+  /**
+   * Reads every ready shard of a namespace and returns the live rows (in
+   * rowid order, so the sequence is stable across a rebuild), the matching
+   * vector slices, the shared dimension, and the tombstone accounting:
+   * `removedChunks` = tombstoned rows, `removedFiles` = files whose every
+   * chunk is tombstoned. Counts are computed here, before any deletion.
+   */
+  private async collectLiveChunks(
+    namespaceId: string,
+    readyShards: ShardedManifestShard[],
+  ): Promise<VacuumCollection> {
+    const rows: ChunkRow[] = []
+    const vectors: Float32Array[] = []
+    const liveByFile = new Map<string, number>()
+    const tombstonedByFile = new Map<string, number>()
+    let removedChunks = 0
+    let dimension = 0
+
+    for (const shard of readyShards) {
+      if (shard.vectorCount === 0) continue
+      if (dimension === 0) {
+        dimension = shard.dimension
+      } else if (shard.dimension !== dimension) {
+        throw new VectorStoreError(
+          'database_corrupt',
+          'sqlite',
+          'rebuild_index',
+          `Shards mix dimensions ${dimension} and ${shard.dimension} in namespace ${namespaceId}`,
+        )
+      }
+      const shardRoot = getShardedShardRoot(this.baseDir, namespaceId, shard.id)
+      const runtime = this.openShardRuntime(namespaceId, shard.id)
+      try {
+        const shardRows = runtime.query<ChunkRow>(
+          'select * from chunks order by rowid',
+        )
+        const shardVectors = await this.readShardVectors(
+          shardRoot,
+          shard.dimension,
+          shard.vectorCount,
+        )
+        for (let i = 0; i < shardRows.length; i += 1) {
+          const row = shardRows[i]
+          if (row.tombstone === 0) {
+            rows.push(row)
+            vectors.push(
+              shardVectors.subarray(
+                i * shard.dimension,
+                (i + 1) * shard.dimension,
+              ),
+            )
+            liveByFile.set(
+              row.file_path,
+              (liveByFile.get(row.file_path) ?? 0) + 1,
+            )
+          } else {
+            removedChunks += 1
+            tombstonedByFile.set(
+              row.file_path,
+              (tombstonedByFile.get(row.file_path) ?? 0) + 1,
+            )
+          }
+        }
+      } finally {
+        runtime.close()
+      }
+    }
+
+    let removedFiles = 0
+    for (const filePath of tombstonedByFile.keys()) {
+      if ((liveByFile.get(filePath) ?? 0) === 0) removedFiles += 1
+    }
+    return { rows, vectors, dimension, removedFiles, removedChunks }
+  }
+
+  /**
+   * Builds one replacement shard at `.build-<runId>-vacuum-<n>`: a fresh
+   * chunks.sqlite (rows inserted in the collected order, so rowid 1..N
+   * matches the vector order), vectors.f32 and index.bin from the same
+   * sequence, plus shard.meta.json. The temp dir is then moved onto the
+   * final `shards/<id>` path — ids restart at 000001 after a vacuum, so any
+   * previous dir with the id is removed first.
+   */
+  private async buildVacuumShard(
+    namespaceId: string,
+    runId: string,
+    batchIndex: number,
+    rows: ChunkRow[],
+    vectors: Float32Array[],
+    dimension: number,
+  ): Promise<ShardedManifestShard> {
+    const shardId = String(batchIndex + 1).padStart(SHARD_ID_WIDTH, '0')
+    const tempRoot = getShardedTempShardRoot(
+      this.baseDir,
+      namespaceId,
+      runId,
+      `vacuum-${batchIndex}`,
+    )
+    const runtime = this.openShardSqliteAt(`${tempRoot}/chunks.sqlite`)
+    try {
+      runtime.transaction(() => {
+        for (const row of rows) {
+          runtime.exec(INSERT_CHUNK_SQL, [
+            row.chunk_id,
+            row.file_path,
+            row.file_mtime,
+            row.file_content_hash,
+            row.chunk_content_hash,
+            row.start_line,
+            row.end_line,
+            row.page,
+            row.text,
+            row.metadata_json,
+          ])
+        }
+      })
+    } finally {
+      runtime.close()
+    }
+
+    const full = new Float32Array(rows.length * dimension)
+    for (let i = 0; i < rows.length; i += 1) {
+      full.set(vectors[i], i * dimension)
+    }
+    await this.adapter.writeBinary(`${tempRoot}/vectors.f32`, full.buffer)
+    await this.adapter.writeBinary(
+      `${tempRoot}/index.bin`,
+      // Freshly allocated Float32Array, never backed by a SharedArrayBuffer.
+      buildCoarseIndex(full, rows.length, dimension).buffer as ArrayBuffer,
+    )
+    const shard: ShardedManifestShard = {
+      id: shardId,
+      relativePath: `models/${namespaceId}/shards/${shardId}`,
+      state: 'ready',
+      dimension,
+      vectorCount: rows.length,
+      checksums: {
+        chunksSqlite: CHECKSUM_PLACEHOLDER,
+        vectorsF32: CHECKSUM_PLACEHOLDER,
+        indexBin: CHECKSUM_PLACEHOLDER,
+        tombstonesBin: CHECKSUM_PLACEHOLDER,
+        shardMeta: CHECKSUM_PLACEHOLDER,
+      },
+    }
+    await this.writeShardMeta(tempRoot, shard)
+
+    const finalRoot = getShardedShardRoot(this.baseDir, namespaceId, shardId)
+    if (await this.adapter.exists(finalRoot)) {
+      await this.adapter.remove(finalRoot, { recursive: true })
+    }
+    await this.adapter.rename(tempRoot, finalRoot)
+    return shard
   }
 
   async getStatusByNamespaceId(
@@ -1589,7 +1895,13 @@ export class ShardedVectorStore implements VectorStore {
     namespaceId: string,
     shardId: string,
   ): SqliteNativeRuntimeFacade {
-    const dbPath = `${getShardedShardRoot(this.baseDir, namespaceId, shardId)}/chunks.sqlite`
+    return this.openShardSqliteAt(
+      `${getShardedShardRoot(this.baseDir, namespaceId, shardId)}/chunks.sqlite`,
+    )
+  }
+
+  /** Opens a chunks.sqlite (any path — a shard root or a vacuum temp dir) and ensures the table. */
+  private openShardSqliteAt(dbPath: string): SqliteNativeRuntimeFacade {
     const runtime = this.openShardSqlite(dbPath)
     runtime.exec(CHUNKS_TABLE_SQL)
     return runtime

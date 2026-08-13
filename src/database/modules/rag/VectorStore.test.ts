@@ -116,7 +116,7 @@ describe('VectorStore contract', () => {
       replaceFile: async () => undefined,
       deleteFile: async () => undefined,
       clearNamespace: async () => undefined,
-      vacuum: async () => undefined,
+      vacuum: async () => ({ removedFiles: 0, removedChunks: 0 }),
       getStatus: async () => status,
       search: async () => ({
         hits: [hit],

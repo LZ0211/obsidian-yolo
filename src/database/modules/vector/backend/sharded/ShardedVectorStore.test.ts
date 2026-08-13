@@ -290,6 +290,47 @@ class ParkNextReadVaultAdapter extends InMemoryVaultAdapter {
   }
 }
 
+/**
+ * In-memory adapter double that keeps the real-FS chunks.sqlite files (the
+ * write-path opener redirects sqlite into a temp dir) in sync with virtual
+ * directory moves/removals — simulating production mobile, where chunks.sqlite
+ * is itself a vault file managed by the adapter. Without this, a vacuum's
+ * virtual rename/remove would leave the old real sqlite file behind at the
+ * reused shard path, desyncing its rows from the rebuilt vectors.f32.
+ */
+class SqliteSyncVaultAdapter extends InMemoryVaultAdapter {
+  private readonly tempRoot: string
+
+  constructor(tempRoot: string) {
+    super()
+    this.tempRoot = tempRoot
+  }
+
+  private realPath(virtualPath: string): string {
+    return path.join(this.tempRoot, virtualPath.replace(/^[\\/]+/, ''))
+  }
+
+  override rename(oldValue: string, newValue: string): Promise<void> {
+    const oldDb = path.join(this.realPath(oldValue), 'chunks.sqlite')
+    const newDb = path.join(this.realPath(newValue), 'chunks.sqlite')
+    if (fs.existsSync(oldDb)) {
+      fs.mkdirSync(path.dirname(newDb), { recursive: true })
+      fs.rmSync(newDb, { force: true })
+      fs.renameSync(oldDb, newDb)
+    }
+    return super.rename(oldValue, newValue)
+  }
+
+  override remove(
+    value: string,
+    options?: { recursive?: boolean },
+  ): Promise<void> {
+    const dbPath = path.join(this.realPath(value), 'chunks.sqlite')
+    if (fs.existsSync(dbPath)) fs.rmSync(dbPath)
+    return super.remove(value, options)
+  }
+}
+
 const BASE_DIR = '/vault/.yolo'
 
 const testNamespace: VectorNamespace = {
@@ -481,7 +522,6 @@ describe('ShardedVectorStore skeleton', () => {
     await store.open()
     const unimplemented: Array<Promise<unknown>> = [
       store.clearNamespace(testNamespace),
-      store.vacuum(testNamespace),
       store.getStats(testNamespace),
       store.getStatusByNamespaceId?.('m1-d256'),
       store.getQueryEmbedding?.(testNamespace, 'hash'),
@@ -1792,6 +1832,264 @@ describe('ShardedVectorStore tombstone deletes', () => {
       expect(result.hits[0]?.score).toBeCloseTo(1, 5)
       expect(result.hits[1]?.score).toBeCloseTo(1 / 1002, 5)
       expect(result.totalCount).toBe(2)
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('ShardedVectorStore vacuum', () => {
+  jest.setTimeout(60_000)
+
+  const query = [1, 0, 0, 0]
+
+  it('rebuilds shards without tombstones, drops old shard dirs, and keeps search live-only', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-vacuum-'))
+    try {
+      const adapter = new SqliteSyncVaultAdapter(tempRoot)
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      // a.md (c1) + b.md (c2) → tombstone a.md → append c.md (c3).
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        contentHash: 'ha',
+        chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+      })
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/b.md',
+        mtime: 2,
+        contentHash: 'hb',
+        chunks: [
+          chunk('c2', 'beta', [0.5, Math.sqrt(0.75), 0, 0], 1, 'notes/b.md'),
+        ],
+      })
+      await store.deleteFile(writeNamespace, 'notes/a.md')
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/c.md',
+        mtime: 3,
+        contentHash: 'hc',
+        chunks: [chunk('c3', 'gamma', [1, 0, 0, 0], 1, 'notes/c.md')],
+      })
+
+      const before = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(before.shards[0]?.vectorCount).toBe(3)
+
+      const result = await store.vacuum(writeNamespace)
+      expect(result).toEqual({ removedFiles: 1, removedChunks: 1 })
+
+      // Manifest: only live rows count now; the shard sequence restarts at 1.
+      const after = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(after.shards.map((shard) => shard.id)).toEqual(['000001'])
+      expect(
+        after.shards.reduce((sum, shard) => sum + shard.vectorCount, 0),
+      ).toBe(2)
+      expect(after.shards[0]?.dimension).toBe(writeNamespace.dimension)
+
+      // Old shard dirs removed: artifacts hold exactly the live vectors.
+      const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
+      expect(
+        (await adapter.readBinary(`${shardRoot}/vectors.f32`)).byteLength,
+      ).toBe(2 * writeNamespace.dimension * 4)
+      expect(
+        (await adapter.readBinary(`${shardRoot}/index.bin`)).byteLength,
+      ).toBe(2 * COARSE_DIMENSION * 4)
+      const shardsListing = await adapter.list(
+        `${getShardedModelRoot(BASE_DIR, WRITE_NS_ID)}/shards`,
+      )
+      expect(shardsListing.folders).toEqual(['000001'])
+
+      // chunks.sqlite physically compacted: no tombstone rows remain.
+      const runtime = openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+      )
+      try {
+        const rows = runtime.query<{ chunk_id: string; tombstone: number }>(
+          'select chunk_id, tombstone from chunks order by rowid',
+        )
+        expect(rows).toEqual([
+          { chunk_id: 'c2', tombstone: 0 },
+          { chunk_id: 'c3', tombstone: 0 },
+        ])
+        expect(
+          runtime.queryOne<{ n: number }>(
+            'select count(*) as n from chunks where tombstone = 1',
+          )?.n,
+        ).toBe(0)
+      } finally {
+        runtime.close()
+      }
+
+      // Search returns only live content with correct scores.
+      const searchResult = await store.search(writeNamespace, query, {
+        topK: 10,
+      })
+      expect(searchResult.hits.map((hit) => hit.chunkId)).toEqual(['c3', 'c2'])
+      expect(searchResult.totalCount).toBe(2)
+      expect(searchResult.hits[0]?.score).toBeCloseTo(1, 5)
+      expect(searchResult.hits[1]?.score).toBeCloseTo(0.5, 5)
+      const indexed = await store.getIndexedFiles(writeNamespace)
+      expect(indexed.has('notes/a.md')).toBe(false)
+      expect(indexed.has('notes/b.md')).toBe(true)
+      expect(indexed.has('notes/c.md')).toBe(true)
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('vacuum on a namespace without a manifest (or with another active model) is a no-op', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const store = makeStore(adapter)
+    await store.open()
+    expect(await store.vacuum(writeNamespace)).toEqual({
+      removedFiles: 0,
+      removedChunks: 0,
+    })
+    // All-namespaces vacuum on an empty store is also a no-op.
+    expect(await store.vacuum()).toEqual({ removedFiles: 0, removedChunks: 0 })
+    expect(await adapter.exists(getShardedManifestPath(BASE_DIR))).toBe(false)
+
+    // A manifest active for a different model makes the vacuum a no-op too.
+    await adapter.write(
+      getShardedManifestPath(BASE_DIR),
+      JSON.stringify({
+        schemaVersion: 1,
+        formatVersion: 1,
+        activeModel: 'other-d4',
+        updatedAt: 1,
+        shards: [],
+      }),
+    )
+    const otherStore = makeStore(adapter)
+    await otherStore.open()
+    expect(await otherStore.vacuum(writeNamespace)).toEqual({
+      removedFiles: 0,
+      removedChunks: 0,
+    })
+    expect(
+      parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      ).activeModel,
+    ).toBe('other-d4')
+  })
+
+  it('preserves search correctness across the rebuild (rowid↔offset intact)', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-vacuum-'))
+    try {
+      const adapter = new SqliteSyncVaultAdapter(tempRoot)
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      // Mixed tombstones: c1 (score 1.0) and c2 (0.5) tombstoned, c3 (1/3)
+      // live, c4 (0.7) appended after the tombstones.
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        chunks: [chunk('c1', 'gone-strong', [1, 0, 0, 0], 1)],
+      })
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 2,
+        chunks: [chunk('c2', 'gone-mid', [0.5, Math.sqrt(0.75), 0, 0], 1)],
+      })
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/b.md',
+        mtime: 3,
+        chunks: [
+          chunk('c3', 'kept', [1 / 3, Math.sqrt(8 / 9), 0, 0], 1, 'notes/b.md'),
+        ],
+      })
+      await store.deleteFile(writeNamespace, 'notes/a.md')
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 4,
+        chunks: [chunk('c4', 'new', [0.7, Math.sqrt(0.51), 0, 0], 1)],
+      })
+
+      const before = await store.search(writeNamespace, query, { topK: 10 })
+      expect(before.hits.map((hit) => hit.chunkId)).toEqual(['c4', 'c3'])
+
+      // a.md still owns a live chunk (c4), so no file is fully removed.
+      expect(await store.vacuum(writeNamespace)).toEqual({
+        removedFiles: 0,
+        removedChunks: 2,
+      })
+
+      // Identical ordering and scores after the rebuild: each vector stayed
+      // glued to its row across the compaction.
+      const afterSearch = await store.search(writeNamespace, query, {
+        topK: 10,
+      })
+      expect(afterSearch.hits.map((hit) => hit.chunkId)).toEqual(['c4', 'c3'])
+      expect(afterSearch.hits[0]?.score).toBeCloseTo(0.7, 5)
+      expect(afterSearch.hits[1]?.score).toBeCloseTo(1 / 3, 5)
+      expect(afterSearch.totalCount).toBe(2)
+
+      // Physically compacted: only the live rows survive.
+      const manifest = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(
+        manifest.shards.reduce((sum, shard) => sum + shard.vectorCount, 0),
+      ).toBe(2)
+      const runtime = openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+      )
+      try {
+        const rows = runtime.query<{ chunk_id: string; tombstone: number }>(
+          'select chunk_id, tombstone from chunks order by rowid',
+        )
+        expect(rows).toEqual([
+          { chunk_id: 'c3', tombstone: 0 },
+          { chunk_id: 'c4', tombstone: 0 },
+        ])
+      } finally {
+        runtime.close()
+      }
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('returns accurate removedFiles/removedChunks counts', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-vacuum-'))
+    try {
+      const adapter = new SqliteSyncVaultAdapter(tempRoot)
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 1,
+        chunks: [
+          chunk('c1', 'a1', [1, 0, 0, 0], 1),
+          chunk('c2', 'a2', [0.5, Math.sqrt(0.75), 0, 0], 2),
+        ],
+      })
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/b.md',
+        mtime: 2,
+        chunks: [
+          chunk('c3', 'b1', [1 / 3, Math.sqrt(8 / 9), 0, 0], 1, 'notes/b.md'),
+        ],
+      })
+      await store.deleteFile(writeNamespace, 'notes/a.md')
+
+      // a.md fully tombstoned (2 chunks), b.md still live.
+      expect(await store.vacuum(writeNamespace)).toEqual({
+        removedFiles: 1,
+        removedChunks: 2,
+      })
+      const search = await store.search(writeNamespace, query, { topK: 10 })
+      expect(search.hits.map((hit) => hit.chunkId)).toEqual(['c3'])
+
+      // A second vacuum finds nothing to remove.
+      expect(await store.vacuum(writeNamespace)).toEqual({
+        removedFiles: 0,
+        removedChunks: 0,
+      })
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true })
     }

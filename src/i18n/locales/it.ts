@@ -1520,6 +1520,8 @@ export const it: DeepPartial<TranslationKeys> = {
       manageEmbeddingDatabase: 'Gestisci database embedding',
       manage: 'Gestisci',
       rebuildIndex: 'Ricostruisci indice',
+      vacuumButton: 'Compatta database',
+      vacuumDone: 'Compattazione completata: rimossi {files} file',
       rebuildFromScratch: 'Ricostruisci da zero',
       rebuildFromScratchConfirm:
         "Verranno eliminati tutti i vettori esistenti del modello di embedding corrente e l'intero vault verrà reindicizzato, con possibili numerose chiamate API. Continuare?",

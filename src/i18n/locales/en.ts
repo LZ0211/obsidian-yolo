@@ -1644,6 +1644,8 @@ export const en: TranslationKeys = {
       manageEmbeddingDatabase: 'Manage embedding database',
       manage: 'Manage',
       rebuildIndex: 'Rebuild index',
+      vacuumButton: 'Compact database',
+      vacuumDone: 'Compaction finished: {files} files removed',
       rebuildFromScratch: 'Rebuild from scratch',
       rebuildFromScratchConfirm:
         'This will clear all existing vectors for the current embedding model and re-index the entire vault, which may incur many embedding API calls. Continue?',
