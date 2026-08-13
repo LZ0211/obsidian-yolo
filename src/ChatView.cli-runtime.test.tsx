@@ -31,6 +31,7 @@ jest.mock('obsidian', () => {
   }
   return {
     ItemView,
+    Modal: class {},
     TFile: class {},
     TFolder: class {},
     WorkspaceLeaf: class {},

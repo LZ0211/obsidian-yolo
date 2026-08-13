@@ -14,6 +14,7 @@ For add and update operations, sector values are episodic, semantic, procedural,
 Use semantic for profile and preferences, and episodic for other when adding memory.
 For updates, omit sector to preserve the existing indexed sector.
 Never use reflective for ordinary extraction.
+For add and update operations, reason is an optional short phrase explaining why this memory matters or when to apply it (e.g. "user corrected this twice"). Omit it for self-evident entries.
 Never call tools. Return strict JSON only.
 </memory_extraction_contract>"
 `)
