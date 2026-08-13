@@ -1151,6 +1151,11 @@ export function getLocalFileTools(options?: {
               "Optional read-only parent-context fork for the sub-agent. Defaults to none (the child sees only the prompt, exactly as today). last_turns appends a read-only snapshot of the parent conversation's most recent turns to the child prompt; full appends a size-capped read-only snapshot of the whole parent history. The snapshot reflects the parent conversation as of the current parent run's start: the child cannot write to parent state.",
             default: 'none',
           },
+          sessionId: {
+            type: 'string',
+            description:
+              'Optional id of an existing durable subagent session to continue (obtained from a previous delegate_subagent result). When set, the prompt is queued to that session instead of spawning a new one.',
+          },
         },
         required: ['description', 'prompt'],
       },
@@ -4363,6 +4368,76 @@ export async function callLocalFileTool({
                 sessionService.deliverQueuedIntents.bind(sessionService),
             } satisfies SubagentSessionGatewayLike)
           : undefined
+
+        // sessionId 续接参数（工具层会话续跑）：非空时把 prompt 以 after_run 意图
+        // 排队到既有 durable 会话（send），不 spawn 新会话；IDLE/NEEDS_RESUME 时
+        // 立即投递成续跑（deliverQueuedIntents → onIntentRunRequested），RUNNING
+        // 时不投递——settleRun 结算时会自动投递 PENDING after_run 意图。状态常量
+        // 动态 import（localFileTools → state/statuses 不引静态边，与 4263 注释
+        // 同款约定）。本分支位于 profile/模型解析之后：续接会话复用会话已冻结的
+        // 角色/模型，父侧解析结果不参与续接（无 sessionId 时解析照常进行）。
+        const requestedSessionId = getOptionalTextArg(args, 'sessionId')?.trim()
+        if (requestedSessionId) {
+          if (!sessionService) {
+            throw new Error('Subagent sessions are not available.')
+          }
+          const existing = await sessionService.query(requestedSessionId)
+          if (!existing) {
+            throw new Error(`Unknown subagent session "${requestedSessionId}".`)
+          }
+          const { SUBAGENT_SESSION_STATUS: SESSION_STATUS } = await import(
+            '../state/statuses'
+          )
+          const existingStatus = existing.session.status
+          const continuable =
+            existingStatus === SESSION_STATUS.IDLE ||
+            existingStatus === SESSION_STATUS.RUNNING ||
+            existingStatus === SESSION_STATUS.NEEDS_RESUME
+          if (!continuable) {
+            throw new Error(
+              `Subagent session "${requestedSessionId}" is in state ${existingStatus} and cannot be continued.`,
+            )
+          }
+          const sent = await sessionService.send({
+            sessionId: requestedSessionId,
+            messageId: uuidv4(),
+            text: taskPrompt,
+            delivery: 'after_run',
+            expectedSessionRevision: existing.session.revision,
+            requestId: uuidv4(),
+          })
+          if (!sent.accepted) {
+            throw new Error(
+              `Failed to queue message to subagent session "${requestedSessionId}": ${sent.errorCode}`,
+            )
+          }
+          if (
+            existingStatus === SESSION_STATUS.IDLE ||
+            existingStatus === SESSION_STATUS.NEEDS_RESUME
+          ) {
+            // fire-and-forget 投递续跑（subagentCardUtils.ts 同款 .catch 诊断）
+            void sessionService
+              .deliverQueuedIntents(requestedSessionId)
+              .catch((error: unknown) => {
+                console.warn('[YOLO] Subagent queued intent delivery failed', {
+                  sessionId: requestedSessionId,
+                  error,
+                })
+              })
+          }
+          return {
+            status: ToolCallResponseStatus.Success,
+            text: JSON.stringify({
+              accepted: true,
+              sessionId: requestedSessionId,
+              mode: AGENT_SESSION_MODE.PERSISTENT,
+              queued: true,
+              status: 'queued',
+              sessionRevision: sent.sessionRevision,
+              note: 'Prompt queued to the existing subagent session. The sub-agent continues asynchronously after its current run settles (or immediately when idle); the result arrives as a follow-up background event.',
+            }),
+          }
+        }
 
         // 审查 Critical 修复（8b）：durable 委托场景（delegatedRoleId + gateway）
         // 先 spawn 持久会话——否则 settleRun 对未 spawn 会话静默 no-op

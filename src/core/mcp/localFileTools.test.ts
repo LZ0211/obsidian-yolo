@@ -3151,6 +3151,187 @@ describe('delegate_subagent model selection', () => {
       expect(runSubagent).toHaveBeenCalled()
     })
   })
+
+  describe('sessionId continuation of an existing durable session', () => {
+    const makeQueryResult = (status: string, revision: number) =>
+      ({
+        session: { sessionId: 'sub_durable01', status, revision },
+      }) as never
+
+    const mockContinuationService = (options: {
+      status: 'idle' | 'running' | 'archived'
+      revision: number
+      sendAccepted?: boolean
+    }) => {
+      const send = jest.fn().mockResolvedValue({
+        accepted: options.sendAccepted ?? true,
+        ...(options.sendAccepted === false
+          ? {
+              errorCode: 'session_not_sendable',
+              retryable: false,
+            }
+          : { queued: true, sessionRevision: options.revision + 1 }),
+      })
+      const deliverQueuedIntents = jest.fn().mockResolvedValue(undefined)
+      const spawn = jest.fn().mockResolvedValue({
+        accepted: true,
+        sessionId: 'sub_new',
+        runKey: 'sub_new:1',
+        sessionRevision: 1,
+      })
+      jest.mocked(getSubagentSessionService).mockReturnValue({
+        spawn,
+        settleRun: jest.fn(),
+        query: jest.fn().mockResolvedValue(
+          makeQueryResult(options.status, options.revision),
+        ),
+        send,
+        deliverQueuedIntents,
+      } as never)
+      return { send, deliverQueuedIntents, spawn }
+    }
+
+    beforeEach(() => {
+      resetParentSubagentBreakers()
+      jest.mocked(getSubagentSessionService).mockReset()
+    })
+
+    it('rejects an unknown sessionId with the session name in the error', async () => {
+      const query = jest.fn().mockResolvedValue(null)
+      jest.mocked(getSubagentSessionService).mockReturnValue({
+        spawn: jest.fn(),
+        settleRun: jest.fn(),
+        query,
+        send: jest.fn(),
+        deliverQueuedIntents: jest.fn(),
+      } as never)
+
+      const result = await callDelegateSubagent({ sessionId: 'sub_unknown' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      if (result.status === ToolCallResponseStatus.Error) {
+        expect(result.error).toContain(
+          'Unknown subagent session "sub_unknown".',
+        )
+      }
+      expect(query).toHaveBeenCalledWith('sub_unknown')
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+
+    it('rejects a non-continuable session with its status in the error', async () => {
+      const { send, spawn } = mockContinuationService({
+        status: 'archived',
+        revision: 2,
+      })
+
+      const result = await callDelegateSubagent({ sessionId: 'sub_durable01' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      if (result.status === ToolCallResponseStatus.Error) {
+        expect(result.error).toContain(
+          'Subagent session "sub_durable01" is in state archived and cannot be continued.',
+        )
+      }
+      expect(send).not.toHaveBeenCalled()
+      expect(spawn).not.toHaveBeenCalled()
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+
+    it('queues to an idle session via send and delivers the continuation without spawning', async () => {
+      const { send, deliverQueuedIntents, spawn } =
+        mockContinuationService({ status: 'idle', revision: 2 })
+
+      const result = await callDelegateSubagent({
+        sessionId: 'sub_durable01',
+      })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      if (result.status === ToolCallResponseStatus.Success) {
+        expect(JSON.parse(result.text)).toMatchObject({
+          accepted: true,
+          sessionId: 'sub_durable01',
+          mode: AGENT_SESSION_MODE.PERSISTENT,
+          queued: true,
+          status: 'queued',
+          sessionRevision: 3,
+        })
+      }
+      expect(send).toHaveBeenCalledWith({
+        sessionId: 'sub_durable01',
+        messageId: expect.any(String),
+        text: 'Scan notes',
+        delivery: 'after_run',
+        expectedSessionRevision: 2,
+        requestId: expect.any(String),
+      })
+      expect(deliverQueuedIntents).toHaveBeenCalledWith('sub_durable01')
+      expect(spawn).not.toHaveBeenCalled()
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+
+    it('queues to a running session but does not deliver (settleRun auto-delivers after_run)', async () => {
+      const { send, deliverQueuedIntents, spawn } =
+        mockContinuationService({ status: 'running', revision: 3 })
+
+      const result = await callDelegateSubagent({
+        sessionId: 'sub_durable01',
+      })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Success)
+      if (result.status === ToolCallResponseStatus.Success) {
+        expect(JSON.parse(result.text)).toMatchObject({
+          accepted: true,
+          sessionId: 'sub_durable01',
+          queued: true,
+          sessionRevision: 4,
+        })
+      }
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 'sub_durable01',
+          expectedSessionRevision: 3,
+          delivery: 'after_run',
+        }),
+      )
+      expect(deliverQueuedIntents).not.toHaveBeenCalled()
+      expect(spawn).not.toHaveBeenCalled()
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+
+    it('rejects with the errorCode when send rejects (e.g. needs_resume session)', async () => {
+      mockContinuationService({
+        status: 'running',
+        revision: 2,
+        sendAccepted: false,
+      })
+
+      const result = await callDelegateSubagent({
+        sessionId: 'sub_durable01',
+      })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      if (result.status === ToolCallResponseStatus.Error) {
+        expect(result.error).toContain(
+          'Failed to queue message to subagent session "sub_durable01": session_not_sendable',
+        )
+      }
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+
+    it('rejects sessionId when no session service is available', async () => {
+      jest.mocked(getSubagentSessionService).mockReturnValue(null)
+
+      const result = await callDelegateSubagent({ sessionId: 'sub_durable01' })
+
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
+      if (result.status === ToolCallResponseStatus.Error) {
+        expect(result.error).toContain(
+          'Subagent sessions are not available.',
+        )
+      }
+      expect(runSubagent).not.toHaveBeenCalled()
+    })
+  })
 })
 
 describe('send_attachment (Bot Platform Phase 6.5)', () => {
