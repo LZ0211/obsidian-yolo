@@ -33,6 +33,16 @@ import type { SettingMigration } from '../setting.types'
  * targeting the same action), the most-restrictive valid policy wins — a
  * group-alias default may initialize a missing action entry but never loosens
  * an explicit old-tool setting — and a diagnostic is logged.
+ *
+ * NOTE (allowAutoExecution): this migration still reads/merges/carries the
+ * legacy `allowAutoExecution` field (see BuiltinToolActionOption below) even
+ * though it is a dead key — zero readers in the current schema and UI, and
+ * the field has been removed from `mcp.types.ts`. It is preserved here
+ * deliberately: legacy persisted data written before the field was dropped
+ * must migrate faithfully (most-restrictive merge, `false` wins), and any
+ * residue that reaches the current zod schema is stripped on the next parse.
+ * Do not "clean up" the field out of this historical migration — it is the
+ * only place that still understands pre-drop data.
  */
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

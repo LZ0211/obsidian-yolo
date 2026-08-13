@@ -166,7 +166,12 @@ export function createWebYoloRuntime({
     initialActiveFile: null,
     getAssistantId: () => null,
   })
-  const mcpManager = createWebMcpManager({ api })
+  const mcpManager = createWebMcpManager({
+    api,
+    // 与桌面 McpManager 的 settings getter 一致：getSettingsSnapshot /
+    // getJsSandboxSettings 读当前设置快照（跟随 settings.update 更新）。
+    getSettings: () => currentSettings,
+  })
   const pluginInfo = bootstrap.pluginInfo ?? {
     id: 'smart-rag',
     name: 'Smart RAG',

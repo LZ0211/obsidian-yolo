@@ -1,11 +1,28 @@
 import { createWebMcpManager } from './createWebMcpManager'
 
 describe('createWebMcpManager', () => {
+  const settings = {
+    jsSandbox: {
+      allowFetch: true,
+      fetchMaxResponseKb: 512,
+    },
+  }
+
+  function createManager(
+    api: { postJson: jest.Mock } = { postJson: jest.fn() },
+    getSettings: () => unknown = () => settings,
+  ) {
+    return createWebMcpManager({
+      api: api as never,
+      getSettings: getSettings as never,
+    })
+  }
+
   it('delegates listAvailableTools to the server instead of synthesizing an empty list', async () => {
     const api = {
       postJson: jest.fn().mockResolvedValue([{ name: 'tool-a' }]),
     }
-    const manager = createWebMcpManager({ api } as never)
+    const manager = createManager(api)
 
     await expect(
       manager.listAvailableTools({
@@ -24,7 +41,7 @@ describe('createWebMcpManager', () => {
     const api = {
       postJson: jest.fn().mockResolvedValue({ aborted: true }),
     }
-    const manager = createWebMcpManager({ api } as never)
+    const manager = createManager(api)
 
     await expect(manager.abortToolCall('tool-call-1')).resolves.toBe(true)
 
@@ -33,19 +50,51 @@ describe('createWebMcpManager', () => {
     })
   })
 
-  it('throws explicit errors for MCP admin state that is not available in shared web', () => {
-    const manager = createWebMcpManager({ api: { postJson: jest.fn() } } as never)
+  it('returns an empty server snapshot instead of throwing', () => {
+    const manager = createManager()
 
-    expect(() => manager.getServers()).toThrow(
-      'MCP server administration is not available in the shared web runtime.',
-    )
+    // The web runtime has no server-state concept; consumers must see an
+    // empty list, never an exception (matches McpManager.getServers shape).
+    expect(manager.getServers()).toEqual([])
   })
 
   it('provides a stable server-change subscription for selector consumers', () => {
-    const manager = createWebMcpManager({ api: { postJson: jest.fn() } } as never)
+    const manager = createManager()
     const unsubscribe = manager.subscribeServersChange(() => {})
 
     expect(unsubscribe).toEqual(expect.any(Function))
     expect(() => unsubscribe()).not.toThrow()
+  })
+
+  it('returns the current settings snapshot', () => {
+    const manager = createManager()
+
+    expect(manager.getSettingsSnapshot()).toBe(settings)
+  })
+
+  it('derives getJsSandboxSettings from real settings', () => {
+    const manager = createManager()
+
+    expect(manager.getJsSandboxSettings()).toEqual({
+      allowFetch: true,
+      fetchMaxResponseKb: 512,
+    })
+  })
+
+  it('normalizes allowExternalScripts to implicitly enable fetch, matching the desktop source of truth', () => {
+    const manager = createManager(undefined, () => ({
+      jsSandbox: { allowExternalScripts: true },
+    }))
+
+    expect(manager.getJsSandboxSettings()).toEqual({
+      allowExternalScripts: true,
+      allowFetch: true,
+    })
+  })
+
+  it('keeps the capability off when settings carry no sandbox config', () => {
+    const manager = createManager(undefined, () => ({}))
+
+    expect(manager.getJsSandboxSettings()).toEqual({})
   })
 })

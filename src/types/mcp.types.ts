@@ -228,7 +228,6 @@ export function normalizeMcpServerParameters({
 
 export const builtinToolActionOptionSchema = z.object({
   disabled: z.boolean().optional(),
-  allowAutoExecution: z.boolean().optional(),
 })
 
 export type BuiltinToolActionOption = z.infer<
@@ -239,7 +238,6 @@ export const mcpServerToolOptionsSchema = z.record(
   z.string(),
   z.object({
     disabled: z.boolean().optional(),
-    allowAutoExecution: z.boolean().optional(),
     blockedPrefixes: z.array(z.string()).optional(),
     allowedModelIds: z.array(z.string()).optional(),
     preferredModelId: z.string().optional(),
