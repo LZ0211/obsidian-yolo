@@ -331,6 +331,37 @@ class SqliteSyncVaultAdapter extends InMemoryVaultAdapter {
   }
 }
 
+/**
+ * Adapter double that injects an IO error into the SECOND `.build-*` shard's
+ * vectors.f32 write during a vacuum rebuild — i.e. the second batch of a
+ * multi-batch compact fails after the first batch built (and, on the
+ * pre-fix code, already replaced its old shard dir). Arms once; later
+ * writes pass through so a vacuum re-run completes normally.
+ */
+class FailVacuumSecondBatchAdapter extends SqliteSyncVaultAdapter {
+  private failOnBuildWrite = 0
+  private buildVectorWrites = 0
+
+  failSecondVacuumBatch(): void {
+    this.failOnBuildWrite = 2
+  }
+
+  override writeBinary(value: string, data: ArrayBuffer): Promise<void> {
+    if (
+      this.failOnBuildWrite > 0 &&
+      value.includes('/.build-') &&
+      value.endsWith('/vectors.f32')
+    ) {
+      this.buildVectorWrites += 1
+      if (this.buildVectorWrites === this.failOnBuildWrite) {
+        this.failOnBuildWrite = 0
+        return Promise.reject(new Error('injected vacuum build failure'))
+      }
+    }
+    return super.writeBinary(value, data)
+  }
+}
+
 const BASE_DIR = '/vault/.yolo'
 
 const testNamespace: VectorNamespace = {
@@ -1880,18 +1911,20 @@ describe('ShardedVectorStore vacuum', () => {
       const result = await store.vacuum(writeNamespace)
       expect(result).toEqual({ removedFiles: 1, removedChunks: 1 })
 
-      // Manifest: only live rows count now; the shard sequence restarts at 1.
+      // Manifest: only live rows count now; the rebuilt shard id continues
+      // past the old sequence's max (000001 → 000002) so the old dir was
+      // never touched before the publish.
       const after = parseShardedManifest(
         JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
       )
-      expect(after.shards.map((shard) => shard.id)).toEqual(['000001'])
+      expect(after.shards.map((shard) => shard.id)).toEqual(['000002'])
       expect(
         after.shards.reduce((sum, shard) => sum + shard.vectorCount, 0),
       ).toBe(2)
       expect(after.shards[0]?.dimension).toBe(writeNamespace.dimension)
 
       // Old shard dirs removed: artifacts hold exactly the live vectors.
-      const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
+      const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000002')
       expect(
         (await adapter.readBinary(`${shardRoot}/vectors.f32`)).byteLength,
       ).toBe(2 * writeNamespace.dimension * 4)
@@ -1901,11 +1934,11 @@ describe('ShardedVectorStore vacuum', () => {
       const shardsListing = await adapter.list(
         `${getShardedModelRoot(BASE_DIR, WRITE_NS_ID)}/shards`,
       )
-      expect(shardsListing.folders).toEqual(['000001'])
+      expect(shardsListing.folders).toEqual(['000002'])
 
       // chunks.sqlite physically compacted: no tombstone rows remain.
       const runtime = openShardSqliteNode(
-        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000002'),
       )
       try {
         const rows = runtime.query<{ chunk_id: string; tombstone: number }>(
@@ -2036,7 +2069,7 @@ describe('ShardedVectorStore vacuum', () => {
         manifest.shards.reduce((sum, shard) => sum + shard.vectorCount, 0),
       ).toBe(2)
       const runtime = openShardSqliteNode(
-        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000002'),
       )
       try {
         const rows = runtime.query<{ chunk_id: string; tombstone: number }>(
@@ -2090,6 +2123,131 @@ describe('ShardedVectorStore vacuum', () => {
         removedFiles: 0,
         removedChunks: 0,
       })
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('a mid-build failure leaves old manifest, old shard dirs, and search intact; a re-run compacts', async () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'sharded-vacuum-fail-'),
+    )
+    try {
+      const adapter = new FailVacuumSecondBatchAdapter(tempRoot)
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      // 1100 live chunks fill shards 000001 (1000) + 000002 (100); a small
+      // file's chunk appends to 000002 and is then tombstoned, so the
+      // rebuild needs two batches and has real garbage to compact.
+      const chunks = Array.from({ length: 1100 }, (_, i) => {
+        const x = 1 / (i + 1)
+        return chunk(`c${i}`, `text-${i}`, [x, Math.sqrt(1 - x * x), 0, 0], i)
+      })
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/big.md',
+        mtime: 1,
+        chunks,
+      })
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/small.md',
+        mtime: 2,
+        chunks: [
+          chunk(
+            'c1100',
+            'small',
+            [1 / 1101, Math.sqrt(1 - 1 / 1101 ** 2), 0, 0],
+            1,
+            'notes/small.md',
+          ),
+        ],
+      })
+      await store.deleteFile(writeNamespace, 'notes/small.md')
+
+      const manifestBefore = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifestBefore.shards.map((shard) => shard.id)).toEqual([
+        '000001',
+        '000002',
+      ])
+      expect(
+        manifestBefore.shards.reduce(
+          (sum, shard) => sum + shard.vectorCount,
+          0,
+        ),
+      ).toBe(1101)
+
+      // The second batch's vectors.f32 write fails: the first batch already
+      // built, and on the pre-fix code already replaced its old shard dir.
+      adapter.failSecondVacuumBatch()
+      await expect(store.vacuum(writeNamespace)).rejects.toThrow(
+        'injected vacuum build failure',
+      )
+
+      // Old manifest untouched and still searchable: same shards, same hits.
+      const manifestAfter = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifestAfter.shards.map((shard) => shard.id)).toEqual([
+        '000001',
+        '000002',
+      ])
+      const searchAfter = await store.search(writeNamespace, query, {
+        topK: 10,
+      })
+      expect(searchAfter.totalCount).toBe(1100)
+      expect(searchAfter.hits.map((hit) => hit.chunkId)).toEqual([
+        'c0',
+        'c1',
+        'c2',
+        'c3',
+        'c4',
+        'c5',
+        'c6',
+        'c7',
+        'c8',
+        'c9',
+      ])
+
+      // Old shard dirs intact; no temp dirs left behind.
+      expect(
+        await adapter.exists(
+          getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001'),
+        ),
+      ).toBe(true)
+      expect(
+        await adapter.exists(
+          getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000002'),
+        ),
+      ).toBe(true)
+      const shardsAfter = await adapter.list(
+        `${getShardedModelRoot(BASE_DIR, WRITE_NS_ID)}/shards`,
+      )
+      expect(shardsAfter.folders).toEqual(['000001', '000002'])
+
+      // A re-run succeeds and compacts: tombstone dropped, shards rebuilt.
+      expect(await store.vacuum(writeNamespace)).toEqual({
+        removedFiles: 1,
+        removedChunks: 1,
+      })
+      const manifestCompacted = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(
+        manifestCompacted.shards.reduce(
+          (sum, shard) => sum + shard.vectorCount,
+          0,
+        ),
+      ).toBe(1100)
+      const finalSearch = await store.search(writeNamespace, query, {
+        topK: 10,
+      })
+      expect(finalSearch.totalCount).toBe(1100)
+      expect(finalSearch.hits[0]?.chunkId).toBe('c0')
+      const shardsFinal = await adapter.list(
+        `${getShardedModelRoot(BASE_DIR, WRITE_NS_ID)}/shards`,
+      )
+      expect(shardsFinal.folders).toEqual(['000003', '000004'])
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true })
     }

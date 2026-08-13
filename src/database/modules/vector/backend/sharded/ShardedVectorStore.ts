@@ -634,7 +634,9 @@ export class ShardedVectorStore implements VectorStore {
    * vectors from every ready shard of the target namespace (all namespaces
    * when omitted), rebuild a fresh shard sequence at MAX_VECTORS_PER_SHARD
    * in temp dirs (`.build-<runId>-vacuum-<n>`), publish a staged manifest
-   * atomically, then delete the old shard dirs. Returns how much garbage was
+   * atomically, then delete the old shard dirs. New shard ids continue past
+   * the old sequence's max, so the old dirs are never touched before the
+   * publish and survive any mid-build failure. Returns how much garbage was
    * dropped: files whose every chunk was tombstoned, and tombstoned chunks.
    *
    * The rebuild preserves the rowid↔offset invariant search depends on:
@@ -685,44 +687,79 @@ export class ShardedVectorStore implements VectorStore {
       const runId = `${Date.now().toString(36)}-${Math.random()
         .toString(36)
         .slice(2, 8)}`
-      const nextShards: ShardedManifestShard[] = []
+      // New shard ids continue past the old sequence's max, so the commit's
+      // renames never collide with (and never need to remove) an old shard
+      // dir — old dirs stay intact until the new manifest is published.
+      const nextShardNumber = manifest.shards.reduce(
+        (max, shard) => Math.max(max, Number(shard.id) || 0),
+        0,
+      )
       const tempRoots: string[] = []
-      const createdRoots: string[] = []
+      const builtShards: ShardedManifestShard[] = []
       try {
         for (
           let offset = 0;
           offset < collection.rows.length;
           offset += MAX_VECTORS_PER_SHARD
         ) {
+          const batchIndex = builtShards.length
+          const tempRoot = getShardedTempShardRoot(
+            this.baseDir,
+            namespaceId,
+            runId,
+            `vacuum-${batchIndex}`,
+          )
+          // Track the temp dir BEFORE building so a build that fails midway
+          // still gets its temp dir cleaned up below.
+          tempRoots.push(tempRoot)
           const shard = await this.buildVacuumShard(
             namespaceId,
             runId,
-            nextShards.length,
+            batchIndex,
+            String(nextShardNumber + 1 + batchIndex).padStart(
+              SHARD_ID_WIDTH,
+              '0',
+            ),
             collection.rows.slice(offset, offset + MAX_VECTORS_PER_SHARD),
             collection.vectors.slice(offset, offset + MAX_VECTORS_PER_SHARD),
             collection.dimension,
           )
-          nextShards.push(shard)
-          tempRoots.push(
-            getShardedTempShardRoot(
-              this.baseDir,
-              namespaceId,
-              runId,
-              `vacuum-${nextShards.length - 1}`,
-            ),
-          )
-          createdRoots.push(
-            getShardedShardRoot(this.baseDir, namespaceId, shard.id),
+          builtShards.push(shard)
+        }
+        // Commit: every batch built, so move the temp dirs onto their final
+        // ids and publish the staged manifest. Any failure up to here leaves
+        // the old manifest + old dirs fully intact and searchable.
+        for (let i = 0; i < builtShards.length; i += 1) {
+          await this.adapter.rename(
+            tempRoots[i],
+            getShardedShardRoot(this.baseDir, namespaceId, builtShards[i].id),
           )
         }
+        const nextManifest: ShardedManifest = {
+          schemaVersion: manifest.schemaVersion,
+          formatVersion: manifest.formatVersion,
+          activeModel: manifest.activeModel,
+          updatedAt: 0,
+          shards: builtShards,
+        }
+        await this.publishManifest(nextManifest)
       } catch (error) {
-        // Best-effort cleanup of temp dirs and of any final dirs already
-        // moved into place, then surface the original failure. The old
-        // manifest is untouched, so a failed vacuum leaves the previous
-        // state searchable (a re-run rebuilds from the still-present rows).
-        for (const root of [...tempRoots, ...createdRoots]) {
+        // Old data survives any mid-build/mid-commit failure: remove ONLY
+        // the temp dirs and any new dirs already renamed into place (ids
+        // never collided, so nothing old was touched), then rethrow.
+        for (const tempRoot of tempRoots) {
           try {
-            await this.adapter.remove(root, { recursive: true })
+            await this.adapter.remove(tempRoot, { recursive: true })
+          } catch {
+            // Cleanup is best-effort; the original error is what matters.
+          }
+        }
+        for (const shard of builtShards) {
+          try {
+            await this.adapter.remove(
+              getShardedShardRoot(this.baseDir, namespaceId, shard.id),
+              { recursive: true },
+            )
           } catch {
             // Cleanup is best-effort; the original error is what matters.
           }
@@ -730,38 +767,22 @@ export class ShardedVectorStore implements VectorStore {
         throw error
       }
 
-      const nextManifest: ShardedManifest = {
-        schemaVersion: manifest.schemaVersion,
-        formatVersion: manifest.formatVersion,
-        activeModel: manifest.activeModel,
-        updatedAt: 0,
-        shards: nextShards,
-      }
-      await this.publishManifest(nextManifest)
-
-      // Old shard dirs are removed only after the manifest switched over, so
-      // a crash mid-cleanup leaves consistent state plus deletable garbage.
-      const removeFailures: string[] = []
+      // Old shard dirs are removed only after the new manifest is live. A
+      // leftover dir is harmless garbage (nothing references it), so removal
+      // failures are logged, not fatal.
       for (const shard of manifest.shards) {
-        const shardRoot = getShardedShardRoot(
-          this.baseDir,
-          namespaceId,
-          shard.id,
-        )
-        if (createdRoots.includes(shardRoot)) continue
         try {
-          await this.adapter.remove(shardRoot, { recursive: true })
+          await this.adapter.remove(
+            getShardedShardRoot(this.baseDir, namespaceId, shard.id),
+            { recursive: true },
+          )
         } catch (error) {
-          removeFailures.push(`${shard.id} (${String(error)})`)
+          console.error(
+            '[YOLO] vacuum: failed to remove old shard dir',
+            shard.id,
+            error,
+          )
         }
-      }
-      if (removeFailures.length > 0) {
-        throw new VectorStoreError(
-          'transaction_failed',
-          'sqlite',
-          'none',
-          `vacuum compacted the index but could not remove old shard dirs: ${removeFailures.join(', ')}`,
-        )
       }
       return {
         removedFiles: collection.removedFiles,
@@ -851,19 +872,19 @@ export class ShardedVectorStore implements VectorStore {
    * Builds one replacement shard at `.build-<runId>-vacuum-<n>`: a fresh
    * chunks.sqlite (rows inserted in the collected order, so rowid 1..N
    * matches the vector order), vectors.f32 and index.bin from the same
-   * sequence, plus shard.meta.json. The temp dir is then moved onto the
-   * final `shards/<id>` path — ids restart at 000001 after a vacuum, so any
-   * previous dir with the id is removed first.
+   * sequence, plus shard.meta.json. Build-only: the caller renames the temp
+   * dir onto the final `shards/<id>` path only after ALL batches built
+   * successfully, so a failed build never touches an old shard dir.
    */
   private async buildVacuumShard(
     namespaceId: string,
     runId: string,
     batchIndex: number,
+    shardId: string,
     rows: ChunkRow[],
     vectors: Float32Array[],
     dimension: number,
   ): Promise<ShardedManifestShard> {
-    const shardId = String(batchIndex + 1).padStart(SHARD_ID_WIDTH, '0')
     const tempRoot = getShardedTempShardRoot(
       this.baseDir,
       namespaceId,
@@ -917,12 +938,6 @@ export class ShardedVectorStore implements VectorStore {
       },
     }
     await this.writeShardMeta(tempRoot, shard)
-
-    const finalRoot = getShardedShardRoot(this.baseDir, namespaceId, shardId)
-    if (await this.adapter.exists(finalRoot)) {
-      await this.adapter.remove(finalRoot, { recursive: true })
-    }
-    await this.adapter.rename(tempRoot, finalRoot)
     return shard
   }
 
