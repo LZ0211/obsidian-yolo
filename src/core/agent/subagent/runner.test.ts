@@ -61,7 +61,12 @@ jest.mock('../live-stream/taskStreamBus', () => ({
   liveTaskStreamBus: { push: jest.fn() },
 }))
 jest.mock('../citationRegistry', () => ({
-  CitationRegistry: jest.fn().mockImplementation(() => ({})),
+  CitationRegistry: jest.fn().mockImplementation(() => ({
+    size: 0,
+    assign: jest.fn(),
+    toArray: jest.fn(() => []),
+  })),
+  attachSourcesToLatestAssistant: jest.fn((messages) => messages),
 }))
 
 const flushMicrotasks = (): Promise<void> =>

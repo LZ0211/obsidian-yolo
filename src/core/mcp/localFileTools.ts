@@ -2469,10 +2469,7 @@ export async function callLocalFileTool({
   chatModelId,
   workspaceAccessPolicy,
   allowedSkillPaths,
-  // Unused in this file now that fs_search (citation annotation) — its only
-  // consumer — is gone. Kept in the accepted options shape because callers
-  // still pass it uniformly regardless of which tool is being invoked.
-  runContext: _runContext,
+  runContext,
   subagentParentContext,
   promptSourceWatcher,
   bashApprovalMode,
@@ -3784,6 +3781,7 @@ export async function callLocalFileTool({
                 workspaceAccessPolicy,
               ),
               signal,
+              registry: runContext?.citationRegistry,
             }),
             signal,
             readOnly: bashReadOnly ?? false,

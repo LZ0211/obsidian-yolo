@@ -3,6 +3,7 @@ import type { App } from 'obsidian'
 import type { AssistantWorkspaceScope } from '../../../types/assistant.types'
 import type { VaultSearchStructuredOutcome } from '../../mcp/vaultSearchService'
 import type { AggregatedSearchResult } from '../../search/searchResultAggregation'
+import { CitationRegistry } from '../citationRegistry'
 
 import { createVaultBashSearch } from './vaultBashSearch'
 
@@ -160,6 +161,102 @@ describe('createVaultBashSearch', () => {
     if (outcome.status === 'success') {
       expect(outcome.results).toEqual([{ kind: 'file', path: 'notes/in.md' }])
     }
+  })
+
+  it('assigns content hits as citations on the provided registry', async () => {
+    mockRunVaultSearchStructured.mockResolvedValue(
+      successOutcome([
+        {
+          kind: 'content_group',
+          path: 'notes/a.md',
+          source: 'hybrid',
+          score: 1,
+          hitCount: 2,
+          snippets: [
+            { startLine: 3, endLine: 5, snippet: 'one', source: 'rag' },
+            { line: 9, snippet: 'two', source: 'keyword' },
+          ],
+        },
+        { kind: 'file', path: 'notes/b.md', source: 'keyword' },
+      ]),
+    )
+    const registry = new CitationRegistry()
+    const search = createVaultBashSearch({ app, registry })
+
+    await search({ query: 'q', maxResults: 20 })
+
+    expect(registry.toArray()).toEqual([
+      {
+        ordinal: 1,
+        path: 'notes/a.md',
+        startLine: 3,
+        endLine: 5,
+        snippet: 'one',
+        source: 'rag',
+      },
+      {
+        ordinal: 2,
+        path: 'notes/a.md',
+        startLine: 9,
+        endLine: 9,
+        snippet: 'two',
+        source: 'keyword',
+      },
+    ])
+  })
+
+  it('dedupes repeated searches of the same snippet in the registry', async () => {
+    mockRunVaultSearchStructured.mockResolvedValue(
+      successOutcome([
+        {
+          kind: 'content_group',
+          path: 'notes/a.md',
+          source: 'hybrid',
+          score: 1,
+          hitCount: 1,
+          snippets: [{ startLine: 3, endLine: 5, snippet: 'one', source: 'rag' }],
+        },
+      ]),
+    )
+    const registry = new CitationRegistry()
+    const search = createVaultBashSearch({ app, registry })
+
+    await search({ query: 'q', maxResults: 20 })
+    await search({ query: 'q', maxResults: 20 })
+
+    expect(registry.size).toBe(1)
+    expect(registry.toArray()[0].ordinal).toBe(1)
+  })
+
+  it('runs without a registry and does not throw', async () => {
+    mockRunVaultSearchStructured.mockResolvedValue(
+      successOutcome([
+        {
+          kind: 'content_group',
+          path: 'a.md',
+          source: 'hybrid',
+          score: 1,
+          hitCount: 1,
+          snippets: [{ line: 1, snippet: 's', source: 'hybrid' }],
+        },
+      ]),
+    )
+    const search = createVaultBashSearch({ app })
+
+    await expect(search({ query: 'q', maxResults: 20 })).resolves.toEqual({
+      status: 'success',
+      notice: undefined,
+      results: [
+        {
+          kind: 'content',
+          path: 'a.md',
+          startLine: 1,
+          endLine: undefined,
+          page: undefined,
+          snippet: 's',
+        },
+      ],
+    })
   })
 
   it('maps aborted and error outcomes to search errors', async () => {

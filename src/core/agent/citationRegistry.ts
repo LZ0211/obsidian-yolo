@@ -1,3 +1,5 @@
+import type { ChatMessage } from '../../types/chat'
+
 export type CitationSource = {
   ordinal: number
   path: string
@@ -31,4 +33,36 @@ export class CitationRegistry {
   get size(): number {
     return this.byKey.size
   }
+}
+
+/**
+ * Writes the registry's collected sources into the latest assistant message's
+ * metadata (new array + new message object, never in-place mutation), so chat
+ * surfaces and web citation routes render the source cards. No-op when the
+ * registry is empty.
+ */
+export function attachSourcesToLatestAssistant(
+  messages: ChatMessage[],
+  registry: CitationRegistry,
+): ChatMessage[] {
+  if (registry.size === 0) {
+    return messages
+  }
+  const sources = registry.toArray()
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message.role !== 'assistant') {
+      continue
+    }
+    const next = [...messages]
+    next[index] = {
+      ...message,
+      metadata: {
+        ...message.metadata,
+        sources,
+      },
+    }
+    return next
+  }
+  return messages
 }

@@ -18,7 +18,10 @@ import { runWithBackgroundExecution } from '../../background/backgroundExecution
 import type { BaseLLMProvider } from '../../llm/base'
 import { type YoloAgentEvent, conversationStateToEvents } from '../agent-api'
 import { backgroundTaskCompletionBus } from '../background-task/completion-bus'
-import { CitationRegistry } from '../citationRegistry'
+import {
+  CitationRegistry,
+  attachSourcesToLatestAssistant,
+} from '../citationRegistry'
 import { liveTaskStreamBus } from '../live-stream/taskStreamBus'
 import { NativeAgentRuntime } from '../native-runtime'
 import type { AgentConversationState } from '../service'
@@ -580,7 +583,13 @@ async function runChildAgent(
     }
 
     const snapshot = runtime.getSnapshot()
-    const finalMessages = snapshot.messages
+    // The child registry collects retrieval hits during the run (bash
+    // `search`); attach them to the final transcript so SubagentDetailModal's
+    // message rendering shows the source cards (same shape as the main chat).
+    const finalMessages = attachSourcesToLatestAssistant(
+      snapshot.messages,
+      citationRegistry,
+    )
     const content = extractLastAssistantText(finalMessages)
     const completedEventText =
       projectSubagentEvent({

@@ -47,7 +47,10 @@ import {
 } from '../memory/memoryExtractionQueue'
 import type { MemoryExtractionRequest } from './types'
 import type { AgentFileChangeTracker } from './agentFileChangeTracker'
-import { CitationRegistry } from './citationRegistry'
+import {
+  CitationRegistry,
+  attachSourcesToLatestAssistant,
+} from './citationRegistry'
 import { NativeAgentRuntime } from './native-runtime'
 import { PromptSourceWatcher } from './promptSourceWatcher'
 import {
@@ -2360,32 +2363,6 @@ export class AgentService {
     }
   }
 
-  private attachSourcesToLatestAssistant(
-    messages: ChatMessage[],
-    registry: CitationRegistry,
-  ): ChatMessage[] {
-    if (registry.size === 0) {
-      return messages
-    }
-    const sources = registry.toArray()
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index]
-      if (message.role !== 'assistant') {
-        continue
-      }
-      const next = [...messages]
-      next[index] = {
-        ...message,
-        metadata: {
-          ...message.metadata,
-          sources,
-        },
-      }
-      return next
-    }
-    return messages
-  }
-
   private attachFileChangesToLatestAssistant(
     messages: ChatMessage[],
     fileChanges: AgentFileChange[],
@@ -2609,7 +2586,7 @@ export class AgentService {
       }
 
       const nextMessages = this.attachFileChangesToLatestAssistant(
-        this.attachSourcesToLatestAssistant(
+        attachSourcesToLatestAssistant(
           currentRunEntry.state.messages,
           citationRegistry,
         ),

@@ -8,6 +8,8 @@ import type {
   BashSearchCallback,
   BashSearchResultEntry,
 } from '../../runtime-components/contracts'
+import { superSearchDedupKey } from '../../search/hybridSearch'
+import type { CitationRegistry } from '../citationRegistry'
 import { isPathAllowedByScope } from '../workspaceScope'
 
 /**
@@ -27,12 +29,19 @@ export function createVaultBashSearch({
   getRagEngine,
   workspaceScope,
   signal,
+  registry,
 }: {
   app: App
   settings?: YoloSettings
   getRagEngine?: () => Promise<RAGEngine>
   workspaceScope?: AssistantWorkspaceScope
   signal?: AbortSignal
+  /**
+   * Run-scoped citation registry (from the agent run's runContext). When
+   * provided, each content hit is registered so the run can attach the
+   * sources to the assistant message metadata (citation cards).
+   */
+  registry?: CitationRegistry
 }): BashSearchCallback {
   return async ({ query, scopePath, maxResults }) => {
     if (
@@ -85,6 +94,31 @@ export function createVaultBashSearch({
             page: snippet.page,
             snippet: snippet.snippet,
           })
+          if (registry) {
+            const startLine = snippet.startLine ?? snippet.line ?? 0
+            const endLine = snippet.endLine ?? snippet.line ?? startLine
+            registry.assign(
+              superSearchDedupKey({
+                kind: 'content',
+                path: result.path,
+                line: snippet.line,
+                startLine: snippet.startLine,
+                endLine: snippet.endLine,
+                page: snippet.page,
+                snippet: snippet.snippet,
+                source: snippet.source,
+              }),
+              {
+                path: result.path,
+                startLine,
+                endLine,
+                page: snippet.page,
+                snippet: snippet.snippet ?? '',
+                similarity: snippet.similarity,
+                source: snippet.source,
+              },
+            )
+          }
         }
       } else {
         entries.push({ kind: result.kind, path: result.path })

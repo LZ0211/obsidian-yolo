@@ -1,4 +1,8 @@
-import { CitationRegistry } from './citationRegistry'
+import type { ChatAssistantMessage, ChatMessage } from '../../types/chat'
+import {
+  CitationRegistry,
+  attachSourcesToLatestAssistant,
+} from './citationRegistry'
 
 describe('CitationRegistry', () => {
   it('assigns ordinals starting at 1', () => {
@@ -88,5 +92,99 @@ describe('CitationRegistry', () => {
     const arr = registry.toArray()
     expect(arr.map((entry) => entry.ordinal)).toEqual([1, 2])
     expect(arr.map((entry) => entry.snippet)).toEqual(['s1', 's2'])
+  })
+})
+
+describe('attachSourcesToLatestAssistant', () => {
+  const userMessage: ChatMessage = {
+    role: 'user',
+    id: 'u1',
+    content: null,
+    promptContent: 'hi',
+    mentionables: [],
+  }
+  const assistantMessage = (
+    id: string,
+    metadata?: ChatAssistantMessage['metadata'],
+  ): ChatMessage => ({
+    role: 'assistant',
+    id,
+    content: 'answer',
+    metadata,
+  })
+  const metadataOf = (
+    message: ChatMessage,
+  ): ChatAssistantMessage['metadata'] | undefined =>
+    message.role === 'assistant' ? message.metadata : undefined
+
+  it('writes registry sources into the latest assistant message metadata', () => {
+    const registry = new CitationRegistry()
+    registry.assign('content:a.md:1:2', {
+      path: 'a.md',
+      startLine: 1,
+      endLine: 2,
+      snippet: 'hit',
+      source: 'hybrid',
+    })
+    const messages = [userMessage, assistantMessage('a1'), assistantMessage('a2')]
+
+    const next = attachSourcesToLatestAssistant(messages, registry)
+
+    expect(next).not.toBe(messages)
+    expect(metadataOf(next[2])?.sources).toHaveLength(1)
+    expect(metadataOf(next[2])?.sources?.[0]).toEqual({
+      ordinal: 1,
+      path: 'a.md',
+      startLine: 1,
+      endLine: 2,
+      snippet: 'hit',
+      source: 'hybrid',
+    })
+    // The older assistant message must stay untouched; input array unchanged.
+    expect(metadataOf(next[1])).toBeUndefined()
+    expect(metadataOf(messages[2])).toBeUndefined()
+  })
+
+  it('merges into existing metadata without clobbering other keys', () => {
+    const registry = new CitationRegistry()
+    registry.assign('content:b.md:3:3', {
+      path: 'b.md',
+      startLine: 3,
+      endLine: 3,
+      snippet: 's',
+      source: 'keyword',
+    })
+    const messages = [
+      assistantMessage('a1', {
+        fileChanges: [{ kind: 'modified', path: 'x' }],
+      }),
+    ]
+
+    const next = attachSourcesToLatestAssistant(messages, registry)
+
+    expect(metadataOf(next[0])?.sources).toHaveLength(1)
+    expect(metadataOf(next[0])?.fileChanges).toEqual([
+      { kind: 'modified', path: 'x' },
+    ])
+  })
+
+  it('returns the same array when the registry is empty', () => {
+    const messages = [assistantMessage('a1')]
+    expect(attachSourcesToLatestAssistant(messages, new CitationRegistry())).toBe(
+      messages,
+    )
+  })
+
+  it('returns the same array when there is no assistant message', () => {
+    const registry = new CitationRegistry()
+    registry.assign('content:a.md:1:1', {
+      path: 'a.md',
+      startLine: 1,
+      endLine: 1,
+      snippet: 's',
+      source: 'rag',
+    })
+    const messages = [userMessage]
+    expect(attachSourcesToLatestAssistant(messages, registry)).toBe(messages)
   })
 })
