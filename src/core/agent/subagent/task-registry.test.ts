@@ -168,6 +168,40 @@ describe('SubagentTaskRegistry', () => {
     })
   })
 
+  it('prunes zombie running records (abort fired, never settled) past the bound', () => {
+    const registry = new SubagentTaskRegistry(2)
+    // Oldest entry is a zombie: still `running`, but its abort controller
+    // already fired and the child never settled (pre-S3 hang leak shape).
+    const zombie = makeRecord('sub_zombie', { status: 'running', createdAt: 0 })
+    registry.register(zombie)
+    zombie.abortController.abort()
+
+    for (let index = 1; index <= 2; index += 1) {
+      const record = makeRecord(`sub_${index}`, { createdAt: index })
+      registry.register(record)
+      registry.compactCompleted(record.taskId)
+    }
+
+    // Cap 2, 3 eligible records (zombie + 2 compacted): the oldest — the
+    // zombie — is pruned; the settled records and the live one survive.
+    expect(registry.get('sub_zombie')).toBeUndefined()
+    expect(registry.get('sub_1')).toBeDefined()
+    expect(registry.get('sub_2')).toBeDefined()
+    expect(registry.getLiveTranscript('sub_zombie')).toBeUndefined()
+  })
+
+  it('never prunes actively running records (live abort controller)', () => {
+    const registry = new SubagentTaskRegistry(1)
+    const active = makeRecord('sub_active', { status: 'running', createdAt: 0 })
+    registry.register(active)
+    const completed = makeRecord('sub_comp', { createdAt: 1 })
+    registry.register(completed)
+    registry.compactCompleted(completed.taskId)
+
+    expect(registry.get('sub_active')).toMatchObject({ status: 'running' })
+    expect(registry.get('sub_comp')).toBeDefined()
+  })
+
   it('does not prune completed records that have not been compacted', () => {
     const registry = new SubagentTaskRegistry(1)
     const pendingMergeRecord = makeRecord('sub_pending_merge', { createdAt: 0 })
