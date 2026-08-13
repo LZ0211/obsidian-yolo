@@ -653,7 +653,10 @@ export const serializeChatMessage = (
         promptContent: message.promptContent,
         snapshotRef: message.snapshotRef,
         id: message.id,
-        mentionables: message.mentionables.map(serializeMentionable),
+        // mentionables 是 web 会话可选字段（桌面 run 请求/服务端状态不保证携带，
+        // 见 createWebYoloRuntime normalizeWebChatMessage 的 ?? [] 兜底）——
+        // 序列化侧同款兜底，否则缺字段的消息经 serialize 直接崩。
+        mentionables: (message.mentionables ?? []).map(serializeMentionable),
         selectedSkills: message.selectedSkills ?? [],
         selectedModelIds: message.selectedModelIds ?? [],
         reasoningLevel: message.reasoningLevel,
@@ -695,7 +698,9 @@ export const deserializeChatMessage = (
         promptContent: message.promptContent,
         snapshotRef: message.snapshotRef,
         id: message.id,
-        mentionables: message.mentionables
+        // mentionables 可选（web 会话的 run 输入/服务端状态不保证携带；同
+        // serializeChatMessage 的兜底）——缺字段时反序列化不得崩。
+        mentionables: (message.mentionables ?? [])
           .map((m) => deserializeMentionable(m, app))
           .filter((m): m is Mentionable => m !== null),
         selectedSkills: message.selectedSkills ?? [],

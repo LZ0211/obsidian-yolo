@@ -93,6 +93,18 @@ export function registerSettingsRoutes(
           const { workspacePolicy: _wp, ...rest } = wa
           return {
             ...rest,
+            // 剥离真实策略后回填中性占位：浏览器端共享聊天代码（Chat.tsx /
+            // ConversationPreferencesController 经 getUnifiedAgentList →
+            // toWorkspaceAccessPolicy）要求 workspacePolicy 形状完整才能解析
+            // unified agent，字段缺失会让 chat 挂载即崩（a044fcf69 剥策略后
+            // 的客户端补偿缺口）。中性策略不携带任何保护路径；vault 内容边界
+            // 仍由服务端 isReadablePathSafe 执行（客户端策略仅为形态占位）。
+            workspacePolicy: {
+              workspaceRoot: '/',
+              readAllowlist: [],
+              readDenylist: [],
+              writeDenylist: [],
+            },
             shareTokens: (rest.shareTokens ?? []).map((token) => ({
               ...token,
               tokenHash: '',

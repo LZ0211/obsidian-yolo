@@ -341,10 +341,17 @@ describe('settingsRoutes protected path privacy', () => {
     return res.jsonBody as Record<string, unknown>
   }
 
-  it('strips workspacePolicy (workspaceRoot + protected paths) from workspace agents', async () => {
+  it('replaces workspacePolicy with a neutral placeholder (no workspaceRoot/protected paths) from workspace agents', async () => {
     const body = await fetchSettings(registerWithAgents())
     const agents = body.workspaceAgents as Array<Record<string, unknown>>
-    expect(agents[0]).not.toHaveProperty('workspacePolicy')
+    // 中性占位：形状完整（客户端 getUnifiedAgentList 可解析），但不携带任何
+    // 保护路径（workspaceRoot 回落 '/'、清单全空）——真实策略零泄露。
+    expect(agents[0]).toHaveProperty('workspacePolicy', {
+      workspaceRoot: '/',
+      readAllowlist: [],
+      readDenylist: [],
+      writeDenylist: [],
+    })
     expect(JSON.stringify(body)).not.toContain('private-root')
   })
 

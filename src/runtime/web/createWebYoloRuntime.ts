@@ -4,6 +4,7 @@ import type {
   AgentConversationRunSummary,
   AgentConversationState,
 } from '../../core/agent/service'
+import { initWebSubagentSessionService } from '../../core/agent/subagent/session-service'
 import {
   deserializeChatMessage,
   serializeChatMessage,
@@ -29,6 +30,7 @@ import { createWebCompatApp } from './createWebCompatApp'
 import { createWebCompatibilityBridge } from './createWebCompatibilityBridge'
 import { createWebCompatPlugin } from './createWebCompatPlugin'
 import { createWebMcpManager } from './createWebMcpManager'
+import { WebSubagentSessionService } from './createWebSubagentSessionService'
 import { Notice } from './obsidianCompat'
 import type { WebApiClient, WebBootstrapPayload } from './WebApiClient'
 import { createWebConversationGateway } from './WebConversationGateway'
@@ -167,6 +169,9 @@ export function createWebYoloRuntime({
     getAssistantId: () => null,
   })
   const mcpManager = createWebMcpManager({ api })
+  // Task 11 web 接线：浏览器侧挂载 subagent 会话服务 HTTP facade（会话 store
+  // 在服务端；UI 的 session 状态行/恢复/resend/drop/续跑投递经 /api/subagent/*）。
+  initWebSubagentSessionService(new WebSubagentSessionService(api))
   const pluginInfo = bootstrap.pluginInfo ?? {
     id: 'smart-rag',
     name: 'Smart RAG',

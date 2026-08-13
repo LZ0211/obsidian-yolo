@@ -123,7 +123,12 @@ export function SubagentCard({
 
   // runner.ts:1054 恒等 taskId === sessionId：registry record 优先，宿主重载/
   // registry 裁剪后 subagentResult.taskId 兜底（历史卡片仍有恢复 UI）。
-  const sessionId = liveTask?.sessionId ?? subagentResult?.taskId
+  // Task 11：再退到 accepted 响应里的 taskId（spawn 派发即落盘的会话身份）——
+  // 运行中崩溃重载时子代理结果消息从未写入父会话，subagentResult 恒缺，而
+  // 工具消息的 Success 响应（accepted JSON）随父会话持久化，据此重建 session
+  // 订阅才能让 needs_resume 状态行/恢复动作在历史卡片上出现（web 与桌面同
+  // 受益：桌面重载后 run 1 中断的会话此前同样无法显示恢复 UI）。
+  const sessionId = liveTask?.sessionId ?? subagentResult?.taskId ?? accepted.taskId
   const [sessionSnapshot, refreshSessionSnapshot] = useSubagentSessionSnapshot(
     sessionId,
     // status/runSequence 变化时重查 snapshot（会话服务无订阅机制）。
@@ -132,8 +137,15 @@ export function SubagentCard({
   const sessionTaskRecord = useMemo(
     () =>
       liveTask ??
-      (subagentResult?.taskId ? { sessionId: subagentResult.taskId } : null),
-    [liveTask, subagentResult],
+      (subagentResult?.taskId
+        ? { sessionId: subagentResult.taskId }
+        : // 与 sessionId 同款兜底（Task 11）：运行中崩溃重载时结果消息可能尚未
+          // 落盘，accepted 响应（随父会话持久化）里的 taskId 即会话身份——
+          // buildSubagentCardSessionProps 依赖 record 才能渲染状态行/恢复条。
+          accepted.taskId
+          ? { sessionId: accepted.taskId }
+          : null),
+    [liveTask, subagentResult, accepted.taskId],
   )
   const sessionProps = useMemo(
     () => buildSubagentCardSessionProps(sessionSnapshot, sessionTaskRecord, t),

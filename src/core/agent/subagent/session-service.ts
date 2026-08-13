@@ -1023,3 +1023,26 @@ export function initSubagentSessionService(
 export function getSubagentSessionService(): SubagentSessionService | null {
   return subagentSessionService
 }
+
+/**
+ * Web 浏览器侧的会话服务挂载（Task 11 web 接线）：浏览器进程没有本地文件
+ * 系统/会话 store，UI 消费面（SubagentCard 的 session 状态行/恢复/resend/drop
+ * 与 runSubagentSessionAction 的续跑投递）只用到 query/recover/queueRecovery/
+ * deliverQueuedIntents 四个方法——由 createWebSubagentSessionService 的 HTTP
+ * facade 经 /api/subagent/* 转发到服务端真实 SubagentSessionService。
+ * 与桌面 initSubagentSessionService 互斥（同一模块级单例）：浏览器 bundle 只
+ * 调用本入口；桌面进程只调用 initSubagentSessionService。cast 边界限定在此处：
+ * facade 是 Pick 子集，运行时绝不触碰其余方法（桌面 UI 的会话 chat 输入面
+ * web 未实现）。
+ */
+export type WebSubagentSessionServiceLike = Pick<
+  SubagentSessionService,
+  'query' | 'recover' | 'queueRecovery' | 'deliverQueuedIntents'
+>
+
+export function initWebSubagentSessionService(
+  service: WebSubagentSessionServiceLike,
+): void {
+  if (subagentSessionService) return
+  subagentSessionService = service as unknown as SubagentSessionService
+}
