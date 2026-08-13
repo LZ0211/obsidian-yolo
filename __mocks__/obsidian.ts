@@ -107,5 +107,6 @@ export const htmlToMarkdown = jest.fn((html: string) => html)
 export const renderMath = jest.fn()
 export const finishRenderMath = jest.fn(async () => undefined)
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- Jest mock: 复用 js-yaml 与生产环境(Obsidian 内嵌)行为一致
-const yaml = require('js-yaml') as { load: (input: string) => unknown }
+const yaml = require('js-yaml') as { load: (input: string) => unknown; dump: (value: unknown) => string }
 export const parseYaml = jest.fn((input: string) => yaml.load(input))
+export const stringifyYaml = jest.fn((value: unknown) => yaml.dump(value))

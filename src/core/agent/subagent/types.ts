@@ -5,6 +5,7 @@ import type {
   TaskSource,
 } from '../../../types/chat'
 import type { ResponseUsage } from '../../../types/llm/response'
+import type { ProjectTaskBinding } from '../project/types'
 
 export type SubagentTaskStatus = 'running' | 'completed' | 'failed' | 'aborted'
 
@@ -56,7 +57,11 @@ export type SubagentTaskRecord = {
   liveTranscript?: ChatMessage[]
   activityLog?: string
   error?: string
+  // Project delivery bridge parity: project/ 的 deliveryBridge 与测试（T1 拷贝）
+  // 访问 projectTask/runKey；sessionId/runSequence 由 T2 补齐。
+  projectTask?: ProjectTaskBinding
   abortController: AbortController
+  runKey?: string
 }
 
 /** Registry-facing projection without streaming transcripts or abort owners. */
