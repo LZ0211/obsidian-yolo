@@ -161,6 +161,34 @@ class InMemoryVaultAdapter {
   }
 }
 
+/**
+ * Adapter double that injects a failure into the Nth writeBinary call for a
+ * given path (1-based). Used to simulate an IO error mid-replaceFile.
+ */
+class WriteFailVaultAdapter extends InMemoryVaultAdapter {
+  private failPath: string | null = null
+  private failCallNumber = 0
+
+  armWriteBinaryFailure(path: string, callNumber: number): void {
+    this.failPath = path.replace(/\\/g, '/')
+    this.failCallNumber = callNumber
+  }
+
+  override writeBinary(value: string, data: ArrayBuffer): Promise<void> {
+    if (
+      this.failPath != null &&
+      this.failCallNumber > 0 &&
+      value.replace(/\\/g, '/') === this.failPath
+    ) {
+      this.failCallNumber -= 1
+      if (this.failCallNumber === 0) {
+        return Promise.reject(new Error('injected write failure'))
+      }
+    }
+    return super.writeBinary(value, data)
+  }
+}
+
 const BASE_DIR = '/vault/.yolo'
 
 const testNamespace: VectorNamespace = {
@@ -666,6 +694,221 @@ describe('ShardedVectorStore write path', () => {
         }),
       ).rejects.toMatchObject({ code: 'dimension_mismatch' })
       expect(await adapter.exists(getShardedManifestPath(BASE_DIR))).toBe(false)
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('a dimension-mismatched replaceFile on an existing namespace leaves the store fully usable', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-write-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFiles(writeNamespace, [
+        {
+          path: 'notes/a.md',
+          mtime: 1,
+          contentHash: 'ha',
+          chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+        },
+        {
+          path: 'notes/b.md',
+          mtime: 2,
+          contentHash: 'hb',
+          chunks: [chunk('c2', 'beta', [1, 0, 0, 0], 1, 'notes/b.md')],
+        },
+      ])
+
+      // Validation happens before any mutation: the mismatched write must
+      // not drop a.md's old rows or decrement any vector count.
+      await expect(
+        store.replaceFile(writeNamespace, {
+          path: 'notes/a.md',
+          mtime: 3,
+          contentHash: 'ha-bad',
+          chunks: [
+            {
+              ...chunk('c3', 'bad', [1, 0, 0, 0], 1),
+              embedding: [1, 0, 0, 0, 0, 0, 0, 0],
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({ code: 'dimension_mismatch' })
+
+      const indexed = await store.getIndexedFiles(writeNamespace)
+      expect(indexed.get('notes/a.md')).toMatchObject({
+        mtime: 1,
+        contentHash: 'ha',
+      })
+      expect(indexed.get('notes/b.md')).toMatchObject({
+        mtime: 2,
+        contentHash: 'hb',
+      })
+      const manifest = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifest.shards[0]?.vectorCount).toBe(2)
+      const runtime = openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+      )
+      try {
+        const rows = runtime.query<{ chunk_id: string }>(
+          'select chunk_id from chunks order by rowid',
+        )
+        expect(rows.map((row) => row.chunk_id)).toEqual(['c1', 'c2'])
+      } finally {
+        runtime.close()
+      }
+
+      // Subsequent valid writes keep working.
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 5,
+        contentHash: 'ha2',
+        chunks: [chunk('c3', 'new', [1, 0, 0, 0], 1)],
+      })
+      const after = await store.getIndexedFiles(writeNamespace)
+      expect(after.get('notes/a.md')).toMatchObject({
+        mtime: 5,
+        contentHash: 'ha2',
+      })
+      expect(after.get('notes/b.md')).toMatchObject({ mtime: 2 })
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('an adapter write failure mid-replaceFile rolls back so the file is not reported indexed', async () => {
+    const adapter = new WriteFailVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-write-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFiles(writeNamespace, [
+        {
+          path: 'notes/a.md',
+          mtime: 1,
+          contentHash: 'ha',
+          chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+        },
+        {
+          path: 'notes/b.md',
+          mtime: 2,
+          contentHash: 'hb',
+          chunks: [chunk('c2', 'beta', [1, 0, 0, 0], 1, 'notes/b.md')],
+        },
+      ])
+
+      // Fail the insert-phase vectors.f32 append: the 1st vectors.f32 write
+      // of this replaceFile is the compaction rewrite, the 2nd is the new
+      // chunk's append — after the upsert but before the count increment.
+      const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
+      adapter.armWriteBinaryFailure(`${shardRoot}/vectors.f32`, 2)
+      await expect(
+        store.replaceFile(writeNamespace, {
+          path: 'notes/a.md',
+          mtime: 10,
+          contentHash: 'ha3',
+          chunks: [chunk('c3', 'new', [1, 0, 0, 0], 1)],
+        }),
+      ).rejects.toThrow('injected write failure')
+
+      // Rollback: a.md is fully removed (never half-indexed), b.md intact.
+      const indexed = await store.getIndexedFiles(writeNamespace)
+      expect(indexed.has('notes/a.md')).toBe(false)
+      expect(indexed.get('notes/b.md')).toMatchObject({ mtime: 2 })
+      const manifest = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifest.shards).toHaveLength(1)
+      expect(manifest.shards[0]?.vectorCount).toBe(1)
+      const runtime = openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+      )
+      try {
+        const rows = runtime.query<{ chunk_id: string }>(
+          'select chunk_id from chunks order by rowid',
+        )
+        expect(rows.map((row) => row.chunk_id)).toEqual(['c2'])
+        expect(
+          (await adapter.readBinary(`${shardRoot}/vectors.f32`)).byteLength,
+        ).toBe(writeNamespace.dimension * 4)
+      } finally {
+        runtime.close()
+      }
+
+      // The store remains usable for subsequent writes.
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 11,
+        contentHash: 'ha4',
+        chunks: [chunk('c4', 'again', [1, 0, 0, 0], 1)],
+      })
+      const after = await store.getIndexedFiles(writeNamespace)
+      expect(after.get('notes/a.md')).toMatchObject({ mtime: 11 })
+      expect(after.get('notes/b.md')).toMatchObject({ mtime: 2 })
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('an adapter write failure during the compaction phase is rolled back into a consistent shard', async () => {
+    const adapter = new WriteFailVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-write-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+      await store.replaceFiles(writeNamespace, [
+        {
+          path: 'notes/a.md',
+          mtime: 1,
+          chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+        },
+        {
+          path: 'notes/b.md',
+          mtime: 2,
+          chunks: [chunk('c2', 'beta', [1, 0, 0, 0], 1, 'notes/b.md')],
+        },
+      ])
+
+      // Fail the compaction's first write (index.bin rewrite).
+      const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
+      adapter.armWriteBinaryFailure(`${shardRoot}/index.bin`, 1)
+      await expect(
+        store.replaceFile(writeNamespace, {
+          path: 'notes/a.md',
+          mtime: 10,
+          chunks: [chunk('c3', 'new', [1, 0, 0, 0], 1)],
+        }),
+      ).rejects.toThrow('injected write failure')
+
+      // Rollback re-runs the compaction: the file is unindexed, never
+      // half-indexed, and the manifest counts match the artifacts.
+      const indexed = await store.getIndexedFiles(writeNamespace)
+      expect(indexed.has('notes/a.md')).toBe(false)
+      expect(indexed.get('notes/b.md')).toMatchObject({ mtime: 2 })
+      const manifest = parseShardedManifest(
+        JSON.parse(await adapter.read(getShardedManifestPath(BASE_DIR))),
+      )
+      expect(manifest.shards[0]?.vectorCount).toBe(1)
+      const runtime = openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+      )
+      try {
+        const rows = runtime.query<{ chunk_id: string }>(
+          'select chunk_id from chunks order by rowid',
+        )
+        expect(rows.map((row) => row.chunk_id)).toEqual(['c2'])
+        expect(
+          (await adapter.readBinary(`${shardRoot}/index.bin`)).byteLength,
+        ).toBe(COARSE_DIMENSION * 4)
+        expect(
+          (await adapter.readBinary(`${shardRoot}/vectors.f32`)).byteLength,
+        ).toBe(writeNamespace.dimension * 4)
+      } finally {
+        runtime.close()
+      }
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true })
     }

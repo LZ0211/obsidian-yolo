@@ -53,7 +53,8 @@ const CHUNKS_TABLE_SQL = `create table if not exists chunks (
   tombstone INTEGER NOT NULL DEFAULT 0
 )`
 
-const INSERT_CHUNK_SQL = `insert into chunks (
+/** Insert into the staging table used by the compaction's rowid rebuild. */
+const INSERT_CHUNK_REBUILD_SQL = `insert into chunks_rebuild (
   chunk_id, file_path, file_mtime, file_content_hash, chunk_content_hash,
   start_line, end_line, page, text, metadata_json, tombstone
 ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -276,6 +277,24 @@ export class ShardedVectorStore implements VectorStore {
     this.assertOpen()
     this.assertNotClosing()
     const namespaceId = validateShardedNamespaceId(vectorNamespaceId(namespace))
+    // Validate every chunk's embedding dimension before any mutation. A
+    // mismatched embedding would otherwise poison the namespace mid-write:
+    // `removeFileRowsFromShards` (compaction) runs first, so the error would
+    // surface after old rows were already dropped and vector counts
+    // decremented, leaving every later write dead in the vectors.f32
+    // byteLength check until manual cleanup.
+    for (const file of files) {
+      for (const chunk of file.chunks) {
+        if (chunk.embedding.length !== namespace.dimension) {
+          throw new VectorStoreError(
+            'dimension_mismatch',
+            'sqlite',
+            'rebuild_index',
+            `Expected embedding dimension ${namespace.dimension} but received ${chunk.embedding.length}`,
+          )
+        }
+      }
+    }
     for (const file of files) {
       await this.replaceFileById(namespaceId, namespace.dimension, file)
     }
@@ -449,6 +468,10 @@ export class ShardedVectorStore implements VectorStore {
    * chunks into the current shard, rolling to `shards/<next>` when the
    * current shard reaches `MAX_VECTORS_PER_SHARD`. The manifest is published
    * once per file via `manifest.next.json` → atomic rename.
+   *
+   * Any IO failure after the first mutation triggers a rollback (see
+   * `rollbackFileWrite`) so a rejected replaceFile never leaves the file
+   * half-indexed on disk.
    */
   private async replaceFileById(
     namespaceId: string,
@@ -467,22 +490,56 @@ export class ShardedVectorStore implements VectorStore {
       )
     }
 
-    if (manifest.shards.length > 0) {
-      await this.removeFileRowsFromShards(manifest, namespaceId, file.path)
-    }
+    try {
+      if (manifest.shards.length > 0) {
+        await this.removeFileRowsFromShards(manifest, namespaceId, file.path)
+      }
 
-    for (const chunk of file.chunks) {
-      const shard = await this.ensureModelShard(
-        manifest,
-        namespaceId,
-        dimension,
+      for (const chunk of file.chunks) {
+        const shard = await this.ensureModelShard(
+          manifest,
+          namespaceId,
+          dimension,
+        )
+        await this.insertChunkIntoShard(namespaceId, shard, file, chunk)
+      }
+
+      if (manifest.shards.length > 0) {
+        await this.publishManifest(manifest)
+      }
+    } catch (error) {
+      await this.rollbackFileWrite(manifest, namespaceId, file.path, error)
+    }
+  }
+
+  /**
+   * Best-effort rollback of a partially written file: re-run the physical
+   * delete (which removes both the partially inserted rows and any old rows
+   * the compaction may have dropped) and publish the corrected manifest
+   * counts, so no half-indexed file state remains observable. If the
+   * rollback itself fails the previous state cannot be restored — surface a
+   * clear `transaction_failed` error instead.
+   */
+  private async rollbackFileWrite(
+    manifest: ShardedManifest,
+    namespaceId: string,
+    filePath: string,
+    cause: unknown,
+  ): Promise<never> {
+    try {
+      if (manifest.shards.length > 0) {
+        await this.removeFileRowsFromShards(manifest, namespaceId, filePath)
+        await this.publishManifest(manifest)
+      }
+    } catch (rollbackError) {
+      throw new VectorStoreError(
+        'transaction_failed',
+        'sqlite',
+        'none',
+        `replaceFile failed (${String(cause)}) and rollback also failed (${String(rollbackError)})`,
       )
-      await this.insertChunkIntoShard(namespaceId, shard, file, chunk)
     }
-
-    if (manifest.shards.length > 0) {
-      await this.publishManifest(manifest)
-    }
+    throw cause
   }
 
   /**
@@ -594,7 +651,12 @@ export class ShardedVectorStore implements VectorStore {
       await this.adapter.writeBinary(vectorsPath, appended.buffer)
 
       shard.vectorCount += 1
-      await this.rewriteCoarseIndex(namespaceId, shard.id, shard)
+      await this.rewriteCoarseIndex(
+        namespaceId,
+        shard.id,
+        shard.dimension,
+        shard.vectorCount,
+      )
       await this.writeShardMeta(shardRoot, shard)
     } finally {
       runtime.close()
@@ -604,24 +666,22 @@ export class ShardedVectorStore implements VectorStore {
   /**
    * Rewrites `index.bin` from the whole shard: one L2-normalized coarse
    * vector (first `min(dim, COARSE_DIMENSION)` dims) per chunk, contiguous,
-   * aligned with vectors.f32 by rowid order.
+   * aligned with vectors.f32 by rowid order. The count is explicit so
+   * callers can index a file whose vectors.f32 layout differs from the
+   * manifest count mid-compaction.
    */
   private async rewriteCoarseIndex(
     namespaceId: string,
     shardId: string,
-    shard: ShardedManifestShard,
+    dimension: number,
+    count: number,
   ): Promise<void> {
     const shardRoot = getShardedShardRoot(this.baseDir, namespaceId, shardId)
-    const vectors = await this.readShardVectors(
-      shardRoot,
-      shard.dimension,
-      shard.vectorCount,
-    )
+    const vectors = await this.readShardVectors(shardRoot, dimension, count)
     await this.adapter.writeBinary(
       `${shardRoot}/index.bin`,
       // Freshly allocated Float32Array, never backed by a SharedArrayBuffer.
-      buildCoarseIndex(vectors, shard.vectorCount, shard.dimension)
-        .buffer as ArrayBuffer,
+      buildCoarseIndex(vectors, count, dimension).buffer as ArrayBuffer,
     )
   }
 
@@ -631,6 +691,14 @@ export class ShardedVectorStore implements VectorStore {
    * that Task 3's search depends on, the affected shard is compacted: old
    * rows are dropped, the chunks table is rebuilt with fresh rowids, and
    * vectors.f32/index.bin are rewritten to match the surviving rows.
+   *
+   * Mutation order is deliberate so a mid-compaction adapter failure leaves
+   * a state that a rollback re-run can recover from: index.bin/vectors.f32
+   * are written from the in-memory compacted buffers before the chunks table
+   * is rebuilt, and `shard.vectorCount` is only updated at the very end. An
+   * adapter failure therefore leaves either a fully-unchanged shard (re-run
+   * is a full compaction) or a compacted-files + old-table shard whose
+   * byteLength check fails loudly in the re-run.
    */
   private async removeFileRowsFromShards(
     manifest: ShardedManifest,
@@ -652,27 +720,6 @@ export class ShardedVectorStore implements VectorStore {
         )
         const kept = rows.filter((row) => row.file_path !== filePath)
 
-        runtime.transaction(() => {
-          runtime.exec(CHUNKS_REBUILD_TABLE_SQL)
-          for (const row of kept) {
-            runtime.exec(INSERT_CHUNK_SQL, [
-              row.chunk_id,
-              row.file_path,
-              row.file_mtime,
-              row.file_content_hash,
-              row.chunk_content_hash,
-              row.start_line,
-              row.end_line,
-              row.page,
-              row.text,
-              row.metadata_json,
-              row.tombstone,
-            ])
-          }
-          runtime.exec('drop table chunks')
-          runtime.exec('alter table chunks_rebuild rename to chunks')
-        })
-
         // Compact vectors.f32 and index.bin to the surviving rows.
         const vectors = await this.readShardVectors(
           shardRoot,
@@ -690,12 +737,38 @@ export class ShardedVectorStore implements VectorStore {
           out += 1
         }
         await this.adapter.writeBinary(
+          `${shardRoot}/index.bin`,
+          // Freshly allocated Float32Array, never backed by a SharedArrayBuffer.
+          buildCoarseIndex(compacted, kept.length, shard.dimension)
+            .buffer as ArrayBuffer,
+        )
+        await this.adapter.writeBinary(
           `${shardRoot}/vectors.f32`,
           compacted.buffer,
         )
 
+        runtime.transaction(() => {
+          runtime.exec(CHUNKS_REBUILD_TABLE_SQL)
+          for (const row of kept) {
+            runtime.exec(INSERT_CHUNK_REBUILD_SQL, [
+              row.chunk_id,
+              row.file_path,
+              row.file_mtime,
+              row.file_content_hash,
+              row.chunk_content_hash,
+              row.start_line,
+              row.end_line,
+              row.page,
+              row.text,
+              row.metadata_json,
+              row.tombstone,
+            ])
+          }
+          runtime.exec('drop table chunks')
+          runtime.exec('alter table chunks_rebuild rename to chunks')
+        })
+
         shard.vectorCount = kept.length
-        await this.rewriteCoarseIndex(namespaceId, shard.id, shard)
         await this.writeShardMeta(shardRoot, shard)
       } finally {
         runtime.close()
