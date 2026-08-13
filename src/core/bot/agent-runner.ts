@@ -52,11 +52,8 @@ function createPlainTextEditorState(text: string): SerializedEditorState {
   }
 }
 
-import { getMemoryIndexRuntimeHandle } from '../memory/memoryIndexRuntime'
-import { resolveChatModeRuntime } from '../../components/chat-view/chat-runtime-profiles'
 import { resolveWorkspaceAccessPolicyForRuntimeInput } from '../../components/chat-view/chat-runtime-inputs'
-import { findUnifiedAgentById } from '../agent/workspaceAgentResolver'
-import { augmentWorkspacePolicyWithProtectedPaths } from '../paths/protectedPaths'
+import { resolveChatModeRuntime } from '../../components/chat-view/chat-runtime-profiles'
 import type {
   BotPlatformConfig,
   YoloSettings,
@@ -72,10 +69,13 @@ import { DEFAULT_ASSISTANT_ID } from '../agent/default-assistant'
 import type { AgentService } from '../agent/service'
 import { getEnabledAssistantToolNames } from '../agent/tool-preferences'
 import type { AgentRuntimeRunInput } from '../agent/types'
+import { findUnifiedAgentById } from '../agent/workspaceAgentResolver'
 import { getChatModelClient } from '../llm/manager'
 import { getLocalFileToolServerName } from '../mcp/localFileToolNames'
 import type { McpManager } from '../mcp/mcpManager'
 import { getToolName } from '../mcp/tool-name-utils'
+import { getMemoryIndexRuntimeHandle } from '../memory/memoryIndexRuntime'
+import { augmentWorkspacePolicyWithProtectedPaths } from '../paths/protectedPaths'
 import { listLiteSkillEntries } from '../skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../skills/skillPolicy'
 
@@ -244,7 +244,10 @@ export async function runBotAgentTurn(
         agentService.getPromptSourceWatcher().getRevision(),
       promptSourcePathsCallback: (paths) =>
         agentService.getPromptSourceWatcher().setWatchedPaths(paths),
-      memoryIndexRuntime: getMemoryIndexRuntimeHandle(app, () => requestSettings),
+      memoryIndexRuntime: getMemoryIndexRuntimeHandle(
+        app,
+        () => requestSettings,
+      ),
     },
   )
 
