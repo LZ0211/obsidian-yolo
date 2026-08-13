@@ -18,6 +18,7 @@ import {
   getMemoryIndexRuntime,
   getMemoryIndexRuntimeHandle,
   getMemoryIndexStore,
+  planMemorySettingsReconcile,
   resolveMemoryRename,
 } from './memoryIndexRuntime'
 import type { MemorySourceSnapshot } from './memoryManager'
@@ -155,6 +156,58 @@ describe('memory index runtime adapter', () => {
 
     expect(resolution.reconcilePartition).toBeNull()
     expect(resolution.cleanupPartition).toEqual(indexedPartition)
+  })
+
+  it('plans assistant removal cleanup and full reconciles from a settings change', () => {
+    const plan = planMemorySettingsReconcile({
+      previousAssistantIds: ['agent-1', 'agent-2', 'agent-3'],
+      settings: {
+        yolo: { baseDir: 'YOLO' },
+        advancedMemoryIndexEnabled: true,
+        assistants: [
+          { id: 'agent-2', name: 'Agent 2' },
+          { id: 'agent-3', name: 'Agent 3' },
+        ],
+      },
+    })
+
+    expect(plan.removedAssistantIds).toEqual(['agent-1'])
+    expect(plan.reconciles).toEqual(
+      expect.arrayContaining([
+        {
+          partition: buildMemoryPartition({ scope: 'global' }),
+          sourcePath: 'YOLO/memory/global.md',
+        },
+        {
+          partition: buildMemoryPartition({
+            scope: 'assistant',
+            assistantId: 'agent-2',
+          }),
+          sourcePath: 'YOLO/memory/Agent 2.md',
+        },
+        {
+          partition: buildMemoryPartition({
+            scope: 'assistant',
+            assistantId: 'agent-3',
+          }),
+          sourcePath: 'YOLO/memory/Agent 3.md',
+        },
+      ]),
+    )
+    expect(plan.reconciles).toHaveLength(3)
+  })
+
+  it('plans only assistant cleanup when the advanced index is disabled', () => {
+    const plan = planMemorySettingsReconcile({
+      previousAssistantIds: ['agent-1'],
+      settings: {
+        advancedMemoryIndexEnabled: false,
+        assistants: [],
+      },
+    })
+
+    expect(plan.removedAssistantIds).toEqual(['agent-1'])
+    expect(plan.reconciles).toEqual([])
   })
 
   it('shares one app-scoped store and disables it through current settings', async () => {

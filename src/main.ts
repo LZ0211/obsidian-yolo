@@ -75,6 +75,8 @@ import { installYoloInjectionBridge } from './core/mcp/injectionBridge'
 import {
   closeMemoryIndexRuntime,
   getMemoryIndexRuntime,
+  getMemoryIndexRuntimeHandle,
+  planMemorySettingsReconcile,
 } from './core/memory/memoryIndexRuntime'
 import type {
   LocalMcpServerRuntime,
@@ -2389,6 +2391,32 @@ export default class YoloPlugin extends Plugin {
         this.reconcileScheduledTasks()
       }
       previousScheduledTasksEnabled = nextScheduledTasksEnabled
+    })
+    // Memory index: 助手删除 → 清其分区；关闭高级索引 → 关 runtime；否则全分区
+    // 重 reconcile（backup main.ts:3850-3890 行为——设置变化时把存量记忆重新
+    // 对账，保证改名/重名索引漂移被拾取；监听器首次触发即承担初始全量 reconcile）。
+    let previousMemoryAssistantIds = new Set(
+      this.settings.assistants.map((assistant) => assistant.id),
+    )
+    this.addSettingsChangeListener((settings) => {
+      const plan = planMemorySettingsReconcile({
+        previousAssistantIds: [...previousMemoryAssistantIds],
+        settings,
+      })
+      previousMemoryAssistantIds = new Set(
+        settings.assistants.map((assistant) => assistant.id),
+      )
+      const runtime = getMemoryIndexRuntimeHandle(this.app, () => this.settings)
+      for (const assistantId of plan.removedAssistantIds) {
+        runtime.onAssistantRemoved?.(assistantId)
+      }
+      if (!settings.advancedMemoryIndexEnabled) {
+        void closeMemoryIndexRuntime(this.app)
+        return
+      }
+      for (const reconcile of plan.reconciles) {
+        runtime.onSourceCommitted(reconcile)
+      }
     })
     // Bot: 「服务本体没建 → 应该建」时惰性启动（desktop 门控在 startBotService
     // 内）。触发条件与 onload 的启动门完全一致：enabled 且存在启用中的平台；

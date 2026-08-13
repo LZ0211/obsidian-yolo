@@ -14,6 +14,7 @@ import {
   type MemorySettingsLike,
   loadMemorySourceSnapshot,
   loadMemorySourceSnapshotAtPath,
+  resolveMemoryFilePaths,
   resolveMemoryPartitionByPath,
 } from './memoryManager'
 import type { MemoryPartition, MemorySector } from './memoryTypes'
@@ -50,6 +51,57 @@ export type MemoryRenameResolution = Readonly<{
 
 const getOptionalVault = (app: App): VaultWithOptionalEvents | undefined =>
   (app as Partial<App>).vault as VaultWithOptionalEvents | undefined
+
+export type MemorySettingsReconcilePlan = {
+  removedAssistantIds: readonly string[]
+  reconciles: ReadonlyArray<{
+    partition: MemoryPartition
+    sourcePath: string
+  }>
+}
+
+/**
+ * What a settings change means for the memory index (backup main.ts
+ * settings-listener behavior, extracted so main.ts wiring is a thin shell):
+ * - assistants that disappeared must have their partitions dropped;
+ * - while the advanced index is enabled, every memory partition (global plus
+ *   each assistant) is re-reconciled so renames/duplicate-index shifts are
+ *   picked up;
+ * - disabling the advanced index yields no reconciles (main.ts then closes
+ *   the runtime).
+ */
+export const planMemorySettingsReconcile = ({
+  previousAssistantIds,
+  settings,
+}: {
+  previousAssistantIds: readonly string[]
+  settings: MemorySettingsLike
+}): MemorySettingsReconcilePlan => {
+  const removedAssistantIds = previousAssistantIds.filter(
+    (assistantId) =>
+      !settings.assistants?.some((assistant) => assistant.id === assistantId),
+  )
+  if (!settings.advancedMemoryIndexEnabled) {
+    return { removedAssistantIds, reconciles: [] }
+  }
+  const paths = new Set<string>()
+  for (const assistantId of [
+    undefined,
+    ...(settings.assistants?.map((assistant) => assistant.id) ?? []),
+  ]) {
+    const memoryPaths = resolveMemoryFilePaths({ settings, assistantId })
+    paths.add(memoryPaths.global)
+    if (memoryPaths.assistant) paths.add(memoryPaths.assistant)
+  }
+  const reconciles = [...paths].flatMap((sourcePath) => {
+    const partition = resolveMemoryPartitionByPath({
+      settings,
+      path: sourcePath,
+    })
+    return partition ? [{ partition, sourcePath }] : []
+  })
+  return { removedAssistantIds, reconciles }
+}
 
 export const resolveMemoryRename = ({
   settings,
