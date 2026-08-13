@@ -8,6 +8,7 @@ import {
   buildCompactionResumeMessage,
   buildCompactionSummaryMessage,
 } from '../../core/agent/compaction'
+import { listDelegatableAssistantRoles } from '../../core/agent/subagent/delegatable-assistant'
 import type {
   SystemPromptSnapshot,
   SystemPromptSnapshotStore,
@@ -1918,6 +1919,12 @@ ${entries}
     const useAssistant = contextPolicy?.useAssistant ?? true
     const assistant = useAssistant ? this.getCurrentAssistant() : null
     const latestCompaction = getLatestChatConversationCompaction(compaction)
+    // The delegatable-assistant catalogue is injected into the system prompt
+    // (`system.delegatable-assistants`), so the snapshot must refresh when the
+    // set of delegatable roles changes.
+    const delegatableAssistantCatalogue = listDelegatableAssistantRoles(
+      this.settings,
+    )
     // The exact memory files this request will read. Captures baseDir, the
     // assistant name, AND the sibling-driven duplicate index — so a same-named
     // assistant being added/renamed (which changes which file we read) refreshes
@@ -1986,6 +1993,7 @@ ${entries}
             workspaceScope: assistant.workspaceScope ?? null,
           }
         : null,
+      delegatableAssistantCatalogue,
     })
   }
 
@@ -2146,6 +2154,27 @@ ${resolvedAssistantSystemPrompt}
         content: `<module_mode_instructions module="${modePersonaModuleId ?? ''}">
 ${modePersonaPrompt.trim()}
 </module_mode_instructions>`,
+      })
+    }
+
+    // Delegatable-assistant catalogue — bucket: system. The
+    // `delegate_subagent` tool schema promises "the available roles listed in
+    // the request context", so the model must be able to discover them here
+    // (backup `requestContextBuilder.ts` behavior; the built-in subagent roles
+    // are always appended by `listDelegatableAssistantRoles`).
+    const delegatableAssistants = listDelegatableAssistantRoles(this.settings)
+    if (delegatableAssistants.length > 0) {
+      sections.push({
+        bucket: 'system',
+        id: 'system.delegatable-assistants',
+        content: `<delegatable_assistants>
+${delegatableAssistants
+  .map(
+    ({ id, name }) =>
+      `<assistant id="${escapeXmlAttr(id)}" name="${escapeXmlAttr(name)}" />`,
+  )
+  .join('\n')}
+</delegatable_assistants>`,
       })
     }
 
