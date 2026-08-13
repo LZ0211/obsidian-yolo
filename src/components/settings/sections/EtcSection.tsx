@@ -12,7 +12,10 @@ import { useLanguage } from '../../../contexts/language-context'
 import { useSettings } from '../../../contexts/settings-context'
 import { isPortableVaultPathSegment } from '../../../core/paths/portableVaultPath'
 import { ensureUserDataRootDir } from '../../../core/paths/yoloManagedData'
-import { hasHiddenYoloBaseDirSegment } from '../../../core/paths/yoloPaths'
+import {
+  getYoloProjectsDir,
+  hasHiddenYoloBaseDirSegment,
+} from '../../../core/paths/yoloPaths'
 import { ChatManager } from '../../../database/json/chat/ChatManager'
 import { clearAllEditReviewSnapshotStores } from '../../../database/json/chat/editReviewSnapshotStore'
 import { clearImageCache } from '../../../database/json/chat/imageCacheStore'
@@ -138,6 +141,9 @@ const StorageBadge = ({ value }: { value: number | null }) => {
 const normalizeYoloBaseDirInput = (value: string): string =>
   normalizePath(value.trim()).replace(/^\/+/, '') || 'YOLO'
 
+const normalizeProjectsDirInput = (value: string): string =>
+  normalizePath(value.trim()).replace(/^\/+/, '') || 'Projects'
+
 export function EtcSection({ app, plugin, className }: EtcSectionProps) {
   const { settings, setSettings } = useSettings()
   const { t } = useLanguage()
@@ -149,6 +155,9 @@ export function EtcSection({ app, plugin, className }: EtcSectionProps) {
   })
   const [yoloBaseDirInput, setYoloBaseDirInput] = useState(yoloBaseDir)
   const normalizedYoloBaseDirInput = normalizeYoloBaseDirInput(yoloBaseDirInput)
+  const projectsDir = getYoloProjectsDir(settings)
+  const [projectsDirInput, setProjectsDirInput] = useState(projectsDir)
+  const normalizedProjectsDirInput = normalizeProjectsDirInput(projectsDirInput)
   const yoloBaseDirError = hasHiddenYoloBaseDirSegment(yoloBaseDirInput)
     ? t(
         'settings.etc.yoloBaseDirHiddenPath',
@@ -166,6 +175,10 @@ export function EtcSection({ app, plugin, className }: EtcSectionProps) {
   useEffect(() => {
     setYoloBaseDirInput(yoloBaseDir)
   }, [yoloBaseDir])
+
+  useEffect(() => {
+    setProjectsDirInput(projectsDir)
+  }, [projectsDir])
 
   const refreshStorageUsage = useCallback(() => {
     let cancelled = false
@@ -221,6 +234,36 @@ export function EtcSection({ app, plugin, className }: EtcSectionProps) {
       })
       .finally(() => {
         setYoloBaseDirInput(plugin.settings.yolo.baseDir)
+      })
+  }
+
+  const handleProjectsDirBlur = (value: string) => {
+    const normalized = normalizeProjectsDirInput(value)
+    setProjectsDirInput(normalized)
+    if (
+      normalized
+        .split('/')
+        .some((segment) => !isPortableVaultPathSegment(segment))
+    ) {
+      return
+    }
+    if (normalized === projectsDir) return
+
+    void Promise.resolve(
+      setSettings({
+        ...settings,
+        yolo: {
+          ...(settings.yolo ?? {}),
+          projectsDir: normalized,
+        },
+      }),
+    )
+      .catch((error: unknown) => {
+        console.error('[YOLO] Failed to change project directory', error)
+        new Notice(t('common.error', 'Something went wrong.'))
+      })
+      .finally(() => {
+        setProjectsDirInput(getYoloProjectsDir(plugin.settings))
       })
   }
 
@@ -538,6 +581,24 @@ export function EtcSection({ app, plugin, className }: EtcSectionProps) {
                 {yoloBaseDirError}
               </div>
             )}
+          </div>
+
+          <div className="yolo-settings-field">
+            <ObsidianSetting
+              name={t('settings.etc.yoloProjectsDir', '项目目录')}
+              desc={t(
+                'settings.etc.yoloProjectsDirDesc',
+                '用于存放项目与任务文件的库内相对目录，独立于 YOLO 根目录（例如：Projects）。项目文件由 project 工具管理，并自动从 RAG 索引与 Agent 的 fs 工具中排除。',
+              )}
+              className="yolo-settings-card"
+            >
+              <ObsidianTextInput
+                value={projectsDirInput}
+                placeholder={t('settings.etc.yoloProjectsDirPlaceholder', 'Projects')}
+                onChange={setProjectsDirInput}
+                onBlur={handleProjectsDirBlur}
+              />
+            </ObsidianSetting>
           </div>
 
           <ObsidianSetting

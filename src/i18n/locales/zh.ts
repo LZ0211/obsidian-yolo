@@ -2047,6 +2047,10 @@ export const zh: TranslationKeys = {
       yoloBaseDirDesc:
         '填写库内相对路径（不要以 / 开头）。例如：放在库根目录填 YOLO；放在 setting 文件夹下填 setting/YOLO。当前技能目录：{path}。',
       yoloBaseDirPlaceholder: 'YOLO',
+      yoloProjectsDir: '项目目录',
+      yoloProjectsDirDesc:
+        '存放项目与任务文件的库内相对目录，独立于 YOLO 根目录（例如：Projects）。项目文件由 project 工具管理，并自动从 RAG 索引与 Agent 的 fs 工具中排除。',
+      yoloProjectsDirPlaceholder: 'Projects',
       yoloBaseDirHiddenPath:
         'YOLO 根目录不能使用隐藏文件夹。请移除文件夹名称开头的“.”，例如将 .yolo 改为 yolo。',
       yoloBaseDirInvalidPath:

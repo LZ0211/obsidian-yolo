@@ -1951,6 +1951,10 @@ export const it: DeepPartial<TranslationKeys> = {
       yoloBaseDirDesc:
         'Inserisci un percorso relativo al vault (senza / iniziale). Esempio: YOLO nella radice del vault, oppure setting/YOLO nella cartella setting. Directory skill attuale: {path}.',
       yoloBaseDirPlaceholder: 'YOLO',
+      yoloProjectsDir: 'Directory progetti',
+      yoloProjectsDirDesc:
+        "Cartella vault-relative per file di progetto e attività, indipendente dalla cartella base YOLO (es. Projects). I file di progetto sono gestiti dal tool project ed esclusi dall'indicizzazione RAG e dagli strumenti fs dell'agente.",
+      yoloProjectsDirPlaceholder: 'Projects',
       yoloBaseDirHiddenPath:
         'La cartella base YOLO non può usare cartelle nascoste. Rimuovi il punto iniziale dal nome, ad esempio cambia .yolo in yolo.',
       yoloBaseDirInvalidPath:

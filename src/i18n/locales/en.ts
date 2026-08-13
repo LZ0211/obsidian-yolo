@@ -2215,6 +2215,10 @@ export const en: TranslationKeys = {
       yoloBaseDirDesc:
         'Enter a vault-relative path (without a leading /). Example: use YOLO at vault root, or setting/YOLO under the setting folder. Current skills directory: {path}.',
       yoloBaseDirPlaceholder: 'YOLO',
+      yoloProjectsDir: 'Project directory',
+      yoloProjectsDirDesc:
+        'Vault-relative folder for project and task files, independent of the YOLO root (e.g. Projects). Project files are managed by the project tool and excluded from RAG indexing and agent fs tools.',
+      yoloProjectsDirPlaceholder: 'Projects',
       yoloBaseDirHiddenPath:
         'YOLO root cannot use hidden folders. Remove the dot at the beginning of the folder name, for example change .yolo to yolo.',
       yoloBaseDirInvalidPath:
