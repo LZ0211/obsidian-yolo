@@ -1205,6 +1205,10 @@ export function getLocalFileTools(options?: {
         required: ['description', 'prompt'],
       },
     },
+    // 边界说明：browser_ops（scroll/navigate/click/type）不在此注册——浏览器
+    // 操作由第三方插件经 MCP 桥注入（injectionBridge），YOLO 内置不提供执行
+    // 器。内置仅保留 fs_read 的 browser:// 只读能力（读取 <browser_context>
+    // 标记的已打开 webview 页面）。
     {
       name: 'project_ops',
       description:

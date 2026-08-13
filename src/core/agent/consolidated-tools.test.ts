@@ -1,5 +1,6 @@
 // src/core/agent/consolidated-tools.test.ts
 import {
+  CONSOLIDATED_TOOLS,
   LEGACY_TOOL_TO_CAPABILITY,
   capabilityKey,
   resolveConsolidatedAction,
@@ -14,9 +15,23 @@ describe('capabilityKey', () => {
   })
 })
 
+describe('consolidated tool catalog boundary', () => {
+  it('keeps browser_ops out of the consolidated catalog and legacy map', () => {
+    // Browser operations are third-party-injected via the MCP bridge; the
+    // historical consolidated browser_ops definition was removed and must not
+    // be re-added as a built-in (the built-in keeps only fs_read's browser://
+    // read-only capability).
+    expect(CONSOLIDATED_TOOLS).not.toContain('browser_ops')
+    expect(LEGACY_TOOL_TO_CAPABILITY.browser_scroll).toBeUndefined()
+    expect(LEGACY_TOOL_TO_CAPABILITY.browser_navigate).toBeUndefined()
+    expect(LEGACY_TOOL_TO_CAPABILITY.browser_click).toBeUndefined()
+    expect(LEGACY_TOOL_TO_CAPABILITY.browser_type).toBeUndefined()
+  })
+})
+
 describe('LEGACY_TOOL_TO_CAPABILITY', () => {
-  it('maps all eighteen legacy names', () => {
-    expect(Object.keys(LEGACY_TOOL_TO_CAPABILITY)).toHaveLength(18)
+  it('maps all fourteen legacy names', () => {
+    expect(Object.keys(LEGACY_TOOL_TO_CAPABILITY)).toHaveLength(14)
     expect(LEGACY_TOOL_TO_CAPABILITY.fs_delete).toBe('fs_file_ops:delete')
     expect(LEGACY_TOOL_TO_CAPABILITY.scheduled_task_run_now).toBe(
       'scheduled_task_ops:run_now',
@@ -25,8 +40,6 @@ describe('LEGACY_TOOL_TO_CAPABILITY', () => {
       'context_manage:compact',
     )
     expect(LEGACY_TOOL_TO_CAPABILITY.memory_add).toBe('memory_ops:add')
-    expect(LEGACY_TOOL_TO_CAPABILITY.browser_type).toBe('browser_ops:type')
-    expect(LEGACY_TOOL_TO_CAPABILITY.browser_scroll).toBe('browser_ops:scroll')
   })
 })
 
@@ -127,68 +140,6 @@ describe('validateConsolidatedAction', () => {
         { id: 't1', priority: 1 },
       ),
     ).toThrow(/mutation fields/)
-  })
-  it('requires pageId+direction for browser scroll and rejects action fields', () => {
-    expect(() =>
-      validateConsolidatedAction(
-        { toolName: 'browser_ops', action: 'scroll' },
-        { pageId: 'p', direction: 'down' },
-      ),
-    ).not.toThrow()
-    expect(() =>
-      validateConsolidatedAction(
-        { toolName: 'browser_ops', action: 'scroll' },
-        { pageId: 'p' },
-      ),
-    ).toThrow(/direction/)
-    expect(() =>
-      validateConsolidatedAction(
-        { toolName: 'browser_ops', action: 'scroll' },
-        { pageId: 'p', direction: 'down', url: 'https://x' },
-      ),
-    ).toThrow(/rejects/)
-  })
-  it('requires pageId+url for browser navigate', () => {
-    expect(() =>
-      validateConsolidatedAction(
-        { toolName: 'browser_ops', action: 'navigate' },
-        { pageId: 'p', url: 'https://x' },
-      ),
-    ).not.toThrow()
-    expect(() =>
-      validateConsolidatedAction(
-        { toolName: 'browser_ops', action: 'navigate' },
-        { pageId: 'p' },
-      ),
-    ).toThrow(/url/)
-  })
-  it('requires pageId+selector for browser click', () => {
-    expect(() =>
-      validateConsolidatedAction(
-        { toolName: 'browser_ops', action: 'click' },
-        { pageId: 'p', selector: '#go' },
-      ),
-    ).not.toThrow()
-  })
-  it('requires pageId+selector+text for browser type and rejects cross-action fields', () => {
-    expect(() =>
-      validateConsolidatedAction(
-        { toolName: 'browser_ops', action: 'type' },
-        { pageId: 'p', selector: '#q', text: 'hi' },
-      ),
-    ).not.toThrow()
-    expect(() =>
-      validateConsolidatedAction(
-        { toolName: 'browser_ops', action: 'type' },
-        { pageId: 'p', selector: '#q' },
-      ),
-    ).toThrow(/text/)
-    expect(() =>
-      validateConsolidatedAction(
-        { toolName: 'browser_ops', action: 'type' },
-        { pageId: 'p', selector: '#q', text: 'hi', url: 'https://x' },
-      ),
-    ).toThrow(/rejects/)
   })
 })
 

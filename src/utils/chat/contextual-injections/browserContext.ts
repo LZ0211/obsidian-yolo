@@ -7,6 +7,11 @@
  * page's URL/title and scroll position — without the model having to call
  * fs_read.
  *
+ * This injection is read-only: the built-in only reads open pages via
+ * fs_read's `browser://` paths. Browser *operations* (scroll/navigate/click/
+ * type) are NOT built into YOLO — they arrive as third-party tools injected
+ * through the MCP bridge, so the model must not attempt them natively.
+ *
  * Body is constructed at render time so the URL/title/metadata reflect the
  * webview's state at request build time, not at chat-input submit time.
  */

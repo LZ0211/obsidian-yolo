@@ -1,12 +1,16 @@
 // src/core/agent/consolidated-tools.ts
 import type { McpTool } from '../../types/mcp.types'
 
+// 边界说明：browser_ops 不在此定义——浏览器操作（scroll/navigate/click/type）
+// 由第三方插件经 MCP 桥注入（injectionBridge），YOLO 内置不提供执行器。历史
+// consolidated browser_ops 定义（schema/validator/legacy 映射）已移除；内置仅
+// 保留 fs_read 的 browser:// 只读能力（读取 <browser_context> 标记的已打开
+// webview 页面，见 localFileTools 的 fs_read 工具描述）。
 export const CONSOLIDATED_TOOLS = [
   'context_manage',
   'fs_file_ops',
   'memory_ops',
   'scheduled_task_ops',
-  'browser_ops',
   'project_ops',
 ] as const
 export type ConsolidatedToolName = (typeof CONSOLIDATED_TOOLS)[number]
@@ -24,7 +28,6 @@ export const CONSOLIDATED_TOOL_ACTIONS: Record<
   fs_file_ops: ['delete', 'create_dir', 'move'],
   memory_ops: ['add', 'update', 'delete'],
   scheduled_task_ops: ['create', 'update', 'delete', 'list', 'get', 'run_now'],
-  browser_ops: ['scroll', 'navigate', 'click', 'type'],
   project_ops: ['init', 'get', 'status', 'update', 'review'],
 }
 
@@ -53,10 +56,6 @@ export const LEGACY_TOOL_TO_CAPABILITY: Record<string, string> = {
   scheduled_task_list: 'scheduled_task_ops:list',
   scheduled_task_get: 'scheduled_task_ops:get',
   scheduled_task_run_now: 'scheduled_task_ops:run_now',
-  browser_scroll: 'browser_ops:scroll',
-  browser_navigate: 'browser_ops:navigate',
-  browser_click: 'browser_ops:click',
-  browser_type: 'browser_ops:type',
 }
 
 const getArg = (args: Record<string, unknown>, key: string): unknown =>
@@ -253,46 +252,6 @@ const validators: Record<
         if (key !== 'action' && key !== 'enabled')
           throw new Error(`list rejects ${key}`)
       }
-    },
-  },
-  browser_ops: {
-    scroll: (a) => {
-      if (
-        getArg(a, 'pageId') === undefined ||
-        getArg(a, 'direction') === undefined
-      ) {
-        throw new Error('scroll requires pageId and direction')
-      }
-      if (hasAny(a, ['url', 'selector', 'text', 'replace']))
-        throw new Error('scroll rejects navigate/click/type fields')
-    },
-    navigate: (a) => {
-      if (getArg(a, 'pageId') === undefined || getArg(a, 'url') === undefined) {
-        throw new Error('navigate requires pageId and url')
-      }
-      if (hasAny(a, ['direction', 'amount', 'selector', 'text', 'replace']))
-        throw new Error('navigate rejects scroll/click/type fields')
-    },
-    click: (a) => {
-      if (
-        getArg(a, 'pageId') === undefined ||
-        getArg(a, 'selector') === undefined
-      ) {
-        throw new Error('click requires pageId and selector')
-      }
-      if (hasAny(a, ['url', 'text', 'replace', 'direction', 'amount']))
-        throw new Error('click rejects navigate/type/scroll fields')
-    },
-    type: (a) => {
-      if (
-        getArg(a, 'pageId') === undefined ||
-        getArg(a, 'selector') === undefined ||
-        getArg(a, 'text') === undefined
-      ) {
-        throw new Error('type requires pageId, selector, and text')
-      }
-      if (hasAny(a, ['url', 'direction', 'amount']))
-        throw new Error('type rejects navigate/scroll fields')
     },
   },
   project_ops: {
@@ -686,68 +645,6 @@ export function buildConsolidatedToolSchemas(): ConsolidatedToolSchemas {
         enabled: {
           type: 'boolean',
           description: 'Whether the task is active. Defaults to true.',
-        },
-      },
-      required: ['action'],
-    },
-    browser_ops: {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          enum: ['scroll', 'navigate', 'click', 'type'],
-          description:
-            "Browser operation: 'scroll' moves an open web page's viewport, 'navigate' loads a URL (https/http only), 'click' clicks a unique visible element, 'type' enters text into a unique editable element (credential/secret fields are hard-blocked and typed text is redacted).",
-        },
-        pageId: {
-          type: 'string',
-          description:
-            'Exact page_id from <browser_context>, e.g. browser://page_<8 chars>_<8 chars> or page_<8 chars>_<8 chars>. Do not pass a URL.',
-        },
-        direction: {
-          type: 'string',
-          enum: ['up', 'down'],
-          description: 'Scroll direction (scroll only).',
-        },
-        amount: {
-          type: 'integer',
-          minimum: 1,
-          maximum: 20000,
-          description:
-            'Pixels to scroll (scroll only). Defaults to one viewport height when omitted.',
-        },
-        url: {
-          type: 'string',
-          description:
-            'Absolute destination URL, https:// or http:// (navigate only). URLs with embedded credentials are rejected.',
-        },
-        waitUntil: {
-          type: 'string',
-          enum: ['dom_ready', 'load'],
-          description:
-            'Load state to wait for (navigate only). dom_ready is faster, load (default) waits for the full page.',
-        },
-        timeoutMs: {
-          type: 'integer',
-          minimum: 1000,
-          maximum: 60000,
-          description:
-            'Maximum wait for the load state (navigate only). Defaults to 30000.',
-        },
-        selector: {
-          type: 'string',
-          description:
-            'CSS selector matching exactly one element (click / type). Prefer stable attributes (id, name, aria-label, data-*).',
-        },
-        text: {
-          type: 'string',
-          description:
-            'Text to type (type only). Treated as transient sensitive data; never echoed back in results.',
-        },
-        replace: {
-          type: 'boolean',
-          description:
-            'Replace the current value (true) or append to it (false, default). type only.',
         },
       },
       required: ['action'],
