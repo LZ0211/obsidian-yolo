@@ -111,6 +111,7 @@ describe('memory wiring integration (extract → persist → reconcile → recal
       memoryAgentModelId: '',
       embeddingModelId: 'test-embed',
       currentAssistantId: undefined,
+      assistants: [],
       skills: { disabledSkillIds: [] },
     } as never
     executeSingleTurnMock.mockReset()
