@@ -252,7 +252,12 @@ export function buildSubagentCardSessionProps(
  *   记录 errorCode/retryable；
  * - 调用本身抛错（store I/O 等）同样 warn，不产生 unhandled rejection；
  * - settle 后一律 onSettled（组件用它触发快照重查——恢复/resend/drop 只改
- *   store，registry 不感知，不重查 UI 不刷新）。
+ *   store，registry 不感知，不重查 UI 不刷新）；
+ * - recover/resend 成功（drop 不触发）后调用
+ *   `getSubagentSessionService()?.deliverQueuedIntents(sessionId)`——把
+ *   PENDING after_run 意图投递成续跑（UI 续跑缺口修复）。session-service
+ *   以动态 import 获取（与 main.ts 同款），避免本工具模块新增对
+ *   session-service 的静态边；service 未初始化时静默跳过。
  * 组件侧以 `void runSubagentSessionAction(...)` 包裹（React 异步 handler
  * 规范）。
  */
@@ -260,6 +265,7 @@ export async function runSubagentSessionAction(
   action: 'recover' | 'resend' | 'drop',
   request: Promise<SubagentRecoverResult | SubagentQueueRecoveryResult>,
   onSettled: () => void,
+  sessionId: string,
 ): Promise<void> {
   try {
     const result = await request
@@ -269,6 +275,11 @@ export async function runSubagentSessionAction(
         errorCode: result.errorCode,
         retryable: result.retryable,
       })
+    } else if (action === 'recover' || action === 'resend') {
+      const { getSubagentSessionService } = await import(
+        '../../../core/agent/subagent/session-service'
+      )
+      void getSubagentSessionService()?.deliverQueuedIntents(sessionId)
     }
   } catch (error: unknown) {
     console.warn('[YOLO] Subagent session action failed', { action, error })

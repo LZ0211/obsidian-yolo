@@ -656,16 +656,32 @@ export class SubagentSessionService {
     }
   }
 
-  /** deliverQueuedIntents：PENDING 意图 → 触发续跑（由 runner 层消费，见 Task 7）。 */
+  /**
+   * deliverQueuedIntents（Task 10 UI 续跑接线）：恢复/resend 动作成功后由 UI
+   * 触发——存在 PENDING `after_run` 意图（next_boundary 由 run 内边界 claim，
+   * 不在此列）且 session ∈ {IDLE, NEEDS_RESUME} 且当前无活跃 run 时，调用
+   * `onIntentRunRequested(sessionId)`（Task 9 注册，经 runner 续跑）。
+   * 不改写 intent 状态：claim 由续跑路径的 beginRun 原子执行——预先置 CLAIMED
+   * 会让 beginRun 找不到 PENDING、新 run prompt 丢失（settleRun 的投递同款：
+   * 只投递不置状态）；回调未注册时静默返回。
+   */
   async deliverQueuedIntents(sessionId: string): Promise<void> {
     const stored = await this.store.readById(sessionId)
     if (!stored) return
-    const hasPending = stored.intents.some(
-      (intent) => intent.state === SUBAGENT_MESSAGE_INTENT_STATE.PENDING,
-    )
-    if (hasPending) {
-      this.options.onIntentRunRequested?.(sessionId)
+    if (
+      stored.session.status !== SUBAGENT_SESSION_STATUS.IDLE &&
+      stored.session.status !== SUBAGENT_SESSION_STATUS.NEEDS_RESUME
+    ) {
+      return
     }
+    if (this.isSessionActive(sessionId)) return
+    const hasPendingAfterRun = stored.intents.some(
+      (intent) =>
+        intent.delivery === 'after_run' &&
+        intent.state === SUBAGENT_MESSAGE_INTENT_STATE.PENDING,
+    )
+    if (!hasPendingAfterRun) return
+    this.options.onIntentRunRequested?.(sessionId)
   }
 
   /**

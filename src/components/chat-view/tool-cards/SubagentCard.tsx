@@ -217,6 +217,7 @@ export function SubagentCard({
         requestId: `ui:recover:${crypto.randomUUID()}`,
       }),
       refreshSessionSnapshot,
+      sessionId,
     )
   }, [sessionId, sessionSnapshot, refreshSessionSnapshot])
 
@@ -235,6 +236,7 @@ export function SubagentCard({
           requestId: `ui:resend:${crypto.randomUUID()}`,
         }),
         refreshSessionSnapshot,
+        sessionId,
       )
     },
     [sessionId, sessionSnapshot, refreshSessionSnapshot],
@@ -255,6 +257,7 @@ export function SubagentCard({
           requestId: `ui:drop:${crypto.randomUUID()}`,
         }),
         refreshSessionSnapshot,
+        sessionId,
       )
     },
     [sessionId, sessionSnapshot, refreshSessionSnapshot],

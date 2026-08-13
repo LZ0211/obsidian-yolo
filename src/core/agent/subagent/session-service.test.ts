@@ -462,6 +462,154 @@ describe('SubagentSessionService', () => {
     expect(requested).toContainEqual({ sessionId: spawned.sessionId })
   })
 
+  describe('deliverQueuedIntents (Task 10 UI 续跑接线)', () => {
+    const spawnSession = async (
+      store: SubagentSessionStore,
+      service: SubagentSessionService,
+    ) => {
+      const spawned = await service.spawn({
+        title: 't',
+        prompt: 'p',
+        mode: AGENT_SESSION_MODE.PERSISTENT,
+        requestId: 'r1',
+        parentConversationId: 'c',
+        originAssistantMessageId: 'm',
+        originToolCallId: 't',
+        memoryAssistantId: 'x',
+      })
+      if (!spawned.accepted) throw new Error('spawn failed')
+      return spawned
+    }
+
+    it('requests a run for a pending after_run intent when idle and inactive', async () => {
+      const app = mockApp()
+      const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)
+      const requested: string[] = []
+      const service = new SubagentSessionService(store, {
+        isSessionActive: () => false,
+        onIntentRunRequested: (sessionId) => requested.push(sessionId),
+      })
+      const spawned = await spawnSession(store, service)
+      const sent = await service.send({
+        sessionId: spawned.sessionId,
+        messageId: 'm1',
+        text: 'again',
+        delivery: 'after_run',
+        expectedSessionRevision: spawned.sessionRevision,
+        requestId: 'r2',
+      })
+      if (!sent.accepted) throw new Error('send failed')
+
+      await service.deliverQueuedIntents(spawned.sessionId)
+
+      expect(requested).toEqual([spawned.sessionId])
+      // 不改写 intent 状态——claim 由续跑路径的 beginRun 原子执行（预先置
+      // CLAIMED 会让 beginRun 找不到 PENDING、新 run prompt 丢失）。
+      const stored = await store.readById(spawned.sessionId)
+      expect(stored?.intents[0]).toMatchObject({ state: 'pending' })
+    })
+
+    it('does not request a run while the session is running', async () => {
+      const app = mockApp()
+      const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)
+      const requested: string[] = []
+      const service = new SubagentSessionService(store, {
+        isSessionActive: () => false,
+        onIntentRunRequested: (sessionId) => requested.push(sessionId),
+      })
+      const spawned = await spawnSession(store, service)
+      const begin = await service.beginRun({
+        sessionId: spawned.sessionId,
+        expectedSessionRevision: spawned.sessionRevision,
+        prompt: 'p2',
+      })
+      if (!begin.accepted) throw new Error('beginRun failed')
+      const sent = await service.send({
+        sessionId: spawned.sessionId,
+        messageId: 'm1',
+        text: 'again',
+        delivery: 'after_run',
+        expectedSessionRevision: begin.sessionRevision,
+        requestId: 'r2',
+      })
+      if (!sent.accepted) throw new Error('send failed')
+
+      await service.deliverQueuedIntents(spawned.sessionId)
+
+      expect(requested).toEqual([])
+    })
+
+    it('does not request a run when only next_boundary intents are pending', async () => {
+      const app = mockApp()
+      const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)
+      const requested: string[] = []
+      const service = new SubagentSessionService(store, {
+        isSessionActive: () => false,
+        onIntentRunRequested: (sessionId) => requested.push(sessionId),
+      })
+      const spawned = await spawnSession(store, service)
+      const sent = await service.send({
+        sessionId: spawned.sessionId,
+        messageId: 'm1',
+        text: 'steer',
+        delivery: 'next_boundary',
+        expectedSessionRevision: spawned.sessionRevision,
+        requestId: 'r2',
+      })
+      if (!sent.accepted) throw new Error('send failed')
+
+      await service.deliverQueuedIntents(spawned.sessionId)
+
+      expect(requested).toEqual([])
+    })
+
+    it('does not request a run while an active runtime is registered', async () => {
+      const app = mockApp()
+      const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)
+      const requested: string[] = []
+      const service = new SubagentSessionService(store, {
+        isSessionActive: () => true,
+        onIntentRunRequested: (sessionId) => requested.push(sessionId),
+      })
+      const spawned = await spawnSession(store, service)
+      const sent = await service.send({
+        sessionId: spawned.sessionId,
+        messageId: 'm1',
+        text: 'again',
+        delivery: 'after_run',
+        expectedSessionRevision: spawned.sessionRevision,
+        requestId: 'r2',
+      })
+      if (!sent.accepted) throw new Error('send failed')
+
+      await service.deliverQueuedIntents(spawned.sessionId)
+
+      expect(requested).toEqual([])
+    })
+
+    it('resolves silently when onIntentRunRequested is not registered', async () => {
+      const app = mockApp()
+      const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)
+      const service = new SubagentSessionService(store, {
+        isSessionActive: () => false,
+      })
+      const spawned = await spawnSession(store, service)
+      const sent = await service.send({
+        sessionId: spawned.sessionId,
+        messageId: 'm1',
+        text: 'again',
+        delivery: 'after_run',
+        expectedSessionRevision: spawned.sessionRevision,
+        requestId: 'r2',
+      })
+      if (!sent.accepted) throw new Error('send failed')
+
+      await expect(
+        service.deliverQueuedIntents(spawned.sessionId),
+      ).resolves.toBeUndefined()
+    })
+  })
+
   it('begins a run claiming the first pending after_run intent as its prompt (Task 9)', async () => {
     const app = mockApp()
     const store = new SubagentSessionStore(app, SUBAGENT_DATA_DIR)

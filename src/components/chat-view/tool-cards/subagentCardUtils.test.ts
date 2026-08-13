@@ -28,6 +28,16 @@ jest.mock('./SubagentDetailModal', () => ({
   SubagentDetailModal: () => null,
 }))
 
+// runSubagentSessionAction 经动态 import 取 session-service（与 main.ts 同款
+// 避免静态边），测试侧 mock 掉整个模块：既避免 node env 加载 obsidian，也
+// 让 deliverQueuedIntents 调用可断言。
+const mockedDeliverQueuedIntents = jest.fn(async () => undefined)
+jest.mock('../../../core/agent/subagent/session-service', () => ({
+  getSubagentSessionService: () => ({
+    deliverQueuedIntents: mockedDeliverQueuedIntents,
+  }),
+}))
+
 const t = (_key: string, fallback?: string): string => fallback ?? ''
 
 const taskRecord = (overrides: Partial<SubagentTaskSummary> = {}) =>
@@ -210,6 +220,7 @@ describe('runSubagentSessionAction', () => {
 
   beforeEach(() => {
     warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    mockedDeliverQueuedIntents.mockClear()
   })
 
   afterEach(() => {
@@ -222,9 +233,48 @@ describe('runSubagentSessionAction', () => {
       'recover',
       Promise.resolve({ accepted: true, status: 'idle', sessionRevision: 2 }),
       onSettled,
+      'sub_abc123',
     )
     expect(onSettled).toHaveBeenCalledTimes(1)
     expect(warnSpy).not.toHaveBeenCalled()
+  })
+
+  it('delivers queued intents after an accepted recover', async () => {
+    await runSubagentSessionAction(
+      'recover',
+      Promise.resolve({ accepted: true, status: 'idle', sessionRevision: 2 }),
+      jest.fn(),
+      'sub_abc123',
+    )
+    expect(mockedDeliverQueuedIntents).toHaveBeenCalledWith('sub_abc123')
+  })
+
+  it('delivers queued intents after an accepted resend', async () => {
+    await runSubagentSessionAction(
+      'resend',
+      Promise.resolve({
+        accepted: true,
+        state: 'pending',
+        sessionRevision: 2,
+      }),
+      jest.fn(),
+      'sub_abc123',
+    )
+    expect(mockedDeliverQueuedIntents).toHaveBeenCalledWith('sub_abc123')
+  })
+
+  it('does not deliver queued intents after a drop', async () => {
+    await runSubagentSessionAction(
+      'drop',
+      Promise.resolve({
+        accepted: true,
+        state: 'dropped',
+        sessionRevision: 2,
+      }),
+      jest.fn(),
+      'sub_abc123',
+    )
+    expect(mockedDeliverQueuedIntents).not.toHaveBeenCalled()
   })
 
   it('warns with the errorCode on rejection and still refreshes', async () => {
@@ -238,12 +288,14 @@ describe('runSubagentSessionAction', () => {
         current: snapshot(),
       }),
       onSettled,
+      'sub_abc123',
     )
     expect(warnSpy).toHaveBeenCalledWith(
       '[YOLO] Subagent session action rejected',
       { action: 'drop', errorCode: 'revision_conflict', retryable: true },
     )
     expect(onSettled).toHaveBeenCalledTimes(1)
+    expect(mockedDeliverQueuedIntents).not.toHaveBeenCalled()
   })
 
   it('warns when the action call itself fails and still refreshes', async () => {
@@ -252,12 +304,14 @@ describe('runSubagentSessionAction', () => {
       'resend',
       Promise.reject(new Error('store read failed')),
       onSettled,
+      'sub_abc123',
     )
     expect(warnSpy).toHaveBeenCalledWith(
       '[YOLO] Subagent session action failed',
       expect.objectContaining({ action: 'resend' }),
     )
     expect(onSettled).toHaveBeenCalledTimes(1)
+    expect(mockedDeliverQueuedIntents).not.toHaveBeenCalled()
   })
 })
 
