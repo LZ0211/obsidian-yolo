@@ -2,6 +2,13 @@ import { ToolCallResponseStatus } from '../../../types/tool-call.types'
 import { backgroundTaskCompletionBus } from '../background-task/completion-bus'
 import type { NativeAgentRuntime } from '../native-runtime'
 
+import {
+  isParentSubagentDeadlineExpired,
+  registerParentSubagentDeadline,
+  resetParentSubagentDeadlines,
+  resetParentSubagentTimeoutConfig,
+  setParentSubagentTimeoutConfig,
+} from './pending-timeout-registry'
 import { SUBAGENT_DEFAULT_SYSTEM_PROMPT } from './constants'
 import type { DelegatedAssistantProfile } from './delegated-assistant-profile'
 import type { SubagentParentContext } from './parent-context'
@@ -58,7 +65,13 @@ jest.mock('../background-task/completion-bus', () => ({
   backgroundTaskCompletionBus: { pushCompleted: jest.fn() },
 }))
 jest.mock('../live-stream/taskStreamBus', () => ({
-  liveTaskStreamBus: { push: jest.fn() },
+  liveTaskStreamBus: {
+    push: jest.fn(),
+    // F5 test registers a parent deadline, which subscribes to the stream as
+    // its heartbeat source; the mock must expose the subscription surface.
+    subscribe: jest.fn(() => () => {}),
+    getSnapshot: jest.fn(() => null),
+  },
 }))
 jest.mock('../citationRegistry', () => ({
   CitationRegistry: jest.fn().mockImplementation(() => ({
@@ -420,52 +433,52 @@ describe('buildSubagentInitialRunInput', () => {
   })
 })
 
-describe('runSubagent ephemeral dispatch', () => {
-  const makeParent = (): SubagentParentContext =>
-    ({
-      conversationId: 'parent-test',
-      allowedToolNames: ['parent__read'],
-      toolPreferences: {},
-      toolServerPreferences: {},
-      allowedSkillPaths: [],
-      workspaceAccessPolicy: {
-        workspaceRoot: '/vault',
-        access: 'full_access',
-      },
-      loopConfig: {
-        enableTools: true,
-        includeBuiltinTools: true,
-        maxAutoIterations: 5,
-      },
-      requestContextBuilder: {},
-      mcpManager: {},
-      assistantId: 'assistant-parent',
-      bypassToolApproval: false,
-      enableToolDisclosure: false,
-      reasoningLevel: 'full',
-      requestParams: {},
-    }) as unknown as SubagentParentContext
-
-  const makeChildModel = (): RunSubagentParams['childModel'] =>
-    ({
-      providerClient: {},
-      model: { model: 'child-model', name: 'child-name' },
-      apiType: null,
-    }) as unknown as RunSubagentParams['childModel']
-
-  const makeParams = (): RunSubagentParams => ({
-    description: 't',
-    prompt: 'p',
-    conversationId: 'c',
-    source: {
-      type: 'llm_tool_call',
-      toolCallId: 'tc',
-      assistantMessageId: 'm',
+const makeRunSubagentParent = (): SubagentParentContext =>
+  ({
+    conversationId: 'parent-test',
+    allowedToolNames: ['parent__read'],
+    toolPreferences: {},
+    toolServerPreferences: {},
+    allowedSkillPaths: [],
+    workspaceAccessPolicy: {
+      workspaceRoot: '/vault',
+      access: 'full_access',
     },
-    parent: makeParent(),
-    childModel: makeChildModel(),
-  })
+    loopConfig: {
+      enableTools: true,
+      includeBuiltinTools: true,
+      maxAutoIterations: 5,
+    },
+    requestContextBuilder: {},
+    mcpManager: {},
+    assistantId: 'assistant-parent',
+    bypassToolApproval: false,
+    enableToolDisclosure: false,
+    reasoningLevel: 'full',
+    requestParams: {},
+  }) as unknown as SubagentParentContext
 
+const makeChildModel = (): RunSubagentParams['childModel'] =>
+  ({
+    providerClient: {},
+    model: { model: 'child-model', name: 'child-name' },
+    apiType: null,
+  }) as unknown as RunSubagentParams['childModel']
+
+const makeParams = (): RunSubagentParams => ({
+  description: 't',
+  prompt: 'p',
+  conversationId: 'c',
+  source: {
+    type: 'llm_tool_call',
+    toolCallId: 'tc',
+    assistantMessageId: 'm',
+  },
+  parent: makeRunSubagentParent(),
+  childModel: makeChildModel(),
+})
+
+describe('runSubagent ephemeral dispatch', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     runGate = null
@@ -607,4 +620,105 @@ describe('runSubagent ephemeral dispatch', () => {
     )
   })
 
+})
+
+describe('approval pause parent deadline renewal (F5)', () => {
+  afterEach(() => {
+    resetParentSubagentDeadlines()
+    resetParentSubagentTimeoutConfig()
+    jest.useRealTimers()
+  })
+
+  it('keeps the parent deadline alive while paused on approval so the child autoReject fires first', async () => {
+    jest.useFakeTimers().setSystemTime(0)
+    // Real-world overlap: parent deadline (default 5min) == child autoReject
+    // window (5min). Without the runner's renewal the parent deadline trips at
+    // the same moment and aborts the whole child + increments the breaker.
+    setParentSubagentTimeoutConfig({ timeoutMs: 5 * 60 * 1000 })
+    const onExpire = jest.fn()
+    registerParentSubagentDeadline({
+      toolCallId: 'tc',
+      runKey: 'c',
+      conversationId: 'c',
+      onExpire,
+    })
+
+    // Runtime pauses on a PendingApproval tool call: run() resolves, the
+    // snapshot holds a pending call, and setToolCallResponse patches the
+    // snapshot (the way AgentService.approveToolCall/rejectToolCall and the
+    // autoReject fallback do in production).
+    const nativeRuntimeModule = jest.requireMock<{
+      NativeAgentRuntime: jest.Mock
+    }>('../native-runtime')
+    let runCount = 0
+    let snapshot = {
+      messages: [
+        {
+          role: 'tool',
+          id: 'tool-1',
+          toolCalls: [
+            {
+              request: { id: 'pending-call', name: 'fs_edit' },
+              response: { status: ToolCallResponseStatus.PendingApproval },
+            },
+          ],
+        },
+      ],
+      compaction: [],
+      pendingCompactionAnchorMessageId: null,
+    }
+    nativeRuntimeModule.NativeAgentRuntime.mockImplementationOnce(() => ({
+      subscribe: jest.fn(() => () => {}),
+      run: jest.fn(async () => {
+        runCount += 1
+      }),
+      getSnapshot: jest.fn(() => snapshot),
+      setToolCallResponse: jest.fn((toolCallId, response) => {
+        snapshot = {
+          ...snapshot,
+          messages: snapshot.messages.map((message) =>
+            message.role === 'tool'
+              ? {
+                  ...message,
+                  toolCalls: message.toolCalls.map((toolCall) =>
+                    toolCall.request.id === toolCallId
+                      ? { ...toolCall, response }
+                      : toolCall,
+                  ),
+                }
+              : message,
+          ),
+        }
+      }),
+    }))
+
+    const result = await runSubagent(makeParams())
+    if (!result.accepted) return
+    // Wait for the child to enter the approval gate (first runtime.run()).
+    for (let attempt = 0; attempt < 50 && runCount === 0; attempt += 1) {
+      await jest.advanceTimersByTimeAsync(0)
+    }
+    expect(runCount).toBe(1)
+
+    // Past the 5-minute mark: the child's autoReject must fire, while the
+    // parent deadline (renewed every 60s during the pause) must not.
+    await jest.advanceTimersByTimeAsync(5 * 60 * 1000)
+
+    const setToolCallResponse = (
+      nativeRuntimeModule.NativeAgentRuntime as jest.Mock
+    ).mock.results.at(-1)?.value.setToolCallResponse as jest.Mock
+    expect(setToolCallResponse).toHaveBeenCalledWith(
+      'pending-call',
+      expect.objectContaining({
+        status: ToolCallResponseStatus.Error,
+        error: expect.stringContaining('5 minutes'),
+      }),
+    )
+    expect(onExpire).not.toHaveBeenCalled()
+    expect(isParentSubagentDeadlineExpired('tc')).toBe(false)
+
+    // The child then resumes with the auto-rejected batch and settles.
+    await jest.advanceTimersByTimeAsync(0)
+    expect(subagentTaskRegistry.get(result.taskId)?.status).toBe('completed')
+  })
 })

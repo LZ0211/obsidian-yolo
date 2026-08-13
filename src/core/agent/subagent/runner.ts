@@ -204,6 +204,18 @@ export function autoRejectPendingApprovals(runtime: NativeAgentRuntime): void {
 /** Auto-reject window for paused subagent tool calls. */
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000
 
+/**
+ * F5: cadence at which the runner renews the parent-side subagent deadline
+ * while the child is paused on user approval. The parent deadline is
+ * heartbeat-driven (liveTaskStreamBus events), and an approval pause produces
+ * no events — without this renewal the parent deadline (default 5min) trips
+ * at the same wall-clock moment as the child's own autoReject and the whole
+ * child run is aborted + breaker incremented, shadowing the intended
+ * autoReject fallback. Must stay well below both `APPROVAL_TIMEOUT_MS` and
+ * the configured parent `timeoutMs`.
+ */
+const APPROVAL_PARENT_DEADLINE_RENEWAL_INTERVAL_MS = 60 * 1000
+
 function extractLastAssistantText(messages: ChatMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]
@@ -577,12 +589,27 @@ async function runChildAgent(
         autoRejectPendingApprovals(runtime)
         void resumeRun()
       }, APPROVAL_TIMEOUT_MS)
+      // F5: the child produces no heartbeat while paused on approval, so the
+      // parent deadline would otherwise trip at the same moment as this
+      // autoReject window and abort the whole child (+ breaker increment),
+      // shadowing the intended per-call fallback. Renew the parent deadline
+      // while the gate is open so the child's own autoReject fires first.
+      // Dynamic import keeps the madge edge dynamic (accepted repo pattern;
+      // see localFileTools delegate_subagent case).
+      const { renewParentSubagentDeadline } = await import(
+        './pending-timeout-registry'
+      )
+      const renewalHandle = setInterval(() => {
+        // No-op when the parent deadline is not (or no longer) registered.
+        renewParentSubagentDeadline(parentToolCallId)
+      }, APPROVAL_PARENT_DEADLINE_RENEWAL_INTERVAL_MS)
       try {
         await new Promise<void>((resolve) => {
           approvalResolver = resolve
         })
       } finally {
         clearTimeout(timeoutHandle)
+        clearInterval(renewalHandle)
       }
       if (abortController.signal.aborted) {
         break
