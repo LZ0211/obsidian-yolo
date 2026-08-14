@@ -12,8 +12,8 @@ import { sha256Hex, sha256HexSync } from '../common/content-hash'
 
 import { convertPdfViaMinerU, getMineruCacheDir } from './mineruCacheStore'
 
-const endpointHashFor = (baseUrl: string, apiKey: string): string =>
-  sha256HexSync(`${baseUrl}${String.fromCharCode(0)}${apiKey}`).slice(0, 12)
+const endpointHashFor = (baseUrl: string): string =>
+  sha256HexSync(baseUrl).slice(0, 12)
 
 type JSZipConstructor = typeof import('jszip')
 type JSZipInstance = InstanceType<JSZipConstructor>
@@ -184,7 +184,6 @@ describe('convertPdfViaMinerU', () => {
   const expectedCacheDir = async (): Promise<string> =>
     `Projects/mineru-cache/${await expectedHash16()}-${endpointHashFor(
       OPTIONS.baseUrl,
-      OPTIONS.apiKey,
     )}`
 
   it('persists result.md, images and manifest.json under the vault cache dir', async () => {
@@ -252,7 +251,7 @@ describe('convertPdfViaMinerU', () => {
     expect(mockedRequestUrl).toHaveBeenCalledTimes(3)
   })
 
-  it('isolates the cache and in-flight dedup by endpoint (baseUrl+apiKey)', async () => {
+  it('isolates cache entries by normalized endpoint, not API credentials', async () => {
     const otherOptions = {
       ...OPTIONS,
       baseUrl: 'http://mineru-other.test',
@@ -260,11 +259,23 @@ describe('convertPdfViaMinerU', () => {
     }
     const otherDir = `Projects/mineru-cache/${await expectedHash16()}-${endpointHashFor(
       otherOptions.baseUrl,
-      otherOptions.apiKey,
     )}`
 
     const first = await convertPdfViaMinerU({ app, file, options: OPTIONS })
     expect(await adapter.exists(otherDir)).toBe(false)
+
+    mockedRequestUrl.mockClear()
+    const rotatedKey = await convertPdfViaMinerU({
+      app,
+      file,
+      options: {
+        ...OPTIONS,
+        baseUrl: `${BASE_URL}/`,
+        apiKey: 'Bearer rotated',
+      },
+    })
+    expect(rotatedKey).toEqual(first)
+    expect(mockedRequestUrl).not.toHaveBeenCalled()
 
     // 并发同 PDF、不同端点：不得共享首个调用的转换结果/配置。
     mockedRequestUrl.mockClear()

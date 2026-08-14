@@ -32,8 +32,8 @@ export type MineruCacheManifest = {
  * the hash (it requires reading the file); pass the yolo settings to honor a
  * configured projectsDir.
  *
- * `endpointHash` 把转换端点（baseUrl + apiKey）纳入缓存键：切换 MinerU 服务
- * 后同一 PDF 不得复用旧端点的转换结果（不同服务可能产出不同 markdown/图片）。
+ * `endpointHash` 把转换端点纳入缓存键：切换 MinerU 服务后同一 PDF 不得
+ * 复用旧端点的结果。API key 只是凭据，轮换它不应失效同一端点的缓存。
  * 缺省为空串保持既有调用（无端点概念的历史调用点）行为不变。
  */
 export function getMineruCacheDir(
@@ -222,11 +222,9 @@ export async function convertPdfViaMinerU(input: {
 
   const pdfBytes = await app.vault.readBinary(file)
   const hash16 = (await sha256Hex(arrayBufferToBase64(pdfBytes))).slice(0, 16)
-  // 端点（baseUrl+apiKey）纳入缓存与去重键：切换 MinerU 服务后不得复用
-  // 旧端点的缓存，也不得共享首个调用的配置。
-  const endpointHash = sha256HexSync(
-    `${baseUrl}${String.fromCharCode(0)}${options.apiKey}`,
-  ).slice(0, 12)
+  // The normalized endpoint determines conversion identity. Credentials may
+  // rotate without changing the service or its output.
+  const endpointHash = sha256HexSync(baseUrl).slice(0, 12)
   const cacheKey = `${hash16}-${endpointHash}`
   const cacheDir = getMineruCacheDir(hash16, input.settings, endpointHash)
 
