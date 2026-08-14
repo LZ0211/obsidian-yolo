@@ -1,5 +1,5 @@
 /*
- @yolo-version: 1.6.5
+ @yolo-version: 1.6.5.4
  */
 /*
  * 全局动效 token。三层动效语汇（自会话历史下拉的实践提炼而来）：
@@ -23475,6 +23475,16 @@ button.yolo-todo-panel__icon-button svg {
   background: color-mix(in srgb, var(--color-cyan) 14%, transparent);
   color: color-mix(in srgb, var(--color-cyan) 82%, var(--text-normal));
 }
+
+.yolo-runtime-badge--hermes {
+  background: color-mix(in srgb, var(--color-blue) 15%, transparent);
+  color: color-mix(in srgb, var(--color-blue) 82%, var(--text-normal));
+}
+
+.yolo-runtime-badge--pi {
+  background: color-mix(in srgb, var(--color-purple) 14%, transparent);
+  color: color-mix(in srgb, var(--color-purple) 82%, var(--text-normal));
+}
 /*
  * Chat-header compaction status line (compacting… / last compacted count).
  * A transient, non-interactive indicator — muted small text, no animation.
@@ -23488,16 +23498,6 @@ button.yolo-todo-panel__icon-button svg {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.yolo-runtime-badge--hermes {
-  background: color-mix(in srgb, var(--color-blue) 15%, transparent);
-  color: color-mix(in srgb, var(--color-blue) 82%, var(--text-normal));
-}
-
-.yolo-runtime-badge--pi {
-  background: color-mix(in srgb, var(--color-purple) 14%, transparent);
-  color: color-mix(in srgb, var(--color-purple) 82%, var(--text-normal));
 }
 
 /* The Smart Space floating panel itself was removed (superseded by Quick

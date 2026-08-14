@@ -325,6 +325,8 @@ export class AcpSessionAggregator {
    * id, not that the id is unique across turns. Hermes (and others) recycle
    * the same value, which would otherwise upsert into the previous turn.
    */
+  // ACP delivers `messageId` as `string | null | undefined`; absent and
+  // explicitly-null both mean "no id", and `?.trim()` collapses them together.
   private scopeLiveMessageId(
     messageId: string | null | undefined,
     kind: string,
