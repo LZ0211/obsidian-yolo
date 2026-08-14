@@ -595,8 +595,13 @@ export function createWebCliRuntimeScope(
     resolveRuntime: toCliRuntime,
     selectConversationRuntime: (runtimeId) => getController(runtimeId),
     createConversationRuntime: (runtimeId) => {
+      const previous = controllers.get(runtimeId)
       const controller = createController(runtimeId)
       controllers.set(runtimeId, controller)
+      if (previous) {
+        previous.dispose()
+        allControllers.delete(previous)
+      }
       return controller
     },
     selectConversationSession: (ref) => getController(ref.runtimeId),

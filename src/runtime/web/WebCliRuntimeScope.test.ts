@@ -479,8 +479,8 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
     })
   })
 
-  it('keeps a newly created conversation controller selected', () => {
-    const { fetch } = createFetchMock()
+  it('keeps a newly created conversation controller selected and disposes the replaced controller', async () => {
+    const { fetch, feeds } = createFetchMock()
     const scope = createWebCliRuntimeScope({
       baseUrl: 'http://localhost',
       fetchImpl: fetch,
@@ -492,6 +492,25 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
 
     expect(created).not.toBe(previous)
     expect(scope.selectConversationRuntime('codex')).toBe(created)
+
+    feeds[0].feed(
+      `data: ${JSON.stringify({
+        protocolVersion: 1,
+        eventId: 'replacement-event',
+        sequence: 1,
+        runId: 'run-1',
+        conversationId: '',
+        sessionRef: null,
+        timestamp: 1,
+        type: 'run.state',
+        payload: { state: 'running' },
+      })}\n\n`,
+    )
+    await flushMicrotasks()
+
+    expect(created.getSnapshot().runState).toBe('running')
+    expect(previous.getSnapshot().runState).toBe('idle')
+    await scope.dispose()
   })
 
   it('probes CLI availability from the host via /api/cli/availability', async () => {
