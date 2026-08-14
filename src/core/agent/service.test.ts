@@ -432,6 +432,100 @@ describe('AgentService abort handling', () => {
     runtime.resolveRun()
     await runPromise
   })
+
+  it('aborts the child subagent when its settled parent delegate call is aborted (S1 regression: children kept running)', async () => {
+    const service = new AgentService()
+    const abortSpy = jest.spyOn(subagentTaskRegistry, 'abort')
+    const userMessage = makeUserMessage('u1', 'dispatch')
+    const runPromise = service.run({
+      conversationId: 'conv-subagent-abort',
+      loopConfig: {
+        enableTools: true,
+        maxAutoIterations: 100,
+        includeBuiltinTools: true,
+      },
+      input: {
+        conversationId: 'conv-subagent-abort',
+        messages: [userMessage],
+        mcpManager: { abortToolCall: jest.fn() },
+      } as never,
+    })
+    const runtime = runtimeInstances[0]
+    runtime.emitSnapshot([
+      userMessage,
+      {
+        role: 'tool',
+        id: 'tool-1',
+        toolCalls: [
+          {
+            request: { id: 'call-1', name: 'yolo_local__delegate_subagent' },
+            response: { status: ToolCallResponseStatus.Running },
+          },
+        ],
+      },
+    ])
+    // The child is already running in the background: the parent tool call
+    // settled (Running), so it is no longer in `mcpManager.activeToolCalls`
+    // and the old abort path never reached the child (RED before S1).
+    const record: SubagentTaskRecord = {
+      taskId: 'sub_abort_1',
+      conversationId: 'conv-subagent-abort',
+      source: {
+        type: 'llm_tool_call',
+        toolCallId: 'call-1',
+        assistantMessageId: 'assistant-1',
+      },
+      title: 'Child task',
+      status: 'running',
+      createdAt: 1,
+      prompt: 'child prompt',
+      abortController: new AbortController(),
+    }
+    subagentTaskRegistry.register(record)
+
+    try {
+      expect(
+        service.abortToolCall({
+          conversationId: 'conv-subagent-abort',
+          toolCallId: 'call-1',
+        }),
+      ).toBe(true)
+      expect(abortSpy).toHaveBeenCalledWith('sub_abort_1')
+      expect(record.abortController.signal.aborted).toBe(true)
+    } finally {
+      abortSpy.mockRestore()
+      runtime.resolveRun()
+      await runPromise
+    }
+  })
+
+  it('aborts every running child subagent when its conversation is stopped (S1: abortConversation path)', () => {
+    const service = new AgentService()
+    const abortSpy = jest.spyOn(subagentTaskRegistry, 'abort')
+    const record: SubagentTaskRecord = {
+      taskId: 'sub_abort_conv_1',
+      conversationId: 'conv-stop-subagents',
+      source: {
+        type: 'llm_tool_call',
+        toolCallId: 'call-9',
+        assistantMessageId: 'assistant-1',
+      },
+      title: 'Child task',
+      status: 'running',
+      createdAt: 1,
+      prompt: 'child prompt',
+      abortController: new AbortController(),
+    }
+    subagentTaskRegistry.register(record)
+
+    try {
+      service.abortConversation('conv-stop-subagents')
+      expect(abortSpy).toHaveBeenCalledWith('sub_abort_conv_1')
+      expect(record.abortController.signal.aborted).toBe(true)
+    } finally {
+      abortSpy.mockRestore()
+    }
+  })
 })
 
 describe('AgentService streaming publish coalescing', () => {
