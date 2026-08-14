@@ -326,6 +326,38 @@ describe('ShadowGitDiffBackend', () => {
     },
   )
 
+  it('excludes namePrefix protected paths from the finish-stage candidates', async () => {
+    const repo = await createRepo()
+    try {
+      await writeFile(join(repo.vault, 'Allowed', 'secret.md'), 'before\n')
+      await commitAll(repo.root, 'initial')
+      const backend = new ShadowGitDiffBackend({
+        vaultPath: repo.vault,
+        snapshotRoot: join(repo.root, 'snapshots'),
+      })
+      const baseline = await backend.begin(
+        policy({
+          protectedPaths: [
+            { kind: 'namePrefix', dir: 'Allowed', name: 'secret' },
+          ],
+        }),
+      )
+      expect(baseline).not.toBeNull()
+
+      await writeFile(
+        join(repo.vault, 'Allowed', 'secret.md'),
+        'before\nafter\n',
+      )
+      // 快照阶段按 glob 排除了该文件；finish 阶段候选过滤必须同样命中 glob
+      //（此前只查 literal excludes，受保护文件会漏进最终 diff）。
+      await expect(
+        backend.finish(baseline!, [change('Allowed/secret.md')]),
+      ).resolves.toEqual(new Map())
+    } finally {
+      await repo.cleanup()
+    }
+  })
+
   it('returns null for a vault outside Git', async () => {
     const root = await mkdtemp(join(tmpdir(), 'obsidian-yolo-no-git-'))
     try {

@@ -163,6 +163,25 @@ const isWithin = (candidate: string, root: string): boolean => {
   )
 }
 
+/**
+ * Matches a repo path against the namePrefix-derived protected globs
+ * (`<dir>/<name>*`, see `addProtectedScopeExcludes`). The generated globs only
+ * ever carry a trailing `*`, so a literal prefix comparison is exact — this is
+ * the JS-side twin of the snapshot stage's `:(top,glob,exclude)` pathspec,
+ * which the finish-stage candidate filter must mirror to keep protected files
+ * out of the final diff.
+ */
+const isProtectedGlobMatch = (
+  repoPath: string,
+  globs: readonly string[] | undefined,
+): boolean => {
+  if (!globs || globs.length === 0) return false
+  return globs.some((glob) => {
+    if (!glob.endsWith('*')) return comparisonPath(repoPath) === comparisonPath(glob)
+    return repoPath.startsWith(glob.slice(0, -1))
+  })
+}
+
 const isFilesystemWithin = (candidate: string, root: string): boolean => {
   const relativePath = relative(comparisonPath(root), comparisonPath(candidate))
   return (
@@ -1060,6 +1079,10 @@ export class ShadowGitDiffBackend implements AgentGitDiffBackend {
               isWithin(repoPath, activeRun.scope.positiveRoot) &&
               !activeRun.scope.writeExcludes.some((exclude) =>
                 isWithin(repoPath, exclude),
+              ) &&
+              !isProtectedGlobMatch(
+                repoPath,
+                activeRun.scope.protectedGlobs,
               )
             ) {
               candidatePaths.add(repoPath)

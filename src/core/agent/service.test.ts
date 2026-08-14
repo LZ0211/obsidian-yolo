@@ -2089,7 +2089,11 @@ const makeAssistantToolMessages = ({
   toolName?: string
   requestMetadata?: {
     approvalPolicy?: 'auto' | 'always-require-user'
-    executionConstraints?: { bashReadOnly?: boolean }
+    executionConstraints?: {
+      bashReadOnly?: boolean
+      bashApprovalMode?: 'full_access' | 'require_approval' | 'dangerous_only'
+      allowedSkillPaths?: string[]
+    }
   }
 }): ChatMessage[] => {
   const request = {
@@ -2228,7 +2232,13 @@ describe('AgentService continuation input', () => {
         userMessage,
         responseStatus: ToolCallResponseStatus.PendingApproval,
         toolName: 'yolo_local__bash',
-        requestMetadata: { executionConstraints: { bashReadOnly: true } },
+        requestMetadata: {
+          executionConstraints: {
+            bashReadOnly: true,
+            bashApprovalMode: 'full_access',
+            allowedSkillPaths: ['skills/research/SKILL.md'],
+          },
+        },
       }),
     )
 
@@ -2239,7 +2249,12 @@ describe('AgentService continuation input', () => {
 
     await waitForRuntimeCount(2)
     expect(callTool).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'yolo_local__bash', bashReadOnly: true }),
+      expect.objectContaining({
+        name: 'yolo_local__bash',
+        bashReadOnly: true,
+        bashApprovalMode: 'full_access',
+        allowedSkillPaths: ['skills/research/SKILL.md'],
+      }),
     )
 
     runtimeInstances[1].resolveRun()

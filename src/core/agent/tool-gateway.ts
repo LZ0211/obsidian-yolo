@@ -53,6 +53,10 @@ import {
   classifyBashCommandSafety,
   isBlockedByCommandPrefix,
 } from './bash/command-classifier'
+import {
+  CONSOLIDATED_TOOLS,
+  resolveConsolidatedAction,
+} from './consolidated-tools'
 import type { SubagentParentContext } from './subagent/parent-context'
 import { isSubagentBlockedToolName } from './subagent/tool-filter'
 import {
@@ -66,10 +70,6 @@ import {
   getAssistantToolDisclosureMode,
   isAssistantToolEnabled,
 } from './tool-preferences'
-import {
-  CONSOLIDATED_TOOLS,
-  resolveConsolidatedAction,
-} from './consolidated-tools'
 import {
   expandAllowedToolNames,
   isLoadToolSchemasToolName,
@@ -809,6 +809,39 @@ export class AgentToolGateway {
     }
   }
 
+  /**
+   * 把「审批后直执行」路径（approveToolCall / approveSubagentToolCall /
+   * UI recovery）需要的执行参数固定到请求元数据上，覆盖所有工具调用而不
+   * 只是模块聊天模式：bash 调用写入 bashReadOnly + 解析后的审批档位；
+   * 运行期有技能路径白名单时一并写入。缺了这些，用户批准过的 bash 脚本
+   * 中途触发危险操作会再次弹审批（bashApprovalMode 丢失），技能路径策略
+   * 也会在绕过网关执行时失效。
+   */
+  private attachExecutionSnapshot(request: ToolCallRequest): ToolCallRequest {
+    const isBash = this.isBashToolCall(request.name)
+    const hasSkillPaths =
+      this.allowedSkillPaths != null && this.allowedSkillPaths.length > 0
+    if (!isBash && !hasSkillPaths) {
+      return request
+    }
+    return {
+      ...request,
+      metadata: {
+        ...request.metadata,
+        executionConstraints: {
+          ...request.metadata?.executionConstraints,
+          ...(isBash ? { bashReadOnly: this.bashReadOnly } : {}),
+          ...(isBash
+            ? { bashApprovalMode: this.resolveApprovalMode(request.name) }
+            : {}),
+          ...(hasSkillPaths && this.allowedSkillPaths
+            ? { allowedSkillPaths: [...this.allowedSkillPaths] }
+            : {}),
+        },
+      },
+    }
+  }
+
   createToolMessage({
     toolCallRequests,
     conversationId,
@@ -826,7 +859,9 @@ export class AgentToolGateway {
   }): ChatToolMessage {
     const preparedRequests = toolCallRequests.map((request) =>
       this.prepareFinalToolCallRequest(
-        this.attachPolicySnapshot(this.attachModuleChatModeSnapshot(request)),
+        this.attachPolicySnapshot(
+          this.attachExecutionSnapshot(this.attachModuleChatModeSnapshot(request)),
+        ),
       ),
     )
     const normalizedToolCallRequests = preparedRequests.map(

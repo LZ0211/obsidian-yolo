@@ -1768,7 +1768,48 @@ describe('AgentToolGateway', () => {
       ).toBeUndefined()
       expect(
         message.toolCalls[0]?.request.metadata?.executionConstraints,
-      ).toEqual({ bashReadOnly: true })
+      ).toEqual({
+        bashReadOnly: true,
+        bashApprovalMode: expect.stringMatching(
+          /^(full_access|require_approval|dangerous_only)$/,
+        ) as unknown as string,
+      })
+    })
+
+    it('persists bashApprovalMode and allowedSkillPaths on every bash call for the approval path', () => {
+      const mcpManager = {
+        isToolExecutionAllowed: jest.fn().mockReturnValue(true),
+        getJsSandboxSettings: jest.fn().mockReturnValue({}),
+      } as unknown as McpManager
+
+      const gateway = new AgentToolGateway(mcpManager, {
+        allowedToolNames: ['yolo_local__bash', 'yolo_local__skill'],
+        bypassToolApproval: true,
+        allowedSkillPaths: ['skills/research/SKILL.md'],
+      })
+
+      const message = gateway.createToolMessage({
+        toolCallRequests: [
+          {
+            id: 'tool-1',
+            name: 'yolo_local__bash',
+            arguments: createCompleteToolCallArguments({
+              value: { command: 'ls' },
+            }),
+          },
+        ],
+        conversationId: 'conv-1',
+      })
+
+      // bypassToolApproval → 解析档位固定为 full_access；技能白名单随请求
+      // 持久化，审批后直执行（approveToolCall）可以原样取回。
+      expect(
+        message.toolCalls[0]?.request.metadata?.executionConstraints,
+      ).toEqual({
+        bashReadOnly: false,
+        bashApprovalMode: 'full_access',
+        allowedSkillPaths: ['skills/research/SKILL.md'],
+      })
     })
 
     it('does not write executionConstraints for a non-bash tool in module mode', () => {
@@ -1831,9 +1872,14 @@ describe('AgentToolGateway', () => {
       expect(
         message.toolCalls[0]?.request.metadata?.approvalPolicy,
       ).toBeUndefined()
+      // executionConstraints 不再只属于模块聊天模式：bash 调用始终持久化
+      // 执行参数（审批后直执行路径读取），approvalPolicy 才保持 module-only。
       expect(
         message.toolCalls[0]?.request.metadata?.executionConstraints,
-      ).toBeUndefined()
+      ).toEqual({
+        bashReadOnly: false,
+        bashApprovalMode: 'full_access',
+      })
     })
 
     it('snapshots the enabled workspace access policy onto tool call requests at creation time', () => {

@@ -1690,11 +1690,15 @@ export class AgentService {
               lastLoopConfig,
             ),
             // This call bypasses `AgentToolGateway` (approval already
-            // happened), so it can't read the gateway's live `bashReadOnly`
-            // option — read the persisted snapshot instead. See
+            // happened), so it can't read the gateway's live options — read
+            // the persisted snapshot instead. See
             // `ToolCallRequest.metadata.executionConstraints`.
             bashReadOnly:
               toolCall.request.metadata?.executionConstraints?.bashReadOnly,
+            bashApprovalMode:
+              toolCall.request.metadata?.executionConstraints?.bashApprovalMode,
+            allowedSkillPaths:
+              toolCall.request.metadata?.executionConstraints?.allowedSkillPaths,
           }),
         getResponseBody: (response) => response,
       }),
@@ -2240,10 +2244,14 @@ export class AgentService {
             request.metadata?.workspaceAccessPolicy ??
             entry.workspaceAccessPolicy,
           // This call bypasses `AgentToolGateway` (approval already
-          // happened), so it can't read the gateway's live `bashReadOnly`
-          // option — read the persisted snapshot instead. See
+          // happened), so it can't read the gateway's live options — read
+          // the persisted snapshot instead. See
           // `ToolCallRequest.metadata.executionConstraints`.
           bashReadOnly: request.metadata?.executionConstraints?.bashReadOnly,
+          bashApprovalMode:
+            request.metadata?.executionConstraints?.bashApprovalMode,
+          allowedSkillPaths:
+            request.metadata?.executionConstraints?.allowedSkillPaths,
         }),
       )
     } catch (error) {

@@ -1,4 +1,7 @@
-import type { WorkspaceAccessPolicy } from './assistant.types'
+import type {
+  AssistantToolApprovalMode,
+  WorkspaceAccessPolicy,
+} from './assistant.types'
 import type { ContentPart } from './llm/request'
 
 export type ToolCallArguments =
@@ -170,15 +173,24 @@ export type ToolCallRequest = {
      */
     approvalPolicy?: 'auto' | 'always-require-user'
     /**
-     * Execution constraints fixed alongside `approvalPolicy` at creation
-     * time, for the two execution paths that call `McpManager.callTool`
-     * directly instead of going through `AgentToolGateway`
-     * (`AgentService.approveToolCall` and the chat UI's pending-tool-call
-     * recovery path) — neither has access to the gateway's live
-     * `bashReadOnly` option, so it must be persisted on the request itself.
+     * Execution constraints fixed at tool-call creation time by
+     * `AgentToolGateway`, for the two execution paths that call
+     * `McpManager.callTool` directly instead of going through the gateway
+     * (`AgentService.approveToolCall` / `approveSubagentToolCall` and the chat
+     * UI's pending-tool-call recovery path) — neither has access to the
+     * gateway's live options, so they must be persisted on the request:
+     * - `bashReadOnly`: the structurally read-only bash variant flag.
+     * - `bashApprovalMode`: the resolved approval tier (full_access /
+     *   require_approval / dangerous_only). Missing on the direct path makes
+     *   `confirmDangerousOperation` re-prompt mid-script for a call the user
+     *   already approved.
+     * - `allowedSkillPaths`: the skill path allowlist applied when the call
+     *   executes (skill gating), so an approved call can't bypass the policy.
      */
     executionConstraints?: {
       bashReadOnly?: boolean
+      bashApprovalMode?: AssistantToolApprovalMode
+      allowedSkillPaths?: string[]
     }
     /**
      * Workspace access policy fixed at tool-call creation time by
