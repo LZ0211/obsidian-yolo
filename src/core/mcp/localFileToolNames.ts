@@ -29,6 +29,7 @@ export const LOCAL_FILE_TOOL_SHORT_NAMES = [
   'fs_read',
   'fs_edit',
   'fs_write',
+  'mineru_convert',
   'memory_add',
   'memory_update',
   'memory_delete',

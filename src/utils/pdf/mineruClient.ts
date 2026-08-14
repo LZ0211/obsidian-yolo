@@ -150,7 +150,8 @@ const withTimeout = <T>(
 const authHeaders = (apiKey: string): Record<string, string> =>
   apiKey ? { Authorization: apiKey } : {}
 
-const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer =>
+/** Copies a Uint8Array view into a standalone ArrayBuffer (adapter writes). */
+export const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer =>
   bytes.buffer.slice(
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength,

@@ -886,6 +886,9 @@ export const en: TranslationKeys = {
       builtinFsReadLabel: 'Read',
       builtinFsReadDesc:
         'Read vault files, skills, or open web pages (browser://)',
+      builtinMineruConvertLabel: 'Convert PDF (MinerU)',
+      builtinMineruConvertDesc:
+        'Convert a vault PDF to markdown and images through the configured MinerU service, writing the results into a target folder',
       builtinContextPruneToolResultsLabel: 'Prune Tool Results',
       builtinContextPruneToolResultsDesc:
         'Exclude past tool results from future context. Note: this tool may break the prompt cache and increase request cost.',

@@ -808,6 +808,9 @@ export const zh: TranslationKeys = {
       builtinFsSearchDesc: '搜索库内文件与内容',
       builtinFsReadLabel: '读取',
       builtinFsReadDesc: '读取库内文件、技能或已打开网页（browser://）',
+      builtinMineruConvertLabel: 'PDF 转 Markdown（MinerU）',
+      builtinMineruConvertDesc:
+        '通过已配置的 MinerU 服务将库内 PDF 转为 Markdown 与图片，并写入指定目录',
       builtinContextPruneToolResultsLabel: '裁剪工具调用结果',
       builtinContextPruneToolResultsDesc:
         '从后续上下文中排除历史工具结果；注意，该工具可能会破坏上下文缓存，增加请求开销',

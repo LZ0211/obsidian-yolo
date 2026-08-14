@@ -985,6 +985,9 @@ export const it: DeepPartial<TranslationKeys> = {
       builtinFsReadLabel: 'Leggi',
       builtinFsReadDesc:
         'Leggi file del vault, skill o pagine web aperte (browser://)',
+      builtinMineruConvertLabel: 'Converti PDF (MinerU)',
+      builtinMineruConvertDesc:
+        'Converte un PDF del vault in markdown e immagini tramite il servizio MinerU configurato, scrivendo i risultati in una cartella di destinazione',
       builtinContextPruneToolResultsLabel: 'Pota risultati strumenti',
       builtinContextPruneToolResultsDesc:
         'Escludi i risultati storici degli strumenti dal contesto futuro. Nota: questo strumento può invalidare la cache del prompt e aumentare il costo delle richieste.',

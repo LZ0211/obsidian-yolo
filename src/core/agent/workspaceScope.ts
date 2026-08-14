@@ -249,6 +249,10 @@ const TOOL_TOP_LEVEL_PATH_KEYS: Record<string, readonly string[]> = {
   fs_create_dir: ['path'],
   fs_move: ['oldPath', 'newPath'],
   fs_file_ops: ['path'],
+  // mineru_convert reads the input PDF and writes converted markdown/images to
+  // outputDir — both are subject to the workspace scope (write resolution for
+  // outputDir, read for inputPath; see isLocalFsWriteToolName).
+  mineru_convert: ['inputPath', 'outputDir'],
 }
 
 // The consolidated fs_file_ops tool carries a top-level `action` discriminator.

@@ -60,9 +60,12 @@ import {
 } from '../../utils/pdf/extractPdfText'
 import { convertPdfViaMinerU } from '../../utils/pdf/mineruCacheStore'
 import {
+  type MinerURawConversionResult,
+  convertPdfToMarkdown,
   isMinerUEnabled,
   markMinerUFailure,
   resolveMinerUImageRefs,
+  toArrayBuffer,
 } from '../../utils/pdf/mineruClient'
 import { renderPdfPagesToImages } from '../../utils/pdf/renderPdfPagesToImages'
 import { PdfSliceError, slicePdfPages } from '../../utils/pdf/slicePdfPages'
@@ -199,7 +202,11 @@ import {
   TERMINAL_COMMAND_TOOL_NAME,
 } from './localFileToolNames'
 import { parseToolName } from './tool-name-utils'
-import { ensureParentFolderExists, validateVaultPath } from './vaultFileOps'
+import {
+  ensureFolderPathExists,
+  ensureParentFolderExists,
+  validateVaultPath,
+} from './vaultFileOps'
 
 /**
  * localFileTools 可消费的调度服务结构子集。就地声明避免
@@ -377,6 +384,10 @@ export const LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES = [
 const LOCAL_FS_WRITE_TOOL_NAMES = new Set<string>([
   'fs_edit',
   ...LOCAL_FS_SPLIT_ACTION_TOOL_NAMES,
+  // mineru_convert writes converted markdown/images into outputDir — treat it
+  // as a write tool so workspace-policy resolution (and the tool gateway's
+  // pre-call gate) covers both inputPath (read) and outputDir (write).
+  'mineru_convert',
   'memory_add',
   'memory_update',
   'memory_delete',
@@ -900,6 +911,26 @@ export function getLocalFileTools(options?: {
           },
         },
         required: ['path', 'content'],
+      },
+    },
+    {
+      name: 'mineru_convert',
+      description:
+        'Convert a PDF file to Markdown and images via the configured MinerU service (only available when MinerU is enabled and reachable in settings). Pass inputPath (vault-relative PDF path) and outputDir (vault-relative target folder); returns the written markdown/image file list.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          inputPath: {
+            type: 'string',
+            description: 'Vault-relative path of the PDF to convert.',
+          },
+          outputDir: {
+            type: 'string',
+            description:
+              'Vault-relative target folder for the extracted markdown and images.',
+          },
+        },
+        required: ['inputPath', 'outputDir'],
       },
     },
     ...(isRuntimeComponentEnabled('bash-engine')
@@ -4103,6 +4134,68 @@ export async function callLocalFileTool({
             toolCallId,
           }),
         )
+      }
+
+      case 'mineru_convert': {
+        // 显式按需转换（与 fs_read/RAG/附件的隐式路径互补）：输入 PDF +
+        // 目标目录 → 转换结果落盘到 outputDir，返回写入清单。无缓存——协议层
+        // 直接转换，落盘方式与 mineruCacheStore.writeCache 一致（vault adapter）。
+        if (!isMinerUEnabled(settings) || !settings?.mineru) {
+          throw new Error(
+            'MinerU is not enabled or not configured in settings.',
+          )
+        }
+        const inputPath = validateVaultPath(getTextArg(args, 'inputPath'))
+        const outputDir = validateVaultPath(getTextArg(args, 'outputDir'))
+
+        const file = app.vault.getAbstractFileByPath(inputPath)
+        if (!file || !(file instanceof TFile)) {
+          throw new Error(`File not found: ${inputPath}`)
+        }
+        if ((file.extension ?? '').toLowerCase() !== 'pdf') {
+          throw new Error(`Not a PDF file: ${inputPath}`)
+        }
+
+        const pdfBytes = await app.vault.readBinary(file)
+        let raw: MinerURawConversionResult
+        try {
+          raw = await convertPdfToMarkdown({
+            pdfBytes,
+            fileName: file.name,
+            baseUrl: settings.mineru.baseUrl,
+            apiKey: settings.mineru.apiKey,
+            signal,
+          })
+        } catch (error) {
+          // Abort 语义与 fs_read MinerU 分支一致：透传不计数（请求已被取消）。
+          if (error instanceof DOMException && error.name === 'AbortError') {
+            throw error
+          }
+          markMinerUFailure()
+          throw error
+        }
+        if (signal?.aborted) {
+          return { status: ToolCallResponseStatus.Aborted }
+        }
+
+        // 落盘：md → {outputDir}/result.md，图片 → {outputDir}/images/{name}。
+        await ensureFolderPathExists(app, `${outputDir}/images`)
+        const resultPath = normalizePath(`${outputDir}/result.md`)
+        const adapter = app.vault.adapter
+        await adapter.write(resultPath, raw.markdown)
+        const imageFiles: string[] = []
+        for (const image of raw.images) {
+          const vaultPath = normalizePath(`${outputDir}/images/${image.name}`)
+          await adapter.writeBinary(vaultPath, toArrayBuffer(image.data))
+          imageFiles.push(vaultPath)
+        }
+        return {
+          status: ToolCallResponseStatus.Success,
+          text: JSON.stringify({
+            markdownFiles: [resultPath],
+            imageFiles,
+          }),
+        }
       }
 
       case BASH_TOOL_NAME: {

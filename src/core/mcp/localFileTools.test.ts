@@ -44,6 +44,13 @@ jest.mock('../../utils/pdf/mineruCacheStore', () => ({
   convertPdfViaMinerU: jest.fn(),
 }))
 
+// mineru_convert tool: protocol-level conversion is mocked; the availability
+// helpers (isMinerUEnabled / markMinerUFailure / circuit breaker) stay real.
+jest.mock('../../utils/pdf/mineruClient', () => ({
+  ...jest.requireActual('../../utils/pdf/mineruClient'),
+  convertPdfToMarkdown: jest.fn(),
+}))
+
 jest.mock('../../utils/pdf/slicePdfPages', () => ({
   PdfSliceError: class PdfSliceError extends Error {
     kind: string
@@ -77,6 +84,10 @@ import {
 import { editUndoSnapshotStore } from '../../utils/chat/editUndoSnapshotStore'
 import { extractPdfText } from '../../utils/pdf/extractPdfText'
 import { convertPdfViaMinerU } from '../../utils/pdf/mineruCacheStore'
+import {
+  convertPdfToMarkdown,
+  resetMinerUSessionState,
+} from '../../utils/pdf/mineruClient'
 import { slicePdfPages } from '../../utils/pdf/slicePdfPages'
 import {
   getPendingDangerousBashApproval,
@@ -2853,6 +2864,138 @@ describe('fs_read MinerU PDF integration', () => {
       }),
     )
     expect(extractPdfText).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('mineru_convert tool', () => {
+  const mineruSettings = {
+    mineru: {
+      enabled: true,
+      baseUrl: 'http://localhost:7860',
+      apiKey: 'secret',
+    },
+  } as unknown as YoloSettings
+
+  const makePdfFile = (path = 'docs/report.pdf'): TFile =>
+    Object.assign(new TFile(), {
+      path,
+      name: path.split('/').pop(),
+      extension: 'pdf',
+      stat: { size: 2048, mtime: 1000 },
+    })
+
+  const makeApp = ({
+    file,
+    adapter,
+  }: {
+    file: TFile | null
+    adapter: { write: jest.Mock; writeBinary: jest.Mock }
+  }): App =>
+    ({
+      vault: {
+        getAbstractFileByPath: jest
+          .fn()
+          .mockImplementation((path: string) =>
+            file && path === file.path ? file : null,
+          ),
+        readBinary: jest.fn().mockResolvedValue(new ArrayBuffer(8)),
+        createFolder: jest.fn().mockResolvedValue(undefined),
+        adapter,
+      },
+    }) as unknown as App
+
+  beforeEach(() => {
+    ;(convertPdfToMarkdown as jest.Mock).mockReset()
+    resetMinerUSessionState()
+  })
+
+  it('converts a PDF via MinerU and writes markdown + images into outputDir', async () => {
+    ;(convertPdfToMarkdown as jest.Mock).mockResolvedValue({
+      markdown: '# Converted\n\nSee ![](fig1.png).',
+      images: [{ name: 'fig1.png', data: new Uint8Array([1, 2, 3]) }],
+    })
+    const file = makePdfFile()
+    const adapter = {
+      write: jest.fn().mockResolvedValue(undefined),
+      writeBinary: jest.fn().mockResolvedValue(undefined),
+    }
+
+    const result = await callLocalFileTool({
+      app: makeApp({ file, adapter }),
+      settings: mineruSettings,
+      toolName: 'mineru_convert',
+      args: { inputPath: 'docs/report.pdf', outputDir: 'out/mineru' },
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    expect(JSON.parse((result as { text: string }).text)).toEqual({
+      markdownFiles: ['out/mineru/result.md'],
+      imageFiles: ['out/mineru/images/fig1.png'],
+    })
+    expect(convertPdfToMarkdown).toHaveBeenCalledTimes(1)
+    expect(convertPdfToMarkdown).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pdfBytes: expect.any(ArrayBuffer),
+        fileName: 'report.pdf',
+        baseUrl: 'http://localhost:7860',
+        apiKey: 'secret',
+      }),
+    )
+    expect(adapter.write).toHaveBeenCalledWith(
+      'out/mineru/result.md',
+      '# Converted\n\nSee ![](fig1.png).',
+    )
+    expect(adapter.writeBinary).toHaveBeenCalledWith(
+      'out/mineru/images/fig1.png',
+      new Uint8Array([1, 2, 3]).buffer,
+    )
+  })
+
+  it('returns an Error when MinerU is not configured', async () => {
+    const file = makePdfFile()
+    const adapter = {
+      write: jest.fn(),
+      writeBinary: jest.fn(),
+    }
+
+    const result = await callLocalFileTool({
+      app: makeApp({ file, adapter }),
+      settings: {} as unknown as YoloSettings,
+      toolName: 'mineru_convert',
+      args: { inputPath: 'docs/report.pdf', outputDir: 'out/mineru' },
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+    expect((result as { error: string }).error).toContain(
+      'MinerU is not enabled or not configured',
+    )
+    expect(convertPdfToMarkdown).not.toHaveBeenCalled()
+    expect(adapter.write).not.toHaveBeenCalled()
+  })
+
+  it('returns an Error when the input path is not a PDF', async () => {
+    const file = Object.assign(new TFile(), {
+      path: 'notes/readme.txt',
+      name: 'readme.txt',
+      extension: 'txt',
+      stat: { size: 100, mtime: 1000 },
+    })
+    const adapter = {
+      write: jest.fn(),
+      writeBinary: jest.fn(),
+    }
+
+    const result = await callLocalFileTool({
+      app: makeApp({ file, adapter }),
+      settings: mineruSettings,
+      toolName: 'mineru_convert',
+      args: { inputPath: 'notes/readme.txt', outputDir: 'out/mineru' },
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+    expect((result as { error: string }).error).toContain('Not a PDF file')
+    expect(convertPdfToMarkdown).not.toHaveBeenCalled()
+    expect(adapter.write).not.toHaveBeenCalled()
   })
 })
 

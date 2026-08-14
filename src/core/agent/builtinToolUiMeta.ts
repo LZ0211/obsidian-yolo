@@ -95,6 +95,13 @@ export const BUILTIN_TOOL_UI_META: Record<string, BuiltinToolUiMeta> = {
     descFallback:
       'Read vault files, skills, or open web pages by path with full-file or line-range operations.',
   },
+  mineru_convert: {
+    labelKey: 'settings.agent.builtinMineruConvertLabel',
+    descKey: 'settings.agent.builtinMineruConvertDesc',
+    labelFallback: 'Convert PDF (MinerU)',
+    descFallback:
+      'Convert a vault PDF to markdown and images through the configured MinerU service, writing the results into a target folder.',
+  },
   context_prune_tool_results: {
     labelKey: 'settings.agent.builtinContextPruneToolResultsLabel',
     descKey: 'settings.agent.builtinContextPruneToolResultsDesc',
@@ -267,6 +274,7 @@ const BUILTIN_TOOL_CATEGORY_MAP: Record<string, BuiltinToolCategory> = {
   fs_list: 'vault',
   fs_search: 'vault',
   fs_read: 'vault',
+  mineru_convert: 'vault',
   fs_edit: 'vault',
   bash: 'vault',
   [FILE_EDIT_GROUP_TOOL_NAME]: 'vault',
