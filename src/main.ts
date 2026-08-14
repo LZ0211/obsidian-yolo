@@ -239,6 +239,7 @@ import type {
   VectorBackendStatus,
   VectorNamespace,
 } from './database/modules/rag/VectorStore'
+import { createEmbeddingVectorNamespace } from './database/modules/rag/embeddingNamespace'
 import {
   buildFailedRetrievalInspectStatus,
   composeRetrievalInspectStatus,
@@ -4351,12 +4352,15 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
     if (!configuredModel) {
       return null
     }
-    return {
-      provider: 'embedding',
+    const provider = this.settings.providers.find(
+      (item) => item.id === configuredModel.providerId,
+    )
+    return createEmbeddingVectorNamespace({
       model: configuredModel.model ?? configuredModel.id,
       dimension: configuredModel.dimension,
-      distanceMetric: 'cosine',
-    }
+      providerId: configuredModel.providerId,
+      endpoint: provider?.baseUrl,
+    })
   }
 
   async getVectorBackendStatus(): Promise<VectorBackendStatus> {

@@ -214,3 +214,45 @@ describe('YoloPlugin RAG maintenance runJob', () => {
     }
   })
 })
+
+describe('YoloPlugin RAG backend status', () => {
+  it('queries the namespace for the configured provider and endpoint', async () => {
+    const getStatus = jest.fn(async (_namespace: unknown) => ({
+      backend: 'sqlite' as const,
+      readiness: 'ready' as const,
+      rebuildRequired: false,
+    }))
+    const getStats = jest.fn(async (_namespace: unknown) => ({ chunkCount: 1 }))
+    const plugin = Object.create(YoloPlugin.prototype) as YoloPlugin
+    Object.assign(plugin, {
+      settings: {
+        embeddingModelId: 'embedding-1',
+        embeddingModels: [
+          {
+            id: 'embedding-1',
+            model: 'text-embedding-3-small',
+            dimension: 1536,
+            providerId: 'provider-1',
+          },
+        ],
+        providers: [
+          { id: 'provider-1', baseUrl: 'https://embedding.example/v1/' },
+        ],
+        ragBackendSettings: { rebuildRequired: false },
+      },
+      getDbManager: jest.fn(async () => ({
+        getVectorStore: () => ({ getStatus, getStats }),
+      })),
+    })
+
+    await plugin.getVectorBackendStatus()
+
+    expect(getStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerIdentity: 'provider-1',
+        endpointIdentity: 'https://embedding.example/v1/',
+      }),
+    )
+    expect(getStats).toHaveBeenCalledWith(getStatus.mock.calls[0][0])
+  })
+})
