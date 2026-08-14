@@ -193,6 +193,7 @@ const makeSettings = (overrides: Partial<YoloSettings> = {}): YoloSettings => {
       enableScriptExecution: false,
       allowedScriptDirectories: [],
     },
+    pluginUpdateNoticeEnabled: true,
     ...overrides,
   } satisfies YoloSettings
 
