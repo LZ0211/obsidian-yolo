@@ -325,6 +325,8 @@ export type TranslationKeys = {
         dingtalkDesc?: string
         feishuLabel?: string
         feishuDesc?: string
+        qqOfficialLabel?: string
+        qqOfficialDesc?: string
       }
       platformName?: {
         telegram?: string
@@ -1832,6 +1834,7 @@ export type TranslationKeys = {
       enable?: string
       deleteTaskTitle?: string
       deleteTaskMessage?: string
+      deleteTaskRunningWarning?: string
       runNowTaskNotFound?: string
       runNowTaskDisabled?: string
       runNowAlreadyQueued?: string
