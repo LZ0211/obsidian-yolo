@@ -5378,9 +5378,7 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
     const store = createScheduledTasksStore(
       normalizePath(`${vaultBasePath}/${getYoloBaseDir(this.settings)}`),
     )
-    const eventBus = new TaskEventBus({
-      channelName: `yolo-scheduled-task-events:${normalizePath(vaultBasePath)}`,
-    })
+    const eventBus = new TaskEventBus()
     const executor = new TaskExecutor({
       getAgentApi: () => this.getAgentApi(),
       getVaultBasePath: () => this.resolveVaultBasePath(),
