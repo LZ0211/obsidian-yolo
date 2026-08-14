@@ -666,8 +666,11 @@ export class ShadowGitDiffBackend implements AgentGitDiffBackend {
       }
 
       const excludes = new Set<string>()
+      // W7: read exclusions hide changes too — the agent cannot legitimately
+      // read (readExcludes) or produce (writeExcludes) files under these
+      // paths, so their changes must not surface as workspace activity.
       for (const rawRule of policyEnabled
-        ? (policy?.writeExcludes ?? [])
+        ? [...(policy?.writeExcludes ?? []), ...(policy?.readExcludes ?? [])]
         : []) {
         const rule = normalizeWorkspacePath(rawRule)
         const repoRule = joinSlashPath(vaultPrefix, rule)
