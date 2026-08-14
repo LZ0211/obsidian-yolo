@@ -14,7 +14,6 @@ import type { DelegatedAssistantProfile } from './delegated-assistant-profile'
 import type { SubagentParentContext } from './parent-context'
 import { SUBAGENT_RESULT_MAX_CHARS } from './result-limit'
 import {
-  SUBAGENT_ABORT_SETTLE_GRACE_MS,
   type RunSubagentParams,
   autoRejectPendingApprovals,
   buildSubagentContinuationInput,
@@ -580,18 +579,21 @@ describe('runSubagent ephemeral dispatch', () => {
     await flushMicrotasks()
   })
 
-  it('force-settles an aborted child whose runtime.run never returns (no permanent running record)', async () => {
+  it('does not report an aborted child settled while runtime.run is still executing', async () => {
     jest.useFakeTimers().setSystemTime(0)
     const nativeRuntimeModule = jest.requireMock<{
       NativeAgentRuntime: jest.Mock
     }>('../native-runtime')
     let started = false
+    let finishRun!: () => void
     nativeRuntimeModule.NativeAgentRuntime.mockImplementationOnce(() => ({
       subscribe: jest.fn(() => () => {}),
-      // The provider call never settles, even after the abort signal fires.
+      // The provider call ignores abort until its own work settles.
       run: jest.fn(() => {
         started = true
-        return new Promise<void>(() => {})
+        return new Promise<void>((resolve) => {
+          finishRun = resolve
+        })
       }),
       getSnapshot: jest.fn().mockReturnValue({
         messages: [],
@@ -608,18 +610,21 @@ describe('runSubagent ephemeral dispatch', () => {
     }
     expect(started).toBe(true)
 
-    // Abort the child: without the runner's settle grace the registry entry
-    // stays `running` forever (project claim stuck, timeout marker leaked).
     subagentTaskRegistry.abort(result.taskId)
-    await jest.advanceTimersByTimeAsync(SUBAGENT_ABORT_SETTLE_GRACE_MS + 1)
+    await jest.advanceTimersByTimeAsync(10_001)
 
-    // The runner force-settles: registry entry terminal + completion pushed.
-    expect(subagentTaskRegistry.get(result.taskId)?.status).toBe('aborted')
     const pushCompleted = (
       backgroundTaskCompletionBus as unknown as {
         pushCompleted: jest.Mock
       }
     ).pushCompleted
+    expect(subagentTaskRegistry.get(result.taskId)?.status).toBe('running')
+    expect(pushCompleted).not.toHaveBeenCalled()
+
+    finishRun()
+    await jest.advanceTimersByTimeAsync(0)
+
+    expect(subagentTaskRegistry.get(result.taskId)?.status).toBe('aborted')
     expect(pushCompleted).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'subagent',

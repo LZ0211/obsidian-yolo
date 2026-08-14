@@ -206,17 +206,6 @@ export function autoRejectPendingApprovals(runtime: NativeAgentRuntime): void {
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000
 
 /**
- * S3: grace window after the child abort signal fires before the runner
- * force-settles a child whose `runtime.run` never returns (provider call or
- * mcp tool that ignores the abort signal). Without it the registry entry
- * stays `running` forever — the bound project task claim is never released
- * and the parent-side timeout-settled marker is never consumed. The child's
- * own abort path settles in milliseconds, so this is a rarely-reached
- * safety net, not the common path.
- */
-export const SUBAGENT_ABORT_SETTLE_GRACE_MS = 10_000
-
-/**
  * F5: cadence at which the runner renews the parent-side subagent deadline
  * while the child is paused on user approval. The parent deadline is
  * heartbeat-driven (liveTaskStreamBus events), and an approval pause produces
@@ -526,37 +515,7 @@ async function runChildAgent(
   try {
     let nextRunInput: AgentRuntimeRunInput = runInput
     while (true) {
-      // S3: race the child run against an abort + grace window. An aborted
-      // child whose `runtime.run` never returns would otherwise keep the
-      // registry entry `running` forever (project claim stuck, parent
-      // timeout-settled marker leaked). When the grace expires the race is
-      // won below and the loop breaks into the normal settle path (aborted).
-      const runPromise = runWithBackgroundExecution(() =>
-        runtime.run(nextRunInput),
-      )
-      let forceSettle: (() => void) | undefined
-      const abortSettlePromise = new Promise<void>((resolve) => {
-        forceSettle = resolve
-      })
-      let abortGraceHandle: ReturnType<typeof setTimeout> | undefined
-      const startAbortGrace = () => {
-        abortGraceHandle = setTimeout(() => {
-          forceSettle?.()
-        }, SUBAGENT_ABORT_SETTLE_GRACE_MS)
-      }
-      if (abortController.signal.aborted) {
-        startAbortGrace()
-      } else {
-        abortController.signal.addEventListener('abort', startAbortGrace, {
-          once: true,
-        })
-      }
-      await Promise.race([runPromise, abortSettlePromise])
-      abortController.signal.removeEventListener('abort', startAbortGrace)
-      if (abortGraceHandle !== undefined) {
-        clearTimeout(abortGraceHandle)
-        abortGraceHandle = undefined
-      }
+      await runWithBackgroundExecution(() => runtime.run(nextRunInput))
       const snapshotAfterRun = runtime.getSnapshot()
       if (
         abortController.signal.aborted ||
