@@ -3,7 +3,7 @@ import { normalizePath } from 'obsidian'
 
 import { getYoloProjectsDir } from '../../core/paths/yoloPaths'
 import { arrayBufferToBase64 } from '../base64'
-import { sha256Hex } from '../common/content-hash'
+import { sha256Hex, sha256HexSync } from '../common/content-hash'
 
 import {
   type MinerUConversionResult,
@@ -31,12 +31,20 @@ export type MineruCacheManifest = {
  * first 16 hex chars of the SHA-256 of the PDF content. The caller computes
  * the hash (it requires reading the file); pass the yolo settings to honor a
  * configured projectsDir.
+ *
+ * `endpointHash` 把转换端点（baseUrl + apiKey）纳入缓存键：切换 MinerU 服务
+ * 后同一 PDF 不得复用旧端点的转换结果（不同服务可能产出不同 markdown/图片）。
+ * 缺省为空串保持既有调用（无端点概念的历史调用点）行为不变。
  */
 export function getMineruCacheDir(
   hash16: string,
   settings?: YoloSettingsLike | null,
+  endpointHash?: string,
 ): string {
-  return normalizePath(`${getYoloProjectsDir(settings)}/mineru-cache/${hash16}`)
+  const suffix = endpointHash ? `-${endpointHash}` : ''
+  return normalizePath(
+    `${getYoloProjectsDir(settings)}/mineru-cache/${hash16}${suffix}`,
+  )
 }
 
 const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer =>
@@ -130,6 +138,39 @@ async function writeCache(
 const inFlightConversions = new Map<string, Promise<MinerUConversionResult>>()
 
 /**
+ * 调用方侧的 abort 包装：只拒绝该调用方的 promise，不取消共享任务——并发
+ * 同 hash 请求中一个 abort 不得让其他调用方一起失败（此前共享任务的 signal
+ * 是首个调用方的，任何一方 abort 都会连带拒绝所有人）。
+ */
+const withCallerAbort = <T>(
+  promise: Promise<T>,
+  signal?: AbortSignal | null,
+): Promise<T> => {
+  if (!signal) return promise
+  if (signal.aborted) {
+    return Promise.reject(
+      new DOMException('The MinerU conversion was aborted.', 'AbortError'),
+    )
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(new DOMException('The MinerU conversion was aborted.', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      },
+    )
+  })
+}
+
+/**
  * Converts a PDF via MinerU with a content-hash cache: cache hits return the
  * stored markdown + image list without touching the network; misses run the
  * gradio conversion and persist the result under
@@ -158,27 +199,33 @@ export async function convertPdfViaMinerU(input: {
 
   const pdfBytes = await app.vault.readBinary(file)
   const hash16 = (await sha256Hex(arrayBufferToBase64(pdfBytes))).slice(0, 16)
-  const cacheDir = getMineruCacheDir(hash16, input.settings)
+  // 端点（baseUrl+apiKey）纳入缓存与去重键：切换 MinerU 服务后不得复用
+  // 旧端点的缓存，也不得共享首个调用的配置。
+  const endpointHash = sha256HexSync(
+    `${baseUrl}${String.fromCharCode(0)}${options.apiKey}`,
+  ).slice(0, 12)
+  const cacheKey = `${hash16}-${endpointHash}`
+  const cacheDir = getMineruCacheDir(hash16, input.settings, endpointHash)
 
-  const inFlight = inFlightConversions.get(hash16)
-  if (inFlight) return inFlight
+  const inFlight = inFlightConversions.get(cacheKey)
+  if (inFlight) return withCallerAbort(inFlight, signal)
 
   const task = (async (): Promise<MinerUConversionResult> => {
     const cached = await readCacheIfComplete(app, cacheDir)
     if (cached) return cached
 
+    // 共享任务不带 signal：abort 由每个调用方在自己的 await 边界处理。
     const raw = await convertPdfToMarkdown({
       pdfBytes,
       fileName: file.name,
       baseUrl,
       apiKey: options.apiKey,
-      signal,
     })
     return writeCache(app, cacheDir, raw)
   })().finally(() => {
-    inFlightConversions.delete(hash16)
+    inFlightConversions.delete(cacheKey)
   })
 
-  inFlightConversions.set(hash16, task)
-  return task
+  inFlightConversions.set(cacheKey, task)
+  return withCallerAbort(task, signal)
 }

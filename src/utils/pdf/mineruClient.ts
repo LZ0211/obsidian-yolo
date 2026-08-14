@@ -363,16 +363,22 @@ export async function convertPdfToMarkdown(input: {
   )
 
   // ① POST the PDF: { event_id }
-  const startResponse = await withAbort(
-    requestUrl({
-      url: `${normalizedBaseUrl}/gradio_api/call/${MINERU_API_NAME.replace(/^\//, '')}`,
-      method: 'POST',
-      contentType: `multipart/form-data; boundary=${boundary}`,
-      headers: { Accept: 'application/json', ...authHeaders(apiKey) },
-      body: toArrayBuffer(multipart),
-      throw: true,
-    }),
-    signal,
+  // POST 同样必须带超时：服务器假死/不响应时不能无限挂起（此前只有 SSE GET
+  // 有超时，挂起的 POST 会让调用方永久 pending）。
+  const startResponse = await withTimeout(
+    withAbort(
+      requestUrl({
+        url: `${normalizedBaseUrl}/gradio_api/call/${MINERU_API_NAME.replace(/^\//, '')}`,
+        method: 'POST',
+        contentType: `multipart/form-data; boundary=${boundary}`,
+        headers: { Accept: 'application/json', ...authHeaders(apiKey) },
+        body: toArrayBuffer(multipart),
+        throw: true,
+      }),
+      signal,
+    ),
+    MINERU_EVENT_POLL_TIMEOUT_MS,
+    `MinerU job start timed out after ${MINERU_EVENT_POLL_TIMEOUT_MS / 1000}s`,
   )
   throwIfAborted(signal)
 
@@ -469,17 +475,27 @@ type MinerUSettingsLike = {
 // Session-level circuit breaker shared by the three-way integration (fs_read /
 // RAG indexing / attachment context). A single conversion failure is transient
 // (server restart, timeout); three consecutive failures mark MinerU unavailable
-// for the rest of the session so slow paths fall back to the legacy PDF
-// pipeline without burning a network round-trip per call.
+// for a cooldown window so slow paths fall back to the legacy PDF pipeline
+// without burning a network round-trip per call. After the cooldown the breaker
+// auto-resets and the next call re-probes — the server may have recovered.
 let consecutiveFailures = 0
 let sessionUnavailable = false
+let brokenAt = 0
 const MINERU_CONSECUTIVE_FAILURE_THRESHOLD = 3
+/** 熔断后自动恢复的冷却窗口：服务端恢复后无需重启插件即可重新使用。 */
+export const MINERU_BREAKER_COOLDOWN_MS = 5 * 60 * 1000
 
 /** MinerU availability gate: switch on + baseUrl configured + not circuit-broken. */
 export function isMinerUEnabled(
   settings: MinerUSettingsLike | null | undefined,
 ): boolean {
-  if (sessionUnavailable) return false
+  if (sessionUnavailable) {
+    if (Date.now() - brokenAt < MINERU_BREAKER_COOLDOWN_MS) return false
+    // 冷却结束：恢复计数，下一个调用重新探测。
+    consecutiveFailures = 0
+    sessionUnavailable = false
+    brokenAt = 0
+  }
   const mineru = settings?.mineru
   return Boolean(mineru?.enabled && (mineru.baseUrl ?? '').trim().length > 0)
 }
@@ -489,6 +505,7 @@ export function markMinerUFailure(): void {
   consecutiveFailures += 1
   if (consecutiveFailures >= MINERU_CONSECUTIVE_FAILURE_THRESHOLD) {
     sessionUnavailable = true
+    brokenAt = Date.now()
   }
 }
 
@@ -496,6 +513,7 @@ export function markMinerUFailure(): void {
 export function resetMinerUSessionState(): void {
   consecutiveFailures = 0
   sessionUnavailable = false
+  brokenAt = 0
 }
 
 const MARKDOWN_IMAGE_REF_RE = /!\[([^\]]*)\]\(([^)]+)\)/g

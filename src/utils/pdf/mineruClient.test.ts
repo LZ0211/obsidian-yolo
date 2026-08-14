@@ -9,9 +9,13 @@ import {
 import { arrayBufferToBase64 } from '../base64'
 
 import {
+  MINERU_BREAKER_COOLDOWN_MS,
   MINERU_EVENT_POLL_TIMEOUT_MS,
   convertPdfToMarkdown,
+  isMinerUEnabled,
+  markMinerUFailure,
   probeMinerU,
+  resetMinerUSessionState,
   resolveMinerUImageRefs,
 } from './mineruClient'
 
@@ -442,5 +446,66 @@ describe('resolveMinerUImageRefs', () => {
     expect(markdown).toBe(
       '![](Projects/mineru-cache/abc123/images/2.jpg) ![](Projects/mineru-cache/abc123/images/1.png)',
     )
+  })
+})
+
+describe('convertPdfToMarkdown job start timeout', () => {
+  it('times out a hung job-start POST (no infinite pending)', async () => {
+    jest.useFakeTimers()
+    try {
+      // POST 永久 pending：此前只有 SSE GET 有超时，挂起的 POST 会让调用
+      // 方永久卡住。
+      mockedRequestUrl.mockImplementationOnce(
+        () =>
+          new Promise<RequestUrlResponse>(
+            () => {},
+          ) as unknown as RequestUrlResponsePromise,
+      )
+
+      const promise = convertPdfToMarkdown({
+        pdfBytes: PDF_BYTES.buffer,
+        fileName: 'a.pdf',
+        baseUrl: BASE_URL,
+        apiKey: API_KEY,
+      })
+      const assertion = expect(promise).rejects.toThrow(/timed out/i)
+
+      await jest.advanceTimersByTimeAsync(MINERU_EVENT_POLL_TIMEOUT_MS + 1000)
+      await assertion
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+})
+
+describe('MinerU session circuit breaker', () => {
+  afterEach(() => {
+    resetMinerUSessionState()
+  })
+
+  it('breaks after three consecutive failures and recovers after the cooldown window', () => {
+    jest.useFakeTimers()
+    try {
+      resetMinerUSessionState()
+      markMinerUFailure()
+      markMinerUFailure()
+      expect(isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }))
+        .toBe(true)
+      markMinerUFailure()
+      expect(isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }))
+        .toBe(false)
+
+      // 冷却窗口未过：仍然熔断。
+      jest.advanceTimersByTime(MINERU_BREAKER_COOLDOWN_MS - 1000)
+      expect(isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }))
+        .toBe(false)
+
+      // 冷却结束：自动恢复，无需重启插件。
+      jest.advanceTimersByTime(2000)
+      expect(isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }))
+        .toBe(true)
+    } finally {
+      jest.useRealTimers()
+    }
   })
 })

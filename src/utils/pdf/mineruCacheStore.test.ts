@@ -1,10 +1,19 @@
 import * as JSZipModule from 'jszip'
-import { type App, type TFile, requestUrl } from 'obsidian'
+import {
+  type App,
+  type RequestUrlResponse,
+  type RequestUrlResponsePromise,
+  type TFile,
+  requestUrl,
+} from 'obsidian'
 
 import { arrayBufferToBase64 } from '../base64'
-import { sha256Hex } from '../common/content-hash'
+import { sha256Hex, sha256HexSync } from '../common/content-hash'
 
 import { convertPdfViaMinerU, getMineruCacheDir } from './mineruCacheStore'
+
+const endpointHashFor = (baseUrl: string, apiKey: string): string =>
+  sha256HexSync(`${baseUrl}${String.fromCharCode(0)}${apiKey}`).slice(0, 12)
 
 type JSZipConstructor = typeof import('jszip')
 type JSZipInstance = InstanceType<JSZipConstructor>
@@ -161,8 +170,14 @@ describe('getMineruCacheDir', () => {
 })
 
 describe('convertPdfViaMinerU', () => {
+  const expectedCacheDir = async (): Promise<string> =>
+    `Projects/mineru-cache/${await expectedHash16()}-${endpointHashFor(
+      OPTIONS.baseUrl,
+      OPTIONS.apiKey,
+    )}`
+
   it('persists result.md, images and manifest.json under the vault cache dir', async () => {
-    const cacheDir = `Projects/mineru-cache/${await expectedHash16()}`
+    const cacheDir = await expectedCacheDir()
 
     const result = await convertPdfViaMinerU({ app, file, options: OPTIONS })
 
@@ -215,7 +230,7 @@ describe('convertPdfViaMinerU', () => {
   })
 
   it('re-converts when the cache is incomplete (a listed image is missing)', async () => {
-    const cacheDir = `Projects/mineru-cache/${await expectedHash16()}`
+    const cacheDir = await expectedCacheDir()
     await convertPdfViaMinerU({ app, file, options: OPTIONS })
     await adapter.remove(`${cacheDir}/images/1.png`)
 
@@ -224,6 +239,85 @@ describe('convertPdfViaMinerU', () => {
     await convertPdfViaMinerU({ app, file, options: OPTIONS })
 
     expect(mockedRequestUrl).toHaveBeenCalledTimes(3)
+  })
+
+  it('isolates the cache and in-flight dedup by endpoint (baseUrl+apiKey)', async () => {
+    const otherOptions = {
+      ...OPTIONS,
+      baseUrl: 'http://mineru-other.test',
+      apiKey: 'Bearer other',
+    }
+    const otherDir = `Projects/mineru-cache/${await expectedHash16()}-${endpointHashFor(
+      otherOptions.baseUrl,
+      otherOptions.apiKey,
+    )}`
+
+    const first = await convertPdfViaMinerU({ app, file, options: OPTIONS })
+    expect(await adapter.exists(otherDir)).toBe(false)
+
+    // 并发同 PDF、不同端点：不得共享首个调用的转换结果/配置。
+    mockedRequestUrl.mockClear()
+    mockZipConversion()
+    const other = await convertPdfViaMinerU({
+      app,
+      file,
+      options: otherOptions,
+    })
+
+    expect(other.markdown).toBe(first.markdown)
+    expect(other.images[0]?.name).toBe('1.png')
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(3)
+    expect(
+      (mockedRequestUrl.mock.calls[0]?.[0] as { url?: string }).url,
+    ).toContain('http://mineru-other.test')
+    expect(await adapter.exists(`${otherDir}/result.md`)).toBe(true)
+
+    // 端点隔离：切回原端点后原缓存仍然命中（不因其他端点的转换被污染）。
+    mockedRequestUrl.mockClear()
+    await convertPdfViaMinerU({ app, file, options: OPTIONS })
+    expect(mockedRequestUrl).not.toHaveBeenCalled()
+  })
+
+  it('an aborted caller does not cancel a shared in-flight conversion of the same content', async () => {
+    const controllerA = new AbortController()
+    const controllerB = new AbortController()
+    // 完整转换流程（POST → SSE → zip 下载）挂起，直到显式推进。
+    const deferredSteps: Array<() => void> = []
+    const makePending = (): Promise<RequestUrlResponsePromise> =>
+      new Promise<RequestUrlResponse>((resolve) => {
+        deferredSteps.push(() =>
+          resolve(responseWithText(JSON.stringify({ event_id: 'evt-shared' }))),
+        )
+      }) as unknown as Promise<RequestUrlResponsePromise>
+    mockedRequestUrl.mockImplementationOnce(() => makePending() as never)
+    const zipBody = await buildZip({
+      'result.md': MARKDOWN,
+      'images/1.png': PNG_BYTES,
+    })
+    mockedRequestUrl
+      .mockImplementationOnce(() => new Promise(() => {}) as never)
+      .mockResolvedValueOnce(responseWithArrayBuffer(zipBody))
+
+    const promiseA = convertPdfViaMinerU({
+      app,
+      file,
+      options: OPTIONS,
+      signal: controllerA.signal,
+    })
+    const promiseB = convertPdfViaMinerU({
+      app,
+      file,
+      options: OPTIONS,
+      signal: controllerB.signal,
+    })
+
+    // A 取消：只拒绝 A 自己的 promise，共享任务继续，B 不受影响。
+    controllerA.abort()
+    await expect(promiseA).rejects.toMatchObject({ name: 'AbortError' })
+
+    for (const step of deferredSteps.splice(0)) step()
+    // 推进共享任务完成（前两次 requestUrl 调用属于 A 触发、B 共享的转换）。
+    await expect(promiseB).resolves.toMatchObject({ markdown: MARKDOWN })
   })
 
   it('throws when MinerU is disabled or has no base url', async () => {

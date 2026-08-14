@@ -4187,22 +4187,50 @@ export async function callLocalFileTool({
         }
 
         // 落盘：md → {outputDir}/result.md，图片 → {outputDir}/images/{name}。
+        // 转换完成后的落盘阶段也可能被取消（信号在写循环中途触发）：继续写
+        // 会留下 result.md + 半套图片的残缺输出——逐文件检查并清理已写文件。
         await ensureFolderPathExists(app, `${outputDir}/images`)
         const resultPath = normalizePath(`${outputDir}/result.md`)
         const adapter = app.vault.adapter
-        await adapter.write(resultPath, raw.markdown)
-        const imageFiles: string[] = []
-        for (const image of raw.images) {
-          const vaultPath = normalizePath(`${outputDir}/images/${image.name}`)
-          await adapter.writeBinary(vaultPath, toArrayBuffer(image.data))
-          imageFiles.push(vaultPath)
+        const writtenPaths: string[] = []
+        const cleanupPartialWrite = async (): Promise<void> => {
+          for (const written of writtenPaths) {
+            try {
+              await app.vault.adapter.remove(written)
+            } catch {
+              // best-effort：清理失败时残留文件由用户/重跑覆盖
+            }
+          }
         }
-        return {
-          status: ToolCallResponseStatus.Success,
-          text: JSON.stringify({
-            markdownFiles: [resultPath],
-            imageFiles,
-          }),
+        try {
+          await adapter.write(resultPath, raw.markdown)
+          writtenPaths.push(resultPath)
+          const imageFiles: string[] = []
+          for (const image of raw.images) {
+            if (signal?.aborted) {
+              await cleanupPartialWrite()
+              return { status: ToolCallResponseStatus.Aborted }
+            }
+            const vaultPath = normalizePath(
+              `${outputDir}/images/${image.name}`,
+            )
+            await adapter.writeBinary(vaultPath, toArrayBuffer(image.data))
+            writtenPaths.push(vaultPath)
+            imageFiles.push(vaultPath)
+          }
+          return {
+            status: ToolCallResponseStatus.Success,
+            text: JSON.stringify({
+              markdownFiles: [resultPath],
+              imageFiles,
+            }),
+          }
+        } catch (error) {
+          if (signal?.aborted) {
+            await cleanupPartialWrite()
+            return { status: ToolCallResponseStatus.Aborted }
+          }
+          throw error
         }
       }
 

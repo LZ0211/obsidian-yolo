@@ -110,7 +110,7 @@ const makeTFile = (path: string): TFile => {
   const name = path.split('/').pop() ?? path
   const dot = name.lastIndexOf('.')
   const extension = dot >= 0 ? name.slice(dot + 1).toLowerCase() : ''
-   
+
   return Object.assign(new TFile(), {
     path,
     name,
