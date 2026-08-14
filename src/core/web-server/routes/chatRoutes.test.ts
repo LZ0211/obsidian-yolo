@@ -1159,6 +1159,141 @@ describe('chatRoutes', () => {
     expect(updateChat).not.toHaveBeenCalled()
     expect(res.statusCode).toBe(400)
   })
+
+  it('rejects a non-string working directory in the patch route', async () => {
+    const updateChat = jest.fn()
+    const { router } = createHarness({
+      updateChat,
+      findById: jest.fn().mockResolvedValue(
+        createConversation({
+          id: 'chat-1',
+          webBinding: {
+            initialAgentId: 'agent-1',
+            activeAgentId: 'agent-1',
+            rootHash: 'root-1',
+          },
+        }),
+      ),
+    })
+
+    const res = await dispatch(
+      router,
+      'POST',
+      '/api/chat/patch-metadata',
+      { id: 'chat-1', patch: { workingDirectory: null } },
+      { [WEB_SESSION_HEADER]: 'session-1' },
+    )
+
+    expect(updateChat).not.toHaveBeenCalled()
+    expect(res.statusCode).toBe(400)
+    expect(res.jsonBody).toEqual({
+      error: {
+        code: 'invalid_request',
+        message: 'workingDirectory must be a string',
+      },
+    })
+  })
+
+  it('normalizes and validates working directory metadata before updating', async () => {
+    const existing = createConversation({
+      id: 'chat-1',
+      workingDirectory: '/Projects',
+      webBinding: {
+        initialAgentId: 'agent-1',
+        activeAgentId: 'agent-1',
+        rootHash: 'root-1',
+      },
+    })
+    const updateChat = jest.fn().mockResolvedValue(existing)
+    const isVaultFolder = jest.fn(() => true)
+    const { router } = createHarness({
+      updateChat,
+      isVaultFolder,
+      findById: jest.fn().mockResolvedValue(existing),
+    })
+
+    const res = await dispatch(
+      router,
+      'POST',
+      '/api/chat/patch-metadata',
+      { id: 'chat-1', patch: { workingDirectory: '/Projects/Exam/' } },
+      { [WEB_SESSION_HEADER]: 'session-1' },
+    )
+
+    expect(isVaultFolder).toHaveBeenCalledWith('/Projects/Exam')
+    expect(updateChat).toHaveBeenCalledWith(
+      'chat-1',
+      { workingDirectory: '/Projects/Exam' },
+      { touchUpdatedAt: true },
+    )
+    expect(res.statusCode).toBe(200)
+  })
+
+  it.each([
+    {
+      label: 'a missing Vault folder',
+      requested: '/Projects/Missing',
+      isVaultFolder: () => false,
+      locked: false,
+      statusCode: 400,
+      message: 'workingDirectory must be an existing Vault folder',
+    },
+    {
+      label: 'a directory outside the Agent policy',
+      requested: '/Archive',
+      isVaultFolder: () => true,
+      locked: false,
+      statusCode: 400,
+      message: 'workingDirectory is outside the active Agent file policy',
+    },
+    {
+      label: 'a directory change after the file scope locks',
+      requested: '/Projects/New',
+      isVaultFolder: () => true,
+      locked: true,
+      statusCode: 409,
+      message: 'Conversation working directory is locked',
+    },
+  ])('rejects $label in the metadata patch route', async (testCase) => {
+    const existing = createConversation({
+      id: 'chat-1',
+      messages: testCase.locked
+        ? ([
+            { id: 'assistant-1', role: 'assistant', content: 'kept' },
+          ] as unknown as WebChatConversation['messages'])
+        : [],
+      workingDirectory: '/Projects/Old',
+      fileScopeLocked: testCase.locked,
+      webBinding: {
+        initialAgentId: 'agent-1',
+        activeAgentId: 'agent-1',
+        rootHash: 'root-1',
+      },
+    } as Partial<WebChatConversation> & { fileScopeLocked?: boolean })
+    const updateChat = jest.fn()
+    const { router } = createHarness({
+      updateChat,
+      isVaultFolder: jest.fn(testCase.isVaultFolder),
+      findById: jest.fn().mockResolvedValue(existing),
+    })
+
+    const res = await dispatch(
+      router,
+      'POST',
+      '/api/chat/patch-metadata',
+      { id: 'chat-1', patch: { workingDirectory: testCase.requested } },
+      { [WEB_SESSION_HEADER]: 'session-1' },
+    )
+
+    expect(updateChat).not.toHaveBeenCalled()
+    expect(res.statusCode).toBe(testCase.statusCode)
+    expect(res.jsonBody).toEqual({
+      error: {
+        code: testCase.statusCode === 409 ? 'conflict' : 'invalid_request',
+        message: testCase.message,
+      },
+    })
+  })
 })
 
 function createHarness(

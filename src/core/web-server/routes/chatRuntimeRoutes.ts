@@ -1,5 +1,5 @@
 // eslint-disable-next-line import/no-nodejs-modules -- type-only import，编译后消失，无运行时 node 依赖
-import type { ServerResponse } from 'node:http'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import type {
   ChatCommandResult,
@@ -27,6 +27,10 @@ export type ChatRuntimeRoutesContext = {
     runtimeId: 'yolo' | 'claude-code' | 'codex',
     conversationId: string | null,
   ) => Promise<ChatRuntime | null> | ChatRuntime | null
+  authorizeChatRuntime?: (
+    sessionId: string | null,
+    conversationId: string | null,
+  ) => Promise<boolean> | boolean
 }
 
 const RUNTIME_IDS = ['yolo', 'claude-code', 'codex'] as const
@@ -220,10 +224,19 @@ export function registerChatRuntimeRoutes(
   context: ChatRuntimeRoutesContext,
 ): void {
   const requireRuntime = async (
+    req: Pick<IncomingMessage, 'headers'>,
     runtimeId: 'yolo' | 'claude-code' | 'codex',
     conversationId: string | null,
-  ): Promise<ChatRuntime | null> =>
-    resolveCachedRuntime(runtimeId, conversationId, context)
+  ): Promise<ChatRuntime | null> => {
+    const sessionId = getHeader(req.headers['x-yolo-web-session-id'])
+    if (
+      context.authorizeChatRuntime &&
+      !(await context.authorizeChatRuntime(sessionId, conversationId))
+    ) {
+      return null
+    }
+    return resolveCachedRuntime(runtimeId, conversationId, context)
+  }
 
   router.get(
     '/api/chat-runtime/:runtimeId/stream',
@@ -234,7 +247,7 @@ export function registerChatRuntimeRoutes(
           return writeJson(res, 400, apiError('bad_runtime', 'unknown runtime'))
         }
         const conversationId = queryValue(req, 'conversationId')
-        const runtime = await requireRuntime(runtimeId, conversationId)
+        const runtime = await requireRuntime(req, runtimeId, conversationId)
         if (!runtime) {
           return writeJson(
             res,
@@ -328,7 +341,7 @@ export function registerChatRuntimeRoutes(
           return writeJson(res, 400, apiError('bad_runtime', 'unknown runtime'))
         }
         const conversationId = queryValue(req, 'conversationId')
-        const runtime = await requireRuntime(runtimeId, conversationId)
+        const runtime = await requireRuntime(req, runtimeId, conversationId)
         if (!runtime) {
           return writeJson(
             res,
@@ -383,7 +396,11 @@ export function registerChatRuntimeRoutes(
         content?: string
         conversationId?: string
       }
-      const runtime = await requireRuntime(runtimeId, conversationId ?? null)
+      const runtime = await requireRuntime(
+        req,
+        runtimeId,
+        conversationId ?? null,
+      )
       if (!runtime) {
         return writeJson(
           res,
@@ -435,7 +452,11 @@ export function registerChatRuntimeRoutes(
           requestId?: string
           conversationId?: string
         }
-        const runtime = await requireRuntime(runtimeId, conversationId ?? null)
+        const runtime = await requireRuntime(
+          req,
+          runtimeId,
+          conversationId ?? null,
+        )
         if (!runtime) {
           return writeJson(
             res,
@@ -476,7 +497,11 @@ export function registerChatRuntimeRoutes(
           decision: string
           conversationId?: string
         }
-        const runtime = await requireRuntime(runtimeId, conversationId ?? null)
+        const runtime = await requireRuntime(
+          req,
+          runtimeId,
+          conversationId ?? null,
+        )
         if (!runtime) {
           return writeJson(
             res,
@@ -523,7 +548,11 @@ export function registerChatRuntimeRoutes(
           answer: unknown
           conversationId?: string
         }
-        const runtime = await requireRuntime(runtimeId, conversationId ?? null)
+        const runtime = await requireRuntime(
+          req,
+          runtimeId,
+          conversationId ?? null,
+        )
         if (!runtime) {
           return writeJson(
             res,
@@ -564,7 +593,11 @@ export function registerChatRuntimeRoutes(
           reasoningEffort?: string | null
           conversationId?: string
         }
-        const runtime = await requireRuntime(runtimeId, conversationId ?? null)
+        const runtime = await requireRuntime(
+          req,
+          runtimeId,
+          conversationId ?? null,
+        )
         if (!runtime) {
           return writeJson(
             res,
@@ -605,7 +638,11 @@ export function registerChatRuntimeRoutes(
           yoloEnabled: boolean
           conversationId?: string
         }
-        const runtime = await requireRuntime(runtimeId, conversationId ?? null)
+        const runtime = await requireRuntime(
+          req,
+          runtimeId,
+          conversationId ?? null,
+        )
         if (!runtime) {
           return writeJson(
             res,
@@ -642,7 +679,7 @@ export function registerChatRuntimeRoutes(
           return writeJson(res, 400, apiError('bad_runtime', 'unknown runtime'))
         }
         const conversationId = queryValue(req, 'conversationId')
-        const runtime = await requireRuntime(runtimeId, conversationId)
+        const runtime = await requireRuntime(req, runtimeId, conversationId)
         if (!runtime) {
           return writeJson(
             res,
@@ -687,7 +724,11 @@ export function registerChatRuntimeRoutes(
           ref?: unknown
           conversationId?: string
         }
-        const runtime = await requireRuntime(runtimeId, conversationId ?? null)
+        const runtime = await requireRuntime(
+          req,
+          runtimeId,
+          conversationId ?? null,
+        )
         if (!runtime) {
           return writeJson(
             res,

@@ -19,6 +19,7 @@ import type { CliRuntimeScope } from '../cli-runtime/coordinator'
 import { detectCliRuntimeAvailability } from '../cli-runtime/desktop'
 import type { McpManager } from '../mcp/mcpManager'
 import { getYoloBaseDir } from '../paths/yoloPaths'
+import { normalizeConversationWorkingDirectory } from '../workspace/conversationFileScope'
 
 import { registerAgentRoutes } from './routes/agentRoutes'
 import { registerApplyRoutes } from './routes/applyRoutes'
@@ -27,6 +28,7 @@ import { registerBootstrapRoutes } from './routes/bootstrapRoutes'
 import { registerChatRoutes } from './routes/chatRoutes'
 import {
   closeChatRuntimeSessionStreams,
+  invalidateChatRuntimeConversation,
   registerChatRuntimeRoutes,
 } from './routes/chatRuntimeRoutes'
 import { registerCitationRoutes } from './routes/citationRoutes'
@@ -337,11 +339,15 @@ export function registerWebServerRoutes(
       const patch = { ...updateRecord }
       delete patch.title
       if (Object.keys(patch).length > 0) {
-        return patchConversation(
+        const updated = await patchConversation(
           conversationId,
           patch,
           updateOptions?.touchUpdatedAt,
         )
+        if (updated && updated.workingDirectory !== current.workingDirectory) {
+          await invalidateChatRuntimeConversation(conversationId)
+        }
+        return updated
       }
       return getChat(conversationId)
     },
@@ -349,9 +355,11 @@ export function registerWebServerRoutes(
       const current = await getChat(conversationId)
       if (!current) return false
       await options.chatManager.deleteChat(conversationId)
+      await invalidateChatRuntimeConversation(conversationId)
       return true
     },
     saveChat: async (request) => {
+      const current = await getChat(request.id)
       const patch: Record<string, unknown> = {
         messages: request.messages,
         overrides: request.overrides,
@@ -362,7 +370,9 @@ export function registerWebServerRoutes(
           request.assistantGroupBoundaryMessageIds,
         reasoningLevel: request.reasoningLevel,
         compaction: request.compaction,
-        workingDirectory: request.workingDirectory,
+      }
+      if (request.workingDirectory !== undefined) {
+        patch.workingDirectory = request.workingDirectory
       }
       // ChatManager.updateChat 是 spread 合并：客户端对象里 webBinding 通常
       // 是 undefined（web 会话绑定由服务端维护），直接写入会把 run 时打上的
@@ -375,7 +385,11 @@ export function registerWebServerRoutes(
         patch as unknown as ChatManagerUpdatePatch,
         { touchUpdatedAt: request.touchUpdatedAt === true },
       )
-      return getChat(request.id)
+      const saved = await getChat(request.id)
+      if (saved && saved.workingDirectory !== current?.workingDirectory) {
+        await invalidateChatRuntimeConversation(request.id)
+      }
+      return saved
     },
     generateTitle: async ({ conversationId, messages, force }) => {
       const current = await getChat(conversationId)
@@ -459,12 +473,37 @@ export function registerWebServerRoutes(
   registerChatRoutes(options.server.router, registerChatRoutesContext)
 
   registerChatRuntimeRoutes(options.server.router, {
-    getChatRuntime: async (runtimeId, _conversationId) => {
+    authorizeChatRuntime: async (sessionId, conversationId) => {
+      if (!conversationId) return true
+      const resolved = resolver.resolve({ sessionId })
+      if (!resolved.ok) return false
+      const conversation = await getChat(conversationId)
+      return canUseWebConversation(conversation, {
+        activeAgentId: resolved.context.activeAgent.id,
+        rootHash: resolved.context.rootHash,
+      })
+    },
+    getChatRuntime: async (runtimeId, conversationId) => {
       // 决策：native 分支不移植——Web 主面（yolo）已走 /api/agent/* 直驱
       // AgentService，此处恒返回 null（路由回 404 runtime_unavailable）。
       if (runtimeId === 'yolo') {
         return null
       }
+      const conversation = conversationId ? await getChat(conversationId) : null
+      if (conversationId && !conversation) return null
+      let workingDirectory: string
+      try {
+        workingDirectory = normalizeConversationWorkingDirectory(
+          conversation?.workingDirectory ?? '/',
+        )
+      } catch {
+        return null
+      }
+      const folder =
+        workingDirectory === '/'
+          ? options.app.vault.getRoot()
+          : options.app.vault.getAbstractFileByPath(workingDirectory.slice(1))
+      if (!(folder instanceof TFolder)) return null
       // CLI 面（claude-code/codex）：桌面协调器 scope 可用时按实例创建
       // CLI 契约 runtime；scope 不可用（移动端/未接线）回 404。
       const scope = await (options.getCliRuntimeScope?.() ?? null)
@@ -473,6 +512,7 @@ export function registerWebServerRoutes(
             app: options.app,
             settings: options.getSettings(),
             getMcpManager: options.getMcpManager,
+            workingDirectory,
           })
         : null
     },

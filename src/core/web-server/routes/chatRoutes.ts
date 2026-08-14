@@ -704,6 +704,22 @@ export function registerChatRoutes(
       )
       return
     }
+    const rawPatchRecord = rawPatch as Record<string, unknown>
+    const hasWorkingDirectory = Object.prototype.hasOwnProperty.call(
+      rawPatchRecord,
+      'workingDirectory',
+    )
+    if (
+      hasWorkingDirectory &&
+      typeof rawPatchRecord.workingDirectory !== 'string'
+    ) {
+      writeJson(
+        res,
+        400,
+        apiError('invalid_request', 'workingDirectory must be a string'),
+      )
+      return
+    }
     const patch: Record<string, unknown> = {}
     for (const key of Object.keys(rawPatch)) {
       if (!CONVERSATION_METADATA_PATCH_KEYS.has(key)) {
@@ -714,13 +730,31 @@ export function registerChatRoutes(
         )
         return
       }
-      patch[key] = (rawPatch as Record<string, unknown>)[key]
+      patch[key] = rawPatchRecord[key]
     }
 
     const existing = await context.findById(id)
     if (!existing || !canAccessConversation(existing, binding.binding)) {
       writeJson(res, 404, apiError('not_found', 'Not found'))
       return
+    }
+
+    if (hasWorkingDirectory) {
+      const workingDirectory = validateWorkingDirectoryForSave({
+        requested: rawPatchRecord.workingDirectory as string,
+        existing,
+        binding: binding.binding,
+        isVaultFolder: context.isVaultFolder,
+      })
+      if (!workingDirectory.ok) {
+        writeJson(
+          res,
+          workingDirectory.statusCode,
+          apiError(workingDirectory.code, workingDirectory.message),
+        )
+        return
+      }
+      patch.workingDirectory = workingDirectory.value
     }
 
     const updated = await context.updateChat(id, patch, {
