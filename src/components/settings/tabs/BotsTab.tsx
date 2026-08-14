@@ -236,10 +236,15 @@ export function BotsTab({ app, plugin }: BotsTabProps) {
     }).open()
   }
 
-  const archiveMapping = (sessionKey: string, archive: boolean) => {
+  const archiveMapping = (
+    sessionKey: string,
+    platformInstanceId: string | undefined,
+    archive: boolean,
+  ) => {
     updateBots({
       sessionMappings: bots.sessionMappings.map((mapping) =>
-        mapping.sessionKey === sessionKey
+        mapping.sessionKey === sessionKey &&
+        mapping.platformInstanceId === platformInstanceId
           ? { ...mapping, archivedAt: archive ? Date.now() : undefined }
           : mapping,
       ),
@@ -490,7 +495,7 @@ export function BotsTab({ app, plugin }: BotsTabProps) {
               return (
                 <div
                   className="setting-item yolo-settings-card"
-                  key={mapping.sessionKey}
+                  key={`${mapping.platformInstanceId ?? ''}\u0000${mapping.sessionKey}`}
                 >
                   <div className="setting-item-info">
                     <div
@@ -544,7 +549,11 @@ export function BotsTab({ app, plugin }: BotsTabProps) {
                           : t('settings.bots.archive', 'Archive')
                       }
                       onClick={() =>
-                        archiveMapping(mapping.sessionKey, !isArchived)
+                        archiveMapping(
+                          mapping.sessionKey,
+                          mapping.platformInstanceId,
+                          !isArchived,
+                        )
                       }
                     />
                   </div>
