@@ -916,21 +916,135 @@ describe('WeixinOCAdapter — sendMessage', () => {
     await adapter.stop()
   })
 
-  it('uploads an image and sends its encrypted image item with the reply text', async () => {
-    mockStartWithFirstPoll({
-      json: {
-        ret: 0,
-        msgs: [
-          {
-            message_id: 'm1',
-            from_user_id: 'alice',
-            context_token: 'ctx-alice',
-            message_type: 1,
-            item_list: [{ type: 1, text_item: { text: 'hi bot' } }],
+  it('fix-round-1: long text + media sends media exactly once (not once per text chunk)', async () => {
+    let pollCount = 0
+    mockedRequestUrl.mockImplementation((async (request) => {
+      const param = asRequestUrlParam(request)
+      if (param.url.includes('/ilink/bot/msg/notifystart')) {
+        return { json: { ret: 0 } } as never
+      }
+      if (param.url.includes('/ilink/bot/getuploadurl')) {
+        return { json: { ret: 0, upload_param: 'upload-param' } } as never
+      }
+      if (param.url.includes('/c2c/upload')) {
+        return {
+          status: 200,
+          headers: { 'x-encrypted-param': 'download-param' },
+        } as never
+      }
+      if (param.url.includes('/ilink/bot/sendmessage')) {
+        return { json: { ret: 0, msg_id: 'sent-mixed' } } as never
+      }
+      if (pollCount === 0) {
+        pollCount += 1
+        return {
+          json: {
+            ret: 0,
+            msgs: [
+              {
+                message_id: 'm1',
+                from_user_id: 'alice',
+                context_token: 'ctx-alice',
+                message_type: 1,
+                item_list: [{ type: 1, text_item: { text: 'hi bot' } }],
+              },
+            ],
           },
-        ],
-      },
+        } as never
+      }
+      return hangForever()
+    }) as typeof requestUrl)
+
+    const adapter = new WeixinOCAdapter({
+      app: {
+        vault: { adapter: { readBinary: jest.fn(async () => new Uint8Array(Buffer.from('hello')).buffer) } },
+      } as unknown as import('obsidian').App,
     })
+    const messagePromise = waitForNextMessage(adapter)
+    await adapter.start(makeConfig({ botToken: 'tok' }))
+    await messagePromise
+
+    const refs = await adapter.sendMessage('weixin_oc:private:alice', {
+      text: 'w'.repeat(4500), // 3 chunks at the 2048 cap
+      images: [
+        {
+          source: 'vault-path',
+          path: 'exports/chart.png',
+          mimeType: 'image/png',
+          label: 'chart.png',
+        },
+      ],
+    })
+
+    const sendCalls = mockedRequestUrl.mock.calls.filter(([params]) =>
+      String(asRequestUrlParam(params).url).includes('sendmessage'),
+    )
+    // RED on the pre-fix-round-1 behavior: every text chunk re-attached the
+    // image, so the image was uploaded/sent 3 times.
+    expect(sendCalls).toHaveLength(4)
+    const imageCount = sendCalls.reduce((count, [params]) => {
+      const body = JSON.parse(bodyAsString(asRequestUrlParam(params))) as {
+        msg: { item_list: unknown[] }
+      }
+      return (
+        count +
+        body.msg.item_list.filter(
+          (item) =>
+            (item as { type?: number }).type === 2,
+        ).length
+      )
+    }, 0)
+    expect(imageCount).toBe(1)
+    const textItems = sendCalls.reduce((count, [params]) => {
+      const body = JSON.parse(bodyAsString(asRequestUrlParam(params))) as {
+        msg: { item_list: Array<{ type?: number }> }
+      }
+      return count + body.msg.item_list.filter((item) => item.type === 1).length
+    }, 0)
+    expect(textItems).toBe(3)
+    expect(refs).toHaveLength(4)
+
+    await adapter.stop()
+  })
+
+  it('uploads an image and sends its encrypted image item with the reply text', async () => {
+    let pollCount = 0
+    mockedRequestUrl.mockImplementation((async (request) => {
+      const param = asRequestUrlParam(request)
+      if (param.url.includes('/ilink/bot/msg/notifystart')) {
+        return { json: { ret: 0 } } as never
+      }
+      if (param.url.includes('/ilink/bot/getuploadurl')) {
+        return { json: { ret: 0, upload_param: 'upload-param' } } as never
+      }
+      if (param.url.includes('/c2c/upload')) {
+        return {
+          status: 200,
+          headers: { 'x-encrypted-param': 'download-param' },
+        } as never
+      }
+      if (param.url.includes('/ilink/bot/sendmessage')) {
+        return { json: { ret: 0, msg_id: 'sent-2' } } as never
+      }
+      if (pollCount === 0) {
+        pollCount += 1
+        return {
+          json: {
+            ret: 0,
+            msgs: [
+              {
+                message_id: 'm1',
+                from_user_id: 'alice',
+                context_token: 'ctx-alice',
+                message_type: 1,
+                item_list: [{ type: 1, text_item: { text: 'hi bot' } }],
+              },
+            ],
+          },
+        } as never
+      }
+      return hangForever()
+    }) as typeof requestUrl)
 
     const readBinary = jest.fn(
       async () => new Uint8Array(Buffer.from('hello')).buffer,
@@ -943,18 +1057,6 @@ describe('WeixinOCAdapter — sendMessage', () => {
     const messagePromise = waitForNextMessage(adapter)
     await adapter.start(makeConfig({ botToken: 'tok' }))
     await messagePromise
-
-    mockedRequestUrl
-      .mockResolvedValueOnce({
-        json: { ret: 0, upload_param: 'upload-param' },
-      } as never)
-      .mockResolvedValueOnce({
-        status: 200,
-        headers: { 'x-encrypted-param': 'download-param' },
-      } as never)
-      .mockResolvedValueOnce({
-        json: { ret: 0, msg_id: 'sent-2' },
-      } as never)
 
     await adapter.sendMessage('weixin_oc:private:alice', {
       text: 'Here is the chart.',
@@ -1004,12 +1106,19 @@ describe('WeixinOCAdapter — sendMessage', () => {
     expect(encrypted).toHaveLength(16)
     expect(Array.from(encrypted)).not.toEqual(Array.from(Buffer.from('hello')))
 
-    const sendCall = mockedRequestUrl.mock.calls.find(([params]) =>
+    const sendCalls = mockedRequestUrl.mock.calls.filter(([params]) =>
       String(asRequestUrlParam(params).url).includes('sendmessage'),
     )
-    const sentBody = JSON.parse(
-      bodyAsString(asRequestUrlParam(sendCall![0])),
-    ) as {
+    // fix-round-1: text and media go out as separate requests — the text
+    // chunk must not re-attach the image (that would send it N times).
+    expect(sendCalls).toHaveLength(2)
+    const textBody = JSON.parse(bodyAsString(asRequestUrlParam(sendCalls[0][0]))) as {
+      msg: { item_list: unknown[] }
+    }
+    expect(textBody.msg.item_list).toEqual([
+      { type: 1, text_item: { text: 'Here is the chart.' } },
+    ])
+    const mediaBody = JSON.parse(bodyAsString(asRequestUrlParam(sendCalls[1][0]))) as {
       msg: {
         item_list: Array<{
           type: number
@@ -1021,11 +1130,7 @@ describe('WeixinOCAdapter — sendMessage', () => {
         }>
       }
     }
-    expect(sentBody.msg.item_list[0]).toEqual({
-      type: 1,
-      text_item: { text: 'Here is the chart.' },
-    })
-    expect(sentBody.msg.item_list[1]).toMatchObject({
+    expect(mediaBody.msg.item_list[0]).toMatchObject({
       type: 2,
       image_item: {
         media: {
@@ -1034,9 +1139,10 @@ describe('WeixinOCAdapter — sendMessage', () => {
         mid_size: 16,
       },
     })
+    expect(mediaBody.msg.item_list).toHaveLength(1)
     expect(
       Buffer.from(
-        sentBody.msg.item_list[1].image_item!.media.aes_key,
+        mediaBody.msg.item_list[0].image_item!.media.aes_key,
         'base64',
       ).toString('utf8'),
     ).toBe(uploadBody.aeskey)

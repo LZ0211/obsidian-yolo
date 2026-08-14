@@ -625,6 +625,60 @@ describe('ScheduledTaskScheduler', () => {
     }
   })
 
+  it('T1 fix-round-1: deleteTask also cancels and keeps ANOTHER window\'s in-flight run', async () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const eventBus = new TaskEventBus()
+      const { agentApi, resolveRun } = makeDeferredAgentApi()
+      const scheduler = new ScheduledTaskScheduler({
+        store,
+        executor: new TaskExecutor({ getAgentApi: () => agentApi }),
+        eventBus,
+      })
+      store.createTask('task-1', makeTaskConfig({ notifyOn: [] }), 1000)
+
+      // The local run starts first (T2's cross-window dedup would reject a
+      // manual run while a RUNNING row already exists), then the OTHER
+      // window's run row appears in the shared store — with no local queue
+      // or AbortController state.
+      const result = scheduler.executeTaskNow('task-1')
+      if (result.outcome !== 'started') throw new Error('unreachable')
+      await flushPromises()
+      store.insertRun(
+        toTaskRunInsert({
+          runId: 'run-remote',
+          taskId: 'task-1',
+          batchId: 'batch-remote',
+          attempt: 1,
+          triggeredBy: 'schedule',
+          scheduledFor: Date.now(),
+          status: TaskRunStatus.RUNNING,
+        }),
+      )
+
+      scheduler.deleteTask('task-1')
+
+      expect(store.getTask('task-1')).toBeNull()
+      expect(store.getRun(result.runId)?.status).toBe(TaskRunStatus.CANCELLED)
+      // RED on the pre-fix-round-1 behavior: the remote run was not in
+      // keepRunIds, so its row was deleted and could never settle as
+      // cancelled — the original T1 bug in the two-window scenario.
+      expect(store.getRun('run-remote')?.status).toBe(TaskRunStatus.CANCELLED)
+
+      // Both runs "settle" afterwards; the CANCELLED rows keep the success
+      // paths silent.
+      resolveRun({ conversationId: 'conv-1', text: 'done', status: 'completed' })
+      await flushPromises()
+      expect(store.getRun(result.runId)?.status).toBe(TaskRunStatus.CANCELLED)
+      expect(store.getRun('run-remote')?.status).toBe(TaskRunStatus.CANCELLED)
+
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
   it('T2: executeTaskNow rejects when another window is already running the task (shared-store dedup)', () => {
     const dir = makeTempDir()
     try {

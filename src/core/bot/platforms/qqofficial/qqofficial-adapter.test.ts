@@ -235,10 +235,12 @@ describe('QQOfficialAdapter — B1 intents', () => {
 
   it('subscribes GUILD_MESSAGES | DIRECT_MESSAGE | GROUP_AND_C2C_EVENT when every channel is enabled', async () => {
     const { ws } = await startAdapter()
-    expect(intentsFromHello(ws)).toBe((1 << 12) | (1 << 13) | (1 << 25))
+    // fix-round-1: official bit table — GUILD_MESSAGES=1<<9 (channel @),
+    // DIRECT_MESSAGE=1<<12 (channel DM), GROUP_AND_C2C_EVENT=1<<25.
+    expect(intentsFromHello(ws)).toBe((1 << 9) | (1 << 12) | (1 << 25))
   })
 
-  it('enableGuild=false drops the guild intents (1<<12 GUILD_MESSAGES / 1<<13 DIRECT_MESSAGE)', async () => {
+  it('enableGuild=false drops the guild intents (1<<9 GUILD_MESSAGES / 1<<12 DIRECT_MESSAGE)', async () => {
     const { ws } = await startAdapter({ enableGuild: false })
     expect(intentsFromHello(ws)).toBe(1 << 25)
   })

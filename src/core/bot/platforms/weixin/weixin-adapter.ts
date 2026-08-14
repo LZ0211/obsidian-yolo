@@ -546,13 +546,26 @@ export class WeixinOCAdapter implements PlatformAdapter {
       // single request.
       const perSendTexts = content.text
         ? splitTextAtBoundaries(content.text, this.capabilities.maxMessageLength)
-        : [null]
+        : []
+      const hasMedia =
+        (content.images?.length ?? 0) > 0 || (content.files?.length ?? 0) > 0
+      // fix-round-1: media must NOT ride along on every text chunk — each
+      // chunk would otherwise re-attach the same images/files and send them
+      // N times. Text chunks are stripped of media; media is sent once on
+      // its own trailing request (or as the only request for media-only
+      // replies).
+      const sends: ReplyContent[] = perSendTexts.map((text) => ({
+        ...content,
+        text,
+        images: [],
+        files: [],
+      }))
+      if (perSendTexts.length === 0 || hasMedia) {
+        sends.push({ ...content, text: undefined })
+      }
       const refs: SentMessageRef[] = []
-      for (const text of perSendTexts) {
-        const items = await this.buildOutgoingItems(
-          chatId,
-          text === null ? content : { ...content, text },
-        )
+      for (const sendContent of sends) {
+        const items = await this.buildOutgoingItems(chatId, sendContent)
         if (items.length === 0) {
           throw new Error(
             'sendMessage called with no text/images/files content.',

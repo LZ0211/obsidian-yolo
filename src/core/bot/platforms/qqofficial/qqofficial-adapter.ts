@@ -280,21 +280,23 @@ export class QQOfficialAdapter implements PlatformAdapter {
     }
   }
   /**
-   * QQ Gateway intent bits (B1). The previous mapping was wrong on two
-   * counts: enableGuild used 1<<9 (GUILDS), but guild channel @-messages
-   * (`AT_MESSAGE_CREATE`) are delivered under GUILD_MESSAGES (1<<12) and
-   * guild private messages (`DIRECT_MESSAGE_CREATE`) under DIRECT_MESSAGE
-   * (1<<13); and enableC2c/enableGroup both used 1<<25, which is a SINGLE
-   * intent (GROUP_AND_C2C_EVENT) covering both C2C and group@ traffic — so
-   * the two switches could never be set independently at the intent level.
-   * The per-channel enable switches therefore also gate dispatch handling
-   * (see handleDispatch), since subscribing to only one half of 1<<25 is
-   * impossible.
+   * QQ Gateway intent bits (B1, fix-round-1). Official bit table (QQ open
+   * platform docs, cross-checked against tencent-connect/bot-node-sdk):
+   * GUILD_MESSAGES = 1<<9 (channel @-messages, `AT_MESSAGE_CREATE`),
+   * DIRECT_MESSAGE = 1<<12 (channel private messages,
+   * `DIRECT_MESSAGE_CREATE`), GROUP_AND_C2C_EVENT = 1<<25 (group @-messages
+   * AND C2C messages — a single bit, so enableC2c/enableGroup cannot be set
+   * independently at the intent level; the per-channel enable switches gate
+   * dispatch handling in handleDispatch instead). The old code mapped
+   * enableGuild to 1<<9 under the mistaken name GUILDS — that bit IS
+   * GUILD_MESSAGES, so channel @-messages worked before; the fix keeps
+   * 1<<9 and adds 1<<12 for channel private messages (1<<13 has no
+   * corresponding event in the official bit table).
    */
   private intents(): number {
     const c = this.config
     return (
-      (c?.enableGuild ? (1 << 12) | (1 << 13) : 0) | // GUILD_MESSAGES | DIRECT_MESSAGE
+      (c?.enableGuild ? (1 << 9) | (1 << 12) : 0) | // GUILD_MESSAGES | DIRECT_MESSAGE
       (c?.enableC2c || c?.enableGroup ? 1 << 25 : 0) // GROUP_AND_C2C_EVENT
     )
   }

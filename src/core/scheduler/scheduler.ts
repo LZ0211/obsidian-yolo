@@ -9,6 +9,7 @@ import {
   type ScheduledTask,
   type ScheduledTasksStore,
   type TaskConfig,
+  type TaskRun,
   type TaskRunLogEntry,
   type TaskRunRuntimeState,
   TaskRunStatus,
@@ -371,17 +372,31 @@ export class ScheduledTaskScheduler {
    * + task_cancelled event), and the store keeps those run rows when it
    * removes the task — the FK is `on delete set null` (not cascade), so the
    * CANCELLED record survives for audit instead of being cascade-deleted.
+   *
+   * fix-round-1: coverage spans ALL windows, not just this one. Another
+   * window's RUNNING row has no local AbortController, but the T2
+   * cross-window cancel path still writes its terminal CANCELLED state to
+   * the shared store and its runId must be kept — otherwise that run would
+   * settle against deleted rows (0-row updates) and still emit a
+   * false-success completion notice, the original T1 bug in the two-window
+   * scenario.
    */
   deleteTask(id: string): void {
     this.queue.removePendingTask(id)
-    const inFlightRunIds = this.queue
-      .getExecutingTasks()
-      .filter((run) => run.taskId === id)
-      .map((run) => run.runId)
-    for (const runId of inFlightRunIds) {
-      this.cancelTaskRun(runId)
+    const cancelledRunIds = new Set<string>()
+    for (const run of this.queue.getExecutingTasks()) {
+      if (run.taskId === id) {
+        this.cancelTaskRun(run.runId)
+        cancelledRunIds.add(run.runId)
+      }
     }
-    this.deps.store.deleteTask(id, { keepRunIds: inFlightRunIds })
+    for (const run of this.deps.store.listRunningRuns()) {
+      if (run.taskId === id) {
+        this.cancelTaskRun(run.id)
+        cancelledRunIds.add(run.id)
+      }
+    }
+    this.deps.store.deleteTask(id, { keepRunIds: [...cancelledRunIds] })
   }
 
   toggleTask(id: string, enabled: boolean): void {
@@ -543,6 +558,13 @@ export class ScheduledTaskScheduler {
 
   getExecutingTasks(): TaskRunRuntimeState[] {
     return this.queue.getExecutingTasks()
+  }
+
+  /** RUNNING runs in the shared store, including runs another Obsidian
+   * window started — the UI reads this (via the service) so the delete-task
+   * warning covers cross-window executions too (T1 fix-round-1). */
+  listRunningRuns(): TaskRun[] {
+    return this.deps.store.listRunningRuns()
   }
 
   // ---- internals ----
