@@ -285,17 +285,22 @@ describe('RAG log settings entry points', () => {
     }
   })
 
-  it('disables desktop-only RAG maintenance controls on mobile', () => {
+  it('only disables the desktop database explorer on mobile', () => {
     mockPlatform.isDesktop = false
     try {
       renderToStaticMarkup(
         <RAGSection app={{} as never} plugin={plugin as never} />,
       )
 
-      const manageButton = mockObsidianButton.mock.calls
+      const buttons = mockObsidianButton.mock.calls
         .map(([props]) => props as { text?: string; disabled?: boolean })
-        .find((props) => props.text === '管理')
+      const manageButton = buttons.find((props) => props.text === '管理')
       expect(manageButton?.disabled).toBe(true)
+      for (const text of ['更新索引', '重建索引', 'Vacuum 索引']) {
+        expect(buttons.find((props) => props.text === text)?.disabled).toBe(
+          false,
+        )
+      }
     } finally {
       mockPlatform.isDesktop = true
     }

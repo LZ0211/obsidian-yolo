@@ -616,8 +616,9 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
   // click a button and trigger a lazy backend check. Only block actions when
   // the backend is known to be not-ready.
   const canRunIndexMaintenance =
-    Platform.isDesktop &&
-    (ragBackendStatus === null || ragBackendStatus.readiness === 'ready')
+    ragBackendStatus === null || ragBackendStatus.readiness === 'ready'
+  const canManageEmbeddingDatabase =
+    Platform.isDesktop && canRunIndexMaintenance
 
   const ensureBackendChecked = useCallback(async (): Promise<boolean> => {
     if (ragBackendStatus !== null) return ragBackendStatus.readiness === 'ready'
@@ -997,7 +998,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
           >
             <ObsidianButton
               text={t('settings.rag.manage', '管理')}
-              disabled={!canRunIndexMaintenance}
+              disabled={!canManageEmbeddingDatabase}
               onClick={() => {
                 void import('../modals/SqliteDatabaseExplorerModal').then(
                   ({ SqliteDatabaseExplorerModal }) =>
