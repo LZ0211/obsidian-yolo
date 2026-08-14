@@ -116,6 +116,14 @@ export class McpManager {
     { count: number; windowStart: number }
   > = new Map()
   private allowedToolsByConversation: Map<string, Set<string>> = new Map()
+  /**
+   * One-time (approve-once) allowances, kept separate from the standing
+   * per-conversation grants above. Each key is consumed on its first match in
+   * `isToolExecutionAllowed`, so an approve-once decision can never grow into
+   * a standing allowance for later calls of the same tool.
+   */
+  private oneTimeAllowedToolsByConversation: Map<string, Set<string>> =
+    new Map()
   private subscribers = new Set<(servers: McpServerState[]) => void>()
 
   private availableToolsCache: Map<string, McpTool[]> = new Map()
@@ -278,6 +286,7 @@ export class McpManager {
     // in-memory permission grants keyed by conversationId, and a leaked entry
     // would resurface on a future conversationId reuse after reinstall.
     this.allowedToolsByConversation.clear()
+    this.oneTimeAllowedToolsByConversation.clear()
     this.oauthController.close()
     disposeJsSandbox()
   }
@@ -1058,16 +1067,31 @@ export class McpManager {
     requestToolName: string,
     conversationId: string,
     requestArgs?: Record<string, unknown>,
+    options?: { oneTime?: boolean },
   ): void {
+    const allowanceKey = this.buildExecutionAllowanceKey({
+      requestToolName,
+      requestArgs,
+    })
+    if (options?.oneTime === true) {
+      // Approve-once grants record ONLY the args-keyed allowance (never the
+      // bare tool name) in a separate consumable map — see
+      // `isToolExecutionAllowed` for the consume-on-match semantics.
+      let oneTimeTools = this.oneTimeAllowedToolsByConversation.get(
+        conversationId,
+      )
+      if (!oneTimeTools) {
+        oneTimeTools = new Set<string>()
+        this.oneTimeAllowedToolsByConversation.set(conversationId, oneTimeTools)
+      }
+      oneTimeTools.add(allowanceKey)
+      return
+    }
     let allowedTools = this.allowedToolsByConversation.get(conversationId)
     if (!allowedTools) {
       allowedTools = new Set<string>()
       this.allowedToolsByConversation.set(conversationId, allowedTools)
     }
-    const allowanceKey = this.buildExecutionAllowanceKey({
-      requestToolName,
-      requestArgs,
-    })
     allowedTools.add(allowanceKey)
     allowedTools.add(requestToolName)
   }
@@ -1091,6 +1115,7 @@ export class McpManager {
    */
   public removeAllowedTools(conversationId: string): void {
     this.allowedToolsByConversation.delete(conversationId)
+    this.oneTimeAllowedToolsByConversation.delete(conversationId)
   }
 
   public isToolExecutionAllowed({
@@ -1145,6 +1170,20 @@ export class McpManager {
           .get(conversationId)
           ?.has(requestToolName)
       ) {
+        return true
+      }
+
+      // One-time (approve-once) allowance: consumed on first match so the
+      // grant covers exactly one gated call. A later call of the same tool
+      // finds no allowance and falls through to `requireAutoExecution` again.
+      const oneTimeTools = this.oneTimeAllowedToolsByConversation.get(
+        conversationId,
+      )
+      if (oneTimeTools?.has(allowanceKey)) {
+        oneTimeTools.delete(allowanceKey)
+        if (oneTimeTools.size === 0) {
+          this.oneTimeAllowedToolsByConversation.delete(conversationId)
+        }
         return true
       }
 
