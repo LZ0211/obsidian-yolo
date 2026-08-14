@@ -118,14 +118,12 @@ export class TelegramAdapter implements PlatformAdapter {
   private readonly errorHandlers: ErrorHandler[] = []
   private pollingFailures = 0
   private lastPollingFailureAt = 0
-  private lifecycleGeneration = 0
 
   constructor(app: App) {
     this.app = app
   }
 
   async start(config: BotPlatformTelegramConfig): Promise<void> {
-    const generation = ++this.lifecycleGeneration
     if (Platform.isMobile) {
       throw new Error('The Telegram bot platform is desktop-only.')
     }
@@ -161,20 +159,7 @@ export class TelegramAdapter implements PlatformAdapter {
           raw: stopError,
         })
       }
-      if (this.lifecycleGeneration !== generation) return
       throw err
-    }
-
-    if (this.lifecycleGeneration !== generation) {
-      try {
-        await bot.stopPolling()
-      } catch (stopError) {
-        this.emitError(toError(stopError), {
-          operation: 'stop',
-          raw: stopError,
-        })
-      }
-      return
     }
 
     this.bot = bot
@@ -184,7 +169,6 @@ export class TelegramAdapter implements PlatformAdapter {
   }
 
   async stop(): Promise<void> {
-    this.lifecycleGeneration += 1
     const bot = this.bot
     this.bot = null
     this.status = 'stopped'

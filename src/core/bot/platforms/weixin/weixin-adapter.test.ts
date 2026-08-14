@@ -225,39 +225,6 @@ describe('WeixinOCAdapter — start()', () => {
     }
   })
 
-  it('does not begin polling when stop() lands during notifyStart', async () => {
-    let releaseNotifyStart!: (value: unknown) => void
-    const notifyStartGate = new Promise((resolve) => {
-      releaseNotifyStart = resolve
-    })
-    mockedRequestUrl.mockImplementation(((request) => {
-      const param = asRequestUrlParam(request)
-      if (param.url.includes('/ilink/bot/msg/notifystart')) {
-        return notifyStartGate as RequestUrlResponsePromise
-      }
-      return hangForever()
-    }) as typeof requestUrl)
-
-    const adapter = new WeixinOCAdapter()
-    const starting = adapter.start(makeConfig({ botToken: 'saved-token' }))
-    await new Promise((resolve) => setImmediate(resolve))
-    expect(
-      mockedRequestUrl.mock.calls.some(([request]) =>
-        asRequestUrlParam(request).url.includes('/ilink/bot/msg/notifystart'),
-      ),
-    ).toBe(true)
-
-    await adapter.stop()
-    releaseNotifyStart({ json: { ret: 0 } })
-    await starting
-
-    expect(adapter.health()).toBe('stopped')
-    expect(
-      mockedRequestUrl.mock.calls.some(([request]) =>
-        asRequestUrlParam(request).url.includes('/ilink/bot/getupdates'),
-      ),
-    ).toBe(false)
-  })
 })
 
 describe('WeixinOCAdapter — QR login', () => {

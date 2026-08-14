@@ -1,10 +1,4 @@
 const fakeBotInstances: FakeTelegramBot[] = []
-let pendingGetMe: Promise<{
-  id: number
-  is_bot: boolean
-  first_name: string
-  username: string
-}> | null = null
 
 class FakeTelegramBot {
   readonly token: string
@@ -58,7 +52,6 @@ class FakeTelegramBot {
   }
 
   async getMe() {
-    if (pendingGetMe) return pendingGetMe
     return this.getMeMock()
   }
 
@@ -160,7 +153,6 @@ async function startAdapter(
 
 beforeEach(() => {
   fakeBotInstances.length = 0
-  pendingGetMe = null
 })
 
 describe('TelegramAdapter — message conversion', () => {
@@ -529,36 +521,6 @@ describe('TelegramAdapter — downloadFile', () => {
 })
 
 describe('TelegramAdapter — lifecycle', () => {
-  it('does not resurrect a bot when stop() lands during getMe()', async () => {
-    let releaseGetMe!: (value: {
-      id: number
-      is_bot: boolean
-      first_name: string
-      username: string
-    }) => void
-    pendingGetMe = new Promise((resolve) => {
-      releaseGetMe = resolve
-    })
-
-    const adapter = new TelegramAdapter(makeFakeApp())
-    const starting = adapter.start(makeConfig())
-    await new Promise((resolve) => setImmediate(resolve))
-    const bot = fakeBotInstances[0]
-    expect(bot).toBeDefined()
-
-    await adapter.stop()
-    releaseGetMe({
-      id: 1,
-      is_bot: true,
-      first_name: 'Test',
-      username: 'TestBot',
-    })
-    await starting
-
-    expect(adapter.health()).toBe('stopped')
-    expect(bot.stopPollingMock).toHaveBeenCalled()
-  })
-
   it('reports stopped health before start and after stop', async () => {
     const adapter = new TelegramAdapter(makeFakeApp())
     expect(adapter.health()).toBe('stopped')

@@ -367,7 +367,6 @@ export class FeishuAdapter implements PlatformAdapter {
   private ws: WebSocket | null = null
   private status: 'stopped' | 'running' | 'degraded' | 'failed' = 'stopped'
   private stopping = false
-  private lifecycleGeneration = 0
   private reconnectAttempt = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private stableTimer: ReturnType<typeof setTimeout> | null = null
@@ -402,15 +401,13 @@ export class FeishuAdapter implements PlatformAdapter {
     if (Platform.isMobile) {
       throw new Error('The Feishu bot platform is desktop-only.')
     }
-    const generation = ++this.lifecycleGeneration
     this.config = config as unknown as BotPlatformFeishuConfig
     this.stopping = false
     this.reconnectAttempt = 0
-    await this.connect(generation)
+    await this.connect()
   }
 
   async stop(): Promise<void> {
-    this.lifecycleGeneration += 1
     this.stopping = true
     this.status = 'stopped'
     this.clearStableTimer()
@@ -610,7 +607,7 @@ export class FeishuAdapter implements PlatformAdapter {
 
   // ─────────────────────────── Connection lifecycle ───────────────────────────
 
-  private async connect(generation = this.lifecycleGeneration): Promise<void> {
+  private async connect(): Promise<void> {
     const config = this.config
     if (!config) return
 
@@ -632,11 +629,10 @@ export class FeishuAdapter implements PlatformAdapter {
       }
       handshake = body.data
     } catch (error) {
-      if (generation !== this.lifecycleGeneration || this.stopping) return
       const err = toError(error)
       this.status = 'degraded'
       this.emitError(err, { operation: 'start', retryable: true, raw: error })
-      this.scheduleReconnect(generation)
+      this.scheduleReconnect()
       return
     }
 
@@ -644,9 +640,9 @@ export class FeishuAdapter implements PlatformAdapter {
     // was in flight must not create a socket that resurrects the adapter —
     // stop() already cleared the timers and nulled `ws`; connecting again
     // would leave a live socket with no lifecycle owner.
-    if (generation !== this.lifecycleGeneration || this.stopping) return
+    if (this.stopping) return
     await this.resolveBotIdentity(config)
-    if (generation !== this.lifecycleGeneration || this.stopping) return
+    if (this.stopping) return
 
     const wsUrl = new URL(handshake.URL)
     const serviceId = Number(wsUrl.searchParams.get('service_id'))
@@ -656,10 +652,10 @@ export class FeishuAdapter implements PlatformAdapter {
 
     const ws = new WebSocket(handshake.URL)
     ws.binaryType = 'arraybuffer'
-    ws.onopen = () => this.handleOpen(ws, generation)
-    ws.onmessage = (event) => this.handleMessage(ws, generation, event)
-    ws.onclose = () => this.handleClose(ws, generation)
-    ws.onerror = (event) => this.handleSocketError(ws, generation, event)
+    ws.onopen = () => this.handleOpen()
+    ws.onmessage = (event) => this.handleMessage(event)
+    ws.onclose = () => this.handleClose()
+    ws.onerror = (event) => this.handleSocketError(event)
     this.ws = ws
   }
 
@@ -724,15 +720,8 @@ export class FeishuAdapter implements PlatformAdapter {
     return undefined
   }
 
-  private handleOpen(ws: WebSocket, generation: number): void {
-    if (
-      this.stopping ||
-      generation !== this.lifecycleGeneration ||
-      this.ws !== ws
-    ) {
-      ws.close(1000)
-      return
-    }
+  private handleOpen(): void {
+    if (this.stopping) return
     this.status = 'running'
     this.reconnectAttempt = 0
     this.clearStableTimer()
@@ -743,8 +732,7 @@ export class FeishuAdapter implements PlatformAdapter {
     this.pingTimer = setInterval(() => this.sendPing(), this.pingIntervalMs)
   }
 
-  private handleClose(ws: WebSocket, generation: number): void {
-    if (this.ws !== ws || generation !== this.lifecycleGeneration) return
+  private handleClose(): void {
     this.ws = null
     this.clearStableTimer()
     this.clearPingTimer()
@@ -753,15 +741,10 @@ export class FeishuAdapter implements PlatformAdapter {
       return
     }
     this.status = 'degraded'
-    this.scheduleReconnect(generation)
+    this.scheduleReconnect()
   }
 
-  private handleSocketError(
-    ws: WebSocket,
-    generation: number,
-    event: Event,
-  ): void {
-    if (this.ws !== ws || generation !== this.lifecycleGeneration) return
+  private handleSocketError(event: Event): void {
     this.emitError(new Error('Feishu WebSocket connection error.'), {
       operation: 'receive',
       retryable: true,
@@ -769,13 +752,8 @@ export class FeishuAdapter implements PlatformAdapter {
     })
   }
 
-  private scheduleReconnect(generation = this.lifecycleGeneration): void {
-    if (
-      this.stopping ||
-      generation !== this.lifecycleGeneration ||
-      this.reconnectTimer
-    )
-      return
+  private scheduleReconnect(): void {
+    if (this.stopping || this.reconnectTimer) return
     this.reconnectAttempt += 1
     const delay = Math.min(
       RECONNECT_BASE_DELAY_MS * 2 ** (this.reconnectAttempt - 1),
@@ -783,8 +761,7 @@ export class FeishuAdapter implements PlatformAdapter {
     )
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
-      if (generation !== this.lifecycleGeneration || this.stopping) return
-      void this.connect(generation)
+      void this.connect()
     }, delay)
   }
 
@@ -817,17 +794,7 @@ export class FeishuAdapter implements PlatformAdapter {
 
   // ─────────────────────────── Frame handling ───────────────────────────
 
-  private handleMessage(
-    ws: WebSocket,
-    generation: number,
-    event: MessageEvent,
-  ): void {
-    if (
-      this.stopping ||
-      generation !== this.lifecycleGeneration ||
-      this.ws !== ws
-    )
-      return
+  private handleMessage(event: MessageEvent): void {
     let frame: DecodedFrame
     try {
       frame = decodeFrame(new Uint8Array(event.data as ArrayBuffer))

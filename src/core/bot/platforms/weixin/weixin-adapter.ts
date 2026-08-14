@@ -419,7 +419,6 @@ export class WeixinOCAdapter implements PlatformAdapter {
   >()
 
   private pollingController: AbortController | null = null
-  private lifecycleGeneration = 0
 
   /**
    * `baseUrl` can be supplied up front so the Settings UI can drive the QR
@@ -432,8 +431,6 @@ export class WeixinOCAdapter implements PlatformAdapter {
   }
 
   async start(config: BotPlatformWeixinConfig): Promise<void> {
-    const generation = ++this.lifecycleGeneration
-    this.stopPolling()
     this.baseUrl = config.baseUrl
     this.pollTimeoutMs = config.pollTimeoutMs
     this.botId = config.botId
@@ -447,12 +444,10 @@ export class WeixinOCAdapter implements PlatformAdapter {
 
     this.token = config.botToken
     await this.notifyStart()
-    if (generation !== this.lifecycleGeneration) return
-    this.beginPolling(generation)
+    this.beginPolling()
   }
 
   async stop(): Promise<void> {
-    this.lifecycleGeneration += 1
     this.stopPolling()
     this.status = 'stopped'
   }
@@ -969,11 +964,11 @@ export class WeixinOCAdapter implements PlatformAdapter {
 
   // ─────────────────────────── Long-poll loop ───────────────────────────
 
-  private beginPolling(generation = this.lifecycleGeneration): void {
+  private beginPolling(): void {
     if (this.pollingController) return // already running
     this.pollingController = new AbortController()
     this.status = 'running'
-    void this.runPollLoop(this.pollingController, generation)
+    void this.runPollLoop(this.pollingController)
   }
 
   private stopPolling(): void {
@@ -984,15 +979,8 @@ export class WeixinOCAdapter implements PlatformAdapter {
     this.pollingController = null
   }
 
-  private async runPollLoop(
-    controller: AbortController,
-    generation: number,
-  ): Promise<void> {
-    while (
-      !controller.signal.aborted &&
-      generation === this.lifecycleGeneration &&
-      this.pollingController === controller
-    ) {
+  private async runPollLoop(controller: AbortController): Promise<void> {
+    while (!controller.signal.aborted) {
       let response: { json: unknown }
       try {
         const body = JSON.stringify({
@@ -1012,12 +1000,7 @@ export class WeixinOCAdapter implements PlatformAdapter {
           },
         )
       } catch (_error) {
-        if (
-          controller.signal.aborted ||
-          generation !== this.lifecycleGeneration ||
-          this.pollingController !== controller
-        )
-          return
+        if (controller.signal.aborted) return
         // Long-poll timeout (server held the connection with nothing new) or
         // a transient network failure — this is a long-poll design, so just
         // retry rather than treating it as fatal.
@@ -1033,12 +1016,7 @@ export class WeixinOCAdapter implements PlatformAdapter {
         await sleep(GETUPDATES_EXCEPTION_BACKOFF_MS, controller.signal)
         continue
       }
-      if (
-        controller.signal.aborted ||
-        generation !== this.lifecycleGeneration ||
-        this.pollingController !== controller
-      )
-        return
+      if (controller.signal.aborted) return
 
       const data = response.json as GetUpdatesResponseBody
       if (this.isProtocolError(data)) {

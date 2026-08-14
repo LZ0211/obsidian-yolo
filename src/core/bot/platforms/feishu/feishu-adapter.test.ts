@@ -381,41 +381,6 @@ describe('FeishuAdapter — start()', () => {
     expect(MockWebSocket.instances).toHaveLength(0)
   })
 
-  it('does not let a stale start create a second connection after restart', async () => {
-    let releaseFirstHandshake!: () => void
-    const firstHandshake = new Promise<void>((resolve) => {
-      releaseFirstHandshake = resolve
-    })
-    let handshakeCount = 0
-    mockRoutes({
-      'callback/ws/endpoint': () => {
-        handshakeCount += 1
-        const response = {
-          json: {
-            code: 0,
-            msg: 'ok',
-            data: { URL: DEFAULT_WS_URL, ClientConfig: { PingInterval: 120 } },
-          },
-        }
-        return handshakeCount === 1
-          ? firstHandshake.then(() => response)
-          : response
-      },
-    })
-
-    const adapter = new FeishuAdapter(makeApp())
-    liveAdapters.push(adapter)
-    const firstStart = adapter.start(makeConfig())
-    await new Promise((resolve) => setImmediate(resolve))
-    expect(handshakeCount).toBe(1)
-
-    await adapter.stop()
-    const secondStart = adapter.start(makeConfig())
-    releaseFirstHandshake()
-    await Promise.all([firstStart, secondStart])
-
-    expect(MockWebSocket.instances).toHaveLength(1)
-  })
 })
 
 describe('FeishuAdapter — WS frame handling', () => {

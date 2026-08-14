@@ -200,7 +200,6 @@ export class DingTalkAdapter implements PlatformAdapter {
   private ws: WebSocket | null = null
   private status: 'stopped' | 'running' | 'degraded' | 'failed' = 'stopped'
   private stopping = false
-  private lifecycleGeneration = 0
   private reconnectAttempt = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private stableTimer: ReturnType<typeof setTimeout> | null = null
@@ -220,7 +219,6 @@ export class DingTalkAdapter implements PlatformAdapter {
     if (Platform.isMobile) {
       throw new Error('The DingTalk bot platform is desktop-only.')
     }
-    const generation = ++this.lifecycleGeneration
     const dingtalkConfig = config as unknown as BotPlatformDingtalkConfig
     if (dingtalkConfig.streamMode === false) {
       throw new Error(
@@ -230,11 +228,10 @@ export class DingTalkAdapter implements PlatformAdapter {
     this.config = dingtalkConfig
     this.stopping = false
     this.reconnectAttempt = 0
-    await this.connect(generation)
+    await this.connect()
   }
 
   async stop(): Promise<void> {
-    this.lifecycleGeneration += 1
     this.stopping = true
     this.status = 'stopped'
     this.clearStableTimer()
@@ -388,7 +385,7 @@ export class DingTalkAdapter implements PlatformAdapter {
 
   // ─────────────────────────── Connection lifecycle ───────────────────────────
 
-  private async connect(generation = this.lifecycleGeneration): Promise<void> {
+  private async connect(): Promise<void> {
     const config = this.config
     if (!config) return
 
@@ -411,11 +408,10 @@ export class DingTalkAdapter implements PlatformAdapter {
       endpoint = body.endpoint
       ticket = body.ticket
     } catch (error) {
-      if (generation !== this.lifecycleGeneration || this.stopping) return
       const err = toError(error)
       this.status = 'degraded'
       this.emitError(err, { operation: 'start', retryable: true, raw: error })
-      this.scheduleReconnect(generation)
+      this.scheduleReconnect()
       return
     }
 
@@ -423,7 +419,7 @@ export class DingTalkAdapter implements PlatformAdapter {
     // flight must not create a socket that resurrects the adapter — stop()
     // already cleared the timers and nulled `ws` (same guard as Feishu's
     // handshake path).
-    if (generation !== this.lifecycleGeneration || this.stopping) return
+    if (this.stopping) return
 
     const endpointUrl = new URL(endpoint)
     const wsUrl = new URL(
@@ -432,22 +428,14 @@ export class DingTalkAdapter implements PlatformAdapter {
     wsUrl.searchParams.set('ticket', ticket)
 
     const ws = new WebSocket(wsUrl.toString())
-    ws.onopen = () => this.handleOpen(ws, generation)
-    ws.onmessage = (event) => this.handleMessage(ws, generation, event)
-    ws.onclose = () => this.handleClose(ws, generation)
-    ws.onerror = (event) => this.handleSocketError(ws, generation, event)
+    ws.onopen = () => this.handleOpen()
+    ws.onmessage = (event) => this.handleMessage(event)
+    ws.onclose = () => this.handleClose()
+    ws.onerror = (event) => this.handleSocketError(event)
     this.ws = ws
   }
 
-  private handleOpen(ws: WebSocket, generation: number): void {
-    if (
-      this.stopping ||
-      generation !== this.lifecycleGeneration ||
-      this.ws !== ws
-    ) {
-      ws.close(1000)
-      return
-    }
+  private handleOpen(): void {
     this.status = 'running'
     this.reconnectAttempt = 0
     this.clearStableTimer()
@@ -456,8 +444,7 @@ export class DingTalkAdapter implements PlatformAdapter {
     }, STABLE_CONNECTION_MS)
   }
 
-  private handleClose(ws: WebSocket, generation: number): void {
-    if (this.ws !== ws || generation !== this.lifecycleGeneration) return
+  private handleClose(): void {
     this.ws = null
     this.clearStableTimer()
     if (this.stopping) {
@@ -465,15 +452,10 @@ export class DingTalkAdapter implements PlatformAdapter {
       return
     }
     this.status = 'degraded'
-    this.scheduleReconnect(generation)
+    this.scheduleReconnect()
   }
 
-  private handleSocketError(
-    ws: WebSocket,
-    generation: number,
-    event: Event,
-  ): void {
-    if (this.ws !== ws || generation !== this.lifecycleGeneration) return
+  private handleSocketError(event: Event): void {
     this.emitError(new Error('DingTalk WebSocket connection error.'), {
       operation: 'receive',
       retryable: true,
@@ -481,13 +463,8 @@ export class DingTalkAdapter implements PlatformAdapter {
     })
   }
 
-  private scheduleReconnect(generation = this.lifecycleGeneration): void {
-    if (
-      this.stopping ||
-      generation !== this.lifecycleGeneration ||
-      this.reconnectTimer
-    )
-      return
+  private scheduleReconnect(): void {
+    if (this.stopping || this.reconnectTimer) return
     this.reconnectAttempt += 1
     const delay = Math.min(
       RECONNECT_BASE_DELAY_MS * 2 ** (this.reconnectAttempt - 1),
@@ -495,8 +472,7 @@ export class DingTalkAdapter implements PlatformAdapter {
     )
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
-      if (generation !== this.lifecycleGeneration || this.stopping) return
-      void this.connect(generation)
+      void this.connect()
     }, delay)
   }
 
@@ -509,17 +485,7 @@ export class DingTalkAdapter implements PlatformAdapter {
 
   // ─────────────────────────── Frame handling ───────────────────────────
 
-  private handleMessage(
-    ws: WebSocket,
-    generation: number,
-    event: MessageEvent,
-  ): void {
-    if (
-      this.stopping ||
-      generation !== this.lifecycleGeneration ||
-      this.ws !== ws
-    )
-      return
+  private handleMessage(event: MessageEvent): void {
     let frame: DingTalkFrame
     try {
       frame = JSON.parse(String(event.data)) as DingTalkFrame
