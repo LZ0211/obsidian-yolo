@@ -30,24 +30,16 @@ export type BotSentMessageRegistryOptions = {
 
 export class BotSentMessageRegistry {
   private readonly entries: BoundedTtlMap<string, BotSentMessageEntry>
-  private readonly legacyEntries: BoundedTtlMap<string, BotSentMessageEntry>
 
   constructor(options: BotSentMessageRegistryOptions = {}) {
-    const mapOptions = {
+    this.entries = new BoundedTtlMap<string, BotSentMessageEntry>({
       capacity: options.capacity ?? DEFAULT_CAPACITY,
       ttlMs: options.ttlMs ?? DEFAULT_TTL_MS,
-    }
-    this.entries = new BoundedTtlMap<string, BotSentMessageEntry>(mapOptions)
-    this.legacyEntries = new BoundedTtlMap<string, BotSentMessageEntry>(
-      mapOptions,
-    )
+    })
   }
 
   register(entry: BotSentMessageEntry, now: number = Date.now()): void {
     this.entries.set(this.keyFor(entry), entry, now)
-    if (entry.platformInstanceId === undefined) {
-      this.legacyEntries.set(entry.platformMessageId, entry, now)
-    }
   }
 
   /** Registers every platform message id produced by a single outgoing send. */
@@ -72,10 +64,7 @@ export class BotSentMessageRegistry {
     platformInstanceId?: string,
   ): BotSentMessageEntry | undefined {
     if (sessionKey === undefined && platformInstanceId === undefined) {
-      return (
-        this.entries.get(platformMessageId, now) ??
-        this.legacyEntries.get(platformMessageId, now)
-      )
+      return this.entries.get(platformMessageId, now)
     }
     return this.entries.get(
       this.keyFor({ platformMessageId, sessionKey, platformInstanceId }),
@@ -101,7 +90,6 @@ export class BotSentMessageRegistry {
 
   clear(): void {
     this.entries.clear()
-    this.legacyEntries.clear()
   }
 
   private keyFor(entry: {
@@ -109,10 +97,7 @@ export class BotSentMessageRegistry {
     sessionKey?: string
     platformInstanceId?: string
   }): string {
-    if (
-      entry.sessionKey === undefined &&
-      entry.platformInstanceId === undefined
-    ) {
+    if (entry.platformInstanceId === undefined) {
       return entry.platformMessageId
     }
     return `${entry.platformInstanceId ?? ''}\u0000${entry.sessionKey ?? ''}\u0000${entry.platformMessageId}`
