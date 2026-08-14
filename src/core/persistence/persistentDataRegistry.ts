@@ -126,6 +126,7 @@ export const HOST_SETTINGS_CLASSIFICATIONS = [
   hostSetting('bots', 'Bot 平台'),
   hostSetting('workspaceAgents', '工作区智能体'),
   hostSetting('mcp', 'MCP 工具'),
+  hostSetting('mineru', 'MinerU PDF 转换'),
   hostSetting('jsSandbox', 'JS 沙箱权限'),
   hostSetting('webSearch', '联网搜索'),
   hostSetting('skills', '技能设置'),
