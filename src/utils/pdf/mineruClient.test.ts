@@ -11,7 +11,6 @@ import { arrayBufferToBase64 } from '../base64'
 import {
   MINERU_BREAKER_COOLDOWN_MS,
   MINERU_EVENT_POLL_TIMEOUT_MS,
-  MINERU_FILE_DOWNLOAD_TIMEOUT_MS,
   convertPdfToMarkdown,
   isMinerUEnabled,
   markMinerUFailure,
@@ -346,9 +345,11 @@ describe('convertPdfToMarkdown', () => {
     }
   })
 
-  it('throws when the FileData download does not complete within the download timeout', async () => {
+  it('allows a FileData download to outlast the event poll timeout', async () => {
+    const zipBuffer = await buildZip({ 'result.md': MARKDOWN })
     jest.useFakeTimers()
     try {
+      let resolveDownload: ((response: RequestUrlResponse) => void) | undefined
       mockedRequestUrl
         .mockResolvedValueOnce(
           responseWithText(
@@ -366,9 +367,9 @@ describe('convertPdfToMarkdown', () => {
         )
         .mockImplementationOnce(
           () =>
-            new Promise<RequestUrlResponse>(
-              () => {},
-            ) as unknown as RequestUrlResponsePromise,
+            new Promise<RequestUrlResponse>((resolve) => {
+              resolveDownload = resolve
+            }) as unknown as RequestUrlResponsePromise,
         )
 
       const promise = convertPdfToMarkdown({
@@ -377,11 +378,15 @@ describe('convertPdfToMarkdown', () => {
         baseUrl: BASE_URL,
         apiKey: API_KEY,
       })
-      const assertion = expect(promise).rejects.toThrow(/download timed out/i)
+      const assertion = expect(promise).resolves.toMatchObject({
+        markdown: MARKDOWN,
+      })
 
       await jest.advanceTimersByTimeAsync(
-        MINERU_FILE_DOWNLOAD_TIMEOUT_MS + 1000,
+        MINERU_EVENT_POLL_TIMEOUT_MS + 1000,
       )
+      resolveDownload?.(responseWithArrayBuffer(zipBuffer))
+      jest.useRealTimers()
       await assertion
       expect(mockedRequestUrl).toHaveBeenCalledTimes(3)
     } finally {
