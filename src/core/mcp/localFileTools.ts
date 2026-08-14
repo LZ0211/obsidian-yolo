@@ -3329,51 +3329,55 @@ export async function callLocalFileTool({
               }
 
               // MinerU 优先：开关开且接口可用时 PDF 先转 md + 图片（取代文本提取）。
-              let mineruResult: Awaited<
-                ReturnType<typeof readPdfViaMinerU>
-              > | null = null
-              try {
-                mineruResult = await readPdfViaMinerU({
-                  app,
-                  file,
-                  settings,
-                  signal,
-                  includeImages: chatModelAcceptsImages,
-                })
-              } catch (mineruErr) {
-                if (
-                  mineruErr instanceof DOMException &&
-                  mineruErr.name === 'AbortError'
-                ) {
-                  return { status: ToolCallResponseStatus.Aborted }
-                }
-                throw mineruErr
-              }
-              if (mineruResult) {
-                // MinerU 一次性返回整份 md，无分页语义；行号 = md 行数。
-                const totalLines =
-                  mineruResult.markdown.length === 0
-                    ? 0
-                    : mineruResult.markdown.split('\n').length
-                results.push({
-                  path,
-                  ok: true,
-                  totalLines,
-                  hasMoreBelow: false,
-                  nextStartLine: null,
-                  content: mineruResult.markdown,
-                  effectiveModality: 'text' as const,
-                  ...wikilinkResultFields,
-                  ...(subpathWarning ? { warning: subpathWarning } : {}),
-                })
-                if (mineruResult.imageParts.length > 0) {
-                  perFileAttachmentParts.push({
-                    path,
-                    parts: mineruResult.imageParts,
+              // 范围语义：仅 full 模式走 MinerU（返回整份 md，无分页语义）；
+              // lines 范围请求保持切片/分页语义，由下方 legacy 路径处理。
+              if (operation.type === 'full') {
+                let mineruResult: Awaited<
+                  ReturnType<typeof readPdfViaMinerU>
+                > | null = null
+                try {
+                  mineruResult = await readPdfViaMinerU({
+                    app,
+                    file,
+                    settings,
+                    signal,
+                    includeImages: chatModelAcceptsImages,
                   })
+                } catch (mineruErr) {
+                  if (
+                    mineruErr instanceof DOMException &&
+                    mineruErr.name === 'AbortError'
+                  ) {
+                    return { status: ToolCallResponseStatus.Aborted }
+                  }
+                  throw mineruErr
                 }
-                continue
-              }
+                if (mineruResult) {
+                  // MinerU 一次性返回整份 md，无分页语义；行号 = md 行数。
+                  const totalLines =
+                    mineruResult.markdown.length === 0
+                      ? 0
+                      : mineruResult.markdown.split('\n').length
+                  results.push({
+                    path,
+                    ok: true,
+                    totalLines,
+                    hasMoreBelow: false,
+                    nextStartLine: null,
+                    content: mineruResult.markdown,
+                    effectiveModality: 'text' as const,
+                    ...wikilinkResultFields,
+                    ...(subpathWarning ? { warning: subpathWarning } : {}),
+                  })
+                  if (mineruResult.imageParts.length > 0) {
+                    perFileAttachmentParts.push({
+                      path,
+                      parts: mineruResult.imageParts,
+                    })
+                  }
+                  continue
+                }
+              } // end: operation.type === 'full'（MinerU 仅 full 模式）
 
               // Slice failed — fall through to text extraction with a warning prefix.
               let pdfSliceFallbackPages: { page: number; text: string }[] = []
@@ -3538,51 +3542,55 @@ export async function callLocalFileTool({
             }
 
             // MinerU 优先：开关开且接口可用时 PDF 先转 md + 图片（取代文本提取）。
-            let mineruResult: Awaited<
-              ReturnType<typeof readPdfViaMinerU>
-            > | null = null
-            try {
-              mineruResult = await readPdfViaMinerU({
-                app,
-                file,
-                settings,
-                signal,
-                includeImages: chatModelAcceptsImages,
-              })
-            } catch (mineruErr) {
-              if (
-                mineruErr instanceof DOMException &&
-                mineruErr.name === 'AbortError'
-              ) {
-                return { status: ToolCallResponseStatus.Aborted }
-              }
-              throw mineruErr
-            }
-            if (mineruResult) {
-              // MinerU 一次性返回整份 md，无分页语义；行号 = md 行数。
-              const totalLines =
-                mineruResult.markdown.length === 0
-                  ? 0
-                  : mineruResult.markdown.split('\n').length
-              results.push({
-                path,
-                ok: true,
-                totalLines,
-                hasMoreBelow: false,
-                nextStartLine: null,
-                content: mineruResult.markdown,
-                effectiveModality: 'text' as const,
-                ...wikilinkResultFields,
-                ...(subpathWarning ? { warning: subpathWarning } : {}),
-              })
-              if (mineruResult.imageParts.length > 0) {
-                perFileAttachmentParts.push({
-                  path,
-                  parts: mineruResult.imageParts,
+            // 范围语义：仅 full 模式走 MinerU（返回整份 md，无分页语义）；
+            // lines 范围请求保持分页语义（行号 = 页号），由下方 legacy 路径处理。
+            if (operation.type === 'full') {
+              let mineruResult: Awaited<
+                ReturnType<typeof readPdfViaMinerU>
+              > | null = null
+              try {
+                mineruResult = await readPdfViaMinerU({
+                  app,
+                  file,
+                  settings,
+                  signal,
+                  includeImages: chatModelAcceptsImages,
                 })
+              } catch (mineruErr) {
+                if (
+                  mineruErr instanceof DOMException &&
+                  mineruErr.name === 'AbortError'
+                ) {
+                  return { status: ToolCallResponseStatus.Aborted }
+                }
+                throw mineruErr
               }
-              continue
-            }
+              if (mineruResult) {
+                // MinerU 一次性返回整份 md，无分页语义；行号 = md 行数。
+                const totalLines =
+                  mineruResult.markdown.length === 0
+                    ? 0
+                    : mineruResult.markdown.split('\n').length
+                results.push({
+                  path,
+                  ok: true,
+                  totalLines,
+                  hasMoreBelow: false,
+                  nextStartLine: null,
+                  content: mineruResult.markdown,
+                  effectiveModality: 'text' as const,
+                  ...wikilinkResultFields,
+                  ...(subpathWarning ? { warning: subpathWarning } : {}),
+                })
+                if (mineruResult.imageParts.length > 0) {
+                  perFileAttachmentParts.push({
+                    path,
+                    parts: mineruResult.imageParts,
+                  })
+                }
+                continue
+              }
+            } // end: operation.type === 'full'（MinerU 仅 full 模式）
 
             let pages: { page: number; text: string }[] = []
             try {
