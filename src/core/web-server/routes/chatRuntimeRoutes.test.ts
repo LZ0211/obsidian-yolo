@@ -464,4 +464,44 @@ describe('chatRuntimeRoutes session endpoints', () => {
     await disposeChatRuntimeRouteCaches()
   })
 
+  it('does not publish an in-flight runtime after its conversation is invalidated', async () => {
+    await disposeChatRuntimeRouteCaches()
+    let releaseFirst!: () => void
+    const firstReady = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    const disposeFirst = jest.fn(async () => undefined)
+    const first = makeRuntime({ dispose: disposeFirst })
+    const second = makeRuntime()
+    const getChatRuntime = jest
+      .fn<Promise<ChatRuntime>, []>()
+      .mockImplementationOnce(async () => {
+        await firstReady
+        return first
+      })
+      .mockResolvedValueOnce(second)
+    const router = new WebRouter()
+    registerChatRuntimeRoutes(router, { getChatRuntime })
+
+    const request = dispatch(
+      router,
+      'GET',
+      '/api/chat-runtime/codex/snapshot?conversationId=conv-cwd-race',
+    )
+    await Promise.resolve()
+    expect(getChatRuntime).toHaveBeenCalledTimes(1)
+
+    await invalidateChatRuntimeConversation('conv-cwd-race')
+    releaseFirst()
+    await request
+    await dispatch(
+      router,
+      'GET',
+      '/api/chat-runtime/codex/snapshot?conversationId=conv-cwd-race',
+    )
+
+    expect(disposeFirst).toHaveBeenCalledTimes(1)
+    expect(getChatRuntime).toHaveBeenCalledTimes(2)
+    await disposeChatRuntimeRouteCaches()
+  })
 })

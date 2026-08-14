@@ -46,6 +46,8 @@ const REPLAY_LIMIT = 200
 /** 稳定 runtime 实例缓存：按 runtimeId + conversationId 键控，避免每个 HTTP 请求新建实例、也避免会话切换串台。 */
 const runtimeCache = new Map<string, ChatRuntime>()
 const runtimeCreationByKey = new Map<string, Promise<ChatRuntime | null>>()
+const runtimeGenerationByKey = new Map<string, number>()
+let runtimeCacheEpoch = 0
 const replayByRuntime = new Map<
   string,
   {
@@ -66,9 +68,11 @@ const activeStreams = new Set<ChatRuntimeStreamCloser>()
  */
 export async function disposeChatRuntimeRouteCaches(): Promise<void> {
   closeAllChatRuntimeStreams('agent_unavailable')
+  runtimeCacheEpoch += 1
   const runtimes = [...runtimeCache.values()]
   runtimeCache.clear()
   runtimeCreationByKey.clear()
+  runtimeGenerationByKey.clear()
   replayByRuntime.clear()
   await Promise.all(
     runtimes
@@ -140,9 +144,19 @@ async function resolveCachedRuntime(
   if (cached) return cached
   let creation = runtimeCreationByKey.get(key)
   if (!creation) {
+    const generation = runtimeGenerationByKey.get(key) ?? 0
+    const cacheEpoch = runtimeCacheEpoch
     creation = Promise.resolve(
       context.getChatRuntime(runtimeId, conversationId),
-    ).then((runtime): ChatRuntime | null => {
+    ).then(async (runtime): Promise<ChatRuntime | null> => {
+      if (cacheEpoch !== runtimeCacheEpoch) {
+        await runtime?.dispose?.().catch(() => undefined)
+        return null
+      }
+      if ((runtimeGenerationByKey.get(key) ?? 0) !== generation) {
+        await runtime?.dispose?.().catch(() => undefined)
+        return resolveCachedRuntime(runtimeId, conversationId, context)
+      }
       if (runtime) runtimeCache.set(key, runtime)
       return runtime
     })
@@ -165,6 +179,7 @@ export async function invalidateChatRuntimeConversation(
   )
   const runtimes = new Set<ChatRuntime>()
   for (const key of keys) {
+    runtimeGenerationByKey.set(key, (runtimeGenerationByKey.get(key) ?? 0) + 1)
     runtimeCreationByKey.delete(key)
     for (const close of [...(streamsByRuntime.get(key) ?? [])]) close()
     const runtime = runtimeCache.get(key)
