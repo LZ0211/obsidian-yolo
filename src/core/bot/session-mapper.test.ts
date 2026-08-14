@@ -88,6 +88,19 @@ describe('SessionMapper', () => {
     expect(mapper.getSessionByKey('missing')).toBeUndefined()
   })
 
+  it('prefers an exact platform instance over an earlier legacy mapping', () => {
+    const legacy = makeMapping({ conversationId: 'legacy' })
+    const exact = makeMapping({
+      platformInstanceId: 'bot-1',
+      conversationId: 'exact',
+    })
+    const { mapper } = makeMapper([legacy, exact])
+
+    expect(
+      mapper.getSessionByKey('telegram:private:123', 'bot-1', true),
+    ).toEqual(exact)
+  })
+
   it('upsertSession creates a new mapping and persists it', async () => {
     const { mapper, saveSettings, getCurrent } = makeMapper([])
     const mapping = makeMapping()
@@ -104,6 +117,23 @@ describe('SessionMapper', () => {
     expect(getCurrent().sessionMappings).toEqual([replacement])
   })
 
+  it('upsertSession replaces only the exact platform instance', async () => {
+    const legacy = makeMapping({ conversationId: 'legacy' })
+    const exact = makeMapping({
+      platformInstanceId: 'bot-1',
+      conversationId: 'old-exact',
+    })
+    const replacement = makeMapping({
+      platformInstanceId: 'bot-1',
+      conversationId: 'new-exact',
+    })
+    const { mapper, getCurrent } = makeMapper([legacy, exact])
+
+    await mapper.upsertSession(replacement, true)
+
+    expect(getCurrent().sessionMappings).toEqual([legacy, replacement])
+  })
+
   it('touchActiveSession bumps lastActiveAt and clears archivedAt', async () => {
     const archived = makeMapping({ archivedAt: 100, lastActiveAt: 50 })
     const { mapper, getCurrent } = makeMapper([archived])
@@ -111,6 +141,29 @@ describe('SessionMapper', () => {
     expect(updated?.lastActiveAt).toBe(999)
     expect(updated?.archivedAt).toBeUndefined()
     expect(getCurrent().sessionMappings[0].archivedAt).toBeUndefined()
+  })
+
+  it('touchActiveSession updates only the exact platform instance', async () => {
+    const legacy = makeMapping({ lastActiveAt: 10, archivedAt: 20 })
+    const exact = makeMapping({
+      platformInstanceId: 'bot-1',
+      conversationId: 'exact',
+      lastActiveAt: 30,
+      archivedAt: 40,
+    })
+    const { mapper, getCurrent } = makeMapper([legacy, exact])
+
+    await mapper.touchActiveSession(
+      'telegram:private:123',
+      'bot-1',
+      999,
+      true,
+    )
+
+    expect(getCurrent().sessionMappings).toEqual([
+      legacy,
+      { ...exact, lastActiveAt: 999, archivedAt: undefined },
+    ])
   })
 
   it('touchActiveSession no-ops for a disabled session', async () => {

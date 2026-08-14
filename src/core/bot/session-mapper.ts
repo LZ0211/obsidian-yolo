@@ -42,14 +42,14 @@ export class SessionMapper {
     platformInstanceId?: string,
     allowLegacyInstance = false,
   ): SessionMapping | undefined {
-    return this.getSettings().sessionMappings.find(
-      (mapping) =>
-        mapping.sessionKey === sessionKey &&
-        (platformInstanceId === undefined ||
-          mapping.platformInstanceId === platformInstanceId ||
-          (allowLegacyInstance === true &&
-            mapping.platformInstanceId === undefined)),
+    const mappings = this.getSettings().sessionMappings
+    const index = this.findSessionIndex(
+      mappings,
+      sessionKey,
+      platformInstanceId,
+      allowLegacyInstance,
     )
+    return index === -1 ? undefined : mappings[index]
   }
 
   /**
@@ -64,12 +64,19 @@ export class SessionMapper {
     allowLegacyInstance = false,
   ): Promise<SessionMapping> {
     const settings = this.getSettings()
-    const existingIndex = settings.sessionMappings.findIndex(
-      (existing) =>
-        existing.sessionKey === mapping.sessionKey &&
-        (existing.platformInstanceId === mapping.platformInstanceId ||
-          (allowLegacyInstance && existing.platformInstanceId === undefined)),
-    )
+    const existingIndex =
+      mapping.platformInstanceId === undefined
+        ? settings.sessionMappings.findIndex(
+            (existing) =>
+              existing.sessionKey === mapping.sessionKey &&
+              existing.platformInstanceId === undefined,
+          )
+        : this.findSessionIndex(
+            settings.sessionMappings,
+            mapping.sessionKey,
+            mapping.platformInstanceId,
+            allowLegacyInstance,
+          )
     const nextMappings = [...settings.sessionMappings]
     if (existingIndex === -1) {
       nextMappings.push(mapping)
@@ -102,13 +109,16 @@ export class SessionMapper {
         ? platformInstanceIdOrNow
         : now
     const settings = this.getSettings()
-    const existing = settings.sessionMappings.find(
-      (mapping) =>
-        mapping.sessionKey === sessionKey &&
-        (platformInstanceId === undefined ||
-          mapping.platformInstanceId === platformInstanceId ||
-          (allowLegacyInstance && mapping.platformInstanceId === undefined)),
+    const existingIndex = this.findSessionIndex(
+      settings.sessionMappings,
+      sessionKey,
+      platformInstanceId,
+      allowLegacyInstance,
     )
+    const existing =
+      existingIndex === -1
+        ? undefined
+        : settings.sessionMappings[existingIndex]
     if (!existing || existing.disabled) return undefined
 
     const updated: SessionMapping = {
@@ -118,15 +128,31 @@ export class SessionMapper {
       // archivedAt 已设置且 disabled !== true，自动清除 archivedAt 恢复活跃").
       archivedAt: undefined,
     }
-    const nextMappings = settings.sessionMappings.map((mapping) =>
-      mapping.sessionKey === sessionKey &&
-      (platformInstanceId === undefined ||
-        mapping.platformInstanceId === platformInstanceId ||
-        (allowLegacyInstance && mapping.platformInstanceId === undefined))
-        ? updated
-        : mapping,
-    )
+    const nextMappings = [...settings.sessionMappings]
+    nextMappings[existingIndex] = updated
     await this.saveSettings({ ...settings, sessionMappings: nextMappings })
     return updated
+  }
+
+  private findSessionIndex(
+    mappings: readonly SessionMapping[],
+    sessionKey: string,
+    platformInstanceId: string | undefined,
+    allowLegacyInstance: boolean,
+  ): number {
+    if (platformInstanceId === undefined) {
+      return mappings.findIndex((mapping) => mapping.sessionKey === sessionKey)
+    }
+    const exactIndex = mappings.findIndex(
+      (mapping) =>
+        mapping.sessionKey === sessionKey &&
+        mapping.platformInstanceId === platformInstanceId,
+    )
+    if (exactIndex !== -1 || !allowLegacyInstance) return exactIndex
+    return mappings.findIndex(
+      (mapping) =>
+        mapping.sessionKey === sessionKey &&
+        mapping.platformInstanceId === undefined,
+    )
   }
 }
