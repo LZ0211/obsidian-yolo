@@ -168,13 +168,14 @@ describe('SubagentTaskRegistry', () => {
     })
   })
 
-  it('prunes zombie running records (abort fired, never settled) past the bound', () => {
+  it('does not prune running records solely because abort was requested', () => {
     const registry = new SubagentTaskRegistry(2)
-    // Oldest entry is a zombie: still `running`, but its abort controller
-    // already fired and the child never settled (pre-S3 hang leak shape).
-    const zombie = makeRecord('sub_zombie', { status: 'running', createdAt: 0 })
-    registry.register(zombie)
-    zombie.abortController.abort()
+    const running = makeRecord('sub_running', {
+      status: 'running',
+      createdAt: 0,
+    })
+    registry.register(running)
+    running.abortController.abort()
 
     for (let index = 1; index <= 2; index += 1) {
       const record = makeRecord(`sub_${index}`, { createdAt: index })
@@ -182,12 +183,9 @@ describe('SubagentTaskRegistry', () => {
       registry.compactCompleted(record.taskId)
     }
 
-    // Cap 2, 3 eligible records (zombie + 2 compacted): the oldest — the
-    // zombie — is pruned; the settled records and the live one survive.
-    expect(registry.get('sub_zombie')).toBeUndefined()
+    expect(registry.get('sub_running')).toMatchObject({ status: 'running' })
     expect(registry.get('sub_1')).toBeDefined()
     expect(registry.get('sub_2')).toBeDefined()
-    expect(registry.getLiveTranscript('sub_zombie')).toBeUndefined()
   })
 
   it('never prunes actively running records (live abort controller)', () => {

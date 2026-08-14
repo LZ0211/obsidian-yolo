@@ -200,38 +200,22 @@ export class SubagentTaskRegistry {
     }
   }
 
-  /**
-   * Records eligible for pruning: compacted terminal records (the existing
-   * path) plus zombie running records — `running` entries whose abort
-   * controller already fired but which never settled (pre-S3 aborted
-   * children, or any future abort-without-settle path). Actively running
-   * records (live, non-aborted controller) are never eligible.
-   */
-  private collectPruneCandidates(): SubagentTaskIndexRecord[] {
-    const terminalRecords = [...this.compactedTaskIds]
+  private pruneCompletedRecords(): string[] {
+    const completedRecords = [...this.compactedTaskIds]
       .map((taskId) => this.tasks.get(taskId))
       .filter(
         (record): record is SubagentTaskIndexRecord =>
           record !== undefined && record.status !== 'running',
       )
-    const zombieRecords = [...this.tasks.values()].filter(
-      (record) =>
-        record.status === 'running' &&
-        this.abortControllers.get(record.taskId)?.signal.aborted === true,
-    )
-    return [...terminalRecords, ...zombieRecords]
-  }
+      .sort(
+        (a, b) =>
+          (a.completedAt ?? a.createdAt) - (b.completedAt ?? b.createdAt),
+      )
 
-  private pruneCompletedRecords(): string[] {
-    const eligibleRecords = this.collectPruneCandidates().sort(
-      (a, b) =>
-        (a.completedAt ?? a.createdAt) - (b.completedAt ?? b.createdAt),
-    )
-
-    const recordsToRemove = eligibleRecords.length - this.maxCompletedRecords
+    const recordsToRemove = completedRecords.length - this.maxCompletedRecords
     const removedTaskIds: string[] = []
     for (let index = 0; index < recordsToRemove; index += 1) {
-      const taskId = eligibleRecords[index].taskId
+      const taskId = completedRecords[index].taskId
       this.tasks.delete(taskId)
       this.compactedTaskIds.delete(taskId)
       this.abortControllers.delete(taskId)
