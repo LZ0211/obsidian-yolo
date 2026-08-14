@@ -33,7 +33,6 @@ import type {
   CliRuntimeConfiguration,
   CliRuntimeConfigurationUpdate,
   CliRuntimeId,
-  CliRuntimeMcpServerStatus,
   CliRuntimeRunState,
   CliRuntimeSkill,
   CliSessionHydration,
@@ -127,7 +126,6 @@ class WebCliConversationController extends CliConversationController {
   private readonly webListeners = new Set<() => void>()
   private unsubscribe: () => void
   private webConversationEpoch = 0
-  private pendingStagedUserMessageId: string | null = null
 
   constructor(
     private adapter: RemoteChatRuntimeAdapter,
@@ -159,7 +157,6 @@ class WebCliConversationController extends CliConversationController {
   override bindConversation(conversationId: string): void {
     if (this.adapter.getSnapshot().conversationId === conversationId) return
     this.webConversationEpoch += 1
-    this.pendingStagedUserMessageId = null
     this.unsubscribe()
     this.adapter = this.getAdapter(conversationId)
     this.currentSnapshot = toCliSnapshot(
@@ -178,7 +175,6 @@ class WebCliConversationController extends CliConversationController {
 
   override resetSession(): void {
     this.webConversationEpoch += 1
-    this.pendingStagedUserMessageId = null
     this.currentSnapshot = {
       ...this.currentSnapshot,
       sessionRef: null,
@@ -200,17 +196,8 @@ class WebCliConversationController extends CliConversationController {
     if (!result.ok) {
       throw new Error(getSessionCommandErrorMessage(result.error))
     }
-    // 会话绑定经 SSE session.changed 异步到达；等待它落到本地快照。
-    let snapshot =
+    const snapshot =
       (await this.adapter.refreshSnapshot()) ?? this.adapter.getSnapshot()
-    const deadline = Date.now() + 2000
-    while (
-      (snapshot.sessionRef as CliSessionRef | null) === null &&
-      Date.now() < deadline
-    ) {
-      await new Promise((resolve) => setTimeout(resolve, 10))
-      snapshot = this.adapter.getSnapshot()
-    }
     const sessionRef = snapshot.sessionRef as CliSessionRef | null
     if (sessionRef === null) {
       throw new Error('CLI session open did not produce an active session.')
@@ -350,34 +337,12 @@ class WebCliConversationController extends CliConversationController {
     throw new Error('listSkills is unsupported on the web CLI runtime')
   }
 
-  override async reloadPlugins(): Promise<void> {
-    throw new Error('reloadPlugins is unsupported on the web CLI runtime')
-  }
-
-  override async mcpServerStatus(): Promise<
-    readonly CliRuntimeMcpServerStatus[]
-  > {
-    throw new Error('mcpServerStatus is unsupported on the web CLI runtime')
-  }
-
-  override async toggleMcpServer(
-    _name: string,
-    _enabled: boolean,
-  ): Promise<void> {
-    throw new Error('toggleMcpServer is unsupported on the web CLI runtime')
-  }
-
-  override async reconnectMcpServer(_name: string): Promise<void> {
-    throw new Error('reconnectMcpServer is unsupported on the web CLI runtime')
-  }
-
   override stageTurn(userMessage: ChatUserMessage): CliStagedConversationTurn {
     const staged = Object.freeze({
       surfaceId: this.currentSnapshot.surfaceId,
       conversationEpoch: this.webConversationEpoch,
       userMessageId: userMessage.id,
     })
-    this.pendingStagedUserMessageId = userMessage.id
     const index = this.currentSnapshot.messages.findIndex(
       (message) => message.id === userMessage.id,
     )
@@ -399,8 +364,7 @@ class WebCliConversationController extends CliConversationController {
   ): void {
     if (
       stagedTurn.surfaceId !== this.currentSnapshot.surfaceId ||
-      stagedTurn.conversationEpoch !== this.webConversationEpoch ||
-      stagedTurn.userMessageId !== this.pendingStagedUserMessageId
+      stagedTurn.conversationEpoch !== this.webConversationEpoch
     ) {
       return
     }

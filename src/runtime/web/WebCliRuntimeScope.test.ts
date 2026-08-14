@@ -167,6 +167,53 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
     await scope.dispose()
   })
 
+  it('rejects immediately when the authoritative open snapshot has no session', async () => {
+    const { fetch } = createFetchMock()
+    const originalFetch = fetch.getMockImplementation()
+    fetch.mockImplementation(async (url, init) => {
+      if (String(url).includes('/snapshot')) {
+        return jsonResponse({
+          snapshot: {
+            replayCursor: 0,
+            runId: 'remote:conversation-1',
+            conversationId: 'conversation-1',
+            sessionRef: null,
+            messages: [],
+            runState: 'idle',
+            error: null,
+            compactionBoundaries: [],
+            configuration: null,
+            capabilities: {},
+          },
+          cursor: 0,
+        })
+      }
+      if (!originalFetch) throw new Error('missing fetch mock')
+      return originalFetch(url, init)
+    })
+    const scope = createWebCliRuntimeScope({
+      baseUrl: 'http://localhost',
+      fetchImpl: fetch,
+      sessionId: 'session-1',
+    })
+    const controller = scope.selectConversationRuntime('codex')
+    const ref = { runtimeId: 'codex' as const, nativeSessionId: 'thread-1' }
+
+    const result = await Promise.race([
+      controller.hydrateSession(ref).then(
+        () => 'resolved',
+        (error: unknown) =>
+          error instanceof Error ? error.message : String(error),
+      ),
+      new Promise<string>((resolve) => {
+        setTimeout(() => resolve('still pending'), 0)
+      }),
+    ])
+
+    expect(result).toBe('CLI session open did not produce an active session.')
+    await scope.dispose()
+  })
+
   it('discovers sessions via the chat-runtime protocol and maps pin state', async () => {
     const { fetch, calls } = createFetchMock()
     const scope = createWebCliRuntimeScope({
@@ -332,7 +379,7 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
     await expect(controller.listSkills()).rejects.toThrow(/unsupported/)
   })
 
-  it('provides the controller methods used by staging and the MCP status UI', async () => {
+  it('uses default no-op semantics for unavailable MCP status and reload operations', async () => {
     const { fetch } = createFetchMock()
     const scope = createWebCliRuntimeScope({
       baseUrl: 'http://localhost',
@@ -356,12 +403,13 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
       error: 'rejected',
     })
 
-    await expect(controller.mcpServerStatus()).rejects.toThrow(/unsupported/)
+    await expect(controller.mcpServerStatus()).resolves.toEqual([])
+    await expect(controller.reloadPlugins()).resolves.toBeUndefined()
     await expect(controller.toggleMcpServer('github', false)).rejects.toThrow(
-      /unsupported/,
+      /does not support/,
     )
     await expect(controller.reconnectMcpServer('github')).rejects.toThrow(
-      /unsupported/,
+      /does not support/,
     )
   })
 
