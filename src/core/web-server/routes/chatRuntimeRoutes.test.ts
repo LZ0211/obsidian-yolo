@@ -12,6 +12,7 @@ import { WebRouter } from '../WebRouter'
 import {
   closeChatRuntimeSessionStreams,
   disposeChatRuntimeRouteCaches,
+  invalidateChatRuntimeConversation,
   registerChatRuntimeRoutes,
 } from './chatRuntimeRoutes'
 
@@ -347,5 +348,160 @@ describe('chatRuntimeRoutes session endpoints', () => {
     )
     expect(subscribedB).toHaveLength(1)
     expect(subscribedA).toHaveLength(1)
+  })
+
+  it('coalesces concurrent runtime creation for the same conversation', async () => {
+    await disposeChatRuntimeRouteCaches()
+    let releaseRuntime!: () => void
+    const runtimeReady = new Promise<void>((resolve) => {
+      releaseRuntime = resolve
+    })
+    const runtime = makeRuntime({
+      getSnapshot: () => ({
+        replayCursor: 0,
+        runId: 'run-coalesced',
+        conversationId: 'conv-coalesced',
+        sessionRef: null,
+        messages: [],
+        runState: 'idle',
+        error: null,
+        compactionBoundaries: [],
+        configuration: null,
+        capabilities: {} as never,
+      }),
+    })
+    const getChatRuntime = jest.fn(async () => {
+      await runtimeReady
+      return runtime
+    })
+    const router = new WebRouter()
+    registerChatRuntimeRoutes(router, { getChatRuntime })
+
+    const first = dispatch(
+      router,
+      'GET',
+      '/api/chat-runtime/codex/snapshot?conversationId=conv-coalesced',
+    )
+    const second = dispatch(
+      router,
+      'GET',
+      '/api/chat-runtime/codex/snapshot?conversationId=conv-coalesced',
+    )
+    releaseRuntime()
+    await Promise.all([first, second])
+
+    expect(getChatRuntime).toHaveBeenCalledTimes(1)
+    await disposeChatRuntimeRouteCaches()
+  })
+
+  it('retries runtime creation after a rejected attempt without leaking a rejection', async () => {
+    await disposeChatRuntimeRouteCaches()
+    const runtime = makeRuntime({
+      getSnapshot: () => ({
+        replayCursor: 0,
+        runId: 'run-retry',
+        conversationId: 'conv-retry',
+        sessionRef: null,
+        messages: [],
+        runState: 'idle',
+        error: null,
+        compactionBoundaries: [],
+        configuration: null,
+        capabilities: {} as never,
+      }),
+    })
+    const getChatRuntime = jest
+      .fn<Promise<ChatRuntime>, []>()
+      .mockRejectedValueOnce(new Error('runtime creation failed'))
+      .mockResolvedValueOnce(runtime)
+    const router = new WebRouter()
+    registerChatRuntimeRoutes(router, { getChatRuntime })
+
+    const failed = await dispatch(
+      router,
+      'GET',
+      '/api/chat-runtime/codex/snapshot?conversationId=conv-retry',
+    )
+    await Promise.resolve()
+    const retried = await dispatch(
+      router,
+      'GET',
+      '/api/chat-runtime/codex/snapshot?conversationId=conv-retry',
+    )
+
+    expect(failed.statusCode).toBe(500)
+    expect(retried.statusCode).toBe(200)
+    expect(getChatRuntime).toHaveBeenCalledTimes(2)
+    await disposeChatRuntimeRouteCaches()
+  })
+
+  it('invalidates only the cached runtimes for the changed conversation', async () => {
+    await disposeChatRuntimeRouteCaches()
+    const disposeFirst = jest.fn(async () => undefined)
+    const first = makeRuntime({ dispose: disposeFirst })
+    const second = makeRuntime()
+    const getChatRuntime = jest
+      .fn<Promise<ChatRuntime>, []>()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second)
+    const router = new WebRouter()
+    registerChatRuntimeRoutes(router, { getChatRuntime })
+
+    await dispatch(
+      router,
+      'GET',
+      '/api/chat-runtime/codex/snapshot?conversationId=conv-cwd',
+    )
+    await invalidateChatRuntimeConversation('conv-cwd')
+    await dispatch(
+      router,
+      'GET',
+      '/api/chat-runtime/codex/snapshot?conversationId=conv-cwd',
+    )
+
+    expect(disposeFirst).toHaveBeenCalledTimes(1)
+    expect(getChatRuntime).toHaveBeenCalledTimes(2)
+    await disposeChatRuntimeRouteCaches()
+  })
+
+  it('does not publish an in-flight runtime after its conversation is invalidated', async () => {
+    await disposeChatRuntimeRouteCaches()
+    let releaseFirst!: () => void
+    const firstReady = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    const disposeFirst = jest.fn(async () => undefined)
+    const first = makeRuntime({ dispose: disposeFirst })
+    const second = makeRuntime()
+    const getChatRuntime = jest
+      .fn<Promise<ChatRuntime>, []>()
+      .mockImplementationOnce(async () => {
+        await firstReady
+        return first
+      })
+      .mockResolvedValueOnce(second)
+    const router = new WebRouter()
+    registerChatRuntimeRoutes(router, { getChatRuntime })
+
+    const request = dispatch(
+      router,
+      'GET',
+      '/api/chat-runtime/codex/snapshot?conversationId=conv-cwd-race',
+    )
+    await Promise.resolve()
+    expect(getChatRuntime).toHaveBeenCalledTimes(1)
+
+    await invalidateChatRuntimeConversation('conv-cwd-race')
+    releaseFirst()
+    await request
+    await dispatch(
+      router,
+      'GET',
+      '/api/chat-runtime/codex/snapshot?conversationId=conv-cwd-race',
+    )
+
+    expect(disposeFirst).toHaveBeenCalledTimes(1)
+    expect(getChatRuntime).toHaveBeenCalledTimes(2)
+    await disposeChatRuntimeRouteCaches()
   })
 })

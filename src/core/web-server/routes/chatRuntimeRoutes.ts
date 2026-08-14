@@ -41,6 +41,9 @@ function resolveRuntimeId(
 const REPLAY_LIMIT = 200
 /** 稳定 runtime 实例缓存：按 runtimeId + conversationId 键控，避免每个 HTTP 请求新建实例、也避免会话切换串台。 */
 const runtimeCache = new Map<string, ChatRuntime>()
+const runtimeCreationByKey = new Map<string, Promise<ChatRuntime | null>>()
+const runtimeGenerationByKey = new Map<string, number>()
+let runtimeCacheEpoch = 0
 const replayByRuntime = new Map<
   string,
   {
@@ -50,8 +53,9 @@ const replayByRuntime = new Map<
   }
 >()
 
-type ChatRuntimeStreamCloser = (code: string) => void
+type ChatRuntimeStreamCloser = (code?: string) => void
 const streamsBySession = new Map<string, Set<ChatRuntimeStreamCloser>>()
+const streamsByRuntime = new Map<string, Set<ChatRuntimeStreamCloser>>()
 const activeStreams = new Set<ChatRuntimeStreamCloser>()
 
 /**
@@ -60,8 +64,11 @@ const activeStreams = new Set<ChatRuntimeStreamCloser>()
  */
 export async function disposeChatRuntimeRouteCaches(): Promise<void> {
   closeAllChatRuntimeStreams('agent_unavailable')
+  runtimeCacheEpoch += 1
   const runtimes = [...runtimeCache.values()]
   runtimeCache.clear()
+  runtimeCreationByKey.clear()
+  runtimeGenerationByKey.clear()
   replayByRuntime.clear()
   await Promise.all(
     runtimes
@@ -88,6 +95,7 @@ function closeAllChatRuntimeStreams(code: string): void {
 export function registerChatRuntimeStream(
   sessionId: string | null,
   close: ChatRuntimeStreamCloser,
+  runtimeKey?: string,
 ): () => void {
   activeStreams.add(close)
   if (sessionId) {
@@ -95,12 +103,23 @@ export function registerChatRuntimeStream(
     streams.add(close)
     streamsBySession.set(sessionId, streams)
   }
+  if (runtimeKey) {
+    const streams = streamsByRuntime.get(runtimeKey) ?? new Set()
+    streams.add(close)
+    streamsByRuntime.set(runtimeKey, streams)
+  }
   return () => {
     activeStreams.delete(close)
-    if (!sessionId) return
-    const streams = streamsBySession.get(sessionId)
-    streams?.delete(close)
-    if (streams?.size === 0) streamsBySession.delete(sessionId)
+    if (sessionId) {
+      const streams = streamsBySession.get(sessionId)
+      streams?.delete(close)
+      if (streams?.size === 0) streamsBySession.delete(sessionId)
+    }
+    if (runtimeKey) {
+      const streams = streamsByRuntime.get(runtimeKey)
+      streams?.delete(close)
+      if (streams?.size === 0) streamsByRuntime.delete(runtimeKey)
+    }
   }
 }
 
@@ -119,9 +138,56 @@ async function resolveCachedRuntime(
   const key = runtimeCacheKey(runtimeId, conversationId)
   const cached = runtimeCache.get(key)
   if (cached) return cached
-  const runtime = await context.getChatRuntime(runtimeId, conversationId)
-  if (runtime) runtimeCache.set(key, runtime)
-  return runtime
+  let creation = runtimeCreationByKey.get(key)
+  if (!creation) {
+    const generation = runtimeGenerationByKey.get(key) ?? 0
+    const cacheEpoch = runtimeCacheEpoch
+    creation = Promise.resolve(
+      context.getChatRuntime(runtimeId, conversationId),
+    ).then(async (runtime): Promise<ChatRuntime | null> => {
+      if (cacheEpoch !== runtimeCacheEpoch) {
+        await runtime?.dispose?.().catch(() => undefined)
+        return null
+      }
+      if ((runtimeGenerationByKey.get(key) ?? 0) !== generation) {
+        await runtime?.dispose?.().catch(() => undefined)
+        return resolveCachedRuntime(runtimeId, conversationId, context)
+      }
+      if (runtime) runtimeCache.set(key, runtime)
+      return runtime
+    })
+    runtimeCreationByKey.set(key, creation)
+  }
+  try {
+    return await creation
+  } finally {
+    if (runtimeCreationByKey.get(key) === creation) {
+      runtimeCreationByKey.delete(key)
+    }
+  }
+}
+
+export async function invalidateChatRuntimeConversation(
+  conversationId: string,
+): Promise<void> {
+  const keys = RUNTIME_IDS.map((runtimeId) =>
+    runtimeCacheKey(runtimeId, conversationId),
+  )
+  const runtimes = new Set<ChatRuntime>()
+  for (const key of keys) {
+    runtimeGenerationByKey.set(key, (runtimeGenerationByKey.get(key) ?? 0) + 1)
+    runtimeCreationByKey.delete(key)
+    for (const close of [...(streamsByRuntime.get(key) ?? [])]) close()
+    const runtime = runtimeCache.get(key)
+    if (runtime) runtimes.add(runtime)
+    runtimeCache.delete(key)
+    replayByRuntime.delete(key)
+  }
+  await Promise.all(
+    [...runtimes]
+      .filter((runtime) => typeof runtime.dispose === 'function')
+      .map((runtime) => runtime.dispose().catch(() => undefined)),
+  )
 }
 
 function recordEvent(key: string, wire: WireEventEnvelope): void {
@@ -209,7 +275,11 @@ export function registerChatRuntimeRoutes(
         }
         replayByRuntime.set(replayKey, entry)
         const cursor = Number(queryValue(req, 'cursor') ?? 0)
-        unregisterStream = registerChatRuntimeStream(sessionId, close)
+        unregisterStream = registerChatRuntimeStream(
+          sessionId,
+          close,
+          replayKey,
+        )
         // 断线续传：先重放缓冲内 cursor 之后的事件；有 gap 时客户端会调用 /snapshot 重建。
         // 重放期间连接可能已被 req close 关闭——必须在循环内检查 closed，
         // 否则 writer.close() 之后仍继续写（close 后再触发 slow-consumer
