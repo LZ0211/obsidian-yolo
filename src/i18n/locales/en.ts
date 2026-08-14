@@ -89,6 +89,8 @@ export const en: TranslationKeys = {
       codexDescription: 'Codex on this device',
       hermesLabel: 'Hermes',
       hermesDescription: 'Hermes on this device',
+      piLabel: 'pi',
+      piDescription: 'pi on this device',
       chatLabel: 'Agent',
       exitCli: 'Exit CLI',
     },
@@ -1114,6 +1116,9 @@ export const en: TranslationKeys = {
       hermesCliPathName: 'Hermes CLI path',
       hermesCliPathDesc:
         'Custom path to the hermes executable — paste the output of "which hermes". Leave empty to auto-detect. Stored on this device only.',
+      piCliPathName: 'pi CLI path',
+      piCliPathDesc:
+        'Custom path to the pi executable — paste the output of "which pi". Leave empty to auto-detect. Stored on this device only.',
       cliPathMissing:
         'This path does not exist on this device; auto-detection will be used instead.',
       autoContextCompactionBlockTitle: 'Context compaction',

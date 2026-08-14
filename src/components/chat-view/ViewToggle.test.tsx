@@ -12,6 +12,10 @@ jest.mock('../../assets/provider-icons/hermes.svg', () => ({
   __esModule: true,
   default: 'hermes-logo',
 }))
+jest.mock('../../assets/provider-icons/pi.svg', () => ({
+  __esModule: true,
+  default: 'pi-logo',
+}))
 
 type CapturedRollerProps = {
   value: string
@@ -44,7 +48,7 @@ const BASE_PROPS = {
   onChangeView: () => {},
   activeRuntimeId: 'yolo' as const,
   onChangeRuntime: () => {},
-  runtimeOptions: ['yolo', 'claude-code', 'codex', 'hermes'] as const,
+  runtimeOptions: ['yolo', 'claude-code', 'codex', 'hermes', 'pi'] as const,
 }
 
 describe('ViewToggle single runtime picker', () => {
@@ -65,6 +69,7 @@ describe('ViewToggle single runtime picker', () => {
       'claude-code',
       'codex',
       'hermes',
+      'pi',
     ])
   })
 

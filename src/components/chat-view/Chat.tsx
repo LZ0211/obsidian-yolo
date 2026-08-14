@@ -33,6 +33,7 @@ import {
   type CliRuntimeAvailability,
   type CliRuntimeScope,
   type CliSessionRef,
+  EMPTY_CLI_RUNTIME_AVAILABILITY,
   RUNTIME_CAPABILITIES,
   buildCliEnvironmentContext,
   createYoloChatRuntimeActions,
@@ -42,6 +43,7 @@ import {
 } from '../../core/cli-runtime'
 import { getMemoryIndexRuntimeHandle } from '../../core/memory/memoryIndexRuntime'
 import { resolveLocalizedText } from '../../core/modules/moduleI18n'
+import { subscribeQueryProgress } from '../../core/rag/queryProgressBus'
 import {
   isConversationFileScopeLocked,
   resolveConversationFileScope,
@@ -123,7 +125,6 @@ import {
 import { useSnippetEntries } from './hooks/useSnippetEntries'
 import { getInputOverlayReserveHeight } from './inputOverlayReserve'
 import type { QueryProgressState } from './QueryProgress'
-import { subscribeQueryProgress } from '../../core/rag/queryProgressBus'
 import { TodoListPanel } from './TodoListPanel'
 import { useChatDomainActions } from './useChatDomainActions'
 import { useChatInputController } from './useChatInputController'
@@ -441,18 +442,10 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
   const cliRuntimeAvailable =
     isCliRuntimeAvailable() || Boolean(resolvedCliRuntimeScope)
   const [cliRuntimeAvailability, setCliRuntimeAvailability] =
-    useState<CliRuntimeAvailability>(() => ({
-      'claude-code': false,
-      codex: false,
-      hermes: false,
-    }))
+    useState<CliRuntimeAvailability>(EMPTY_CLI_RUNTIME_AVAILABILITY)
   useEffect(() => {
     if (!cliRuntimeAvailable || !cliRuntimeScope) {
-      setCliRuntimeAvailability({
-        'claude-code': false,
-        codex: false,
-        hermes: false,
-      })
+      setCliRuntimeAvailability(EMPTY_CLI_RUNTIME_AVAILABILITY)
       return
     }
     let cancelled = false

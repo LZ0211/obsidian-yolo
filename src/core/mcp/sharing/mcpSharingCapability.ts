@@ -10,7 +10,7 @@ import type { CliRuntimeId } from '../../cli-runtime/types'
  * - claude-code / codex：SDK 透传 / codex 配置注入已实现，但进程级投影注入
  *   缝（coordinator runtime options）未接线前不得声明 true，避免能力与
  *   实际进程不一致；`processInjectionWired` 为真且存在共享 server 时才声明支持。
- * - hermes：当前 ACP runtime 没有 MCP 进程投影，始终不声明支持。
+ * - hermes / pi：当前 runtime 没有 MCP 进程投影，始终不声明支持。
  */
 
 const SHARED_TRANSPORTS = new Set(['http', 'sse', 'ws'])
@@ -35,10 +35,10 @@ export function deriveMcpSharingCapability(
     return { supported: true, info: { transports } }
   }
 
-  if (runtimeId === 'hermes') {
+  if (runtimeId === 'hermes' || runtimeId === 'pi') {
     return {
       supported: false,
-      reason: 'Hermes ACP does not expose MCP process projection',
+      reason: `${runtimeId} does not expose MCP process projection`,
     }
   }
 

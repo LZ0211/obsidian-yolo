@@ -5,10 +5,11 @@ import type { ChatRuntimeId, CliRuntimeId } from './types'
 
 export type CliRuntimeAvailability = Readonly<Record<CliRuntimeId, boolean>>
 
-const NO_CLI_RUNTIME_AVAILABLE: CliRuntimeAvailability = {
+export const EMPTY_CLI_RUNTIME_AVAILABILITY: CliRuntimeAvailability = {
   'claude-code': false,
   codex: false,
   hermes: false,
+  pi: false,
 }
 
 export const isCliRuntimeAvailable = (): boolean => Platform.isDesktop
@@ -36,7 +37,7 @@ export const detectCliRuntimeAvailability = async (
     !isCliRuntimeAvailable() ||
     !(app.vault.adapter instanceof FileSystemAdapter)
   ) {
-    return NO_CLI_RUNTIME_AVAILABLE
+    return EMPTY_CLI_RUNTIME_AVAILABILITY
   }
 
   try {
@@ -46,31 +47,39 @@ export const detectCliRuntimeAvailability = async (
       { resolveClaudeProcessSupport },
       { resolveCodexLaunch },
       { resolveHermesCommand },
+      { resolvePiCommand },
     ] = await Promise.all([
       import('./cli-path-override'),
       import('./login-shell-env'),
       import('./claude/process'),
       import('./codex/launch'),
       import('./hermes/resolve-command'),
+      import('./pi/resolve-command'),
     ])
     const vaultPath = app.vault.adapter.getBasePath()
     const environment = await loadLoginShellEnvironment()
-    const [claudeResult, codexResult, hermesResult] = await Promise.allSettled([
-      resolveClaudeProcessSupport({
-        configuredCliPath: getCliPathOverride(app, 'claude-code'),
-      }),
-      resolveCodexLaunch(
-        vaultPath,
-        environment as NodeJS.ProcessEnv,
-        process.platform,
-        getCliPathOverride(app, 'codex'),
-      ),
-      resolveHermesCommand(
-        environment as NodeJS.ProcessEnv,
-        process.platform,
-        getCliPathOverride(app, 'hermes'),
-      ),
-    ])
+    const [claudeResult, codexResult, hermesResult, piResult] =
+      await Promise.allSettled([
+        resolveClaudeProcessSupport({
+          configuredCliPath: getCliPathOverride(app, 'claude-code'),
+        }),
+        resolveCodexLaunch(
+          vaultPath,
+          environment as NodeJS.ProcessEnv,
+          process.platform,
+          getCliPathOverride(app, 'codex'),
+        ),
+        resolveHermesCommand(
+          environment as NodeJS.ProcessEnv,
+          process.platform,
+          getCliPathOverride(app, 'hermes'),
+        ),
+        resolvePiCommand(
+          environment as NodeJS.ProcessEnv,
+          process.platform,
+          getCliPathOverride(app, 'pi'),
+        ),
+      ])
     return {
       'claude-code': claudeResult.status === 'fulfilled',
       codex:
@@ -79,9 +88,10 @@ export const detectCliRuntimeAvailability = async (
         codexResult.value.command.length > 0,
       hermes:
         hermesResult.status === 'fulfilled' && hermesResult.value !== null,
+      pi: piResult.status === 'fulfilled' && piResult.value !== null,
     }
   } catch {
-    return NO_CLI_RUNTIME_AVAILABLE
+    return EMPTY_CLI_RUNTIME_AVAILABILITY
   }
 }
 

@@ -22,21 +22,26 @@ import {
   type CliStagedConversationTurn,
 } from '../../core/cli-runtime/conversation-controller'
 import type { CliRuntimeScope } from '../../core/cli-runtime/coordinator'
+import {
+  type CliRuntimeAvailability,
+  EMPTY_CLI_RUNTIME_AVAILABILITY,
+} from '../../core/cli-runtime/desktop'
 import type {
   CliSessionDiscoveryResult,
   CliSessionService,
 } from '../../core/cli-runtime/session-service'
-import type {
-  CliAssistantBinding,
-  CliPermissionProfileUpdate,
-  CliRuntime,
-  CliRuntimeConfiguration,
-  CliRuntimeConfigurationUpdate,
-  CliRuntimeId,
-  CliRuntimeRunState,
-  CliSessionHydration,
-  CliSessionOverlay,
-  CliSessionRef,
+import {
+  CLI_RUNTIME_IDS,
+  type CliAssistantBinding,
+  type CliPermissionProfileUpdate,
+  type CliRuntime,
+  type CliRuntimeConfiguration,
+  type CliRuntimeConfigurationUpdate,
+  type CliRuntimeId,
+  type CliRuntimeRunState,
+  type CliSessionHydration,
+  type CliSessionOverlay,
+  type CliSessionRef,
 } from '../../core/cli-runtime/types'
 import type { ChatMessage, ChatUserMessage } from '../../types/chat'
 
@@ -556,18 +561,17 @@ export function createWebCliRuntimeScope(
     probeAvailability: async () => {
       const response = await probeTransport.get('/api/cli/availability')
       if (!response.ok) {
-        return { 'claude-code': false, codex: false, hermes: false }
+        return EMPTY_CLI_RUNTIME_AVAILABILITY
       }
-      const payload = (await response.json().catch(() => null)) as {
-        'claude-code'?: boolean
-        codex?: boolean
-        hermes?: boolean
-      } | null
-      return {
-        'claude-code': payload?.['claude-code'] === true,
-        codex: payload?.codex === true,
-        hermes: payload?.hermes === true,
-      }
+      const payload = (await response.json().catch(() => null)) as Partial<
+        Record<CliRuntimeId, boolean>
+      > | null
+      return Object.fromEntries(
+        CLI_RUNTIME_IDS.map((runtimeId) => [
+          runtimeId,
+          payload?.[runtimeId] === true,
+        ]),
+      ) as CliRuntimeAvailability
     },
     resolveRuntime: toCliRuntime,
     selectConversationRuntime: (runtimeId) => getController(runtimeId),

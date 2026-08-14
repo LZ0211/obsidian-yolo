@@ -242,7 +242,7 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
 
   it('reports per-runtime HTTP and transport failures during discovery', async () => {
     const fetch = jest.fn(
-      async (url: RequestInfo | URL, init?: RequestInit) => {
+      async (url: RequestInfo | URL, _init?: RequestInit) => {
         if (String(url).includes('/stream')) {
           return {
             ok: true,
@@ -558,7 +558,12 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
 
   it('probes CLI availability from the host via /api/cli/availability', async () => {
     const availabilityFetch = jest.fn(async () =>
-      jsonResponse({ 'claude-code': true, codex: false, hermes: true }),
+      jsonResponse({
+        'claude-code': true,
+        codex: false,
+        hermes: true,
+        pi: true,
+      }),
     )
     const scope = createWebCliRuntimeScope({
       baseUrl: 'http://localhost',
@@ -570,6 +575,7 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
       'claude-code': true,
       codex: false,
       hermes: true,
+      pi: true,
     })
     expect(availabilityFetch).toHaveBeenCalledWith(
       'http://localhost/api/cli/availability',
@@ -591,6 +597,7 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
       'claude-code': false,
       codex: false,
       hermes: false,
+      pi: false,
     })
   })
 })
