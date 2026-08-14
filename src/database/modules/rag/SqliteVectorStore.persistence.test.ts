@@ -3,8 +3,8 @@ import { createRequire } from 'node:module'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { getSqliteDbPath, getSqliteNamespaceDir } from './backendPaths'
-import { legacyVectorNamespaceId, vectorNamespaceId } from './namespaceId'
+import { getSqliteDbPath } from './backendPaths'
+import { vectorNamespaceId } from './namespaceId'
 import { SQLITE_COARSE_DIMENSION } from './SqliteSchema'
 import { SqliteVectorStore } from './SqliteVectorStore'
 import {
@@ -183,232 +183,6 @@ describe('SqliteVectorStore persistence', () => {
     fs.rmSync(rootDir, { recursive: true, force: true })
   })
 
-  test('migrates the legacy (pre-identity) namespace directory on open', async () => {
-    const { rootDir, baseDir } = createTempStoreRoot()
-
-    // 模拟升级前状态：索引数据在旧算法 id 的目录下（无 provider identity）。
-    const legacyNamespace: VectorNamespace = {
-      ...namespace,
-      providerIdentity: 'openai',
-      endpointIdentity: 'https://api.openai.com/v1',
-    }
-    const legacyId = legacyVectorNamespaceId(legacyNamespace)
-    const legacyDir = getSqliteNamespaceDir(baseDir, legacyId)
-    fs.mkdirSync(legacyDir, { recursive: true })
-    const legacyDb = openRawDb(getSqliteDbPath(baseDir, legacyId))
-    legacyDb.exec('create table legacy_marker (id text)')
-    legacyDb.close()
-
-    const store = createStore(baseDir)
-    await store.open()
-
-    // getStatus 触发迁移：旧目录被改名到新 id 目录，数据不再丢失。
-    const status = await store.getStatus(legacyNamespace)
-    expect(status.rebuildRequired).toBe(false)
-    const canonicalId = vectorNamespaceId(legacyNamespace)
-    expect(fs.existsSync(getSqliteNamespaceDir(baseDir, canonicalId))).toBe(
-      true,
-    )
-    expect(fs.existsSync(legacyDir)).toBe(false)
-
-    const migratedDb = openRawDb(getSqliteDbPath(baseDir, canonicalId))
-    try {
-      const marker = migratedDb
-        .prepare(
-          "select name from sqlite_master where type = 'table' and name = 'legacy_marker'",
-        )
-        .get()
-      expect(marker).toBeDefined()
-    } finally {
-      migratedDb.close()
-    }
-
-    await store.close()
-    fs.rmSync(rootDir, { recursive: true, force: true })
-  })
-
-  test('reports rebuild required when the legacy namespace cannot be renamed', async () => {
-    const { rootDir, baseDir } = createTempStoreRoot()
-    const upgradedNamespace: VectorNamespace = {
-      ...namespace,
-      providerIdentity: 'openai',
-      endpointIdentity: 'https://api.openai.com/v1',
-    }
-    const legacyDir = getSqliteNamespaceDir(
-      baseDir,
-      legacyVectorNamespaceId(upgradedNamespace),
-    )
-    const canonicalDir = getSqliteNamespaceDir(
-      baseDir,
-      vectorNamespaceId(upgradedNamespace),
-    )
-
-    const legacyStore = createStore(baseDir)
-    await legacyStore.open()
-    await legacyStore.replaceFile(
-      namespace,
-      fileWrite([chunk('legacy-chunk', 'legacy vector text', [1, 0, 0, 0], 1)]),
-    )
-    await legacyStore.close()
-
-    const originalRenameSync = fs.renameSync
-    const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation(((
-      oldPath: fs.PathLike,
-      newPath: fs.PathLike,
-    ) => {
-      if (oldPath === legacyDir && newPath === canonicalDir) {
-        const error = new Error('legacy rename busy') as NodeJS.ErrnoException
-        error.code = 'EPERM'
-        throw error
-      }
-      return originalRenameSync(oldPath, newPath)
-    }) as typeof fs.renameSync)
-
-    const store = createStore(baseDir)
-    await store.open()
-    try {
-      await expect(store.getStatus(upgradedNamespace)).resolves.toMatchObject({
-        rebuildRequired: true,
-        recoveryAction: 'rebuild_index',
-      })
-      await expect(
-        store.search(upgradedNamespace, [1, 0, 0, 0], { topK: 1 }),
-      ).rejects.toMatchObject({ code: 'rebuild_required' })
-    } finally {
-      renameSpy.mockRestore()
-      await store.close()
-      fs.rmSync(rootDir, { recursive: true, force: true })
-    }
-  })
-
-  test('migrates legacy namespace rows and keeps indexed vectors queryable', async () => {
-    const { rootDir, baseDir } = createTempStoreRoot()
-    const upgradedNamespace: VectorNamespace = {
-      ...namespace,
-      providerIdentity: 'openai',
-      endpointIdentity: 'https://api.openai.com/v1',
-    }
-    const legacyStore = createStore(baseDir)
-    await legacyStore.open()
-    await legacyStore.replaceFile(
-      namespace,
-      fileWrite([chunk('legacy-chunk', 'legacy vector text', [1, 0, 0, 0], 1)]),
-    )
-    await legacyStore.close()
-
-    const upgradedStore = createStore(baseDir)
-    await upgradedStore.open()
-    expect(await upgradedStore.getIndexedFiles(upgradedNamespace)).toEqual(
-      new Map([
-        [
-          'notes/a.md',
-          expect.objectContaining({ mtime: 123, contentHash: 'file-hash' }),
-        ],
-      ]),
-    )
-    await expect(
-      upgradedStore.search(upgradedNamespace, [1, 0, 0, 0], { topK: 1 }),
-    ).resolves.toMatchObject({
-      hits: [expect.objectContaining({ chunkId: 'legacy-chunk' })],
-    })
-
-    const migratedDb = openRawDb(
-      getSqliteDbPath(baseDir, vectorNamespaceId(upgradedNamespace)),
-    )
-    try {
-      const legacyId = legacyVectorNamespaceId(upgradedNamespace)
-      expect(
-        migratedDb
-          .prepare('select id from rag_namespaces where id = ?')
-          .get(legacyId),
-      ).toBeUndefined()
-      expect(
-        migratedDb
-          .prepare('select namespace_id from rag_files where namespace_id = ?')
-          .get(vectorNamespaceId(upgradedNamespace)),
-      ).toBeDefined()
-    } finally {
-      migratedDb.close()
-    }
-
-    await upgradedStore.close()
-    fs.rmSync(rootDir, { recursive: true, force: true })
-  })
-
-  test('search migrates a legacy-only namespace before checking the canonical database', async () => {
-    const { rootDir, baseDir } = createTempStoreRoot()
-    const upgradedNamespace: VectorNamespace = {
-      ...namespace,
-      providerIdentity: 'openai',
-      endpointIdentity: 'https://api.openai.com/v1',
-    }
-
-    const legacyStore = createStore(baseDir)
-    await legacyStore.open()
-    await legacyStore.replaceFile(
-      namespace,
-      fileWrite([chunk('legacy-chunk', 'legacy vector text', [1, 0, 0, 0], 1)]),
-    )
-    await legacyStore.close()
-
-    const store = createStore(baseDir)
-    await store.open()
-    try {
-      await expect(
-        store.search(upgradedNamespace, [1, 0, 0, 0], { topK: 1 }),
-      ).resolves.toMatchObject({
-        hits: [expect.objectContaining({ chunkId: 'legacy-chunk' })],
-      })
-    } finally {
-      await store.close()
-      fs.rmSync(rootDir, { recursive: true, force: true })
-    }
-  })
-
-  test('does not migrate when the canonical namespace directory already exists', async () => {
-    const { rootDir, baseDir } = createTempStoreRoot()
-    const legacyNamespace: VectorNamespace = {
-      ...namespace,
-      providerIdentity: 'openai',
-      endpointIdentity: 'https://api.openai.com/v1',
-    }
-    const canonicalDir = getSqliteNamespaceDir(
-      baseDir,
-      vectorNamespaceId(legacyNamespace),
-    )
-    fs.mkdirSync(canonicalDir, { recursive: true })
-    const canonicalDb = openRawDb(path.join(canonicalDir, 'rag.sqlite'))
-    canonicalDb.exec('create table canonical_marker (id text)')
-    canonicalDb.close()
-
-    const store = createStore(baseDir)
-    await store.open()
-    await store.getStatus(legacyNamespace)
-
-    expect(
-      fs.existsSync(
-        getSqliteNamespaceDir(
-          baseDir,
-          legacyVectorNamespaceId(legacyNamespace),
-        ),
-      ),
-    ).toBe(false)
-    const checkDb = openRawDb(path.join(canonicalDir, 'rag.sqlite'))
-    try {
-      const marker = checkDb
-        .prepare(
-          "select name from sqlite_master where type = 'table' and name = 'canonical_marker'",
-        )
-        .get()
-      expect(marker).toBeDefined()
-    } finally {
-      checkDb.close()
-    }
-
-    await store.close()
-    fs.rmSync(rootDir, { recursive: true, force: true })
-  })
-
   test('reopens when open is requested while close is still waiting for readers', async () => {
     const { rootDir, baseDir } = createTempStoreRoot()
     const store = createStore(baseDir)
@@ -481,6 +255,42 @@ describe('SqliteVectorStore persistence', () => {
 
     await store.close()
     fs.rmSync(rootDir, { recursive: true, force: true })
+  })
+
+  test('does not claim a pre-identity index for a new embedding endpoint', async () => {
+    const { rootDir, baseDir } = createTempStoreRoot()
+    const identityNamespace: VectorNamespace = {
+      ...namespace,
+      providerIdentity: 'openai',
+      endpointIdentity: 'https://api.openai.com/v1',
+    }
+    const legacyDbPath = getSqliteDbPath(baseDir, vectorNamespaceId(namespace))
+    const identityDbPath = getSqliteDbPath(
+      baseDir,
+      vectorNamespaceId(identityNamespace),
+    )
+
+    const legacyStore = createStore(baseDir)
+    await legacyStore.open()
+    await legacyStore.replaceFile(
+      namespace,
+      fileWrite([chunk('legacy-chunk', 'legacy vector text', [1, 0, 0, 0], 1)]),
+    )
+    await legacyStore.close()
+
+    const store = createStore(baseDir)
+    await store.open()
+    try {
+      await expect(store.getStatus(identityNamespace)).resolves.toMatchObject({
+        rebuildRequired: true,
+        recoveryAction: 'rebuild_index',
+      })
+      expect(fs.existsSync(legacyDbPath)).toBe(true)
+      expect(fs.existsSync(identityDbPath)).toBe(false)
+    } finally {
+      await store.close()
+      fs.rmSync(rootDir, { recursive: true, force: true })
+    }
   })
 
   test('search scoped to a folder with no indexed chunks returns an empty result, not rebuild_required', async () => {

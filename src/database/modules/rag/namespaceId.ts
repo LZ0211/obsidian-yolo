@@ -73,22 +73,6 @@ export function vectorNamespaceId(namespace: VectorNamespace): string {
   return corpus ? `${corpus}--${encodedId}` : encodedId
 }
 
-/**
- * 引入 provider/endpoint identity 之前（audit 修复 653c8e86d）的 namespace id
- * 算法。identity 后缀加入后旧索引的存储位置整体切换，升级用户需要用旧算法
- * 找到历史数据做一次性迁移（见 SqliteVectorStore / ShardedVectorStore）。
- */
-export function legacyVectorNamespaceId(namespace: VectorNamespace): string {
-  const baseId = `${normalizeNamespaceModel(namespace.model)}-d${namespace.dimension}`
-  const encodedId =
-    namespace.embeddingEncoding == null
-      ? baseId
-      : `${baseId}-${sha256HexPrefix12(namespace.embeddingEncoding)}`
-  const corpus = normalizeCorpus(namespace.corpus)
-
-  return corpus ? `${corpus}--${encodedId}` : encodedId
-}
-
 function sha256HexPrefix12(value: string): string {
   return sha256HexSync(value).slice(0, 12)
 }

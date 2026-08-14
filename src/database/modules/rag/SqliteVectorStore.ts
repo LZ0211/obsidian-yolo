@@ -8,7 +8,7 @@ import {
 } from '../../sqlite/sqliteNativeRuntime'
 
 import { getSqliteDbPath, getSqliteNamespaceDir } from './backendPaths'
-import { legacyVectorNamespaceId, vectorNamespaceId } from './namespaceId'
+import { vectorNamespaceId } from './namespaceId'
 import {
   QUERY_EMBEDDING_CACHE_MAX_ENTRIES,
   decodeQueryEmbedding,
@@ -673,31 +673,10 @@ export class SqliteVectorStore
       }
     }
 
-    // getStatus 在打开前执行，必须先迁移再判断存在性，否则状态检查会先报
-    // rebuildRequired 而后台打开才迁移，UI 与查询看到的就绪状态不一致。
     const storagePath = getSqliteDbPath(
       this.baseDir,
       vectorNamespaceId(namespace),
     )
-    try {
-      this.prepareLegacyNamespaceStorage(namespace)
-    } catch (error) {
-      if (
-        error instanceof VectorStoreError &&
-        error.code === 'rebuild_required'
-      ) {
-        return {
-          backend: 'sqlite',
-          readiness: 'ready',
-          rebuildRequired: true,
-          storagePath,
-          executionMode: 'plugin-host',
-          persistenceMode: 'native-sqlite-file',
-          recoveryAction: 'rebuild_index',
-        }
-      }
-      throw error
-    }
     if (!fs.existsSync(storagePath)) {
       return {
         backend: 'sqlite',
@@ -828,9 +807,9 @@ export class SqliteVectorStore
     this.assertOpen()
     this.assertNotClosing()
     throwIfVectorSearchAborted(options.signal)
-    const validatedNamespace = validateNamespaceForSqlite(namespace)
-    const namespaceKey = vectorNamespaceId(validatedNamespace)
-    this.prepareLegacyNamespaceStorage(validatedNamespace)
+    const namespaceKey = vectorNamespaceId(
+      validateNamespaceForSqlite(namespace),
+    )
     const dbPath = getSqliteDbPath(this.baseDir, namespaceKey)
     if (!fs.existsSync(dbPath)) {
       throw new VectorStoreError(
@@ -1097,70 +1076,11 @@ export class SqliteVectorStore
     }
   }
 
-  /**
-   * 一次性迁移（audit 653c8e86d 引入 provider/endpoint identity）：新 id 的
-   * 存储目录不存在而旧算法目录存在时，把旧目录改名到新位置。仅当目录里确实
-   * 有 rag.sqlite 才迁移，避免把无关目录搬走。
-   */
-  private migrateLegacyNamespaceStorage(namespace: VectorNamespace): void {
-    const canonicalId = vectorNamespaceId(namespace)
-    const legacyId = legacyVectorNamespaceId(namespace)
-    if (legacyId === canonicalId) return
-    const canonicalDir = getSqliteNamespaceDir(this.baseDir, canonicalId)
-    const legacyDir = getSqliteNamespaceDir(this.baseDir, legacyId)
-    if (fs.existsSync(canonicalDir)) return
-    if (!fs.existsSync(legacyDir)) return
-    if (!fs.existsSync(getSqliteDbPath(this.baseDir, legacyId))) return
-    try {
-      fs.renameSync(legacyDir, canonicalDir)
-    } catch {
-      throw new VectorStoreError(
-        'rebuild_required',
-        'sqlite',
-        'rebuild_index',
-        `Failed to migrate legacy RAG namespace ${legacyId} to ${canonicalId}`,
-      )
-    }
-  }
-
-  private prepareLegacyNamespaceStorage(namespace: VectorNamespace): void {
-    const canonicalId = vectorNamespaceId(namespace)
-    const legacyId = legacyVectorNamespaceId(namespace)
-    if (legacyId === canonicalId) return
-    if (fs.existsSync(getSqliteNamespaceDir(this.baseDir, canonicalId))) {
-      return
-    }
-    if (!fs.existsSync(getSqliteDbPath(this.baseDir, legacyId))) return
-
-    for (const namespaceId of [canonicalId, legacyId]) {
-      const state = this.namespaceStates.get(namespaceId)
-      if (state == null) continue
-      if (
-        state.activeReaders > 0 ||
-        state.writerActive ||
-        state.pendingWriters > 0
-      ) {
-        throw new VectorStoreError(
-          'operation_in_progress',
-          'sqlite',
-          'rebuild_index',
-          `Cannot migrate RAG namespace ${legacyId} while it is in use`,
-        )
-      }
-      this.clearScheduledCoarseCachePrewarm(state)
-      state.runtime.close()
-      this.namespaceStates.delete(namespaceId)
-    }
-
-    this.migrateLegacyNamespaceStorage(namespace)
-  }
-
   private getNamespaceState(namespace: VectorNamespace): NamespaceRuntimeState {
     this.assertOpen()
     this.assertNotClosing()
     const validatedNamespace = validateNamespaceForSqlite(namespace)
     const namespaceKey = vectorNamespaceId(validatedNamespace)
-    this.prepareLegacyNamespaceStorage(validatedNamespace)
     const existing = this.namespaceStates.get(namespaceKey)
     if (existing != null) return existing
     const dbPath = getSqliteDbPath(this.baseDir, namespaceKey)
@@ -1177,68 +1097,12 @@ export class SqliteVectorStore
     }
     try {
       this.ensureSchema(state, validatedNamespace)
-      this.migrateLegacyNamespaceRows(state, validatedNamespace)
     } catch (error) {
       state.runtime.close()
       throw error
     }
     this.namespaceStates.set(namespaceKey, state)
     return state
-  }
-
-  private migrateLegacyNamespaceRows(
-    state: NamespaceRuntimeState,
-    namespace: VectorNamespace,
-  ): void {
-    const legacyId = legacyVectorNamespaceId(namespace)
-    if (legacyId === state.namespaceId) return
-    state.runtime.transaction((runtime) => {
-      const legacyFiles = runtime.query<{
-        id: string
-        path: string
-        mtime: number
-        content_hash: string | null
-        created_at: number
-        updated_at: number
-      }>(
-        `select id, path, mtime, content_hash, created_at, updated_at
-         from rag_files where namespace_id = ?`,
-        [legacyId],
-      )
-      for (const file of legacyFiles) {
-        const canonicalFileId = fileIdFor(state.namespaceId, file.path)
-        runtime.exec(
-          `insert into rag_files(
-             id, namespace_id, path, mtime, content_hash, created_at, updated_at
-           ) values (?, ?, ?, ?, ?, ?, ?)
-           on conflict(id) do update set
-             namespace_id = excluded.namespace_id,
-             path = excluded.path,
-             mtime = excluded.mtime,
-             content_hash = excluded.content_hash,
-             updated_at = excluded.updated_at`,
-          [
-            canonicalFileId,
-            state.namespaceId,
-            file.path,
-            file.mtime,
-            file.content_hash,
-            file.created_at,
-            file.updated_at,
-          ],
-        )
-        runtime.exec('update rag_chunks set file_id = ? where file_id = ?', [
-          canonicalFileId,
-          file.id,
-        ])
-        runtime.exec(
-          'update rag_coarse_embeddings set file_id = ? where file_id = ?',
-          [canonicalFileId, file.id],
-        )
-        runtime.exec('delete from rag_files where id = ?', [file.id])
-      }
-      runtime.exec('delete from rag_namespaces where id = ?', [legacyId])
-    })
   }
 
   private getExistingNamespaceState(
