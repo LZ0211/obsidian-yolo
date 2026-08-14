@@ -2331,14 +2331,13 @@ export type TranslationKeys = {
       inputLabel?: string
     }
     mentionMenu?: {
-      back?: string
       entryCurrentFile?: string
       entryMode?: string
-      entrySkill?: string
       entryAssistant?: string
       entryModel?: string
       entryFile?: string
       entryFolder?: string
+      categoryEmpty?: string
     }
     slashCommands?: {
       compact?: {
