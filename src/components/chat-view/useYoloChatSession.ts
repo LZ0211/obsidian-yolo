@@ -28,6 +28,7 @@ import {
   type CliRuntimeScope,
   type CliSessionRef,
 } from '../../core/cli-runtime'
+import { resolveConversationFileScope } from '../../core/workspace/conversationFileScope'
 import {
   getConversationDisplayTitle,
   type useChatHistory,
@@ -867,6 +868,7 @@ export function useYoloChatSession({
       conversationId: string,
       ref: CliSessionRef,
       overrides: ConversationOverrideSettings | null | undefined,
+      workingDirectory: string,
       isLatestNavigation: () => boolean,
     ) => {
       if (!cliRuntimeScope || !cliRuntimeAvailable) {
@@ -884,6 +886,7 @@ export function useYoloChatSession({
         const result = await openCliSessionForNavigation({
           scope: cliRuntimeScope,
           ref,
+          workingDirectory,
           isCurrent: isCurrentNavigation,
         })
         if (!result) return
@@ -897,6 +900,7 @@ export function useYoloChatSession({
           scope: cliRuntimeScope,
           runtimeId: ref.runtimeId,
           settings,
+          workingDirectory,
           permissionProfile: modePreference,
         })
         if (!isCurrentNavigation()) return
@@ -980,10 +984,32 @@ export function useYoloChatSession({
         return
       }
       if (conversation.cliSession) {
+        const restoredOverrides =
+          conversation.workingDirectory &&
+          !conversation.overrides?.workingDirectory
+            ? {
+                ...(conversation.overrides ?? {}),
+                workingDirectory: conversation.workingDirectory,
+              }
+            : conversation.overrides
+        const restoredAssistantId =
+          conversation.assistantId ??
+          conversationAssistantIdRef.current.get(conversationId) ??
+          settings.currentAssistantId ??
+          DEFAULT_ASSISTANT_ID
+        const restoredAssistant = findUnifiedAgentById(
+          settings,
+          restoredAssistantId,
+        )
+        const workingDirectory = resolveConversationFileScope(
+          restoredAssistant?.workspaceAccessPolicy,
+          restoredOverrides?.workingDirectory ?? undefined,
+        ).workingDirectory
         await loadCliConversation(
           conversationId,
           conversation.cliSession,
-          conversation.overrides,
+          restoredOverrides,
+          workingDirectory,
           isLatestNavigation,
         )
         return
@@ -1007,6 +1033,8 @@ export function useYoloChatSession({
       cliModeRequestGenerationRef,
       runtimeNavigationGenerationRef,
       chatMountedRef,
+      conversationAssistantIdRef,
+      settings,
     ],
   )
 

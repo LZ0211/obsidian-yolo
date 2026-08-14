@@ -107,6 +107,7 @@ export type ChatSessionCliContext = {
   settings: YoloSettings
   chatMode: CliChatMode
   yoloEnabled: boolean
+  workingDirectory: string
   cliConversationId: string | null
   /** Reads `inputDraftRevisionRef.current` live — that ref bumps on every
    * keystroke without a Chat.tsx re-render (see `ChatInputDraftHolder`), so a
@@ -966,6 +967,7 @@ export class ChatSessionController {
           scope,
           controller,
           runtimeId: cliContext.runtimeId,
+          workingDirectory: cliContext.workingDirectory,
           userMessage: message,
           environmentContext,
           permissionProfile: {

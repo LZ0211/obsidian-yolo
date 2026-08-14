@@ -27,6 +27,7 @@ import {
 import {
   isAgentCompatibleWithDirectory,
   normalizeConversationWorkingDirectory,
+  resolveConversationFileScope,
 } from '../../core/workspace/conversationFileScope'
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import type { WorkspaceAccessPolicy } from '../../types/assistant.types'
@@ -577,7 +578,15 @@ export function useChatRuntimePreferences({
           cliLate.activeHistoryConversationId,
           preferencesController.getSnapshot().conversationOverrides,
         )
-        const controller = cliRuntimeScope.selectConversationRuntime(runtimeId)
+        const controller = cliRuntimeScope.selectConversationRuntime(
+          runtimeId,
+          {
+            workingDirectory: resolveConversationFileScope(
+              cliLate.selectedAssistantFilePolicy,
+              undefined,
+            ).workingDirectory,
+          },
+        )
         if (!controller.getSnapshot().sessionRef) {
           controller.stageConfiguration(
             resolveCliRuntimePreference(

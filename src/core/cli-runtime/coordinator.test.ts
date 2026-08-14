@@ -205,6 +205,75 @@ describe('CLI runtime coordinator', () => {
     expect(getCodexRuntimeOptions).toHaveBeenCalledTimes(2)
   })
 
+  it('creates conversation runtimes with the selected directory as provider cwd', async () => {
+    const harness = runtimeHarness()
+    const coordinator = await createDesktopCliRuntimeCoordinator({
+      app: createApp(new TestFileSystemAdapter('/vault/root')),
+      getCodexRuntimeOptions: () => ({
+        command: '/bin/codex',
+        cwd: '/runtime/vault',
+      }),
+      loadRuntimeFactories: () => harness.factories,
+      createSessionIndexStore: indexStore,
+    })
+    const scope = coordinator.createScope()
+
+    scope.createConversationRuntime('claude-code', {
+      workingDirectory: '/Projects/foo',
+    })
+    scope.createConversationRuntime('codex', {
+      workingDirectory: '/Projects/foo',
+    })
+
+    expect(harness.createClaudeRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ vaultPath: '/vault/root/Projects/foo' }),
+    )
+    expect(harness.createCodexRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: '/runtime/vault/Projects/foo' }),
+    )
+  })
+
+  it('replaces a prewarmed empty controller when its selected directory changes', async () => {
+    const { coordinator, harness } = await createCoordinator()
+    const scope = coordinator.createScope()
+    const first = scope.selectConversationRuntime('codex', {
+      workingDirectory: '/Projects/one',
+    })
+    await first.ensureReady()
+
+    const second = scope.selectConversationRuntime('codex', {
+      workingDirectory: '/Projects/two',
+    })
+
+    expect(second).not.toBe(first)
+    expect(harness.createCodexRuntime).toHaveBeenCalledTimes(2)
+    expect(harness.createCodexRuntime).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cwd: '/vault/root/Projects/two' }),
+    )
+    expect(harness.codexRuntimes[0].dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects changing the selected directory after the conversation starts', async () => {
+    const { coordinator } = await createCoordinator()
+    const scope = coordinator.createScope()
+    const controller = scope.selectConversationRuntime('codex', {
+      workingDirectory: '/Projects/one',
+    })
+    controller.stageTurn({
+      id: 'user-1',
+      role: 'user',
+      content: null,
+      promptContent: null,
+      mentionables: [],
+    })
+
+    expect(() =>
+      scope.selectConversationRuntime('codex', {
+        workingDirectory: '/Projects/two',
+      }),
+    ).toThrow(/after the conversation has started/)
+  })
+
   it('rejects a relative vault cwd without invoking a provider factory', async () => {
     const { coordinator, harness } = await createCoordinator(
       runtimeHarness(),

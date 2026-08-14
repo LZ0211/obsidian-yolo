@@ -123,6 +123,7 @@ export type ChatInputLateState = {
   cliRuntimeScope: CliRuntimeScope | undefined
   cliYoloEnabled: boolean
   cliPreferenceSettingsRef: MutableRefObject<YoloSettings>
+  workingDirectory: string
   /** Forces the CLI skills list to re-fetch, e.g. after the Claude plugin manager mutates plugins. */
   refreshCliSkills: () => void
   currentConversationRunSummary: Pick<
@@ -1266,6 +1267,7 @@ export function useChatInputController({
             scope,
             runtimeId: activeRuntimeId,
             settings: late.cliPreferenceSettingsRef.current,
+            workingDirectory: late.workingDirectory,
             permissionProfile: {
               mode: late.cliChatMode,
               yoloEnabled:

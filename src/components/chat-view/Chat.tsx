@@ -1126,6 +1126,8 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     chatMountedRef,
     seededCliSessionRef: seededRuntimeSnapshot?.cliSessionRef,
     seededCliConversationId: seededRuntimeSnapshot?.cliConversationId,
+    workingDirectory: displayedConversationWorkingDirectory,
+    defaultWorkingDirectory: effectiveConversationWorkingDirectory,
     currentConversationId,
     conversationOverrides,
     setConversationOverrides,
@@ -1192,6 +1194,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
           settings,
           chatMode: cliChatMode,
           yoloEnabled: cliYoloEnabled,
+          workingDirectory: displayedConversationWorkingDirectory,
           cliConversationId,
           getDraftRevision: () => inputDraftRevisionRef.current,
           buildEnvironmentContext: () =>
@@ -2010,6 +2013,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     cliRuntimeScope,
     cliYoloEnabled,
     cliPreferenceSettingsRef,
+    workingDirectory: displayedConversationWorkingDirectory,
     refreshCliSkills,
     currentConversationRunSummary,
   }

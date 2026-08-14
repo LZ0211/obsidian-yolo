@@ -1,6 +1,7 @@
 import { App, FileSystemAdapter, Platform } from 'obsidian'
 
 import type { YoloSettingsLike } from '../paths/yoloManagedData'
+import { normalizeConversationWorkingDirectory } from '../workspace/conversationFileScope'
 
 import type { ClaudeCliRuntimeOptions } from './claude'
 import { createCliChatRuntimeActions } from './cli-actions'
@@ -70,15 +71,33 @@ export type CliRuntimeScope = {
   probeAvailability?(): Promise<CliRuntimeAvailability>
 
   resolveRuntime(runtimeId: CliRuntimeId): CliRuntime
-  selectConversationRuntime(runtimeId: CliRuntimeId): CliConversationController
-  createConversationRuntime(runtimeId: CliRuntimeId): CliConversationController
-  selectConversationSession(ref: CliSessionRef): CliConversationController
+  selectConversationRuntime(
+    runtimeId: CliRuntimeId,
+    options?: CliConversationRuntimeOptions,
+  ): CliConversationController
+  createConversationRuntime(
+    runtimeId: CliRuntimeId,
+    options?: CliConversationRuntimeOptions,
+  ): CliConversationController
+  selectConversationSession(
+    ref: CliSessionRef,
+    options?: CliConversationRuntimeOptions,
+  ): CliConversationController
+  assertConversationWorkingDirectory?(
+    controller: CliConversationController,
+    workingDirectory: string,
+  ): void
   getModelCatalogSnapshot(): CliModelCatalogSnapshot
   subscribeToModelCatalog(listener: () => void): () => void
   warmModelCatalog(runtimeId: CliRuntimeId): Promise<void>
   warmConversationRuntime(runtimeId: CliRuntimeId): Promise<void>
   dispose(): Promise<void>
 }
+
+export type CliConversationRuntimeOptions = Readonly<{
+  /** Normalized vault-relative directory, rooted at `/`. */
+  workingDirectory: string
+}>
 
 /**
  * Process-level view of a CLI conversation that still owns a live provider
@@ -111,6 +130,25 @@ const isAbsoluteFileSystemPath = (path: string): boolean =>
   path.startsWith('/') ||
   /^[A-Za-z]:[\\/]/u.test(path) ||
   path.startsWith('\\\\')
+
+const resolveConversationCwd = (
+  runtimeRoot: string,
+  workingDirectory: string,
+): string => {
+  const normalized = normalizeConversationWorkingDirectory(workingDirectory)
+  const relative = normalized.replace(/^\/+/, '')
+  if (!relative) return runtimeRoot
+  const separator = runtimeRoot.includes('\\') ? '\\' : '/'
+  const base = /[\\/]$/u.test(runtimeRoot)
+    ? runtimeRoot
+    : `${runtimeRoot}${separator}`
+  return `${base}${relative.replace(/\//gu, separator)}`
+}
+
+const resolveWorkingDirectory = (
+  options?: CliConversationRuntimeOptions,
+): string =>
+  normalizeConversationWorkingDirectory(options?.workingDirectory ?? '/')
 
 const defaultLoadRuntimeFactories = async (): Promise<CliRuntimeFactories> => {
   const [{ ClaudeCliRuntime }, { CodexCliRuntime }] = await Promise.all([
@@ -175,6 +213,7 @@ class SettingsAwareSessionIndexStore implements CliSessionIndexStore {
 type ConversationRuntimeRecord = {
   runtime: CliRuntime
   controller: CliConversationController
+  workingDirectory: string
   scopeReferences: number
   unsubscribe: () => void
   disposePromise: Promise<void> | null
@@ -265,35 +304,18 @@ class DesktopCliRuntimeWorkspace {
     const existing = this.runtimes.get(runtimeId)
     if (existing) return existing
 
-    const vaultPath = this.getVaultPath()
-    const codexRuntimeOptions =
-      runtimeId === 'codex' ? this.getCodexRuntimeOptions() : null
-    const runtime =
-      runtimeId === 'claude-code'
-        ? this.factories.createClaudeRuntime({
-            ...this.options.getClaudeRuntimeOptions?.(),
-            vaultPath,
-          })
-        : this.factories.createCodexRuntime({
-            ...codexRuntimeOptions,
-            cwd: codexRuntimeOptions?.cwd ?? vaultPath,
-            resolveHost: this.codexHostPool.acquire,
-          })
-    this.ownedRuntimes.add(runtime)
-    if (runtime.runtimeId !== runtimeId) {
-      throw new Error(
-        `CLI runtime factory returned ${runtime.runtimeId} for ${runtimeId}.`,
-      )
-    }
+    const runtime = this.createRuntime(runtimeId, '/')
     this.runtimes.set(runtimeId, runtime)
     return runtime
   }
 
   selectConversationRuntime(
     runtimeId: CliRuntimeId,
+    options?: CliConversationRuntimeOptions,
   ): CliConversationController {
     this.assertActive()
-    const runtime = this.createRuntime(runtimeId)
+    const workingDirectory = resolveWorkingDirectory(options)
+    const runtime = this.createRuntime(runtimeId, workingDirectory)
     const controller = new CliConversationController(
       runtime,
       () => this.modelCatalog.getSnapshot().get(runtimeId) ?? [],
@@ -308,6 +330,7 @@ class DesktopCliRuntimeWorkspace {
     const record: ConversationRuntimeRecord = {
       runtime,
       controller,
+      workingDirectory,
       scopeReferences: 0,
       unsubscribe: () => undefined,
       disposePromise: null,
@@ -415,14 +438,29 @@ class DesktopCliRuntimeWorkspace {
     }
   }
 
-  selectConversationSession(ref: CliSessionRef): CliConversationController {
+  selectConversationSession(
+    ref: CliSessionRef,
+    options?: CliConversationRuntimeOptions,
+  ): CliConversationController {
     this.assertActive()
+    const workingDirectory = resolveWorkingDirectory(options)
     return (
       [...this.conversations].find((record) => {
         const selectedRef = record.controller.getSnapshot().sessionRef
-        return selectedRef !== null && isSameSession(selectedRef, ref)
-      })?.controller ?? this.selectConversationRuntime(ref.runtimeId)
+        return (
+          selectedRef !== null &&
+          isSameSession(selectedRef, ref) &&
+          record.workingDirectory === workingDirectory
+        )
+      })?.controller ??
+      this.selectConversationRuntime(ref.runtimeId, { workingDirectory })
     )
+  }
+
+  getConversationWorkingDirectory(
+    controller: CliConversationController,
+  ): string | undefined {
+    return this.conversationByController.get(controller)?.workingDirectory
   }
 
   private resolveConversationRuntime(
@@ -509,7 +547,10 @@ class DesktopCliRuntimeWorkspace {
     if (this.disposing) throw new Error('CLI runtime scope is disposed.')
   }
 
-  private createRuntime(runtimeId: CliRuntimeId): CliRuntime {
+  private createRuntime(
+    runtimeId: CliRuntimeId,
+    workingDirectory: string,
+  ): CliRuntime {
     const vaultPath = this.getVaultPath()
     const codexRuntimeOptions =
       runtimeId === 'codex' ? this.getCodexRuntimeOptions() : null
@@ -517,11 +558,14 @@ class DesktopCliRuntimeWorkspace {
       runtimeId === 'claude-code'
         ? this.factories.createClaudeRuntime({
             ...this.options.getClaudeRuntimeOptions?.(),
-            vaultPath,
+            vaultPath: resolveConversationCwd(vaultPath, workingDirectory),
           })
         : this.factories.createCodexRuntime({
             ...codexRuntimeOptions,
-            cwd: codexRuntimeOptions?.cwd ?? vaultPath,
+            cwd: resolveConversationCwd(
+              codexRuntimeOptions?.cwd ?? vaultPath,
+              workingDirectory,
+            ),
             resolveHost: this.codexHostPool.acquire,
           })
     this.ownedRuntimes.add(runtime)
@@ -564,28 +608,74 @@ class DesktopCliRuntimeScope implements CliRuntimeScope {
 
   selectConversationRuntime(
     runtimeId: CliRuntimeId,
+    options?: CliConversationRuntimeOptions,
   ): CliConversationController {
     this.assertActive()
-    return (
-      this.selectedControllers.get(runtimeId) ??
-      this.createConversationRuntime(runtimeId)
-    )
+    const workingDirectory = resolveWorkingDirectory(options)
+    const selected = this.selectedControllers.get(runtimeId)
+    if (selected) {
+      const selectedWorkingDirectory =
+        this.workspace.getConversationWorkingDirectory(selected)
+      if (selectedWorkingDirectory === workingDirectory) return selected
+      const snapshot = selected.getSnapshot()
+      if (
+        snapshot.messages.length > 0 ||
+        snapshot.isCompacting === true ||
+        isActiveRunState(snapshot.runState)
+      ) {
+        throw new Error(
+          'Cannot change the CLI working directory after the conversation has started.',
+        )
+      }
+    }
+    const configuration = selected?.getSnapshot().configuration
+    const replacement = this.createConversationRuntime(runtimeId, {
+      workingDirectory,
+    })
+    if (configuration) {
+      replacement.stageConfiguration({
+        modelId: configuration.modelId,
+        reasoningEffort: configuration.reasoningEffort,
+      })
+    }
+    return replacement
   }
 
   createConversationRuntime(
     runtimeId: CliRuntimeId,
+    options?: CliConversationRuntimeOptions,
   ): CliConversationController {
     this.assertActive()
-    const controller = this.workspace.selectConversationRuntime(runtimeId)
+    const controller = this.workspace.selectConversationRuntime(
+      runtimeId,
+      options,
+    )
     this.selectController(runtimeId, controller)
     return controller
   }
 
-  selectConversationSession(ref: CliSessionRef): CliConversationController {
+  selectConversationSession(
+    ref: CliSessionRef,
+    options?: CliConversationRuntimeOptions,
+  ): CliConversationController {
     this.assertActive()
-    const controller = this.workspace.selectConversationSession(ref)
+    const controller = this.workspace.selectConversationSession(ref, options)
     this.selectController(ref.runtimeId, controller)
     return controller
+  }
+
+  assertConversationWorkingDirectory(
+    controller: CliConversationController,
+    workingDirectory: string,
+  ): void {
+    this.assertActive()
+    const actual = this.workspace.getConversationWorkingDirectory(controller)
+    const expected = normalizeConversationWorkingDirectory(workingDirectory)
+    if (actual !== expected) {
+      throw new Error(
+        `CLI controller working directory mismatch: expected ${expected}, got ${actual ?? 'unavailable'}.`,
+      )
+    }
   }
 
   getModelCatalogSnapshot(): CliModelCatalogSnapshot {

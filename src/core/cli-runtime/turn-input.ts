@@ -175,7 +175,7 @@ const buildEnvironmentParts = (
 /**
  * Encode one user-authored turn for a provider-native CLI runtime. This is
  * deliberately independent from RequestContextBuilder: CLI agents work from
- * the vault cwd and receive only explicit user references/attachments here.
+ * the conversation cwd and receive only explicit user references/attachments here.
  */
 export const buildCliTurnContent = ({
   runtimeId,

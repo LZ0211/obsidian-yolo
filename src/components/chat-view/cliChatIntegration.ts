@@ -53,14 +53,17 @@ export const prepareCliConversation = async ({
   scope,
   runtimeId,
   settings,
+  workingDirectory,
   permissionProfile,
 }: {
   controller: CliConversationController
   scope: CliRuntimeScope
   runtimeId: CliRuntimeId
   settings: YoloSettings
+  workingDirectory: string
   permissionProfile?: CliPermissionProfileUpdate
 }): Promise<void> => {
+  scope.assertConversationWorkingDirectory?.(controller, workingDirectory)
   if (permissionProfile) {
     await controller.updatePermissionProfile(permissionProfile)
   }
@@ -438,17 +441,19 @@ export const shouldClearAcceptedCliDraft = ({
 export const openCliSession = async ({
   scope,
   ref,
+  workingDirectory,
   isCurrent = () => true,
 }: {
   scope: CliRuntimeScope
   ref: CliSessionRef
+  workingDirectory: string
   isCurrent?: () => boolean
 }): Promise<{
   controller: CliConversationController
   hydration: CliSessionHydration | null
   overlayError: Error | null
 }> => {
-  const controller = scope.selectConversationSession(ref)
+  const controller = scope.selectConversationSession(ref, { workingDirectory })
   const existingSnapshot = controller.getSnapshot()
   const alreadyHydrated =
     existingSnapshot.sessionRef?.runtimeId === ref.runtimeId &&
@@ -489,6 +494,7 @@ export type SubmitCliComposerTurnInput = {
   scope: CliRuntimeScope
   controller: CliConversationController
   runtimeId: CliRuntimeId
+  workingDirectory: string
   userMessage: ChatUserMessage
   environmentContext: readonly ContentPart[]
   permissionProfile?: CliPermissionProfileUpdate
@@ -504,6 +510,7 @@ export const submitCliComposerTurn = async ({
   scope,
   controller,
   runtimeId,
+  workingDirectory,
   userMessage,
   environmentContext,
   permissionProfile,
@@ -543,6 +550,7 @@ export const submitCliComposerTurn = async ({
       scope,
       runtimeId,
       settings,
+      workingDirectory,
       permissionProfile,
     })
     throwIfAborted()
@@ -594,6 +602,7 @@ export type RewriteCliConversationTurnInput = {
   scope: CliRuntimeScope
   controller: CliConversationController
   runtimeId: CliRuntimeId
+  workingDirectory: string
   sourceUserMessageId: string
   userMessage: ChatUserMessage
   environmentContext: readonly ContentPart[]
@@ -607,6 +616,7 @@ export const rewriteCliConversationTurn = async ({
   scope,
   controller,
   runtimeId,
+  workingDirectory,
   sourceUserMessageId,
   userMessage,
   environmentContext,
@@ -634,6 +644,7 @@ export const rewriteCliConversationTurn = async ({
     scope,
     runtimeId,
     settings,
+    workingDirectory,
     permissionProfile,
   })
   if (configuration) {

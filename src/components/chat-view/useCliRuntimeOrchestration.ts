@@ -98,6 +98,8 @@ export type UseCliRuntimeOrchestrationParams = {
   chatMountedRef: MutableRefObject<boolean>
   seededCliSessionRef: CliSessionRef | null | undefined
   seededCliConversationId: string | null | undefined
+  workingDirectory: string
+  defaultWorkingDirectory: string
 
   // 会话身份 / 每会话覆盖设置：与 Yolo 会话共享，由 Chat.tsx 持有
   currentConversationId: string
@@ -146,6 +148,8 @@ export function useCliRuntimeOrchestration({
   chatMountedRef,
   seededCliSessionRef,
   seededCliConversationId,
+  workingDirectory,
+  defaultWorkingDirectory,
   currentConversationId,
   conversationOverrides,
   setConversationOverrides,
@@ -203,8 +207,13 @@ export function useCliRuntimeOrchestration({
       const controller =
         initialActiveRuntimeId !== 'yolo' && cliRuntimeScope
           ? seededCliSessionRef?.runtimeId === initialActiveRuntimeId
-            ? cliRuntimeScope.selectConversationSession(seededCliSessionRef)
-            : cliRuntimeScope.selectConversationRuntime(initialActiveRuntimeId)
+            ? cliRuntimeScope.selectConversationSession(seededCliSessionRef, {
+                workingDirectory,
+              })
+            : cliRuntimeScope.selectConversationRuntime(
+                initialActiveRuntimeId,
+                { workingDirectory },
+              )
           : null
       if (
         controller &&
@@ -299,6 +308,25 @@ export function useCliRuntimeOrchestration({
     setCliSkillsRefreshTick((tick) => tick + 1)
   }, [])
   useEffect(() => {
+    if (!isCliRuntime(activeRuntimeId) || !cliRuntimeScope) return
+    try {
+      const controller = cliRuntimeScope.selectConversationRuntime(
+        activeRuntimeId,
+        { workingDirectory },
+      )
+      if (controller !== cliConversationController) {
+        setCliConversationController(controller)
+      }
+    } catch (error) {
+      console.error('[YOLO] Failed to apply CLI working directory', error)
+    }
+  }, [
+    activeRuntimeId,
+    cliConversationController,
+    cliRuntimeScope,
+    workingDirectory,
+  ])
+  useEffect(() => {
     if (
       !isCliRuntime(activeRuntimeId) ||
       !RUNTIME_CAPABILITIES[activeRuntimeId].hasNativeSkills ||
@@ -310,11 +338,17 @@ export function useCliRuntimeOrchestration({
     }
     let cancelled = false
     void (async () => {
+      const selectedController = cliRuntimeScope.selectConversationRuntime(
+        activeRuntimeId,
+        { workingDirectory },
+      )
+      if (selectedController !== cliConversationController) return
       await prepareCliConversation({
         controller: cliConversationController,
         scope: cliRuntimeScope,
         runtimeId: activeRuntimeId,
         settings: cliPreferenceSettingsRef.current,
+        workingDirectory,
         permissionProfile: cliPermissionProfileRef.current,
       })
       const skills = await cliConversationController.listSkills()
@@ -339,6 +373,7 @@ export function useCliRuntimeOrchestration({
     cliConversationController,
     cliRuntimeScope,
     cliSkillsRefreshTick,
+    workingDirectory,
   ])
   useEffect(() => {
     if (activeRuntimeId === 'yolo' || !cliConversationController) return
@@ -412,6 +447,7 @@ export function useCliRuntimeOrchestration({
         const result = await openCliSession({
           scope: cliRuntimeScope,
           ref: seededRef,
+          workingDirectory,
           isCurrent: isCurrentRestore,
         })
         if (!result.hydration || !isCurrentRestore()) {
@@ -422,6 +458,7 @@ export function useCliRuntimeOrchestration({
           scope: cliRuntimeScope,
           runtimeId: seededRef.runtimeId,
           settings,
+          workingDirectory,
           permissionProfile: cliPermissionProfileRef.current,
         })
         if (!isCurrentRestore()) return
@@ -468,6 +505,7 @@ export function useCliRuntimeOrchestration({
     seededCliSessionRef,
     settings,
     t,
+    workingDirectory,
   ])
 
   const transitionCliSession = useCallback(
@@ -507,7 +545,9 @@ export function useCliRuntimeOrchestration({
         cliConversationController?.getSnapshot().runtimeId === runtimeId
           ? cliConversationController.getSnapshot().configuration
           : null
-      const controller = cliRuntimeScope.createConversationRuntime(runtimeId)
+      const controller = cliRuntimeScope.createConversationRuntime(runtimeId, {
+        workingDirectory: defaultWorkingDirectory,
+      })
       const preference = previousConfiguration
         ? {
             modelId: previousConfiguration.modelId,
@@ -546,6 +586,7 @@ export function useCliRuntimeOrchestration({
       cliModelCatalog,
       cliRuntimeScope,
       conversationOverrides,
+      defaultWorkingDirectory,
       updateSettings,
     ],
   )
@@ -1040,6 +1081,7 @@ export function useCliRuntimeOrchestration({
               scope: cliRuntimeScope,
               controller: cliConversationController,
               runtimeId: activeRuntimeId,
+              workingDirectory,
               sourceUserMessageId: sourceMessage.id,
               environmentContext,
               permissionProfile: cliPermissionProfileRef.current,
@@ -1107,6 +1149,7 @@ export function useCliRuntimeOrchestration({
       persistCliConfiguration,
       settings,
       t,
+      workingDirectory,
     ],
   )
 

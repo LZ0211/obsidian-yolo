@@ -70,6 +70,7 @@ function createCliContext(overrides: Partial<ChatSessionCliContext> = {}): {
     settings: parseYoloSettings({ version: SETTINGS_SCHEMA_VERSION }),
     chatMode: 'agent',
     yoloEnabled: false,
+    workingDirectory: '/Projects/default',
     cliConversationId: null,
     getDraftRevision: () => 0,
     buildEnvironmentContext: jest.fn(async () => []),
@@ -846,6 +847,41 @@ describe('ChatSessionController — C2 submit/abortRun/compactContext/retry', ()
         if (result.kind !== 'cli_submitted') throw new Error('unreachable')
         await expect(result.settled).resolves.toEqual({ kind: 'aborted' })
         expect(createOrTouchCliConversation).not.toHaveBeenCalled()
+      } finally {
+        submitSpy.mockRestore()
+      }
+    })
+
+    it('forwards the selected working directory into CLI submission orchestration', async () => {
+      const { controller, getCliSubmitContext } = createController('c1', [])
+      const { cliContext } = createCliContext({
+        workingDirectory: '/Projects/foo',
+      })
+      getCliSubmitContext.mockReturnValue(cliContext)
+      const submitSpy = jest
+        .spyOn(cliChatIntegration, 'submitCliComposerTurn')
+        .mockResolvedValue({
+          sessionRef: {
+            runtimeId: 'claude-code',
+            nativeSessionId: 'native-session',
+          },
+          userMessage: userMessage('draft-1'),
+          overlayError: null,
+        })
+
+      try {
+        const result = controller.submit({
+          runtimeId: 'claude-code',
+          message: userMessage('draft-1'),
+          assistantTimeContextEnabled: false,
+          currentConversationRunSummary: idleRunSummary,
+        })
+        expect(result.kind).toBe('cli_submitted')
+        if (result.kind !== 'cli_submitted') throw new Error('unreachable')
+        await result.settled
+        expect(submitSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ workingDirectory: '/Projects/foo' }),
+        )
       } finally {
         submitSpy.mockRestore()
       }

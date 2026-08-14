@@ -122,6 +122,7 @@ describe('CLI chat integration', () => {
   it('prepares a fresh runtime with its remembered model and effort', async () => {
     const ensureReady = jest.fn(async () => undefined)
     const updatePermissionProfile = jest.fn(async () => undefined)
+    const assertConversationWorkingDirectory = jest.fn()
     const controller = {
       stageTurn: jest.fn((message: ChatUserMessage) => ({
         surfaceId: 'cli:codex:test',
@@ -134,6 +135,7 @@ describe('CLI chat integration', () => {
       getSnapshot: () => cliSnapshot(),
     } as unknown as CliConversationController
     const scope = {
+      assertConversationWorkingDirectory,
       getModelCatalogSnapshot: () =>
         new Map([
           [
@@ -164,9 +166,17 @@ describe('CLI chat integration', () => {
       scope,
       runtimeId: 'codex',
       settings,
+      workingDirectory: '/Projects/foo',
       permissionProfile: { mode: 'agent', yoloEnabled: true },
     })
 
+    expect(assertConversationWorkingDirectory).toHaveBeenCalledWith(
+      controller,
+      '/Projects/foo',
+    )
+    expect(
+      assertConversationWorkingDirectory.mock.invocationCallOrder[0],
+    ).toBeLessThan(ensureReady.mock.invocationCallOrder[0])
     expect(updatePermissionProfile).toHaveBeenCalledWith({
       mode: 'agent',
       yoloEnabled: true,
@@ -273,6 +283,7 @@ describe('CLI chat integration', () => {
       scope,
       controller,
       runtimeId: 'codex',
+      workingDirectory: '/Projects/foo',
       userMessage: userMessage(),
       environmentContext,
       encodeTurnContent,
@@ -354,6 +365,7 @@ describe('CLI chat integration', () => {
         scope,
         controller,
         runtimeId: 'codex',
+        workingDirectory: '/Projects/foo',
         userMessage: userMessage(),
         environmentContext,
         encodeTurnContent: () => 'accepted',
@@ -398,6 +410,7 @@ describe('CLI chat integration', () => {
       } as unknown as CliRuntimeScope,
       controller,
       runtimeId: 'codex',
+      workingDirectory: '/Projects/foo',
       userMessage: userMessage(),
       environmentContext,
       signal: operation!.signal,
@@ -448,9 +461,12 @@ describe('CLI chat integration', () => {
     const opened = await openCliSession({
       scope,
       ref: indexedRef,
+      workingDirectory: '/Projects/foo',
     })
 
-    expect(selectConversationSession).toHaveBeenLastCalledWith(indexedRef)
+    expect(selectConversationSession).toHaveBeenLastCalledWith(indexedRef, {
+      workingDirectory: '/Projects/foo',
+    })
     expect(hydrateSession).toHaveBeenCalledTimes(1)
     expect(hydrateSession).toHaveBeenCalledWith(
       indexedRef,
@@ -519,6 +535,7 @@ describe('CLI chat integration', () => {
         const result = await openCliSessionForNavigation({
           scope,
           ref,
+          workingDirectory: '/',
           isCurrent: isCurrentOpen,
         })
         if (!result) return
@@ -575,6 +592,7 @@ describe('CLI chat integration', () => {
       scope,
       controller,
       runtimeId: 'codex',
+      workingDirectory: '/Projects/foo',
       userMessage: userMessage(),
       environmentContext,
       signal: operation.signal,
@@ -745,6 +763,7 @@ describe('CLI chat integration', () => {
     const result = await openCliSession({
       scope,
       ref,
+      workingDirectory: '/',
     })
 
     expect(result.controller).toBe(controller)
@@ -812,6 +831,7 @@ describe('CLI chat integration', () => {
       scope,
       controller,
       runtimeId: 'claude-code',
+      workingDirectory: '/',
       sourceUserMessageId: 'user-2',
       userMessage: target,
       environmentContext,
