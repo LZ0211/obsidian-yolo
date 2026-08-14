@@ -299,7 +299,11 @@ function createBackendFromScope(
         })),
       ),
     openSession: async (ref) => {
-      scope.selectConversationSession(ref)
+      const controller = scope.selectConversationSession(ref)
+      const hydration = await controller.hydrateSession(ref)
+      if (hydration === null) {
+        throw new Error('CLI session hydration was superseded.')
+      }
     },
     renameSession: (ref, title) =>
       scope.sessionService.renameSession(ref, title),
