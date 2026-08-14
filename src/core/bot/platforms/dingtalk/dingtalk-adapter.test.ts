@@ -444,11 +444,20 @@ describe('DingTalkAdapter — reconnect backoff', () => {
 
     const thirdWs = latestSocket()
     thirdWs.onopen?.()
-    await jest.advanceTimersByTimeAsync(300_000) // stable-connection window resets the counter
 
     thirdWs.onclose?.()
-    await jest.advanceTimersByTimeAsync(10_000) // back to the base delay, not 40s
+    await jest.advanceTimersByTimeAsync(10_000)
+    expect(MockWebSocket.instances).toHaveLength(3)
+    await jest.advanceTimersByTimeAsync(30_000)
     expect(MockWebSocket.instances).toHaveLength(4)
+
+    const fourthWs = latestSocket()
+    fourthWs.onopen?.()
+    await jest.advanceTimersByTimeAsync(300_000) // stable-connection window resets the counter
+
+    fourthWs.onclose?.()
+    await jest.advanceTimersByTimeAsync(10_000) // back to the base delay, not 40s
+    expect(MockWebSocket.instances).toHaveLength(5)
   })
 
   it('does not schedule a reconnect after an intentional stop()', async () => {

@@ -437,7 +437,6 @@ export class DingTalkAdapter implements PlatformAdapter {
 
   private handleOpen(): void {
     this.status = 'running'
-    this.reconnectAttempt = 0
     this.clearStableTimer()
     this.stableTimer = setTimeout(() => {
       this.reconnectAttempt = 0
