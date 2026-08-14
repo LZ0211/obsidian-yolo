@@ -479,5 +479,53 @@ describe('createVaultBashFileSystem', () => {
 
       expect(fs.getAllPaths()).toEqual(['projects/foo/a.md'])
     })
+
+    it('denies host-managed protected paths folded into the scope exclude (M4 regression: bash could read them)', async () => {
+      // `workspacePolicyToUpstreamScope` (localFileTools.ts) folds
+      // `policy.protectedPaths` into the upstream scope exclude — the shape
+      // below is exactly what an exact `YOLO/sessions.sqlite` protected rule
+      // produces. Before M4 the fold only carried readExcludes, so a
+      // whole-vault agent could `cat YOLO/sessions.sqlite` via bash while the
+      // fs tools rejected it.
+      const protectedScope: AssistantWorkspaceScope = {
+        enabled: true,
+        include: [''],
+        exclude: [
+          'YOLO/sessions.sqlite',
+          'YOLO/private',
+          'YOLO/.yolo_vector_db',
+        ],
+      }
+      const dbFile = makeFile('YOLO/sessions.sqlite')
+      const privateFile = makeFile('YOLO/private/config.json')
+      const vectorIndex = makeFile('YOLO/.yolo_vector_db/index')
+      const notes = makeFile('YOLO/notes.md')
+      const yoloFolder = makeFolder('YOLO', [
+        dbFile,
+        privateFile,
+        vectorIndex,
+        notes,
+      ])
+      const { app } = makeApp([yoloFolder, dbFile, privateFile, vectorIndex, notes])
+      const fs = createVaultBashFileSystem(app, protectedScope)
+
+      await expect(fs.readFile('YOLO/sessions.sqlite')).rejects.toThrow(
+        /EACCES/,
+      )
+      await expect(fs.readFile('YOLO/private/config.json')).rejects.toThrow(
+        /EACCES/,
+      )
+      await expect(fs.readFile('YOLO/.yolo_vector_db/index')).rejects.toThrow(
+        /EACCES/,
+      )
+      // Unprotected content in the same folder stays readable.
+      await expect(fs.readFile('YOLO/notes.md')).resolves.toBe(
+        'content:YOLO/notes.md',
+      )
+      // The protected files are invisible to traversal and listings (the YOLO
+      // folder itself remains visible as the traversal ancestor).
+      await expect(fs.exists('YOLO/sessions.sqlite')).resolves.toBe(false)
+      expect(fs.getAllPaths()).toEqual(['YOLO', 'YOLO/notes.md'])
+    })
   })
 })

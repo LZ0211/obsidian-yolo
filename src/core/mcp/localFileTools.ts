@@ -2494,7 +2494,7 @@ async function maybeWithInternalWrite<T>(
   return task()
 }
 
-const workspacePolicyToUpstreamScope = (
+export const workspacePolicyToUpstreamScope = (
   policy: WorkspaceAccessPolicy | undefined,
 ): AssistantWorkspaceScope | undefined => {
   if (!policy?.enabled) return undefined
@@ -2503,7 +2503,24 @@ const workspacePolicyToUpstreamScope = (
     include: [policy.workspaceRoot, ...policy.readExtraIncludes].filter(
       (entry) => entry !== '',
     ),
-    exclude: [...policy.readExcludes],
+    exclude: [
+      ...policy.readExcludes,
+      // Fold the host-managed protected paths into the upstream scope so the
+      // bash virtual FS (which only knows AssistantWorkspaceScope) denies
+      // plugin-private data even for a whole-vault workspaceRoot. Without
+      // this, an agent scoped to `/` could `cat YOLO/sessions.sqlite` etc.
+      // through bash while the fs tools reject the same path. `prefix` and
+      // `exact` rules keep their path; `namePrefix` maps to `<dir>/<name>`,
+      // which the upstream exclude matcher's "path and all descendants"
+      // prefix semantics covers for name-prefixed children (siblings that
+      // only share the prefix without a path boundary are not covered — the
+      // fixed-name exact rules for the SQLite files still hold).
+      ...(policy.protectedPaths ?? []).map((rule) =>
+        rule.kind === 'namePrefix'
+          ? `${rule.dir}/${rule.name}`.replace(/\/+$/, '')
+          : rule.path,
+      ),
+    ],
   }
 }
 
