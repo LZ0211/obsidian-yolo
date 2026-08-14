@@ -270,7 +270,12 @@ const getConsolidatedShortName = (toolName: string): string | undefined => {
  * triggers an immediate run, a mutating side effect the user's review classed
  * with create/update/delete; `project_ops.update/review` were added — both
  * mutate persistent project state (update writes task patches/claims, review
- * writes review decisions).
+ * writes review decisions). `fs_file_ops` is the consolidated successor of the
+ * legacy split tools `fs_delete` / `fs_create_dir` / `fs_move`, which the
+ * backup listed as a group in `REQUIRE_APPROVAL_LOCAL_TOOLS`; all three of its
+ * actions mutate the vault, so each is pinned to require_approval here —
+ * without this a fresh agent would default them to full_access (approval
+ * widening vs the pre-rollback posture).
  */
 const CAPABILITY_APPROVAL_DEFAULTS: Readonly<
   Record<string, Partial<Record<string, AssistantToolApprovalMode>>>
@@ -284,6 +289,11 @@ const CAPABILITY_APPROVAL_DEFAULTS: Readonly<
   project_ops: {
     update: 'require_approval',
     review: 'require_approval',
+  },
+  fs_file_ops: {
+    delete: 'require_approval',
+    create_dir: 'require_approval',
+    move: 'require_approval',
   },
 }
 

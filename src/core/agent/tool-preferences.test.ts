@@ -338,6 +338,9 @@ describe('tool-preferences defaults', () => {
       ['scheduled_task_ops', 'run_now'],
       ['project_ops', 'update'],
       ['project_ops', 'review'],
+      ['fs_file_ops', 'delete'],
+      ['fs_file_ops', 'create_dir'],
+      ['fs_file_ops', 'move'],
     ] as const)(
       'defaults the mutating action %s:%s to require_approval when no explicit mode exists',
       (toolName, action) => {
