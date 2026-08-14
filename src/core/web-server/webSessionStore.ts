@@ -44,14 +44,38 @@ type SessionClosedListener = (event: WebSessionClosedEvent) => void
 const getCrypto = () =>
   loadDesktopNodeModuleSync<typeof import('node:crypto')>('node:crypto')
 
+/** F4：定期清理过期会话的间隔。 */
+const SESSION_SWEEP_INTERVAL_MS = 60_000
+
 export class WebSessionStore {
   private readonly now: () => number
   private readonly sessions = new Map<string, WebSession>()
   private readonly sessionsByTokenRecordId = new Map<string, Set<string>>()
   private readonly closedListeners = new Set<SessionClosedListener>()
+  private readonly sweepTimer: ReturnType<typeof setInterval> | null = null
+  private disposed = false
 
   constructor(options: WebSessionStoreOptions = {}) {
     this.now = options.now ?? Date.now
+    // F4：sweepExpired 此前零调用，过期会话只在被 resolve 时惰性清理——
+    // 定期清扫确保 idle/absolute 过期的会话关闭（closeSession 幂等）。
+    if (typeof setInterval === 'function') {
+      const timer = setInterval(() => {
+        if (this.disposed) return
+        this.sweepExpired()
+      }, SESSION_SWEEP_INTERVAL_MS)
+      if (typeof (timer as { unref?: unknown }).unref === 'function') {
+        ;(timer as { unref: () => void }).unref()
+      }
+      this.sweepTimer = timer
+    }
+  }
+
+  dispose(): void {
+    this.disposed = true
+    if (this.sweepTimer != null) {
+      clearInterval(this.sweepTimer)
+    }
   }
 
   create(input: CreateWebSessionInput): WebSession {

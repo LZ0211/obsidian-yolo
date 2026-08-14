@@ -28,6 +28,9 @@ export type WebAgentRunBridgeOptions = {
   now?: () => number
 }
 
+/** 终态 run 记录保留 TTL（E6-F5）：超过后随下一次 start 惰性清理。 */
+const RUN_RECORD_RETENTION_TTL_MS = 24 * 60 * 60 * 1000
+
 export class WebAgentRunBridge {
   private readonly now: () => number
   private readonly abortControllersByRun = new Map<string, AbortController>()
@@ -39,6 +42,11 @@ export class WebAgentRunBridge {
 
   start(input: StartWebAgentRunInput): Promise<void> {
     const startedAtMs = input.startedAtMs ?? this.now()
+    // E6-F5：新 run 到来时顺带清理过期终态记录（events 级联删除）。
+    this.options.eventStore.sweepExpiredRuns(
+      startedAtMs,
+      RUN_RECORD_RETENTION_TTL_MS,
+    )
     this.options.eventStore.createRun({
       runId: input.runId,
       conversationId: input.conversationId,

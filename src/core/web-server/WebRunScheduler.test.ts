@@ -134,6 +134,51 @@ describe('WebRunScheduler', () => {
     first.resolve()
     second.resolve()
   })
+
+  it('expires terminal entries after the retention TTL (E4)', async () => {
+    let now = 1_000
+    const scheduler = new WebRunScheduler({
+      maxConcurrent: 1,
+      now: () => now,
+      finishedEntryTtlMs: 5_000,
+    })
+
+    scheduler.enqueue({
+      runId: 'run-1',
+      conversationId: 'conversation-1',
+      execute: async () => undefined,
+    })
+    await waitFor(() => scheduler.getRun('run-1')?.status === 'completed')
+    expect(scheduler.getRun('run-1')).not.toBeNull()
+
+    // 未超 TTL：仍在。
+    now = 5_999
+    expect(scheduler.getRun('run-1')).not.toBeNull()
+
+    // 超过 TTL：getRun 惰性清理并返回 null。
+    now = 6_001
+    expect(scheduler.getRun('run-1')).toBeNull()
+  })
+
+  it('keeps running entries regardless of elapsed time (E4)', async () => {
+    let now = 1_000
+    const scheduler = new WebRunScheduler({
+      maxConcurrent: 1,
+      now: () => now,
+      finishedEntryTtlMs: 5_000,
+    })
+    const gate = deferred<void>()
+
+    scheduler.enqueue({
+      runId: 'run-1',
+      conversationId: 'conversation-1',
+      execute: async () => gate.promise,
+    })
+    now = 1_000_000
+    expect(scheduler.getRun('run-1')?.status).toBe('running')
+    gate.resolve()
+    await waitFor(() => scheduler.getRun('run-1')?.status === 'completed')
+  })
 })
 
 function deferred<T>() {

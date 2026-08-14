@@ -169,14 +169,65 @@ class WebCliConversationController {
     await this.adapter.cancel()
   }
 
-  async rewriteTurn(): Promise<void> {}
-  async rollbackToTurn(): Promise<void> {}
-  async respondApproval(): Promise<void> {}
-  async respondQuestion(): Promise<void> {}
-  async updatePermissionProfile(): Promise<void> {}
-  async compact(): Promise<void> {}
+  async rewriteTurn(): Promise<void> {
+    // 远端契约 runtime 的 rewrite 走 UI 事务层，不提供远端 rewrite 端点——
+    // 显式抛错而不是静默 no-op（E5）。
+    const result = await this.adapter.rewriteTurn()
+    if (!result.ok) {
+      throw new Error(`rewrite is unsupported on the web CLI runtime`)
+    }
+  }
+
+  async rollbackToTurn(): Promise<void> {
+    const result = await this.adapter.rollbackToTurn()
+    if (!result.ok) {
+      throw new Error(`rollback is unsupported on the web CLI runtime`)
+    }
+  }
+
+  async respondApproval(response: {
+    requestId: string
+    decision: 'approve_once' | 'approve_for_session' | 'reject'
+  }): Promise<void> {
+    const result = await this.adapter.respondApproval(response)
+    if (!result.ok) {
+      throw new Error(
+        `failed to respond to approval request ${response.requestId}`,
+      )
+    }
+  }
+
+  async respondQuestion(response: {
+    requestId: string
+    answer: unknown
+  }): Promise<void> {
+    const result = await this.adapter.respondQuestion(response)
+    if (!result.ok) {
+      throw new Error(
+        `failed to respond to question request ${response.requestId}`,
+      )
+    }
+  }
+
+  async updatePermissionProfile(update: {
+    mode: 'ask' | 'agent' | 'plan'
+    yoloEnabled: boolean
+  }): Promise<void> {
+    const result = await this.adapter.updatePermissionProfile(update)
+    if (!result.ok) {
+      throw new Error('failed to update the permission profile')
+    }
+  }
+
+  async compact(): Promise<void> {
+    const result = await this.adapter.compact()
+    if (!result.ok) {
+      throw new Error(`compact is unsupported on the web CLI runtime`)
+    }
+  }
+
   async listSkills(): Promise<unknown[]> {
-    return []
+    throw new Error('listSkills is unsupported on the web CLI runtime')
   }
 
   close(): void {
@@ -189,7 +240,6 @@ export type WebCliRuntimeScopeOptions = {
   baseUrl: string
   sessionId?: string | null
   fetchImpl?: typeof fetch
-  EventSourceImpl?: typeof EventSource | undefined
 }
 
 const RUNTIME_IDS: readonly CliRuntimeId[] = ['claude-code', 'codex']
@@ -220,7 +270,6 @@ export function createWebCliRuntimeScope(
         baseUrl: options.baseUrl,
         sessionId: options.sessionId,
         fetchImpl: options.fetchImpl,
-        EventSourceImpl: options.EventSourceImpl,
       })
       // The adapter is the web-native contract runtime; the conversation id
       // keys the server-side native runtime instance (stream/turn/permission

@@ -1,3 +1,4 @@
+import type { WorkspaceAccessPolicy } from './assistant.types'
 import type { ContentPart } from './llm/request'
 
 export type ToolCallArguments =
@@ -179,6 +180,18 @@ export type ToolCallRequest = {
     executionConstraints?: {
       bashReadOnly?: boolean
     }
+    /**
+     * Workspace access policy fixed at tool-call creation time by
+     * `AgentToolGateway` — the two approval recovery paths
+     * (`AgentService.approveToolCall` and the chat UI's pending-tool-call
+     * recovery) execute tool calls directly and can't read the gateway's live
+     * policy, so the policy the call was emitted with is persisted here. A
+     * call approved after the user switched agents still runs under the
+     * emission-time boundary instead of the new assistant's. Present only
+     * when the emitting run had an enabled policy; absent (including
+     * historical sessions) means "fall back to the live policy".
+     */
+    workspaceAccessPolicy?: WorkspaceAccessPolicy
   }
 }
 

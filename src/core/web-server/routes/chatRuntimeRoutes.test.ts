@@ -9,7 +9,10 @@ import type {
 } from '../../chat-runtime/contract'
 import { WebRouter } from '../WebRouter'
 
-import { registerChatRuntimeRoutes } from './chatRuntimeRoutes'
+import {
+  disposeChatRuntimeRouteCaches,
+  registerChatRuntimeRoutes,
+} from './chatRuntimeRoutes'
 
 function createRequest({
   method,
@@ -227,5 +230,69 @@ describe('chatRuntimeRoutes session endpoints', () => {
     expect(res.jsonBody).toMatchObject({
       error: { code: 'bad_request' },
     })
+  })
+
+  it('disposes cached runtimes and clears replay buffers on disposeChatRuntimeRouteCaches (E3)', async () => {
+    const disposedA: string[] = []
+    const subscribedA: string[] = []
+    const subscribedB: string[] = []
+    const runtimeA = {
+      runtimeId: 'codex',
+      capabilities: {},
+      getSnapshot: jest.fn(() => ({
+        messages: [],
+        runState: 'idle',
+        replayCursor: 0,
+      })),
+      subscribe: jest.fn((_listener: (event: unknown) => void) => {
+        subscribedA.push('sub')
+        return () => undefined
+      }),
+      dispose: jest.fn(async () => {
+        disposedA.push('disposed')
+      }),
+    } as unknown as ChatRuntime
+    const runtimeB = {
+      runtimeId: 'codex',
+      capabilities: {},
+      getSnapshot: jest.fn(() => ({
+        messages: [],
+        runState: 'idle',
+        replayCursor: 0,
+      })),
+      subscribe: jest.fn((_listener: (event: unknown) => void) => {
+        subscribedB.push('sub')
+        return () => undefined
+      }),
+      dispose: jest.fn(async () => undefined),
+    } as unknown as ChatRuntime
+
+    let current: ChatRuntime = runtimeA
+    const router = new WebRouter()
+    registerChatRuntimeRoutes(router, {
+      getChatRuntime: () => current,
+    })
+
+    // 第一次请求填充缓存（runtimeA）。
+    await dispatch(
+      router,
+      'GET',
+      '/api/chat-runtime/codex/stream?conversationId=conv-e3&cursor=0',
+    )
+    expect(subscribedA).toHaveLength(1)
+
+    // 服务端重启：释放缓存 —— runtimeA 被 dispose，重放缓冲清空。
+    await disposeChatRuntimeRouteCaches()
+    expect(disposedA).toEqual(['disposed'])
+
+    // 新 server 的请求必须重新解析 runtime（runtimeB），而不是复用旧实例。
+    current = runtimeB
+    await dispatch(
+      router,
+      'GET',
+      '/api/chat-runtime/codex/stream?conversationId=conv-e3&cursor=0',
+    )
+    expect(subscribedB).toHaveLength(1)
+    expect(subscribedA).toHaveLength(1)
   })
 })

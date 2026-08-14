@@ -1,6 +1,8 @@
 import { Platform, requestUrl } from 'obsidian'
+import type { RequestUrlParam } from 'obsidian'
 
 import type { BotPlatformQqOfficialConfig } from '../../../../settings/schema/setting.types'
+import { encodeSessionKey } from '../../types'
 import type { PlatformMessageEvent } from '../../types'
 
 import { QQOfficialAdapter } from './qqofficial-adapter'
@@ -220,6 +222,181 @@ describe('QQOfficialAdapter — reconnect', () => {
     ws.onclose?.()
     await jest.advanceTimersByTimeAsync(300_000)
     expect(MockWebSocket.instances).toHaveLength(1)
+  })
+})
+
+describe('QQOfficialAdapter — B1 intents', () => {
+  function intentsFromHello(ws: MockWebSocket): number {
+    const hello = ws.sent
+      .map((message) => JSON.parse(message) as { op: number; d?: unknown })
+      .find((payload) => payload.op === 2)
+    return ((hello?.d as { intents?: number } | undefined)?.intents ?? -1)
+  }
+
+  it('subscribes GUILD_MESSAGES | DIRECT_MESSAGE | GROUP_AND_C2C_EVENT when every channel is enabled', async () => {
+    const { ws } = await startAdapter()
+    // fix-round-1: official bit table — GUILD_MESSAGES=1<<9 (channel @),
+    // DIRECT_MESSAGE=1<<12 (channel DM), GROUP_AND_C2C_EVENT=1<<25.
+    expect(intentsFromHello(ws)).toBe((1 << 9) | (1 << 12) | (1 << 25))
+  })
+
+  it('enableGuild=false drops the guild intents (1<<9 GUILD_MESSAGES / 1<<12 DIRECT_MESSAGE)', async () => {
+    const { ws } = await startAdapter({ enableGuild: false })
+    expect(intentsFromHello(ws)).toBe(1 << 25)
+  })
+
+  it('C2C and group switches are independent at dispatch time (GROUP_AND_C2C_EVENT is one intent bit)', async () => {
+    const { adapter, ws } = await startAdapter({
+      enableC2c: false,
+      enableGroup: true,
+      enableGuild: false,
+    })
+    const received: PlatformMessageEvent[] = []
+    adapter.onMessage((event) => {
+      received.push(event)
+    })
+
+    sendDispatch(ws, 'C2C_MESSAGE_CREATE', {
+      author: { user_openid: 'u1' },
+      content: 'c2c should be dropped',
+      id: 'msg-c2c',
+    })
+    sendDispatch(ws, 'GROUP_AT_MESSAGE_CREATE', {
+      group_openid: 'g1',
+      content: '<@!BOT_OPENID> group should pass',
+      id: 'msg-group',
+      author: { member_openid: 'm1', user_nick: 'Alice' },
+    })
+    sendDispatch(ws, 'AT_MESSAGE_CREATE', {
+      channel_id: 'ch-1',
+      content: '<@!BOT_OPENID> guild should be dropped',
+      id: 'msg-guild',
+      author: { user_openid: 'u2' },
+    })
+    sendDispatch(ws, 'DIRECT_MESSAGE_CREATE', {
+      guild_id: 'guild-1',
+      content: 'guild dm should be dropped',
+      id: 'msg-dm',
+      author: { user_openid: 'u3' },
+    })
+
+    expect(received).toHaveLength(1)
+    expect(received[0]).toMatchObject({
+      chatType: 'group',
+      mentionedBotId: 'qq_official',
+    })
+  })
+
+  it('drops every dispatch when all channels are disabled', async () => {
+    const { adapter, ws } = await startAdapter({
+      enableC2c: false,
+      enableGroup: false,
+      enableGuild: false,
+    })
+    const received: PlatformMessageEvent[] = []
+    adapter.onMessage((event) => {
+      received.push(event)
+    })
+
+    sendDispatch(ws, 'C2C_MESSAGE_CREATE', {
+      author: { user_openid: 'u1' },
+      content: 'hi',
+      id: 'msg-1',
+    })
+    sendDispatch(ws, 'GROUP_AT_MESSAGE_CREATE', {
+      group_openid: 'g1',
+      content: '<@!BOT_OPENID> hi',
+      id: 'msg-2',
+      author: { member_openid: 'm1' },
+    })
+
+    expect(received).toHaveLength(0)
+  })
+})
+
+describe('QQOfficialAdapter — B2 stop during start', () => {
+  it('does not open a socket when stop() lands while the gateway fetch is in flight', async () => {
+    let releaseGateway!: (value: unknown) => void
+    const gateway = new Promise((resolve) => {
+      releaseGateway = resolve
+    })
+    mockedRequestUrl.mockImplementation(
+      (() => gateway) as unknown as typeof requestUrl,
+    )
+
+    const adapter = new QQOfficialAdapter()
+    liveAdapters.push(adapter)
+    const starting = adapter.start(makeConfig())
+    await Promise.resolve() // let the gateway await begin
+    await adapter.stop()
+    releaseGateway({ json: { url: DEFAULT_GATEWAY_URL } })
+    await starting
+
+    // RED on the old behavior: start() opened the connection anyway.
+    expect(MockWebSocket.instances).toHaveLength(0)
+    expect(adapter.health()).toBe('stopped')
+  })
+})
+
+describe('QQOfficialAdapter — sendMessage', () => {
+  function mockSendRoutes(): {
+    bodies: Array<{ content: string; msg_seq?: number }>
+  } {
+    const bodies: Array<{ content: string; msg_seq?: number }> = []
+    mockedRequestUrl.mockImplementation((async (
+      request: string | RequestUrlParam,
+    ) => {
+      const url = typeof request === 'string' ? request : request.url
+      if (url.includes('/gateway/bot')) {
+        return { json: { url: DEFAULT_GATEWAY_URL } }
+      }
+      if (url.includes('/v2/')) {
+        const body =
+          typeof request === 'string'
+            ? ''
+            : String(request.body ?? '')
+        bodies.push(JSON.parse(body) as { content: string; msg_seq?: number })
+        return { json: { id: 'msg-ok' } }
+      }
+      return Promise.reject(new Error(`Unhandled requestUrl call: ${url}`))
+    }) as unknown as typeof requestUrl)
+    return { bodies }
+  }
+
+  it('B4: splits a long reply into multiple chunked sends at the 2000 cap', async () => {
+    const { bodies } = mockSendRoutes()
+    const { adapter } = await startAdapter()
+    const longText = 'a'.repeat(4500)
+
+    const refs = await adapter.sendMessage(
+      encodeSessionKey('qq_official', 'private', 'u1'),
+      { text: longText },
+    )
+
+    expect(bodies).toHaveLength(3)
+    for (const body of bodies) {
+      expect(body.content.length).toBeLessThanOrEqual(2000)
+    }
+    expect(bodies.map((body) => body.content).join('')).toBe(longText)
+    expect(refs).toHaveLength(3)
+  })
+
+  it('B5: msg_seq increases monotonically instead of being random', async () => {
+    // A fixed random source makes the old implementation emit the same
+    // msg_seq twice — the monotonic assertion fails (RED).
+    const randomSpy = jest.spyOn(Math, 'random').mockReturnValue(0.5)
+    try {
+      const { bodies } = mockSendRoutes()
+      const { adapter } = await startAdapter()
+      const sessionKey = encodeSessionKey('qq_official', 'private', 'u1')
+
+      await adapter.sendMessage(sessionKey, { text: 'first' })
+      await adapter.sendMessage(sessionKey, { text: 'second' })
+
+      expect(bodies.map((body) => body.msg_seq)).toEqual([1, 2])
+    } finally {
+      randomSpy.mockRestore()
+    }
   })
 })
 

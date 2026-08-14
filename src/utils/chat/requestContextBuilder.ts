@@ -229,6 +229,17 @@ type RequestContextBuilderOptions = {
   promptSourcePathsCallback?: (paths: Set<string>) => void
   /** Memory index runtime handle; wires hidden extraction commits + reflection. */
   memoryIndexRuntime?: MemoryIndexRuntimeHandle
+  /**
+   * Runtime-scoped system-prompt overrides for delegated subagent runs (S2,
+   * restored from the pre-rollback backup's `withRuntimeOverrides`): the
+   * child's prompt gets the fixed isolation instructions appended, and the
+   * delegatable-assistant catalogue is suppressed so a delegated role does not
+   * advertise sibling roles it cannot dispatch to.
+   */
+  runtimeOverrides?: {
+    fixedRuntimeInstructions?: string[]
+    suppressDelegatableAssistantCatalogue?: boolean
+  }
 }
 
 /**
@@ -547,6 +558,9 @@ export class RequestContextBuilder {
   private promptSourcePathsCallback?: (paths: Set<string>) => void
   private memoryIndexRuntime?: MemoryIndexRuntimeHandle
   private readonly memoryEmbeddingQueryCache = new QueryEmbeddingMemoryCache()
+  private readonly runtimeOverrides: NonNullable<
+    RequestContextBuilderOptions['runtimeOverrides']
+  >
 
   constructor(
     app: App,
@@ -560,6 +574,7 @@ export class RequestContextBuilder {
     this.getPromptSourceRevision = options?.getPromptSourceRevision
     this.promptSourcePathsCallback = options?.promptSourcePathsCallback
     this.memoryIndexRuntime = options?.memoryIndexRuntime
+    this.runtimeOverrides = options?.runtimeOverrides ?? {}
   }
 
   private getMentionContextMode(): MentionContextMode {
@@ -2161,8 +2176,13 @@ ${modePersonaPrompt.trim()}
     // `delegate_subagent` tool schema promises "the available roles listed in
     // the request context", so the model must be able to discover them here
     // (backup `requestContextBuilder.ts` behavior; the built-in subagent roles
-    // are always appended by `listDelegatableAssistantRoles`).
-    const delegatableAssistants = listDelegatableAssistantRoles(this.settings)
+    // are always appended by `listDelegatableAssistantRoles`). Delegated
+    // subagent runs suppress the catalogue (S2): the child cannot dispatch
+    // sibling roles, so advertising them would only invite invalid calls.
+    const delegatableAssistants = this.runtimeOverrides
+      .suppressDelegatableAssistantCatalogue
+      ? []
+      : listDelegatableAssistantRoles(this.settings)
     if (delegatableAssistants.length > 0) {
       sections.push({
         bucket: 'system',
@@ -2175,6 +2195,22 @@ ${delegatableAssistants
   )
   .join('\n')}
 </delegatable_assistants>`,
+      })
+    }
+
+    // Fixed runtime instructions (S2): appended verbatim for delegated
+    // subagent runs so the isolation statement (`SUBAGENT_DEFAULT_SYSTEM_PROMPT`)
+    // survives alongside the role's own system prompt.
+    const fixedRuntimeInstructions = (
+      this.runtimeOverrides.fixedRuntimeInstructions ?? []
+    )
+      .map((instruction) => instruction.trim())
+      .filter(Boolean)
+    if (fixedRuntimeInstructions.length > 0) {
+      sections.push({
+        bucket: 'system',
+        id: 'system.fixed-runtime-instructions',
+        content: fixedRuntimeInstructions.join('\n\n'),
       })
     }
 

@@ -727,6 +727,102 @@ describe('ShardedVectorStore write path', () => {
     }
   })
 
+  it('replaceFile with zero chunks writes a tombstoned failure marker so getIndexedFiles keeps the mtime (no re-embed on the next reconcile)', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-write-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+
+      // First a successful write so the shard exists with one vector.
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 10,
+        contentHash: 'old-hash',
+        chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+      })
+
+      // Whole-file embedding failure: zero chunks, new mtime. The marker row
+      // must keep the file visible to getIndexedFiles with the new mtime.
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 20,
+        contentHash: 'new-hash',
+        chunks: [],
+      })
+
+      const indexed = await store.getIndexedFiles(writeNamespace)
+      expect(indexed.get('notes/a.md')?.mtime).toBe(20)
+
+      // The marker row is tombstoned (never searched) and carries no vector.
+      const runtime = await openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+      )
+      try {
+        const marker = runtime.queryOne<{ tombstone: number }>(
+          'select tombstone from chunks where chunk_id = ?',
+          ['failed:notes/a.md'],
+        )
+        expect(marker).toEqual({ tombstone: 1 })
+      } finally {
+        runtime.close()
+      }
+      const shardRoot = getShardedShardRoot(BASE_DIR, WRITE_NS_ID, '000001')
+      const vectorsBytes = await adapter.readBinary(`${shardRoot}/vectors.f32`)
+      expect(vectorsBytes.byteLength).toBe(writeNamespace.dimension * 4)
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('a later successful rewrite of a marker file restores normal indexing and updates the mtime', async () => {
+    const adapter = new InMemoryVaultAdapter()
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-write-'))
+    try {
+      const store = makeStoreWithTempSqlite(adapter, tempRoot)
+      await store.open()
+
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 20,
+        contentHash: 'new-hash',
+        chunks: [],
+      })
+
+      // User fixes the model config and edits the file: the rewrite
+      // tombstones the marker and inserts the real chunk.
+      await store.replaceFile(writeNamespace, {
+        path: 'notes/a.md',
+        mtime: 30,
+        contentHash: 'fixed-hash',
+        chunks: [chunk('c1', 'alpha', [1, 0, 0, 0], 1)],
+      })
+
+      const indexed = await store.getIndexedFiles(writeNamespace)
+      expect(indexed.get('notes/a.md')?.mtime).toBe(30)
+
+      const runtime = await openShardSqliteNode(
+        tempChunksDbPath(tempRoot, WRITE_NS_ID, '000001'),
+      )
+      try {
+        const live = runtime.queryOne<{ tombstone: number }>(
+          'select tombstone from chunks where chunk_id = ?',
+          ['c1'],
+        )
+        expect(live).toEqual({ tombstone: 0 })
+        const marker = runtime.queryOne<{ tombstone: number }>(
+          'select tombstone from chunks where chunk_id = ?',
+          ['failed:notes/a.md'],
+        )
+        expect(marker).toEqual({ tombstone: 1 })
+      } finally {
+        runtime.close()
+      }
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
   it('replaceFiles writes multiple files into the current shard', async () => {
     const adapter = new InMemoryVaultAdapter()
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sharded-write-'))

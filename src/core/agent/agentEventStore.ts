@@ -252,6 +252,28 @@ export class AgentEventStore {
     ])
   }
 
+  /**
+   * 删除超过保留 TTL 的终态 run（events 级联）（E6-F5）。返回清理条数。
+   */
+  sweepExpiredRuns(nowMs: number, ttlMs: number): number {
+    const cutoff = nowMs - ttlMs
+    const expired = this.db.query<{ run_id: string }>(
+      `
+        select run_id from agent_runs
+        where finished_at_ms is not null and finished_at_ms < ?
+      `,
+      [cutoff],
+    )
+    if (expired.length === 0) return 0
+    const runIds = expired.map((row) => row.run_id)
+    const placeholders = runIds.map(() => '?').join(', ')
+    this.db.exec(
+      `delete from agent_runs where run_id in (${placeholders})`,
+      runIds,
+    )
+    return runIds.length
+  }
+
   private get db(): SqliteNativeRuntimeFacade {
     if (this.runtime == null) {
       throw new Error('agent event store is not open')

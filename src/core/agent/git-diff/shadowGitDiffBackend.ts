@@ -24,6 +24,7 @@ import {
 
 import type { WorkspaceAccessPolicy } from '../../../types/assistant.types'
 import type { AgentFileChange, AgentGitFileDiff } from '../../../types/chat'
+import type { ProtectedPathRule } from '../../paths/protectedPaths'
 import { normalizeWorkspacePath } from '../workspaceScope'
 
 import { type GitCommandRunner, runGitCommand } from './gitCommandRunner'
@@ -78,6 +79,8 @@ type Scope = {
   workspaceRoot: string
   positiveRoot: string
   writeExcludes: string[]
+  /** Repo-relative glob patterns excluded from the snapshot/diff. */
+  protectedGlobs?: string[]
 }
 
 type ShadowContext = {
@@ -124,6 +127,30 @@ const joinSlashPath = (left: string, right: string): string => {
   if (!left) return right
   if (!right) return left
   return `${left}/${right}`
+}
+
+/**
+ * Adds host-managed protected paths to a git-diff scope's exclude set. `prefix`
+ * and `exact` rules map to literal repo paths; `namePrefix` rules map to a glob
+ * so every file whose name starts with the prefix is excluded. Returns the glob
+ * patterns (the literal ones are folded into `excludes`).
+ */
+function addProtectedScopeExcludes(
+  rules: readonly ProtectedPathRule[] | undefined,
+  vaultPrefix: string,
+  excludes: Set<string>,
+): string[] {
+  if (!rules) return []
+  const globs: string[] = []
+  for (const rule of rules) {
+    if (rule.kind === 'namePrefix') {
+      const dir = joinSlashPath(vaultPrefix, rule.dir)
+      globs.push(`${dir}/${rule.name}*`)
+      continue
+    }
+    excludes.add(joinSlashPath(vaultPrefix, rule.path))
+  }
+  return globs
 }
 
 const isWithin = (candidate: string, root: string): boolean => {
@@ -639,8 +666,11 @@ export class ShadowGitDiffBackend implements AgentGitDiffBackend {
       }
 
       const excludes = new Set<string>()
+      // W7: read exclusions hide changes too — the agent cannot legitimately
+      // read (readExcludes) or produce (writeExcludes) files under these
+      // paths, so their changes must not surface as workspace activity.
       for (const rawRule of policyEnabled
-        ? (policy?.writeExcludes ?? [])
+        ? [...(policy?.writeExcludes ?? []), ...(policy?.readExcludes ?? [])]
         : []) {
         const rule = normalizeWorkspacePath(rawRule)
         const repoRule = joinSlashPath(vaultPrefix, rule)
@@ -650,11 +680,19 @@ export class ShadowGitDiffBackend implements AgentGitDiffBackend {
           excludes.add(positiveRoot)
         }
       }
+      // Host-managed protected paths are always excluded from the snapshot,
+      // regardless of the assistant workspaceRoot or write excludes.
+      const protectedGlobs = addProtectedScopeExcludes(
+        policy?.protectedPaths,
+        vaultPrefix,
+        excludes,
+      )
       return {
         vaultPrefix,
         workspaceRoot,
         positiveRoot,
         writeExcludes: [...excludes].sort(),
+        ...(protectedGlobs.length > 0 ? { protectedGlobs } : {}),
       } satisfies Scope
     } catch {
       return null
@@ -874,6 +912,9 @@ export class ShadowGitDiffBackend implements AgentGitDiffBackend {
     return [
       positive,
       ...scope.writeExcludes.map((path) => `:(top,literal,exclude)${path}`),
+      ...(scope.protectedGlobs ?? []).map(
+        (path) => `:(top,glob,exclude)${path}`,
+      ),
     ]
   }
 

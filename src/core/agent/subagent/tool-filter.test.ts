@@ -40,6 +40,29 @@ describe('subagent tool-filter', () => {
     expect(filterAllowedToolsForSubagent(undefined)).toEqual([])
   })
 
+  it('blocks project_ops and scheduled_task_ops from every child run (M3 regression: children inherited them)', () => {
+    // RED before M3: the deny-list lacked project_ops (backup constants.ts had
+    // it) and scheduled_task_ops (the consolidated task tool), so a child
+    // subagent inherited both from the parent tool set and could mutate
+    // persistent project / scheduled-task state.
+    const projectOps = getToolName(getLocalFileToolServerName(), 'project_ops')
+    const scheduledTaskOps = getToolName(
+      getLocalFileToolServerName(),
+      'scheduled_task_ops',
+    )
+    const parent = [
+      projectOps,
+      scheduledTaskOps,
+      getToolName(getLocalFileToolServerName(), 'fs_read'),
+    ]
+
+    expect(isSubagentBlockedToolName(projectOps)).toBe(true)
+    expect(isSubagentBlockedToolName(scheduledTaskOps)).toBe(true)
+    expect(filterAllowedToolsForSubagent(parent)).toEqual([
+      getToolName(getLocalFileToolServerName(), 'fs_read'),
+    ])
+  })
+
   it('does not filter approval-gated tools — those route to the parent UI', () => {
     // Tools that merely require approval (js_eval with caps, fs_edit in
     // review mode, etc.) are intentionally NOT in the deny-list. Their

@@ -1,5 +1,6 @@
 import {
   Assistant,
+  AssistantToolActionPreference,
   AssistantToolApprovalMode,
   AssistantToolDisclosureMode,
   AssistantToolPreference,
@@ -19,6 +20,7 @@ import { parseToolName } from '../mcp/tool-name-utils'
 import { getMcpToolSchemaTokenCost } from '../mcp/toolCatalogTokenCache'
 
 import { FILE_EDIT_GROUP_TOOL_NAME } from './builtinToolUiMeta'
+import { CONSOLIDATED_TOOLS } from './consolidated-tools'
 
 export const DEFAULT_ASSISTANT_TOOL_APPROVAL_MODE: AssistantToolApprovalMode =
   'require_approval'
@@ -226,6 +228,145 @@ export const getDefaultApprovalModeForTool = (
   } catch {
     return DEFAULT_ASSISTANT_TOOL_APPROVAL_MODE
   }
+}
+
+const CONSOLIDATED_TOOL_SHORT_NAMES: ReadonlySet<string> = new Set(
+  CONSOLIDATED_TOOLS,
+)
+
+/**
+ * Resolve the bare consolidated short name from a tool key that may be an FQN
+ * (`yolo_local__scheduled_task_ops`) or bare (`scheduled_task_ops`). Returns
+ * undefined when the key does not name a consolidated tool.
+ */
+const getConsolidatedShortName = (toolName: string): string | undefined => {
+  let shortName = toolName
+  try {
+    shortName = parseToolName(toolName).toolName
+  } catch {
+    shortName = toolName
+  }
+  return CONSOLIDATED_TOOL_SHORT_NAMES.has(shortName) ? shortName : undefined
+}
+
+/**
+ * Per-action approval defaults for consolidated tools, kept from the
+ * pre-consolidation split tools. Only entries that DIFFER from the consolidated
+ * tool-level default need to be listed; everything else falls back to
+ * `getDefaultApprovalModeForTool`.
+ *
+ * `scheduled_task_ops` is intentionally NOT in `REQUIRE_APPROVAL_LOCAL_TOOLS`
+ * (its read-only actions `list`/`get` default to full_access), so a v79 entry
+ * like `scheduled_task_create: { enabled: true }` with no `approvalMode` would
+ * otherwise move from `require_approval` to `full_access` after the 79→80
+ * consolidation — an access widening the spec forbids. The mutating actions
+ * listed here preserve their legacy posture as the FINAL fallback for both
+ * migrated entries without an explicit mode and hand-edited v80 data.
+ *
+ * Adapted from the pre-rollback backup `CAPABILITY_APPROVAL_DEFAULTS`
+ * (tool-preferences.ts): `browser_ops` entries were dropped because master has
+ * no built-in browser_ops (browser tools are third-party injected and keep
+ * their own approval routing); `scheduled_task_ops.run_now` was added — it
+ * triggers an immediate run, a mutating side effect the user's review classed
+ * with create/update/delete; `project_ops.update/review` were added — both
+ * mutate persistent project state (update writes task patches/claims, review
+ * writes review decisions). `fs_file_ops` is the consolidated successor of the
+ * legacy split tools `fs_delete` / `fs_create_dir` / `fs_move`, which the
+ * backup listed as a group in `REQUIRE_APPROVAL_LOCAL_TOOLS`; all three of its
+ * actions mutate the vault, so each is pinned to require_approval here —
+ * without this a fresh agent would default them to full_access (approval
+ * widening vs the pre-rollback posture).
+ */
+const CAPABILITY_APPROVAL_DEFAULTS: Readonly<
+  Record<string, Partial<Record<string, AssistantToolApprovalMode>>>
+> = {
+  scheduled_task_ops: {
+    create: 'require_approval',
+    update: 'require_approval',
+    delete: 'require_approval',
+    run_now: 'require_approval',
+  },
+  project_ops: {
+    update: 'require_approval',
+    review: 'require_approval',
+  },
+  fs_file_ops: {
+    delete: 'require_approval',
+    create_dir: 'require_approval',
+    move: 'require_approval',
+  },
+}
+
+export const getDefaultApprovalModeForCapability = (
+  toolName: string,
+  action: string,
+): AssistantToolApprovalMode => {
+  const shortName = getConsolidatedShortName(toolName)
+  const capabilityDefault = shortName
+    ? CAPABILITY_APPROVAL_DEFAULTS[shortName]?.[action]
+    : undefined
+  return capabilityDefault ?? getDefaultApprovalModeForTool(toolName)
+}
+
+/**
+ * The action-level override for a consolidated tool's approval decision, if one
+ * exists. Returns `undefined` so callers can fall back to the tool-level mode.
+ */
+export const getAssistantToolActionPreference = (
+  assistant:
+    | Pick<Assistant, 'toolPreferences' | 'enabledToolNames'>
+    | null
+    | undefined,
+  toolName: string,
+  action: string,
+): AssistantToolActionPreference | undefined => {
+  const toolPreferences = getAssistantToolPreferences(assistant)
+  return toolPreferences[toolName]?.actions?.[action]
+}
+
+/**
+ * Resolve the approval mode for a concrete capability (consolidated tool +
+ * action) by checking the action-level override first, then the tool-level
+ * `approvalMode`, then the capability-level default (per-action legacy default,
+ * falling back to the tool default). Consolidated tools are always local, so
+ * the server-preference path in `getAssistantToolApprovalMode` never applies
+ * here. For non-consolidated tools callers should keep using
+ * {@link getAssistantToolApprovalMode} directly; this helper is for the
+ * consolidated names where allowing one action must not change the approval
+ * posture of another (79→80 migrated `actions[action].approvalMode` is read
+ * here; pre-80 v79 data still routes through `getAssistantToolApprovalMode`).
+ */
+export const getAssistantToolCapabilityApprovalMode = (
+  assistant:
+    | Pick<
+        Assistant,
+        'toolPreferences' | 'enabledToolNames' | 'toolServerPreferences'
+      >
+    | null
+    | undefined,
+  toolName: string,
+  action: string,
+): AssistantToolApprovalMode => {
+  const actionPref = getAssistantToolActionPreference(
+    assistant,
+    toolName,
+    action,
+  )
+  if (actionPref?.approvalMode) {
+    return actionPref.approvalMode
+  }
+
+  const toolPreferences = getAssistantToolPreferences(assistant)
+  const explicitToolMode = toolPreferences[toolName]?.approvalMode
+  if (explicitToolMode) {
+    return explicitToolMode
+  }
+
+  // Final fallback: the per-action legacy default. Without it, a v79
+  // `scheduled_task_create: { enabled: true }` (no approvalMode) would inherit
+  // the tool-level full_access default for `scheduled_task_ops` — an approval
+  // widening the spec forbids.
+  return getDefaultApprovalModeForCapability(toolName, action)
 }
 
 /**

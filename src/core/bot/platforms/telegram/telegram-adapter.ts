@@ -27,6 +27,7 @@ import type {
 import { App, FileSystemAdapter, Platform } from 'obsidian'
 
 import type { BotPlatformTelegramConfig } from '../../../../settings/schema/setting.types'
+import { splitTextAtBoundaries } from '../../text-chunking'
 import {
   type DownloadedFile,
   type ErrorHandler,
@@ -62,26 +63,6 @@ function isFatalPollingError(error: Error): boolean {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-/**
- * Splits `text` into chunks no longer than `maxLen`, preferring to break at
- * the last newline (then last space) within the limit so words/paragraphs
- * aren't cut mid-way when avoidable.
- */
-function splitTextAtBoundaries(text: string, maxLen: number): string[] {
-  if (text.length <= maxLen) return [text]
-  const chunks: string[] = []
-  let remaining = text
-  while (remaining.length > maxLen) {
-    let splitAt = remaining.lastIndexOf('\n', maxLen)
-    if (splitAt <= 0) splitAt = remaining.lastIndexOf(' ', maxLen)
-    if (splitAt <= 0) splitAt = maxLen
-    chunks.push(remaining.slice(0, splitAt))
-    remaining = remaining.slice(splitAt).replace(/^\s+/, '')
-  }
-  if (remaining.length > 0) chunks.push(remaining)
-  return chunks
 }
 
 function getComponentFileId(component: MessageComponent): string | undefined {
@@ -216,8 +197,13 @@ export class TelegramAdapter implements PlatformAdapter {
     const bot = this.bot
     if (!bot) throw new Error('Telegram adapter is not started.')
 
-    const { chatId } = decodeSessionKey(sessionKey)
+    const { chatId, threadId } = decodeSessionKey(sessionKey)
     const targetChatId: ChatId = chatId
+    // B3: the session key encodes the topic thread (see convertToPlatformEvent
+    // — encodeSessionKey with msg.message_thread_id); a reply must carry
+    // message_thread_id back or it lands in the channel's general thread
+    // instead of the topic the message came from.
+    const messageThreadId = threadId ? Number(threadId) : undefined
     const replyParameters = content.replyToMessageId
       ? { message_id: Number(content.replyToMessageId) }
       : undefined
@@ -243,6 +229,7 @@ export class TelegramAdapter implements PlatformAdapter {
         )
         for (const chunk of chunks) {
           const sent = await bot.sendMessage(targetChatId, chunk, {
+            message_thread_id: messageThreadId,
             reply_parameters: replyParameters,
           })
           refs.push({
@@ -257,6 +244,7 @@ export class TelegramAdapter implements PlatformAdapter {
       for (const image of content.images ?? []) {
         const input = await this.resolveOutgoingFile(image)
         const sent = await bot.sendPhoto(targetChatId, input, {
+          message_thread_id: messageThreadId,
           caption: image.label,
           reply_parameters: replyParameters,
         })
@@ -273,7 +261,11 @@ export class TelegramAdapter implements PlatformAdapter {
         const sent = await bot.sendDocument(
           targetChatId,
           input,
-          { caption: file.name, reply_parameters: replyParameters },
+          {
+            message_thread_id: messageThreadId,
+            caption: file.name,
+            reply_parameters: replyParameters,
+          },
           { filename: file.name, contentType: file.mimeType },
         )
         refs.push({

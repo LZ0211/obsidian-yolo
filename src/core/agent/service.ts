@@ -2293,6 +2293,16 @@ export class AgentService {
       conversationId,
       toolCallId,
     )
+    // A manual abort of a `delegate_subagent` call must reach the child too:
+    // `delegate_subagent` returns immediately after spawning, so by the time
+    // the user hits abort the call is no longer in `mcpManager.activeToolCalls`
+    // and the child would otherwise keep running to completion and inject a
+    // `[subagent_result]`. Reuse the deadline path's lookup (service.ts
+    // registerParentSubagentDeadline onExpire) to abort the child run.
+    const childTask = findSubagentTaskByParentToolCall(toolCallId)
+    if (childTask) {
+      subagentTaskRegistry.abort(childTask.taskId)
+    }
     const located = this.findToolCall(conversationId, toolCallId)
     if (!located) {
       return abortedForegroundTool
@@ -2843,6 +2853,12 @@ export class AgentService {
     // into the abandoned conversation and increment the breaker (pre
     // `native-runtime.ts` teardown semantics).
     this.teardownApprovedSubagentDeadlines(conversationId)
+    // Stop the conversation's running child subagents as well — without this,
+    // children whose parent tool call already settled keep running to
+    // completion after the parent session is stopped/aborted.
+    for (const task of subagentTaskRegistry.listByConversation(conversationId)) {
+      subagentTaskRegistry.abort(task.taskId)
+    }
     return didAbort
   }
 

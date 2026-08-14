@@ -26,7 +26,9 @@ import {
   type TaskConfig,
   TaskRunStatus,
   createScheduledTasksStore,
+  toTaskRunInsert,
 } from './scheduledTasksStore'
+import { parseCronNextTime } from './cron-parser'
 import { ScheduledTaskScheduler } from './scheduler'
 import { type TaskEvent, TaskEventBus } from './task-event-bus'
 import { TaskExecutor } from './task-executor'
@@ -564,6 +566,245 @@ describe('ScheduledTaskScheduler', () => {
       expect(store.getTask('task-2')).toBeNull()
       store.close()
     } finally {
+      cleanup(dir)
+    }
+  })
+
+  it('T1: deleting an executing task cancels its run, keeps the record as CANCELLED, and never emits a completion', async () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const eventBus = new TaskEventBus()
+      const { agentApi, resolveRun } = makeDeferredAgentApi()
+      const executor = new TaskExecutor({ getAgentApi: () => agentApi })
+      const scheduler = new ScheduledTaskScheduler({
+        store,
+        executor,
+        eventBus,
+      })
+      store.createTask(
+        'task-1',
+        makeTaskConfig({ notifyOn: ['success'] }),
+        1000,
+      )
+      ;(Notice as jest.Mock).mockClear()
+
+      const events: TaskEvent[] = []
+      eventBus.subscribeAll((e) => events.push(e))
+
+      const result = scheduler.executeTaskNow('task-1')
+      if (result.outcome !== 'started') throw new Error('unreachable')
+      await flushPromises()
+      expect(store.getRun(result.runId)?.status).toBe(TaskRunStatus.RUNNING)
+
+      scheduler.deleteTask('task-1')
+
+      // The task is gone, but the in-flight run record survives as CANCELLED
+      // (no cascade loss) — RED on the old behavior: getRun returned null.
+      expect(store.getTask('task-1')).toBeNull()
+      const cancelled = store.getRun(result.runId)
+      expect(cancelled).not.toBeNull()
+      expect(cancelled?.status).toBe(TaskRunStatus.CANCELLED)
+      expect(events.map((e) => e.type)).toContain('task_cancelled')
+
+      // Let the aborted execution settle as if it had completed — the success
+      // path must observe the CANCELLED row and stay silent (no completion
+      // event, no success Notice) — RED on the old behavior: task_completed
+      // was emitted and the success Notice shown.
+      resolveRun({ conversationId: 'conv-1', text: 'done', status: 'completed' })
+      await flushPromises()
+      expect(events.map((e) => e.type)).not.toContain('task_completed')
+      expect(Notice).not.toHaveBeenCalledWith(
+        expect.stringContaining('Scheduled task succeeded'),
+      )
+      expect(scheduler.getExecutingTasks()).toHaveLength(0)
+
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  it('T1 fix-round-1: deleteTask also cancels and keeps ANOTHER window\'s in-flight run', async () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const eventBus = new TaskEventBus()
+      const { agentApi, resolveRun } = makeDeferredAgentApi()
+      const scheduler = new ScheduledTaskScheduler({
+        store,
+        executor: new TaskExecutor({ getAgentApi: () => agentApi }),
+        eventBus,
+      })
+      store.createTask('task-1', makeTaskConfig({ notifyOn: [] }), 1000)
+
+      // The local run starts first (T2's cross-window dedup would reject a
+      // manual run while a RUNNING row already exists), then the OTHER
+      // window's run row appears in the shared store — with no local queue
+      // or AbortController state.
+      const result = scheduler.executeTaskNow('task-1')
+      if (result.outcome !== 'started') throw new Error('unreachable')
+      await flushPromises()
+      store.insertRun(
+        toTaskRunInsert({
+          runId: 'run-remote',
+          taskId: 'task-1',
+          batchId: 'batch-remote',
+          attempt: 1,
+          triggeredBy: 'schedule',
+          scheduledFor: Date.now(),
+          status: TaskRunStatus.RUNNING,
+        }),
+      )
+
+      scheduler.deleteTask('task-1')
+
+      expect(store.getTask('task-1')).toBeNull()
+      expect(store.getRun(result.runId)?.status).toBe(TaskRunStatus.CANCELLED)
+      // RED on the pre-fix-round-1 behavior: the remote run was not in
+      // keepRunIds, so its row was deleted and could never settle as
+      // cancelled — the original T1 bug in the two-window scenario.
+      expect(store.getRun('run-remote')?.status).toBe(TaskRunStatus.CANCELLED)
+
+      // Both runs "settle" afterwards; the CANCELLED rows keep the success
+      // paths silent.
+      resolveRun({ conversationId: 'conv-1', text: 'done', status: 'completed' })
+      await flushPromises()
+      expect(store.getRun(result.runId)?.status).toBe(TaskRunStatus.CANCELLED)
+      expect(store.getRun('run-remote')?.status).toBe(TaskRunStatus.CANCELLED)
+
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  it('T2: executeTaskNow rejects when another window is already running the task (shared-store dedup)', () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const scheduler = new ScheduledTaskScheduler({
+        store,
+        executor: new TaskExecutor({
+          getAgentApi: () => makeDeferredAgentApi().agentApi,
+        }),
+        eventBus: new TaskEventBus(),
+      })
+      store.createTask('task-1', makeTaskConfig(), 1000)
+      // Simulate the OTHER window: its run row is RUNNING in the shared store
+      // while this window's queue knows nothing about it.
+      store.insertRun(
+        toTaskRunInsert({
+          runId: 'run-remote',
+          taskId: 'task-1',
+          batchId: 'batch-remote',
+          attempt: 1,
+          triggeredBy: 'manual',
+          scheduledFor: Date.now(),
+          status: TaskRunStatus.RUNNING,
+        }),
+      )
+
+      expect(scheduler.executeTaskNow('task-1')).toEqual({
+        outcome: 'rejected',
+        reason: 'already_queued',
+      })
+      expect(scheduler.getPendingTasks()).toHaveLength(0)
+
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  it('T2: cancelTaskRun marks a cross-window run CANCELLED in the shared store without a local controller', () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const scheduler = new ScheduledTaskScheduler({
+        store,
+        executor: new TaskExecutor({
+          getAgentApi: () => makeDeferredAgentApi().agentApi,
+        }),
+        eventBus: new TaskEventBus(),
+      })
+      store.createTask('task-1', makeTaskConfig(), 1000)
+      store.insertRun(
+        toTaskRunInsert({
+          runId: 'run-remote',
+          taskId: 'task-1',
+          batchId: 'batch-remote',
+          attempt: 1,
+          triggeredBy: 'schedule',
+          scheduledFor: Date.now(),
+          status: TaskRunStatus.RUNNING,
+        }),
+      )
+
+      scheduler.cancelTaskRun('run-remote')
+
+      // RED on the old behavior: no local AbortController → silent no-op and
+      // the run stayed RUNNING.
+      expect(store.getRun('run-remote')?.status).toBe(TaskRunStatus.CANCELLED)
+      // Terminal runs are not overwritten.
+      store.insertRun(
+        toTaskRunInsert({
+          runId: 'run-done',
+          taskId: 'task-1',
+          batchId: 'batch-done',
+          attempt: 1,
+          triggeredBy: 'schedule',
+          scheduledFor: Date.now(),
+          status: TaskRunStatus.COMPLETED,
+          startedAt: 1000,
+          completedAt: 2000,
+        }),
+      )
+      scheduler.cancelTaskRun('run-done')
+      expect(store.getRun('run-done')?.status).toBe(TaskRunStatus.COMPLETED)
+
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  it('T3: a timezone-only patch recomputes nextRunTime', () => {
+    const dir = makeTempDir()
+    const fixedNow = 1_800_000_000_000
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(fixedNow)
+    try {
+      const store = createScheduledTasksStore(dir)
+      const scheduler = new ScheduledTaskScheduler({
+        store,
+        executor: new TaskExecutor({
+          getAgentApi: () => makeDeferredAgentApi().agentApi,
+        }),
+        eventBus: new TaskEventBus(),
+      })
+      const created = scheduler.createTask(
+        makeTaskConfig({
+          scheduleType: 'cron',
+          cronExpression: '0 9 * * *',
+          intervalSeconds: null,
+          timezone: 'America/New_York',
+        }),
+      )
+      const before = created.nextRunTime
+      expect(before).not.toBeNull()
+
+      scheduler.updateTask(created.id, { timezone: 'Asia/Shanghai' })
+
+      // RED on the old behavior: scheduleFieldsChanged did not include
+      // timezone, so nextRunTime was left at the New York computation.
+      const after = store.getTask(created.id)?.nextRunTime
+      expect(after).not.toBeNull()
+      expect(after).not.toBe(before)
+      expect(after).toBe(parseCronNextTime('0 9 * * *', fixedNow, 'Asia/Shanghai'))
+
+      store.close()
+    } finally {
+      nowSpy.mockRestore()
       cleanup(dir)
     }
   })

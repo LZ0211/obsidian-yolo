@@ -161,7 +161,7 @@ describe('YoloPlugin CLI runtime lifecycle', () => {
     expect(plugin.getCliRuntimeCoordinator()).resolves.toBeNull()
   })
 
-  it('starts coordinator disposal from the plugin unload hook', () => {
+  it('starts coordinator disposal from the plugin unload hook', async () => {
     const plugin = createPlugin()
     const stopAfterCoordinatorCleanup = new Error('stop after CLI cleanup')
     const disposeCliRuntimeCoordinator = jest.fn(() => {
@@ -169,11 +169,13 @@ describe('YoloPlugin CLI runtime lifecycle', () => {
     })
     plugin.disposeCliRuntimeCoordinator = disposeCliRuntimeCoordinator
 
-    expect(() =>
+    // F12：onunload 改 async（内部 await web server stop），同步抛错契约
+    // 变为 rejected promise 契约。
+    await expect(
       YoloPlugin.prototype.onunload.call(
         plugin as unknown as InstanceType<typeof YoloPlugin>,
       ),
-    ).toThrow(stopAfterCoordinatorCleanup)
+    ).rejects.toThrow(stopAfterCoordinatorCleanup)
 
     expect(plugin.isUnloaded).toBe(true)
     expect(disposeCliRuntimeCoordinator).toHaveBeenCalledTimes(1)

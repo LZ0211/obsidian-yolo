@@ -656,6 +656,55 @@ describe('VectorManager.reconcile', () => {
     expect(ragStore.replaceFile).toHaveBeenCalledTimes(1)
   })
 
+  it('with VectorStore, whole-file permanent failure writes an empty file write that advances mtime, so the next reconcile skips the file', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(new Map())
+    const { manager } = createVectorStoreManager(ragStore, [
+      { path: 'notes/a.md', mtime: 100, content: 'alpha' },
+    ])
+    ;(embeddingModel as unknown as { getEmbedding: jest.Mock }).getEmbedding =
+      jest
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error('bad request'), { status: 400 }),
+        )
+
+    await expect(
+      manager.reconcile(embeddingModel, baseConfig, { scope: { kind: 'all' } }),
+    ).resolves.toEqual({
+      permanentFailedPaths: ['notes/a.md'],
+      chunkifyFailedPaths: [],
+    })
+
+    // Even with zero embedded chunks the write is enqueued: `replaceFile`
+    // advances the stored mtime so the incremental diff skips the file on
+    // later reconciles instead of re-embedding the doomed chunks.
+    expect(ragStore.replaceFile).toHaveBeenCalledTimes(1)
+    const [, fileWrite] = ragStore.replaceFile.mock.calls[0]
+    expect(fileWrite.path).toBe('notes/a.md')
+    expect(fileWrite.mtime).toBe(100)
+    expect(fileWrite.chunks).toEqual([])
+
+    // Simulate the DB having applied the write: the file now reports the new
+    // mtime, so the second reconcile must NOT re-embed it (and must not write
+    // again).
+    ragStore.getIndexedFiles.mockResolvedValue(
+      new Map([['notes/a.md', { mtime: 100, contentHash: 'hash' }]]),
+    )
+    ragStore.getFileReadiness.mockResolvedValue(
+      new Map([['notes/a.md', { path: 'notes/a.md', vectorReady: false }]]),
+    )
+    const embedSpy = (
+      embeddingModel as unknown as { getEmbedding: jest.Mock }
+    ).getEmbedding
+    embedSpy.mockClear()
+    await manager.reconcile(embeddingModel, baseConfig, {
+      scope: { kind: 'all' },
+    })
+    expect(embedSpy).not.toHaveBeenCalled()
+    expect(ragStore.replaceFile).toHaveBeenCalledTimes(1)
+  })
+
   it('with VectorStore, truncate calls clearNamespace', async () => {
     const ragStore = fakeVectorStore()
     ragStore.getIndexedFiles.mockResolvedValue(new Map())

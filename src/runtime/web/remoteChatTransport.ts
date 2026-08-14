@@ -16,19 +16,21 @@ const readSessionId = (): string | null => {
  * Web 端契约 ChatRuntime 的 RemoteTransport（Phase B Step 4 地基）。
  *
  * 与 WebApiClient 共用同一个 localStorage 会话 id（x-yolo-web-session-id），
- * 事件流走 EventSource、命令走 fetch，全部指向 `/api/chat-runtime/*` 端点。
+ * 事件流与命令都走 fetch（可携带 header），全部指向 `/api/chat-runtime/*`。
+ *
+ * E1：事件流不再用 EventSource——EventSource 无法设置请求头，非回环 host 下
+ * WebHttpServer.isAuthorizedRequest 要求 Bearer/session header，EventSource
+ * 打开的事件流必然 401 且无限重连。fetch + ReadableStream 逐帧解析 SSE，
+ * 断线/流结束派发 error 事件，由 RemoteChatRuntimeAdapter 以退避重连。
  */
 export const createWebRemoteTransport = ({
   baseUrl,
   sessionId = readSessionId(),
   fetchImpl = (...args) => fetch(...args),
-  EventSourceImpl = globalThis.EventSource,
 }: {
   baseUrl: string
   sessionId?: string | null
   fetchImpl?: typeof fetch
-  /** 事件流构造器；Node 测试环境无全局 EventSource 时注入。 */
-  EventSourceImpl?: typeof EventSource | undefined
 }): RemoteTransport => {
   const origin = baseUrl.replace(/\/+$/, '')
   const headers: Record<string, string> = sessionId
@@ -36,19 +38,7 @@ export const createWebRemoteTransport = ({
     : {}
 
   return {
-    open: (url) => {
-      if (!EventSourceImpl) {
-        throw new Error('EventSource is not available in this environment')
-      }
-      const source = new EventSourceImpl(`${origin}${url}`)
-      return {
-        addEventListener: (type, handler) =>
-          source.addEventListener(type, handler),
-        removeEventListener: (type, handler) =>
-          source.removeEventListener(type, handler),
-        close: () => source.close(),
-      }
-    },
+    open: (url) => createFetchSseSource({ url: `${origin}${url}`, headers, fetchImpl }),
     post: async (path, body) => {
       const response = await fetchImpl(`${origin}${path}`, {
         method: 'POST',
@@ -63,6 +53,102 @@ export const createWebRemoteTransport = ({
     get: async (path) => {
       const response = await fetchImpl(`${origin}${path}`, { headers })
       return { ok: response.ok, json: () => response.json() }
+    },
+  }
+}
+
+type SseSource = ReturnType<RemoteTransport['open']>
+
+const parseSseFrameData = (frame: string): string | null => {
+  const dataLines = frame
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trimStart())
+  return dataLines.length > 0 ? dataLines.join('\n') : null
+}
+
+/**
+ * EventSource-compatible SSE client built on fetch so the session header
+ * reaches the stream endpoint. Dispatches `message` events with the parsed
+ * `data:` payload and an `error` event on fetch failure or stream end — the
+ * adapter treats `error` as "reconnect with backoff".
+ */
+function createFetchSseSource({
+  url,
+  headers,
+  fetchImpl,
+}: {
+  url: string
+  headers: Record<string, string>
+  fetchImpl: typeof fetch
+}): SseSource {
+  const messageListeners = new Set<(event: MessageEvent) => void>()
+  const errorListeners = new Set<(event: Event) => void>()
+  const abortController = new AbortController()
+  let closed = false
+
+  const dispatchError = (): void => {
+    for (const listener of [...errorListeners]) {
+      listener(new Event('error'))
+    }
+  }
+
+  const run = async (): Promise<void> => {
+    try {
+      const response = await fetchImpl(url, {
+        method: 'GET',
+        headers: { Accept: 'text/event-stream', ...headers },
+        signal: abortController.signal,
+      })
+      if (!response.ok || !response.body) {
+        throw new Error(`SSE stream failed with ${response.status}`)
+      }
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (!closed) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let boundary = buffer.indexOf('\n\n')
+        while (boundary >= 0) {
+          const frame = buffer.slice(0, boundary)
+          buffer = buffer.slice(boundary + 2)
+          const data = parseSseFrameData(frame)
+          if (data !== null) {
+            for (const listener of [...messageListeners]) {
+              listener(new MessageEvent('message', { data }))
+            }
+          }
+          boundary = buffer.indexOf('\n\n')
+        }
+      }
+      if (!closed) dispatchError()
+    } catch {
+      if (!closed) dispatchError()
+    }
+  }
+
+  void run()
+
+  return {
+    addEventListener: (type, handler) => {
+      if (type === 'message') {
+        messageListeners.add(handler as (event: MessageEvent) => void)
+      } else if (type === 'error') {
+        errorListeners.add(handler as (event: Event) => void)
+      }
+    },
+    removeEventListener: (type, handler) => {
+      if (type === 'message') {
+        messageListeners.delete(handler as (event: MessageEvent) => void)
+      } else if (type === 'error') {
+        errorListeners.delete(handler as (event: Event) => void)
+      }
+    },
+    close: () => {
+      closed = true
+      abortController.abort()
     },
   }
 }

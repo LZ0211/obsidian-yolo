@@ -24,6 +24,13 @@ export const DELEGATE_SUBAGENT_TOOL_SHORT_NAME = 'delegate_subagent'
 export const SUBAGENT_BLOCKED_TOOL_SHORT_NAMES: readonly string[] = [
   DELEGATE_SUBAGENT_TOOL_SHORT_NAME,
   'ask_user_question',
+  // Parent-only persistent project / scheduled-task state. Children must never
+  // bind or mutate project or task state; the parent composes task context
+  // into their prompt instead (backup `subagent/constants.ts` deny-list
+  // parity — `project_ops` was listed there; `scheduled_task_ops` is the
+  // post-rollback consolidated task tool with the same parent-only posture).
+  'project_ops',
+  'scheduled_task_ops',
 ]
 
 export const SUBAGENT_BLOCKED_TOOL_NAMES: readonly string[] =

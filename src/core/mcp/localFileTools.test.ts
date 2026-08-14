@@ -92,6 +92,7 @@ import {
   isLocalFsWriteToolName,
   parseLocalFsActionFromToolArgs,
   recoverLikelyEscapedBackslashSequences,
+  workspacePolicyToUpstreamScope,
 } from './localFileTools'
 
 afterEach(() => {
@@ -99,6 +100,53 @@ afterEach(() => {
   ;(runSubagent as jest.Mock).mockClear()
   ;(searchFilesByMetadataDsl as jest.Mock).mockClear()
   setRuntimeComponentAcquirerForTests(null)
+})
+
+describe('workspacePolicyToUpstreamScope', () => {
+  it('folds protectedPaths into the scope exclude (M4 regression: bash layer never saw them)', () => {
+    // RED before M4: only readExcludes were folded, so a whole-vault
+    // workspaceRoot agent could reach plugin-private data through the bash
+    // tool (e.g. `cat YOLO/sessions.sqlite`) while the fs tools rejected it.
+    const scope = workspacePolicyToUpstreamScope({
+      enabled: true,
+      // Whole-vault roots are stored normalized (empty string) — see
+      // normalizeWorkspacePath.
+      workspaceRoot: '',
+      readExtraIncludes: [],
+      readExcludes: ['private/excluded.md'],
+      writeExcludes: [],
+      protectedPaths: [
+        { kind: 'exact', path: 'YOLO/sessions.sqlite' },
+        { kind: 'prefix', path: 'YOLO/data' },
+        { kind: 'namePrefix', dir: 'YOLO', name: '.yolo_vector_db' },
+      ],
+    })
+
+    expect(scope).toEqual({
+      enabled: true,
+      // Empty include + exclude-first matching = whole vault minus the
+      // protected paths (see `isPathAllowedByScope`).
+      include: [],
+      exclude: [
+        'private/excluded.md',
+        'YOLO/sessions.sqlite',
+        'YOLO/data',
+        'YOLO/.yolo_vector_db',
+      ],
+    })
+  })
+
+  it('returns undefined for a disabled policy', () => {
+    expect(
+      workspacePolicyToUpstreamScope({
+        enabled: false,
+        workspaceRoot: '/',
+        readExtraIncludes: [],
+        readExcludes: [],
+        writeExcludes: [],
+      }),
+    ).toBeUndefined()
+  })
 })
 
 describe('recoverLikelyEscapedBackslashSequences', () => {

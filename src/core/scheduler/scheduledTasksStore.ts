@@ -139,11 +139,9 @@ export type TaskRun = {
   catchUpRunAt: number | null
 
   attempt: number
-  parentRunId: string | null
   batchId: string
 
   conversationId: string | null
-  messagesCount: number | null
 
   output: string | null
   exitCode: number | null
@@ -179,8 +177,6 @@ export type TaskRunRuntimeState = {
   output?: string
   exitCode?: number
   conversationId?: string
-  messagesCount?: number
-  parentRunId?: string
   catchUpRunAt?: number
   logs?: TaskRunLogEntry[]
 }
@@ -202,10 +198,8 @@ export function toTaskRunInsert(state: TaskRunRuntimeState): TaskRunInsert {
         ? state.completedAt - state.startedAt
         : null,
     attempt: state.attempt,
-    parentRunId: state.parentRunId ?? null,
     batchId: state.batchId,
     conversationId: state.conversationId ?? null,
-    messagesCount: state.messagesCount ?? null,
     output: state.output ?? null,
     exitCode: state.exitCode ?? null,
     catchUpRunAt: state.catchUpRunAt ?? null,
@@ -254,10 +248,8 @@ type TaskRunDbRow = {
   completed_at: number | null
   duration_ms: number | null
   attempt: number
-  parent_run_id: string | null
   batch_id: string
   conversation_id: string | null
-  messages_count: number | null
   output: string | null
   exit_code: number | null
   catch_up_run_at: number | null
@@ -301,9 +293,16 @@ const CREATE_SCHEMA_SQL = `
     last_error text
   );
 
+  -- on delete set null (NOT cascade): deleting a task must not silently
+  -- destroy its RUNNING run row while the run is still executing — the run
+  -- would keep running, write to a deleted row (0-row updates) and emit a
+  -- false-success notice. The scheduler cancels in-flight runs first; the
+  -- store deletes the remaining run rows explicitly (see deleteTask), and
+  -- the cancelled in-flight rows the scheduler asks to keep survive the task
+  -- deletion with task_id nulled by the FK.
   create table if not exists task_runs (
     id text primary key,
-    task_id text not null references scheduled_tasks(id) on delete cascade,
+    task_id text references scheduled_tasks(id) on delete set null,
 
     status text not null check (
       status in ('pending', 'running', 'completed', 'failed', 'cancelled', 'timed_out')
@@ -320,11 +319,9 @@ const CREATE_SCHEMA_SQL = `
     duration_ms integer,
 
     attempt integer not null default 1,
-    parent_run_id text,
     batch_id text not null,
 
     conversation_id text,
-    messages_count integer,
 
     output text,
     exit_code integer,
@@ -375,6 +372,7 @@ export class ScheduledTasksStore {
       // Existing databases already have the additive column.
     }
     this.migrateTaskTypeConstraint()
+    this.migrateTaskRunsTable()
   }
 
   /**
@@ -480,6 +478,102 @@ export class ScheduledTasksStore {
         )
         this.db.exec(
           'create index if not exists idx_scheduled_tasks_queue_group on scheduled_tasks(queue_group)',
+        )
+      })
+    } finally {
+      this.db.exec('pragma foreign_keys = on;')
+    }
+  }
+
+  /**
+   * Rebuilds the `task_runs` table for databases created before the T1
+   * fix-batch: (1) the FK was `on delete cascade`, which silently destroyed a
+   * RUNNING run row when its task was deleted — the run kept executing and
+   * emitted a false-success notice; it must be `on delete set null` so the
+   * scheduler can cancel in-flight runs and their records survive the task
+   * deletion. (2) the `parent_run_id` / `messages_count` columns were never
+   * written by any code path and are dropped in the same rebuild.
+   *
+   * Same FK-safe rebuild pattern as migrateTaskTypeConstraint: FK enforcement
+   * is suspended around the rebuild (it cannot be toggled inside a
+   * transaction), a new table is created under a distinct name, data is
+   * copied, the OLD table is dropped, and only then is the new one renamed
+   * into place — renaming the old table out of the way first would make
+   * SQLite rewrite its FK references and leave dangling constraints. Indexes
+   * are dropped with the old table and re-created explicitly on the new one.
+   *
+   * Runs only when the existing table SQL still carries the old
+   * `on delete cascade` FK; databases created from CREATE_SCHEMA_SQL are
+   * skipped. The rebuild is transactional.
+   */
+  private migrateTaskRunsTable(): void {
+    const row = this.db.queryOne<{ sql: string | null }>(
+      "select sql from sqlite_master where type = 'table' and name = 'task_runs'",
+    )
+    const tableSql = row?.sql ?? ''
+    if (!tableSql.includes('on delete cascade')) return
+    this.db.exec('pragma foreign_keys = off;')
+    try {
+      this.db.transaction(() => {
+        this.db.exec(`
+          create table task_runs_new (
+            id text primary key,
+            task_id text references scheduled_tasks(id) on delete set null,
+
+            status text not null check (
+              status in ('pending', 'running', 'completed', 'failed', 'cancelled', 'timed_out')
+            ),
+            result text,
+            error text,
+
+            scheduled_for integer not null,
+            triggered_by text not null default 'schedule' check (
+              triggered_by in ('schedule', 'manual', 'agent', 'retry')
+            ),
+            started_at integer,
+            completed_at integer,
+            duration_ms integer,
+
+            attempt integer not null default 1,
+            batch_id text not null,
+
+            conversation_id text,
+
+            output text,
+            exit_code integer,
+
+            catch_up_run_at integer,
+            logs text
+          )
+        `)
+        this.db.exec(`
+          insert into task_runs_new (
+            id, task_id, status, result, error,
+            scheduled_for, triggered_by, started_at, completed_at, duration_ms,
+            attempt, batch_id,
+            conversation_id,
+            output, exit_code, catch_up_run_at, logs
+          )
+          select
+            id, task_id, status, result, error,
+            scheduled_for, triggered_by, started_at, completed_at, duration_ms,
+            attempt, batch_id,
+            conversation_id,
+            output, exit_code, catch_up_run_at, logs
+          from task_runs
+        `)
+        this.db.exec('drop table task_runs')
+        this.db.exec('alter table task_runs_new rename to task_runs')
+        // The old indexes were dropped with the old table; re-create them on
+        // the rebuilt table (names are free again now).
+        this.db.exec(
+          'create index if not exists idx_task_runs_task_started on task_runs(task_id, started_at)',
+        )
+        this.db.exec(
+          'create index if not exists idx_task_runs_batch on task_runs(batch_id)',
+        )
+        this.db.exec(
+          'create index if not exists idx_task_runs_status on task_runs(status)',
         )
       })
     } finally {
@@ -650,7 +744,26 @@ export class ScheduledTasksStore {
     return rows.map(fromTaskDbRow)
   }
 
-  deleteTask(id: string): void {
+  /**
+   * Deletes a task. The FK is `on delete set null` (not cascade), so run rows
+   * are deleted here explicitly rather than by cascade — except
+   * `keepRunIds`, which the scheduler passes for in-flight runs it has
+   * already cancelled: those terminal CANCELLED records survive the task
+   * deletion for audit (their task_id is nulled by the FK), so deleting an
+   * executing task cannot lose the run record or let the run complete with a
+   * false-success notice.
+   */
+  deleteTask(id: string, options: { keepRunIds?: string[] } = {}): void {
+    const keepRunIds = options.keepRunIds ?? []
+    if (keepRunIds.length > 0) {
+      const placeholders = keepRunIds.map(() => '?').join(', ')
+      this.db.exec(
+        `delete from task_runs where task_id = ? and id not in (${placeholders})`,
+        [id, ...keepRunIds],
+      )
+    } else {
+      this.db.exec('delete from task_runs where task_id = ?', [id])
+    }
     this.db.exec('delete from scheduled_tasks where id = ?', [id])
   }
 
@@ -660,14 +773,14 @@ export class ScheduledTasksStore {
         insert into task_runs (
           id, task_id, status, result, error,
           scheduled_for, triggered_by, started_at, completed_at, duration_ms,
-          attempt, parent_run_id, batch_id,
-          conversation_id, messages_count,
+          attempt, batch_id,
+          conversation_id,
           output, exit_code, catch_up_run_at, logs
         ) values (
           ?, ?, ?, ?, ?,
           ?, ?, ?, ?, ?,
-          ?, ?, ?,
           ?, ?,
+          ?,
           ?, ?, ?, ?
         )
       `,
@@ -683,10 +796,8 @@ export class ScheduledTasksStore {
         run.completedAt,
         run.durationMs,
         run.attempt,
-        run.parentRunId,
         run.batchId,
         run.conversationId,
-        run.messagesCount,
         run.output,
         run.exitCode,
         run.catchUpRunAt,
@@ -717,13 +828,9 @@ export class ScheduledTasksStore {
     if (patch.durationMs !== undefined)
       setColumn('duration_ms', patch.durationMs)
     if (patch.attempt !== undefined) setColumn('attempt', patch.attempt)
-    if (patch.parentRunId !== undefined)
-      setColumn('parent_run_id', patch.parentRunId)
     if (patch.batchId !== undefined) setColumn('batch_id', patch.batchId)
     if (patch.conversationId !== undefined)
       setColumn('conversation_id', patch.conversationId)
-    if (patch.messagesCount !== undefined)
-      setColumn('messages_count', patch.messagesCount)
     if (patch.output !== undefined) setColumn('output', patch.output)
     if (patch.exitCode !== undefined) setColumn('exit_code', patch.exitCode)
     if (patch.catchUpRunAt !== undefined)
@@ -836,14 +943,6 @@ export class ScheduledTasksStore {
     return { runs: rows.map(fromRunDbRow), total: totalRow?.count ?? 0 }
   }
 
-  listRunsByBatch(batchId: string): TaskRun[] {
-    const rows = this.db.query<TaskRunDbRow>(
-      'select * from task_runs where batch_id = ? order by started_at asc',
-      [batchId],
-    )
-    return rows.map(fromRunDbRow)
-  }
-
   /** Used at startup to find runs left behind in RUNNING state by a previous crash/force-quit (see ScheduledTasksService.recoverOrphanedRuns). */
   listRunningRuns(): TaskRun[] {
     const rows = this.db.query<TaskRunDbRow>(
@@ -851,10 +950,6 @@ export class ScheduledTasksStore {
       [TaskRunStatus.RUNNING],
     )
     return rows.map(fromRunDbRow)
-  }
-
-  deleteRunsByTask(taskId: string): void {
-    this.db.exec('delete from task_runs where task_id = ?', [taskId])
   }
 
   /**
@@ -975,10 +1070,8 @@ function fromRunDbRow(row: TaskRunDbRow): TaskRun {
     completedAt: row.completed_at,
     durationMs: row.duration_ms,
     attempt: row.attempt,
-    parentRunId: row.parent_run_id,
     batchId: row.batch_id,
     conversationId: row.conversation_id,
-    messagesCount: row.messages_count,
     output: row.output,
     exitCode: row.exit_code,
     catchUpRunAt: row.catch_up_run_at,

@@ -3,6 +3,7 @@ import type { WorkspaceAgent } from '../../settings/schema/setting.types'
 
 import {
   getUnifiedAgentList,
+  resolveActiveAssistant,
   resolveWorkspaceAgentAssistant,
   toWorkspaceAccessPolicy,
 } from './workspaceAgentResolver'
@@ -86,7 +87,7 @@ describe('workspaceAgentResolver', () => {
     ).toBeNull()
   })
 
-  it('merges templates and workspace agents into the unified list', () => {
+  it('hides a template covered by a workspace agent (single entry per runnable agent)', () => {
     const settings = {
       assistants: [template],
       workspaceAgents: [agent],
@@ -94,9 +95,36 @@ describe('workspaceAgentResolver', () => {
 
     const unified = getUnifiedAgentList(settings)
 
-    expect(unified).toHaveLength(2)
-    expect(unified[0]!.id).toBe('template-1')
-    expect(unified[1]!.id).toBe('wa-1')
+    expect(unified).toHaveLength(1)
+    expect(unified[0]?.id).toBe('wa-1')
+  })
+
+  it('keeps templates not covered by any workspace agent', () => {
+    const standaloneTemplate = { ...template, id: 'template-2' }
+    const settings = {
+      assistants: [template, standaloneTemplate],
+      workspaceAgents: [agent],
+    } as never
+
+    const unified = getUnifiedAgentList(settings)
+
+    expect(unified.map((a) => a.id)).toEqual(['template-2', 'wa-1'])
+  })
+
+  it('keeps the default assistant template visible even when a workspace agent covers it', () => {
+    const defaultTemplate = { ...template, id: '__default_agent__' }
+    const coveringAgent = { ...agent, templateId: '__default_agent__' }
+    const settings = {
+      assistants: [defaultTemplate],
+      workspaceAgents: [coveringAgent],
+    } as never
+
+    const unified = getUnifiedAgentList(settings)
+
+    expect(unified.map((a) => a.id)).toEqual([
+      '__default_agent__',
+      coveringAgent.id,
+    ])
   })
 
   it('maps the workspace policy to a workspace access policy', () => {
@@ -107,5 +135,67 @@ describe('workspaceAgentResolver', () => {
       readExcludes: ['04-专利/secret'],
       writeExcludes: ['04-专利/archive'],
     })
+  })
+
+  it('resolves a workspace agent id to the merged assistant', () => {
+    const settings = {
+      assistants: [template],
+      workspaceAgents: [agent],
+    } as never
+
+    const resolved = resolveActiveAssistant(settings, {
+      assistantId: 'wa-1',
+    })
+
+    expect(resolved?.id).toBe('wa-1')
+    expect(resolved?.workspaceAccessPolicy?.workspaceRoot).toBe('04-专利')
+  })
+
+  it('falls back to the default assistant when the workspace agent is orphaned (template deleted)', () => {
+    const defaultTemplate = { ...template, id: '__default_agent__' }
+    const orphanedAgent = {
+      ...agent,
+      id: 'wa-orphaned',
+      templateId: 'deleted-template',
+    }
+    const settings = {
+      assistants: [template, defaultTemplate],
+      workspaceAgents: [orphanedAgent],
+    } as never
+
+    const resolved = resolveActiveAssistant(settings, {
+      assistantId: 'wa-orphaned',
+    })
+
+    expect(resolved).not.toBeNull()
+    expect(resolved!.id).toBe('__default_agent__')
+  })
+
+  it('falls back to the default assistant when the id matches nothing', () => {
+    const defaultTemplate = { ...template, id: '__default_agent__' }
+    const settings = {
+      assistants: [template, defaultTemplate],
+      workspaceAgents: [agent],
+    } as never
+
+    const resolved = resolveActiveAssistant(settings, {
+      assistantId: 'does-not-exist',
+    })
+
+    expect(resolved).not.toBeNull()
+    expect(resolved!.id).toBe('__default_agent__')
+  })
+
+  it('resolves a plain template id directly', () => {
+    const settings = {
+      assistants: [template],
+      workspaceAgents: [],
+    } as never
+
+    const resolved = resolveActiveAssistant(settings, {
+      assistantId: 'template-1',
+    })
+
+    expect(resolved?.id).toBe('template-1')
   })
 })

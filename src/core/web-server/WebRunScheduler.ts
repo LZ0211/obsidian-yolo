@@ -24,6 +24,12 @@ export type WebRunSchedulerInput = {
 export type WebRunSchedulerOptions = {
   maxConcurrent: number
   now?: () => number
+  /**
+   * 终态条目保留时长（E4）。完成后条目仍在 entries 里供 run 状态轮询，
+   * 超过 TTL 后在下次 getRun/enqueue 时惰性清理——避免永久驻留。
+   * 默认 10 分钟。
+   */
+  finishedEntryTtlMs?: number
 }
 
 type ScheduledEntry = WebScheduledRun & WebRunSchedulerInput
@@ -33,12 +39,14 @@ export class WebRunScheduler {
   private readonly entries = new Map<string, ScheduledEntry>()
   private readonly queuedRunIds: string[] = []
   private readonly activeConversationIds = new Set<string>()
+  private readonly finishedEntryTtlMs: number
   private maxConcurrent: number
   private activeCount = 0
 
   constructor(private readonly options: WebRunSchedulerOptions) {
     this.assertMaxConcurrent(options.maxConcurrent)
     this.maxConcurrent = options.maxConcurrent
+    this.finishedEntryTtlMs = options.finishedEntryTtlMs ?? 10 * 60 * 1000
     this.now = options.now ?? (() => Date.now())
   }
 
@@ -49,6 +57,7 @@ export class WebRunScheduler {
   }
 
   enqueue(input: WebRunSchedulerInput): WebScheduledRun {
+    this.sweepExpired()
     if (this.entries.has(input.runId)) {
       throw new Error(`Run already exists: ${input.runId}`)
     }
@@ -86,8 +95,27 @@ export class WebRunScheduler {
   }
 
   getRun(runId: string): WebScheduledRun | null {
+    this.sweepExpired()
     const entry = this.entries.get(runId)
     return entry ? this.toRun(entry) : null
+  }
+
+  /**
+   * 移除超过保留 TTL 的终态条目（E4）。惰性调用（enqueue/getRun），
+   * 返回清理条数。
+   */
+  sweepExpired(now: number = this.now()): number {
+    let removed = 0
+    for (const [runId, entry] of [...this.entries]) {
+      if (
+        entry.finishedAtMs != null &&
+        now - entry.finishedAtMs > this.finishedEntryTtlMs
+      ) {
+        this.entries.delete(runId)
+        removed += 1
+      }
+    }
+    return removed
   }
 
   getActiveCount(): number {

@@ -91,7 +91,10 @@ export type ReconcileOptions = {
  *
  * - `permanentFailedPaths`: files whose embedding failed permanently (e.g. 400
  *   bad request). Their successful chunks are kept; they are NOT retried
- *   automatically → need user intervention.
+ *   automatically → need user intervention. In both partial and whole-file
+ *   failure the file's mtime is advanced in the store (via `replaceFile`), so
+ *   the incremental diff skips it on later reconciles instead of re-embedding
+ *   doomed chunks on every run.
  * - `chunkifyFailedPaths`: files that failed to chunkify (e.g. transient I/O).
  *   Excluded from the diff, old index preserved, mtime not advanced → self-heals
  *   on the next reconcile.
@@ -729,12 +732,15 @@ export class VectorManager {
         if (permanentFailed) {
           permanentFailedPaths.push(file.path)
         }
-        if (fileWrite.chunks.length === 0) {
-          // Nothing was embedded (whole-file permanent failure): keep the old
-          // indexed rows instead of replacing the file with an empty write
-          // (which would erase previously indexed content).
-          return
-        }
+        // Whole-file permanent failure (`chunks` is empty) still enqueues the
+        // write: `replaceFile` advances the file's recorded mtime so the
+        // incremental diff skips it on later reconciles. Without this the DB
+        // mtime never moves, every reconcile re-embeds the same doomed chunks
+        // (wasted API calls) and the file keeps surfacing as `currentFile`.
+        // Per the ReconcileResult contract, permanent failures are NOT retried
+        // automatically → need user intervention (fix the model config, then
+        // rebuild). Partial failures behave identically: failed chunks are
+        // dropped, successful chunks and the new mtime are written.
         await enqueueWrite(fileWrite, permanentFailed)
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') {

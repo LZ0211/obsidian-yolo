@@ -19,6 +19,11 @@ export type WebServerLifecycleOptions<
   getSettings: () => TSettings
   saveSettings?: (settings: TSettings) => Promise<void> | void
   createServer?: (settings: WebRuntimeSettings) => WebHttpServer
+  /**
+   * 每次 server 停止/重启后调用：释放跨请求缓存的资源（chat-runtime 实例
+   * 缓存、SSE 重放缓冲等），避免旧 server 的订阅驻留在新实例上。
+   */
+  onStop?: () => Promise<void> | void
 }
 
 export class WebServerLifecycle<TSettings extends WebRuntimeSettingsHolder> {
@@ -92,6 +97,7 @@ export class WebServerLifecycle<TSettings extends WebRuntimeSettingsHolder> {
     if (server != null) {
       await server.close()
     }
+    await this.options.onStop?.()
   }
 
   get isRunning(): boolean {

@@ -9,6 +9,7 @@ import {
   type ScheduledTask,
   type ScheduledTasksStore,
   type TaskConfig,
+  type TaskRun,
   type TaskRunLogEntry,
   type TaskRunRuntimeState,
   TaskRunStatus,
@@ -338,6 +339,9 @@ export class ScheduledTaskScheduler {
         'cronExpression',
         'intervalSeconds',
         'oneTimeDateTime',
+        // T3: a timezone change alone must also recompute nextRunTime — the
+        // same cron expression fires at a different instant in a new tz.
+        'timezone',
       ] as const
     ).some((key) => key in patch)
     if (!scheduleFieldsChanged) {
@@ -361,9 +365,38 @@ export class ScheduledTaskScheduler {
     this.deps.store.updateTask(id, { ...patch, nextRunTime }, Date.now())
   }
 
+  /**
+   * T1: deleting an executing task must not lose its run record or let the
+   * run complete afterwards with a false-success notice. In-flight runs are
+   * cancelled first (reusing the cancel path: abort + terminal CANCELLED row
+   * + task_cancelled event), and the store keeps those run rows when it
+   * removes the task — the FK is `on delete set null` (not cascade), so the
+   * CANCELLED record survives for audit instead of being cascade-deleted.
+   *
+   * fix-round-1: coverage spans ALL windows, not just this one. Another
+   * window's RUNNING row has no local AbortController, but the T2
+   * cross-window cancel path still writes its terminal CANCELLED state to
+   * the shared store and its runId must be kept — otherwise that run would
+   * settle against deleted rows (0-row updates) and still emit a
+   * false-success completion notice, the original T1 bug in the two-window
+   * scenario.
+   */
   deleteTask(id: string): void {
     this.queue.removePendingTask(id)
-    this.deps.store.deleteTask(id)
+    const cancelledRunIds = new Set<string>()
+    for (const run of this.queue.getExecutingTasks()) {
+      if (run.taskId === id) {
+        this.cancelTaskRun(run.runId)
+        cancelledRunIds.add(run.runId)
+      }
+    }
+    for (const run of this.deps.store.listRunningRuns()) {
+      if (run.taskId === id) {
+        this.cancelTaskRun(run.id)
+        cancelledRunIds.add(run.id)
+      }
+    }
+    this.deps.store.deleteTask(id, { keepRunIds: [...cancelledRunIds] })
   }
 
   toggleTask(id: string, enabled: boolean): void {
@@ -401,6 +434,13 @@ export class ScheduledTaskScheduler {
     // Already queued or executing (either from the schedule, or an earlier "run now" that
     // hasn't finished yet) — don't enqueue a second time.
     if (this.queue.isTaskQueued(taskId))
+      return { outcome: 'rejected', reason: 'already_queued' }
+    // T2: cross-window dedup. Web Locks only guard the poll loop, so a
+    // second Obsidian window's "Run now" would otherwise enqueue and execute
+    // the same task in parallel with this window's schedule. The shared store
+    // reflects another window's live run (RUNNING row), so reject here —
+    // cross-window cancel has the same window-local AbortController problem.
+    if (this.hasRunningRunInAnotherWindow(taskId))
       return { outcome: 'rejected', reason: 'already_queued' }
 
     const batchId = crypto.randomUUID()
@@ -445,10 +485,26 @@ export class ScheduledTaskScheduler {
     return { outcome: 'queued', batchId, reason }
   }
 
+  /**
+   * T2: cancellation is not only window-local. A run executing in ANOTHER
+   * window has no AbortController here, but writing the terminal CANCELLED
+   * state to the shared store is still effective: when that window's
+   * execution settles, executeQueuedTask sees the CANCELLED row and skips
+   * the success/failure emission and the retry (the run itself cannot be
+   * aborted cross-window, only re-labelled). Unknown run ids and runs that
+   * already reached a terminal state remain silent no-ops.
+   */
   cancelTaskRun(runId: string): void {
     const controller = this.runAbortControllers.get(runId)
-    if (!controller) return
-    controller.abort()
+    controller?.abort()
+    const run = this.deps.store.getRun(runId)
+    if (!run) return // unknown run id: silent no-op
+    if (
+      run.status !== TaskRunStatus.RUNNING &&
+      run.status !== TaskRunStatus.PENDING
+    ) {
+      return // already terminal — do not overwrite COMPLETED/FAILED/...
+    }
     const now = Date.now()
     this.deps.store.updateRun(runId, {
       status: TaskRunStatus.CANCELLED,
@@ -504,7 +560,25 @@ export class ScheduledTaskScheduler {
     return this.queue.getExecutingTasks()
   }
 
+  /** RUNNING runs in the shared store, including runs another Obsidian
+   * window started — the UI reads this (via the service) so the delete-task
+   * warning covers cross-window executions too (T1 fix-round-1). */
+  listRunningRuns(): TaskRun[] {
+    return this.deps.store.listRunningRuns()
+  }
+
   // ---- internals ----
+
+  /**
+   * T2: whether the shared store has a RUNNING run for `taskId` — i.e. a run
+   * is live in ANOTHER Obsidian window (this window's own live runs are
+   * already covered by `queue.isTaskQueued`). Both the manual "Run now" and
+   * the leader's schedule tick consult this so two windows never execute the
+   * same task concurrently.
+   */
+  private hasRunningRunInAnotherWindow(taskId: string): boolean {
+    return this.deps.store.listRunningRuns().some((run) => run.taskId === taskId)
+  }
 
   private checkAndEnqueueScheduledTasks(): void {
     if (this.isChecking) return // mutex: skip this round if the previous one hasn't finished, to avoid double-enqueueing
@@ -645,6 +719,9 @@ export class ScheduledTaskScheduler {
     const missedTrigger = task.nextRunTime
     if (missedTrigger == null) return // listMissedTasks guarantees non-null; re-check for TS narrowing
     if (this.queue.isTaskQueued(task.id)) return // dedup: already enqueued (e.g. by a manual run)
+    // T2: a run is live in another window — skip; it stays due and the next
+    // tick re-evaluates once that run's RUNNING row settles.
+    if (this.hasRunningRunInAnotherWindow(task.id)) return
     const catchUpAt = Date.now()
     this.queue.enqueue({
       taskId: task.id,
@@ -682,6 +759,9 @@ export class ScheduledTaskScheduler {
     // it actually finishes and is cleared from executing via markCompleted/markFailed, the
     // next tick will naturally pick it up again since nextRunTime is still "due".
     if (this.queue.isTaskQueued(task.id)) return
+    // T2: a run is live in another window (e.g. a manual run started there) —
+    // skip this tick; the run stays due and is picked up once it settles.
+    if (this.hasRunningRunInAnotherWindow(task.id)) return
 
     // Compute the next time / whether to disable before enqueueing: even if the follow-up
     // updateTask fails, the enqueue has already happened, so a "recompute failure" won't

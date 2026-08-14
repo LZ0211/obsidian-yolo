@@ -23,6 +23,9 @@ function createFakeTransport() {
         handler({ data: JSON.stringify(data) } as MessageEvent),
       )
     },
+    emitError: () => {
+      handlers.error.forEach((handler) => handler({} as MessageEvent))
+    },
   }
   return { transport, calls }
 }
@@ -149,6 +152,68 @@ describe('RemoteChatRuntimeAdapter', () => {
       info: { scope: 'provider-native' },
     })
     expect(adapter.capabilities.sessionPin).toEqual({ supported: true })
+  })
+
+  it('reconnects with exponential backoff on transport error (E1b)', async () => {
+    jest.useFakeTimers()
+    try {
+      const { transport } = createFakeTransport()
+      const opened: string[] = []
+      const adapter = new RemoteChatRuntimeAdapter(
+        'claude-code',
+        {
+          open: (url: string) => {
+            opened.push(url)
+            return transport
+          },
+          post: async () => ({ ok: true, json: async () => ({}) }),
+          get: async () => ({ ok: true, json: async () => ({}) }),
+        },
+        'conv-1',
+      )
+      adapter.subscribe(() => undefined)
+      expect(opened).toHaveLength(1)
+
+      // 第一次断线：1s 后重连（退避基数）。
+      transport.emitError()
+      expect(opened).toHaveLength(1)
+      jest.advanceTimersByTime(999)
+      expect(opened).toHaveLength(1)
+      jest.advanceTimersByTime(1)
+      expect(opened).toHaveLength(2)
+
+      // 第二次断线：2s 后重连（2^1）。
+      transport.emitError()
+      jest.advanceTimersByTime(1_999)
+      expect(opened).toHaveLength(2)
+      jest.advanceTimersByTime(1)
+      expect(opened).toHaveLength(3)
+
+      // 收到事件后退避计数复位：下一次断线从 1s 重新开始。
+      transport.emit({
+        protocolVersion: 1,
+        eventId: 'e1',
+        sequence: 1,
+        runId: 'run-1',
+        conversationId: 'conv-1',
+        sessionRef: null,
+        timestamp: 1,
+        type: 'run.state',
+        payload: { state: 'running' },
+      })
+      transport.emitError()
+      jest.advanceTimersByTime(999)
+      expect(opened).toHaveLength(3)
+      jest.advanceTimersByTime(1)
+      expect(opened).toHaveLength(4)
+
+      // 重连 URL 携带 cursor 续传。
+      expect(opened[1]).toContain('cursor=0')
+      expect(opened[3]).toContain('cursor=1')
+      adapter.dispose()
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   it('lists sessions through the sessions endpoint', async () => {

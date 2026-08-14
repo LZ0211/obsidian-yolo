@@ -315,6 +315,94 @@ describe('McpManager per-conversation tool allowance lifecycle', () => {
     expect(manager.getAllowedTools('chat-2')).toEqual([])
   })
 
+  it('consumes a one-time (approve-once) allowance on first use (M2 regression: once grants were permanent)', () => {
+    const manager = createManager()
+
+    manager.allowToolForConversation(
+      'yolo_local__fs_write',
+      'chat-1',
+      { path: 'A.md', content: 'x' },
+      { oneTime: true },
+    )
+
+    // The one-time grant covers exactly one gated call…
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__fs_write',
+        conversationId: 'chat-1',
+        requestArgs: { path: 'A.md', content: 'x' },
+        requireAutoExecution: false,
+      }),
+    ).toBe(true)
+    // …and is consumed: the next call of the same tool needs approval again
+    // (RED before M2: any grant recorded the bare tool name, making the tool
+    // permanently allow-listed in the conversation).
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__fs_write',
+        conversationId: 'chat-1',
+        requestArgs: { path: 'A.md', content: 'x' },
+        requireAutoExecution: false,
+      }),
+    ).toBe(false)
+    // An explicit auto-execution decision still works after consumption.
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__fs_write',
+        conversationId: 'chat-1',
+        requestArgs: { path: 'A.md', content: 'x' },
+        requireAutoExecution: true,
+      }),
+    ).toBe(true)
+    // One-time grants never surface a standing bare-name allowance.
+    expect(manager.getAllowedTools('chat-1')).toEqual([])
+  })
+
+  it('scopes and clears one-time allowances per conversation', () => {
+    const manager = createManager()
+
+    manager.allowToolForConversation('yolo_local__fs_read', 'chat-1', undefined, {
+      oneTime: true,
+    })
+
+    // Never leaks into another conversation.
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__fs_read',
+        conversationId: 'chat-2',
+        requireAutoExecution: false,
+      }),
+    ).toBe(false)
+    // Consumed by the first matching check in chat-1.
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__fs_read',
+        conversationId: 'chat-1',
+        requireAutoExecution: false,
+      }),
+    ).toBe(true)
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__fs_read',
+        conversationId: 'chat-1',
+        requireAutoExecution: false,
+      }),
+    ).toBe(false)
+
+    // Revocation clears unconsumed one-time grants too (idempotent).
+    manager.allowToolForConversation('yolo_local__fs_read', 'chat-1', undefined, {
+      oneTime: true,
+    })
+    manager.removeAllowedTools('chat-1')
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__fs_read',
+        conversationId: 'chat-1',
+        requireAutoExecution: false,
+      }),
+    ).toBe(false)
+  })
+
   it('revokes the whole conversation allowance on removeAllowedTools', () => {
     const manager = createManager()
 

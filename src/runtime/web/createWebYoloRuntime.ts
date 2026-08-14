@@ -231,6 +231,9 @@ export function createWebYoloRuntime({
     void consumeQueueEventStream({
       api,
       signal: runtimeAbortController.signal,
+      onTerminated: () => {
+        queueEventStreamStarted = false
+      },
       onPendingResults: async (conversationId) => {
         if (disposed) return
         await refreshAgentState(conversationId)
@@ -610,6 +613,42 @@ export function createWebYoloRuntime({
   })
 }
 
+const MAX_RUN_STREAM_RETRIES = 3
+const STREAM_RETRY_BASE_MS = 1_000
+const STREAM_RETRY_MAX_MS = 15_000
+
+const sleepWithAbort = (
+  ms: number,
+  signal?: AbortSignal,
+): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve()
+      return
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      resolve()
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+
+/** 提取 SSE 帧的 `id:` 行（服务端写的是 event sequence，供 cursor 重放）。 */
+const parseSseEventId = (rawEvent: string): number | null => {
+  for (const line of rawEvent.split(/\r?\n/)) {
+    if (line.startsWith('id:')) {
+      const raw = line.slice(3).trim()
+      const value = Number.parseInt(raw, 10)
+      if (Number.isFinite(value)) return value
+    }
+  }
+  return null
+}
+
 function toYoloFileRef(file: {
   path: string
   name: string
@@ -649,53 +688,73 @@ async function consumeRunStream({
   normalizeAgentState: (state: AgentConversationState) => AgentConversationState
   getPreviousState: () => AgentConversationState
 }): Promise<void> {
-  try {
-    const response = await api.openSseFetch(
-      `/api/agent/stream/${encodeURIComponent(runId)}`,
-      signal,
-    )
-    if (!response.ok || !response.body) {
-      throw new Error(`SSE stream failed with ${response.status}`)
-    }
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      let boundary = buffer.indexOf('\n\n')
-      while (boundary >= 0) {
-        const rawEvent = buffer.slice(0, boundary)
-        buffer = buffer.slice(boundary + 2)
+  let attempt = 0
+  let cursor: number | null = null
+  while (!signal?.aborted) {
+    try {
+      const cursorQuery = cursor == null ? '' : `?cursor=${cursor}`
+      const response = await api.openSseFetch(
+        `/api/agent/stream/${encodeURIComponent(runId)}${cursorQuery}`,
+        signal,
+      )
+      if (!response.ok || !response.body) {
+        throw new Error(`SSE stream failed with ${response.status}`)
+      }
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let boundary = buffer.indexOf('\n\n')
+        while (boundary >= 0) {
+          const rawEvent = buffer.slice(0, boundary)
+          buffer = buffer.slice(boundary + 2)
+          applySsePayload({
+            rawEvent,
+            conversationId,
+            emitState,
+            normalizeAgentState,
+            getPreviousState,
+          })
+          const eventId = parseSseEventId(rawEvent)
+          if (eventId != null) cursor = eventId
+          boundary = buffer.indexOf('\n\n')
+        }
+      }
+      if (buffer.trim().length > 0) {
         applySsePayload({
-          rawEvent,
+          rawEvent: buffer,
           conversationId,
           emitState,
           normalizeAgentState,
           getPreviousState,
         })
-        boundary = buffer.indexOf('\n\n')
+        const eventId = parseSseEventId(buffer)
+        if (eventId != null) cursor = eventId
       }
+      // 服务端在 run 终态后关闭流：拉全量状态收尾（正常完成路径）。
+      await refreshAgentState(conversationId)
+      return
+    } catch (error) {
+      if (signal?.aborted) return
+      attempt += 1
+      if (attempt > MAX_RUN_STREAM_RETRIES) {
+        const previous = getPreviousState()
+        emitState(conversationId, {
+          ...previous,
+          status: 'error',
+          errorMessage: error instanceof Error ? error.message : String(error),
+        })
+        return
+      }
+      // 断线重连（E2）：退避后按 cursor 重放，避免整个 run 落入 error 态。
+      await sleepWithAbort(
+        Math.min(STREAM_RETRY_BASE_MS * 2 ** (attempt - 1), STREAM_RETRY_MAX_MS),
+        signal,
+      )
     }
-    if (buffer.trim().length > 0) {
-      applySsePayload({
-        rawEvent: buffer,
-        conversationId,
-        emitState,
-        normalizeAgentState,
-        getPreviousState,
-      })
-    }
-    await refreshAgentState(conversationId)
-  } catch (error) {
-    if (signal?.aborted) return
-    const previous = getPreviousState()
-    emitState(conversationId, {
-      ...previous,
-      status: 'error',
-      errorMessage: error instanceof Error ? error.message : String(error),
-    })
   }
 }
 
@@ -705,6 +764,7 @@ async function consumeQueueEventStream({
   onPendingResults,
   onAbortedQueuedMessages,
   onPendingUserMessagesChanged,
+  onTerminated,
 }: {
   api: WebApiClient
   signal?: AbortSignal
@@ -714,42 +774,64 @@ async function consumeQueueEventStream({
     messages: ChatMessage[],
   ) => void
   onPendingUserMessagesChanged: (conversationId: string) => void
+  /** 流结束/放弃时回调，让调用方复位 started 标记以便未来重启（E2）。 */
+  onTerminated: () => void
 }): Promise<void> {
+  let attempt = 0
   try {
-    const response = await api.openSseFetch('/api/agent/queue/events', signal)
-    if (!response.ok || !response.body) {
-      throw new Error(`Queue SSE stream failed with ${response.status}`)
-    }
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      let boundary = buffer.indexOf('\n\n')
-      while (boundary >= 0) {
-        applyQueueSsePayload({
-          rawEvent: buffer.slice(0, boundary),
-          onPendingResults,
-          onAbortedQueuedMessages,
-          onPendingUserMessagesChanged,
-        })
-        buffer = buffer.slice(boundary + 2)
-        boundary = buffer.indexOf('\n\n')
+    while (!signal?.aborted) {
+      try {
+        const response = await api.openSseFetch('/api/agent/queue/events', signal)
+        if (!response.ok || !response.body) {
+          throw new Error(`Queue SSE stream failed with ${response.status}`)
+        }
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          let boundary = buffer.indexOf('\n\n')
+          while (boundary >= 0) {
+            applyQueueSsePayload({
+              rawEvent: buffer.slice(0, boundary),
+              onPendingResults,
+              onAbortedQueuedMessages,
+              onPendingUserMessagesChanged,
+            })
+            buffer = buffer.slice(boundary + 2)
+            boundary = buffer.indexOf('\n\n')
+          }
+        }
+        if (buffer.trim().length > 0) {
+          applyQueueSsePayload({
+            rawEvent: buffer,
+            onPendingResults,
+            onAbortedQueuedMessages,
+            onPendingUserMessagesChanged,
+          })
+        }
+        // 服务端关闭 queue 流：正常收尾。
+        return
+      } catch (error) {
+        if (signal?.aborted) return
+        attempt += 1
+        console.warn(
+          `[YOLO][Web] queue event stream failed (retry ${attempt})`,
+          error,
+        )
+        await sleepWithAbort(
+          Math.min(
+            STREAM_RETRY_BASE_MS * 2 ** (attempt - 1),
+            STREAM_RETRY_MAX_MS,
+          ),
+          signal,
+        )
       }
     }
-    if (buffer.trim().length > 0) {
-      applyQueueSsePayload({
-        rawEvent: buffer,
-        onPendingResults,
-        onAbortedQueuedMessages,
-        onPendingUserMessagesChanged,
-      })
-    }
-  } catch (error) {
-    if (signal?.aborted) return
-    console.warn('[YOLO][Web] queue event stream failed', error)
+  } finally {
+    onTerminated()
   }
 }
 

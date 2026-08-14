@@ -50,6 +50,21 @@ const replayByRuntime = new Map<
   }
 >()
 
+/**
+ * 释放缓存的 runtime 实例与重放缓冲（E3）。server 停止/重启时调用——旧
+ * runtime 的订阅若驻留，会在新 server 上继续推送已死会话的事件。
+ */
+export async function disposeChatRuntimeRouteCaches(): Promise<void> {
+  const runtimes = [...runtimeCache.values()]
+  runtimeCache.clear()
+  replayByRuntime.clear()
+  await Promise.all(
+    runtimes
+      .filter((runtime) => typeof runtime.dispose === 'function')
+      .map((runtime) => runtime.dispose().catch(() => undefined)),
+  )
+}
+
 function runtimeCacheKey(
   runtimeId: 'yolo' | 'claude-code' | 'codex',
   conversationId: string | null,

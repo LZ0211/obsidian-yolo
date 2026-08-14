@@ -15,7 +15,10 @@ import {
 } from '../tool-preferences'
 import type { AgentRuntimeLoopConfig } from '../types'
 
-import { SUBAGENT_MAX_AUTO_ITERATIONS } from './constants'
+import {
+  SUBAGENT_DEFAULT_SYSTEM_PROMPT,
+  SUBAGENT_MAX_AUTO_ITERATIONS,
+} from './constants'
 import {
   type DelegatableAssistantRole,
   resolveDelegatableAssistant,
@@ -89,6 +92,15 @@ export async function resolveDelegatedAssistantProfile({
     },
     {
       includeSkills: true,
+      // S2 (restored from the backup profile): the delegated child keeps the
+      // isolation statement in its system prompt alongside the role's own
+      // prompt, and the delegatable-assistant catalogue is suppressed — a
+      // child cannot dispatch sibling roles, so advertising them would only
+      // invite invalid recursive delegation.
+      runtimeOverrides: {
+        fixedRuntimeInstructions: [SUBAGENT_DEFAULT_SYSTEM_PROMPT],
+        suppressDelegatableAssistantCatalogue: true,
+      },
     },
   )
 
