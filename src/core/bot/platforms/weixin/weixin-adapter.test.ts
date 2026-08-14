@@ -986,29 +986,25 @@ describe('WeixinOCAdapter — sendMessage', () => {
     const sendCalls = mockedRequestUrl.mock.calls.filter(([params]) =>
       String(asRequestUrlParam(params).url).includes('sendmessage'),
     )
-    // RED on the pre-fix-round-1 behavior: every text chunk re-attached the
-    // image, so the image was uploaded/sent 3 times.
-    expect(sendCalls).toHaveLength(4)
-    const imageCount = sendCalls.reduce((count, [params]) => {
+    expect(sendCalls).toHaveLength(3)
+    const itemLists = sendCalls.map(([params]) => {
       const body = JSON.parse(bodyAsString(asRequestUrlParam(params))) as {
         msg: { item_list: unknown[] }
       }
-      return (
-        count +
-        body.msg.item_list.filter(
-          (item) => (item as { type?: number }).type === 2,
-        ).length
-      )
-    }, 0)
+      return body.msg.item_list
+    })
+    const imageCount = itemLists.flat().filter(
+      (item) => (item as { type?: number }).type === 2,
+    ).length
     expect(imageCount).toBe(1)
-    const textItems = sendCalls.reduce((count, [params]) => {
-      const body = JSON.parse(bodyAsString(asRequestUrlParam(params))) as {
-        msg: { item_list: Array<{ type?: number }> }
-      }
-      return count + body.msg.item_list.filter((item) => item.type === 1).length
-    }, 0)
+    expect(
+      itemLists[2].some((item) => (item as { type?: number }).type === 2),
+    ).toBe(true)
+    const textItems = itemLists
+      .flat()
+      .filter((item) => (item as { type?: number }).type === 1).length
     expect(textItems).toBe(3)
-    expect(refs).toHaveLength(4)
+    expect(refs).toHaveLength(3)
 
     await adapter.stop()
   })
@@ -1115,19 +1111,9 @@ describe('WeixinOCAdapter — sendMessage', () => {
     const sendCalls = mockedRequestUrl.mock.calls.filter(([params]) =>
       String(asRequestUrlParam(params).url).includes('sendmessage'),
     )
-    // fix-round-1: text and media go out as separate requests — the text
-    // chunk must not re-attach the image (that would send it N times).
-    expect(sendCalls).toHaveLength(2)
-    const textBody = JSON.parse(
+    expect(sendCalls).toHaveLength(1)
+    const sendBody = JSON.parse(
       bodyAsString(asRequestUrlParam(sendCalls[0][0])),
-    ) as {
-      msg: { item_list: unknown[] }
-    }
-    expect(textBody.msg.item_list).toEqual([
-      { type: 1, text_item: { text: 'Here is the chart.' } },
-    ])
-    const mediaBody = JSON.parse(
-      bodyAsString(asRequestUrlParam(sendCalls[1][0])),
     ) as {
       msg: {
         item_list: Array<{
@@ -1140,7 +1126,11 @@ describe('WeixinOCAdapter — sendMessage', () => {
         }>
       }
     }
-    expect(mediaBody.msg.item_list[0]).toMatchObject({
+    expect(sendBody.msg.item_list[0]).toEqual({
+      type: 1,
+      text_item: { text: 'Here is the chart.' },
+    })
+    expect(sendBody.msg.item_list[1]).toMatchObject({
       type: 2,
       image_item: {
         media: {
@@ -1149,10 +1139,10 @@ describe('WeixinOCAdapter — sendMessage', () => {
         mid_size: 16,
       },
     })
-    expect(mediaBody.msg.item_list).toHaveLength(1)
+    expect(sendBody.msg.item_list).toHaveLength(2)
     expect(
       Buffer.from(
-        mediaBody.msg.item_list[0].image_item!.media.aes_key,
+        sendBody.msg.item_list[1].image_item!.media.aes_key,
         'base64',
       ).toString('utf8'),
     ).toBe(uploadBody.aeskey)

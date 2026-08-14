@@ -550,20 +550,14 @@ export class WeixinOCAdapter implements PlatformAdapter {
             this.capabilities.maxMessageLength,
           )
         : []
-      const hasMedia =
-        (content.images?.length ?? 0) > 0 || (content.files?.length ?? 0) > 0
-      // fix-round-1: media must NOT ride along on every text chunk — each
-      // chunk would otherwise re-attach the same images/files and send them
-      // N times. Text chunks are stripped of media; media is sent once on
-      // its own trailing request (or as the only request for media-only
-      // replies).
-      const sends: ReplyContent[] = perSendTexts.map((text) => ({
+      const lastTextIndex = perSendTexts.length - 1
+      const sends: ReplyContent[] = perSendTexts.map((text, index) => ({
         ...content,
         text,
-        images: [],
-        files: [],
+        images: index === lastTextIndex ? content.images : [],
+        files: index === lastTextIndex ? content.files : [],
       }))
-      if (perSendTexts.length === 0 || hasMedia) {
+      if (perSendTexts.length === 0) {
         sends.push({ ...content, text: undefined })
       }
       const refs: SentMessageRef[] = []
