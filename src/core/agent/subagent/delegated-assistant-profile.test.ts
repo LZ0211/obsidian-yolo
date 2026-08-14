@@ -10,7 +10,10 @@ import type { ChatModel } from '../../../types/chat-model.types'
 import { RequestContextBuilder } from '../../../utils/chat/requestContextBuilder'
 import { resolveAssistantSkillPaths } from '../../skills/assistantSkillPaths'
 
-import { SUBAGENT_MAX_AUTO_ITERATIONS } from './constants'
+import {
+  SUBAGENT_DEFAULT_SYSTEM_PROMPT,
+  SUBAGENT_MAX_AUTO_ITERATIONS,
+} from './constants'
 import { resolveDelegatedAssistantProfile } from './delegated-assistant-profile'
 import { SUBAGENT_BLOCKED_TOOL_NAMES } from './tool-name-utils'
 
@@ -211,6 +214,29 @@ describe('resolveDelegatedAssistantProfile', () => {
     expect(getBuilderAssistantId(profile.requestContextBuilder)).toBe(
       'frozen-parent-assistant',
     )
+  })
+
+  it('bakes the isolation prompt and catalogue suppression into the delegated builder (S2 regression: delegated runs lost both)', async () => {
+    const role = makeRole({ modelId: ROLE_MODEL.id, delegatable: true })
+    const { promise } = resolveProfile({ role })
+
+    const profile = await promise
+
+    // RED before S2: the delegated builder carried no runtime overrides —
+    // `fixedRuntimeInstructions` (the isolation statement) was dropped and
+    // the delegatable-assistant catalogue stayed injected into child prompts.
+    const overrides = (
+      profile.requestContextBuilder as unknown as {
+        runtimeOverrides?: {
+          fixedRuntimeInstructions?: string[]
+          suppressDelegatableAssistantCatalogue?: boolean
+        }
+      }
+    ).runtimeOverrides
+    expect(overrides?.fixedRuntimeInstructions).toEqual([
+      SUBAGENT_DEFAULT_SYSTEM_PROMPT,
+    ])
+    expect(overrides?.suppressDelegatableAssistantCatalogue).toBe(true)
   })
 
   it('rejects a missing explicit role model without using the generic fallback', async () => {

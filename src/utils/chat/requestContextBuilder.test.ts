@@ -2424,6 +2424,38 @@ describe('RequestContextBuilder system prompt freezing', () => {
     expect(systemContent).not.toContain('role-2')
   })
 
+  it('appends fixed runtime instructions and suppresses the catalogue when runtimeOverrides are set (S2 regression: delegated runs lost both)', async () => {
+    const settings = {
+      ...baseSettings,
+      assistants: [{ id: 'role-1', name: 'Research Analyst', delegatable: true }],
+    } as unknown as YoloSettings
+    const builder = new RequestContextBuilder(makeApp(), settings, {
+      includeSkills: false,
+      runtimeOverrides: {
+        fixedRuntimeInstructions: ['Isolate me from the parent conversation.'],
+        suppressDelegatableAssistantCatalogue: true,
+      },
+    })
+
+    const messages = await builder.generateRequestMessages({
+      messages: userMessages,
+      model,
+      conversationId: 'conv-delegated-overrides',
+      hasTools: true,
+      systemPromptSnapshotMode: 'create',
+    })
+
+    const systemContent = getSystemContent(messages)
+    // RED before S2: the builder had no runtime-override mechanism at all —
+    // the isolation instructions were missing and the catalogue was always
+    // injected, even into delegated child runs that cannot dispatch roles.
+    expect(systemContent).toContain(
+      'Isolate me from the parent conversation.',
+    )
+    expect(systemContent).not.toContain('delegatable_assistants')
+    expect(systemContent).not.toContain('role-1')
+  })
+
   it('refreshes the frozen prompt when the delegatable role set changes', async () => {
     const store = new SystemPromptSnapshotStore()
     memMock.mockResolvedValue({ global: 'MEM', assistant: null })
