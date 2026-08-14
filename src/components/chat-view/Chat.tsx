@@ -26,7 +26,7 @@ import {
 } from '../../core/agent/assistant-capabilities'
 import { resolveAssistantModelId } from '../../core/agent/assistant-model'
 import { getLatestAssistantContextUsage } from '../../core/agent/compaction'
-import { findUnifiedAgentById } from '../../core/agent/workspaceAgentResolver'
+import { resolveActiveAssistant } from '../../core/agent/workspaceAgentResolver'
 import type { ChatRuntime } from '../../core/chat-runtime/contract'
 import {
   type ChatRuntimeId,
@@ -858,7 +858,9 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
   } as CSSProperties
 
   const selectedAssistant = useMemo(() => {
-    return findUnifiedAgentById(settings, conversationAssistantId) ?? null
+    return resolveActiveAssistant(settings, {
+      assistantId: conversationAssistantId,
+    })
   }, [conversationAssistantId, settings])
   const selectedAssistantTimeContextEnabled = useMemo(
     () => resolveAssistantTimeContextEnabled(selectedAssistant, settings),
@@ -1607,7 +1609,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       // preserved.
       const overrideAssistantId = options?.assistantId
       const overrideAssistant = overrideAssistantId
-        ? (findUnifiedAgentById(settings, overrideAssistantId) ?? null)
+        ? resolveActiveAssistant(settings, { assistantId: overrideAssistantId })
         : null
       const applySelection = () => {
         flushSync(() => {

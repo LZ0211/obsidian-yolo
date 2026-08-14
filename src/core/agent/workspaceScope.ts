@@ -6,6 +6,8 @@ import type {
   WorkspaceAccessPolicy,
 } from '../../types/assistant.types'
 import { normalizePathSlashes } from '../paths/normalizePath'
+import type { ProtectedPathRule } from '../paths/protectedPaths'
+import { isProtectedVaultPath } from '../paths/protectedPaths'
 
 export const BUILTIN_SKILL_PATH_PREFIX = 'builtin://'
 export const BROWSER_READ_PATH_PREFIX = 'browser://'
@@ -68,6 +70,22 @@ function isPolicyEnabled(
   return Boolean(policy?.enabled)
 }
 
+function isProtectedPath(
+  path: string,
+  rules: readonly ProtectedPathRule[] | undefined,
+): boolean {
+  return isProtectedVaultPath(path, rules)
+}
+
+function assertNotProtectedPath(
+  path: string,
+  rules: readonly ProtectedPathRule[] | undefined,
+): void {
+  if (isProtectedPath(path, rules)) {
+    throw new Error(`Path is inside a host-managed protected zone: ${path}`)
+  }
+}
+
 function readIncludes(policy: WorkspaceAccessPolicy): string[] {
   return [
     normalizeWorkspacePath(policy.workspaceRoot),
@@ -79,6 +97,7 @@ export function isReadablePath(
   path: string,
   policy: WorkspaceAccessPolicy | undefined,
 ): boolean {
+  if (isProtectedPath(path, policy?.protectedPaths)) return false
   if (!isPolicyEnabled(policy)) return true
   const normalizedPath = normalizeWorkspacePath(path)
   if (matchesAny(normalizedPath, normalizedRules(policy.readExcludes))) {
@@ -97,14 +116,17 @@ export function resolveReadablePath(
   path: string,
   policy: WorkspaceAccessPolicy | undefined,
 ): string {
-  if (!isPolicyEnabled(policy)) return normalizeWorkspacePath(path)
+  const normalizedInput = normalizeWorkspacePath(path)
+  assertNotProtectedPath(normalizedInput, policy?.protectedPaths)
+  if (!isPolicyEnabled(policy)) return normalizedInput
   const raw = path.trim()
   const root = normalizeWorkspacePath(policy.workspaceRoot)
   const candidate = raw.startsWith('/')
     ? normalizeWorkspacePath(raw.slice(1))
-    : matchesRule(normalizeWorkspacePath(raw), root)
-      ? normalizeWorkspacePath(raw)
-      : joinWorkspacePath(root, normalizeWorkspacePath(raw))
+    : matchesRule(normalizedInput, root)
+      ? normalizedInput
+      : joinWorkspacePath(root, normalizedInput)
+  assertNotProtectedPath(candidate, policy?.protectedPaths)
   if (!isReadablePath(candidate, policy)) {
     throw new Error(`Path is outside the workspace read policy: ${path}`)
   }
@@ -117,6 +139,7 @@ export function resolveWritablePath(
 ): string {
   const raw = path.trim()
   const normalizedPath = normalizeWorkspacePath(raw)
+  assertNotProtectedPath(normalizedPath, policy?.protectedPaths)
   if (!isPolicyEnabled(policy)) return normalizedPath
 
   const root = normalizeWorkspacePath(policy.workspaceRoot)
@@ -126,6 +149,7 @@ export function resolveWritablePath(
       ? normalizedPath
       : joinWorkspacePath(root, normalizedPath)
 
+  assertNotProtectedPath(candidate, policy?.protectedPaths)
   if (root !== '' && !matchesRule(candidate, root)) {
     throw new Error(`Path is outside the workspace write root: ${path}`)
   }

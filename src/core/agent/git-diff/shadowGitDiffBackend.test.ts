@@ -20,6 +20,7 @@ import { promisify } from 'node:util'
 
 import type { WorkspaceAccessPolicy } from '../../../types/assistant.types'
 import type { AgentFileChange } from '../../../types/chat'
+import { getProtectedVaultPathRules } from '../../paths/protectedPaths'
 import { normalizeWorkspacePath } from '../workspaceScope'
 
 import { type GitCommandRunner, runGitCommand } from './gitCommandRunner'
@@ -180,6 +181,45 @@ describe('ShadowGitDiffBackend', () => {
         backend.finish(baseline!, [
           change('Allowed/a.md'),
           change('Allowed/secret.md'),
+        ]),
+      ).resolves.toEqual(
+        new Map([['Allowed/a.md', { additions: 1, deletions: 0 }]]),
+      )
+    } finally {
+      await repo.cleanup()
+    }
+  })
+
+  it('excludes host-managed protected paths from the diff even under a full-vault root', async () => {
+    const repo = await createRepo()
+    try {
+      await mkdir(join(repo.vault, 'Projects'), { recursive: true })
+      await writeFile(join(repo.vault, 'Projects', 'project.md'), 'before\n')
+      await writeFile(join(repo.vault, 'Allowed', 'a.md'), 'before\n')
+      await commitAll(repo.root, 'initial')
+
+      const backend = new ShadowGitDiffBackend({
+        vaultPath: repo.vault,
+        snapshotRoot: join(repo.root, 'snapshots'),
+      })
+      const baseline = await backend.begin(
+        policy({
+          workspaceRoot: '/',
+          protectedPaths: getProtectedVaultPathRules({} as never),
+        }),
+      )
+      expect(baseline).not.toBeNull()
+
+      await writeFile(
+        join(repo.vault, 'Projects', 'project.md'),
+        'before\nafter\n',
+      )
+      await writeFile(join(repo.vault, 'Allowed', 'a.md'), 'before\nafter\n')
+
+      await expect(
+        backend.finish(baseline!, [
+          change('Projects/project.md'),
+          change('Allowed/a.md'),
         ]),
       ).resolves.toEqual(
         new Map([['Allowed/a.md', { additions: 1, deletions: 0 }]]),

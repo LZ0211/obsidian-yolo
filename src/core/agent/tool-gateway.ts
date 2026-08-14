@@ -733,6 +733,26 @@ export class AgentToolGateway {
   }
 
   /**
+   * Fixes the run's workspace access policy onto a tool call request at
+   * creation time — see `ToolCallRequest.metadata.workspaceAccessPolicy`. The
+   * approval recovery paths (`AgentService.approveToolCall` and the chat UI's
+   * pending-tool-call recovery) execute tool calls directly and can't read
+   * this gateway's live policy, so a call approved after the user switched
+   * agents must still run under the boundary it was emitted with. A no-op for
+   * runs without an enabled policy (plain templates, ask mode).
+   */
+  private attachPolicySnapshot(request: ToolCallRequest): ToolCallRequest {
+    if (!this.workspaceAccessPolicy?.enabled) return request
+    return {
+      ...request,
+      metadata: {
+        ...request.metadata,
+        workspaceAccessPolicy: this.workspaceAccessPolicy,
+      },
+    }
+  }
+
+  /**
    * Fixes the module chat mode approval/execution snapshot onto a tool call
    * request at creation time — see `ToolCallRequest.metadata.approvalPolicy`
    * / `.executionConstraints`. A no-op (returns `request` unchanged) for
@@ -792,7 +812,7 @@ export class AgentToolGateway {
   }): ChatToolMessage {
     const preparedRequests = toolCallRequests.map((request) =>
       this.prepareFinalToolCallRequest(
-        this.attachModuleChatModeSnapshot(request),
+        this.attachPolicySnapshot(this.attachModuleChatModeSnapshot(request)),
       ),
     )
     const normalizedToolCallRequests = preparedRequests.map(

@@ -1251,7 +1251,7 @@ describe('AgentToolGateway', () => {
         readExtraIncludes: ['Notes'],
         readExcludes: [],
         writeExcludes: [],
-        },
+      },
     })
 
     const message = gateway.createToolMessage({
@@ -1701,6 +1701,83 @@ describe('AgentToolGateway', () => {
       ).toBeUndefined()
       expect(
         message.toolCalls[0]?.request.metadata?.executionConstraints,
+      ).toBeUndefined()
+    })
+
+    it('snapshots the enabled workspace access policy onto tool call requests at creation time', () => {
+      const mcpManager = {
+        isToolExecutionAllowed: jest.fn().mockReturnValue(true),
+        getJsSandboxSettings: jest.fn().mockReturnValue({}),
+      } as unknown as McpManager
+
+      const policy = {
+        enabled: true,
+        workspaceRoot: '04-专利',
+        readExtraIncludes: [],
+        readExcludes: [],
+        writeExcludes: ['04-专利/archive'],
+      }
+      const gateway = new AgentToolGateway(mcpManager, {
+        allowedToolNames: ['yolo_local__bash'],
+        toolPreferences: {
+          yolo_local__bash: { enabled: true, approvalMode: 'full_access' },
+        },
+        workspaceAccessPolicy: policy,
+      })
+
+      const message = gateway.createToolMessage({
+        toolCallRequests: [
+          {
+            id: 'tool-1',
+            name: 'yolo_local__bash',
+            arguments: createCompleteToolCallArguments({
+              value: { command: 'ls' },
+            }),
+          },
+        ],
+        conversationId: 'conv-1',
+      })
+
+      expect(
+        message.toolCalls[0]?.request.metadata?.workspaceAccessPolicy,
+      ).toEqual(policy)
+    })
+
+    it('writes no workspace policy snapshot when the run had no enabled policy', () => {
+      const mcpManager = {
+        isToolExecutionAllowed: jest.fn().mockReturnValue(true),
+        getJsSandboxSettings: jest.fn().mockReturnValue({}),
+      } as unknown as McpManager
+
+      const gateway = new AgentToolGateway(mcpManager, {
+        allowedToolNames: ['yolo_local__bash'],
+        toolPreferences: {
+          yolo_local__bash: { enabled: true, approvalMode: 'full_access' },
+        },
+        workspaceAccessPolicy: {
+          enabled: false,
+          workspaceRoot: '',
+          readExtraIncludes: [],
+          readExcludes: [],
+          writeExcludes: [],
+        },
+      })
+
+      const message = gateway.createToolMessage({
+        toolCallRequests: [
+          {
+            id: 'tool-1',
+            name: 'yolo_local__bash',
+            arguments: createCompleteToolCallArguments({
+              value: { command: 'ls' },
+            }),
+          },
+        ],
+        conversationId: 'conv-1',
+      })
+
+      expect(
+        message.toolCalls[0]?.request.metadata?.workspaceAccessPolicy,
       ).toBeUndefined()
     })
   })

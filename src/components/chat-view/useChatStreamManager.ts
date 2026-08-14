@@ -31,7 +31,7 @@ import { buildToolCapabilityPrompt } from '../../core/agent/tool-capability-prom
 import { getEnabledAssistantToolNames } from '../../core/agent/tool-preferences'
 import { selectAllowedTools } from '../../core/agent/tool-selection'
 import type { AgentRuntimeRunInput } from '../../core/agent/types'
-import { findUnifiedAgentById } from '../../core/agent/workspaceAgentResolver'
+import { resolveActiveAssistant } from '../../core/agent/workspaceAgentResolver'
 import {
   LLMAPIKeyInvalidException,
   LLMAPIKeyNotSetException,
@@ -47,6 +47,7 @@ import {
   getLocalFileToolServerName,
 } from '../../core/mcp/localFileToolNames'
 import { getToolName } from '../../core/mcp/tool-name-utils'
+import { augmentWorkspacePolicyWithProtectedPaths } from '../../core/paths/protectedPaths'
 import { listLiteSkillEntries } from '../../core/skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../../core/skills/skillPolicy'
 import type { AssistantToolPreference } from '../../types/assistant.types'
@@ -365,7 +366,9 @@ export function useChatStreamManager({
       const effectiveAssistantId =
         assistantIdOverride ?? settings.currentAssistantId
       const selectedAssistant = effectiveAssistantId
-        ? findUnifiedAgentById(settings, effectiveAssistantId) || null
+        ? resolveActiveAssistant(settings, {
+            assistantId: effectiveAssistantId,
+          })
         : null
       // Module chat modes never inherit an assistant's default model —
       // ChatContextPolicy.useAssistant === false cuts the assistant out of
@@ -612,7 +615,9 @@ export function useChatStreamManager({
         const effectiveAssistantId =
           assistantIdOverride ?? settings.currentAssistantId
         const selectedAssistant = effectiveAssistantId
-          ? findUnifiedAgentById(settings, effectiveAssistantId) || null
+          ? resolveActiveAssistant(settings, {
+              assistantId: effectiveAssistantId,
+            })
           : null
 
         const requestedModelId =
@@ -762,11 +767,17 @@ export function useChatStreamManager({
             : resolveWorkspaceScopeForRuntimeInput(selectedAssistant),
           // fork 特有：工作目录领域（backup 语义）同样受模块模式隔离——
           // assistant 不参与时，其 workspace access policy 不得泄入运行。
+          // 注入宿主托管保护路径（backup agent-api 语义）：chat 运行的
+          // fs/bash/git-diff 工具永远不能触达插件私有数据，无论绑定的
+          // assistant 的 policy 怎么配置。
           workspaceAccessPolicy: isModuleMode
             ? undefined
-            : resolveWorkspaceAccessPolicyForRuntimeInput(
-                selectedAssistant,
-                conversationOverrides?.workingDirectory ?? undefined,
+            : augmentWorkspacePolicyWithProtectedPaths(
+                resolveWorkspaceAccessPolicyForRuntimeInput(
+                  selectedAssistant,
+                  conversationOverrides?.workingDirectory ?? undefined,
+                ),
+                settings,
               ),
           allowedSkillPaths,
           bashReadOnly: chatModeRuntime.bashReadOnly,
@@ -982,7 +993,9 @@ export function useChatStreamManager({
       const effectiveAssistantId =
         assistantIdOverride ?? settings.currentAssistantId
       const selectedAssistant = effectiveAssistantId
-        ? findUnifiedAgentById(settings, effectiveAssistantId) || null
+        ? resolveActiveAssistant(settings, {
+            assistantId: effectiveAssistantId,
+          })
         : null
       // Module chat modes never inherit an assistant's default model —
       // ChatContextPolicy.useAssistant === false cuts the assistant out of

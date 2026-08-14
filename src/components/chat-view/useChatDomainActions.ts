@@ -17,7 +17,10 @@ import { selectionHighlightController } from '../../features/editor/selection-hi
 import type { useChatHistory } from '../../hooks/useChatHistory'
 import type { useChatManager } from '../../hooks/useJsonManagers'
 import type { ApplyViewState } from '../../types/apply-view.types'
-import type { Assistant } from '../../types/assistant.types'
+import type {
+  Assistant,
+  WorkspaceAccessPolicy,
+} from '../../types/assistant.types'
 import type {
   ChatConversationCompactionState,
   ChatMessage,
@@ -237,6 +240,37 @@ export type UseChatDomainActionsParams = {
  * 的返回值与 useChatStreamManager/useChatHistory 的既有实例，不重造持久化
  * 或运行时编排逻辑。
  */
+/**
+ * W4: the approval recovery path executes a pending tool call with the policy
+ * snapshot fixed at tool-call creation time (`ToolCallRequest.metadata.
+ * workspaceAccessPolicy`, written by `AgentToolGateway.createToolMessage`),
+ * NOT the currently selected assistant's live policy — the user may have
+ * switched agents while the call sat in pending-approval, and running the old
+ * call under the new boundary would silently re-scope its file/bash access.
+ * Falls back to the live composition only for historical calls created before
+ * the snapshot existed.
+ */
+export function resolveRecoveryExecutionWorkspaceAccessPolicy({
+  chatMode,
+  request,
+  selectedAssistant,
+  workingDirectory,
+}: {
+  chatMode: ChatMode
+  request: ToolCallRequest
+  selectedAssistant: Assistant | null
+  workingDirectory?: string
+}): WorkspaceAccessPolicy | undefined {
+  if (!isAgentChatMode(chatMode)) return undefined
+  return (
+    request.metadata?.workspaceAccessPolicy ??
+    resolveConversationFileScope(
+      selectedAssistant?.workspaceAccessPolicy,
+      workingDirectory ?? undefined,
+    ).workspaceAccessPolicy
+  )
+}
+
 export function useChatDomainActions({
   chatMessages,
   chatMessagesStateRef,
@@ -429,12 +463,14 @@ export function useChatDomainActions({
               // match the schema used when the call was emitted.
               chatModelId:
                 toolMessage.metadata?.branchModelId ?? conversationModelId,
-              workspaceAccessPolicy: isAgentChatMode(chatMode)
-                ? resolveConversationFileScope(
-                    selectedAssistant?.workspaceAccessPolicy,
+              workspaceAccessPolicy:
+                resolveRecoveryExecutionWorkspaceAccessPolicy({
+                  chatMode,
+                  request,
+                  selectedAssistant,
+                  workingDirectory:
                     conversationOverrides?.workingDirectory ?? undefined,
-                  ).workspaceAccessPolicy
-                : undefined,
+                }),
               subagentParentContext: isDelegateSubagentToolName(request.name)
                 ? plugin
                     .getAgentService()

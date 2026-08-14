@@ -1,4 +1,8 @@
-import { AssistantWorkspaceScope } from '../../types/assistant.types'
+import {
+  AssistantWorkspaceScope,
+  WorkspaceAccessPolicy,
+} from '../../types/assistant.types'
+import { getProtectedVaultPathRules } from '../paths/protectedPaths'
 
 import {
   collectToolCallPaths,
@@ -405,5 +409,84 @@ describe('WorkspaceAccessPolicy helpers', () => {
     expect(() => resolveWritablePath('/Outside/a.md', access)).toThrow(
       /outside the workspace write root/i,
     )
+  })
+})
+
+describe('host-managed protected-path deny', () => {
+  const protectedRules = getProtectedVaultPathRules({} as never)
+
+  const denyPolicy = (
+    override: Partial<{
+      enabled?: boolean
+      workspaceRoot?: string
+      readExtraIncludes?: string[]
+      readExcludes?: string[]
+      writeExcludes?: string[]
+    }> = {},
+  ): WorkspaceAccessPolicy => ({
+    enabled: true,
+    workspaceRoot: 'Work',
+    readExtraIncludes: [],
+    readExcludes: [],
+    writeExcludes: [],
+    ...override,
+    protectedPaths: protectedRules,
+  })
+
+  it('denies protected paths even when no workspace policy is enabled', () => {
+    const plainDisabled: WorkspaceAccessPolicy = {
+      enabled: false,
+      workspaceRoot: '',
+      readExtraIncludes: [],
+      readExcludes: [],
+      writeExcludes: [],
+    }
+
+    expect(isReadablePath('YOLO/sessions.sqlite', plainDisabled)).toBe(true)
+    expect(
+      isReadablePath('YOLO/sessions.sqlite', denyPolicy({ enabled: false })),
+    ).toBe(false)
+    expect(() =>
+      resolveWritablePath(
+        'Projects/proj-x/project.md',
+        denyPolicy({ enabled: false }),
+      ),
+    ).toThrow(/host-managed protected zone/i)
+    expect(() =>
+      resolveReadablePath(
+        'YOLO/.yolo_data.json',
+        denyPolicy({ enabled: false }),
+      ),
+    ).toThrow(/host-managed protected zone/i)
+  })
+
+  it('denies protected paths regardless of workspaceRoot or policy allowlists', () => {
+    const rootAccess = denyPolicy({ workspaceRoot: '/' })
+    const projectsAccess = denyPolicy({ workspaceRoot: 'Projects' })
+
+    for (const access of [rootAccess, projectsAccess]) {
+      expect(isReadablePath('Projects/proj-x/project.md', access)).toBe(false)
+      expect(isWritablePath('Projects/proj-x/project.md', access)).toBe(false)
+      expect(() =>
+        resolveReadablePath('Projects/proj-x/project.md', access),
+      ).toThrow(/host-managed protected zone/i)
+      expect(() =>
+        resolveWritablePath('Projects/proj-x/project.md', access),
+      ).toThrow(/host-managed protected zone/i)
+    }
+  })
+
+  it('denies relative writes that resolve into a protected zone', () => {
+    const access = denyPolicy({ workspaceRoot: 'Projects' })
+    expect(() => resolveWritablePath('proj-x/project.md', access)).toThrow(
+      /host-managed protected zone/i,
+    )
+  })
+
+  it('still allows ordinary user content under a full-vault root', () => {
+    const access = denyPolicy({ workspaceRoot: '/' })
+    expect(isReadablePath('notes/plain.md', access)).toBe(true)
+    expect(resolveWritablePath('notes/draft.md', access)).toBe('notes/draft.md')
+    expect(isReadablePath('YOLO/skills/review/SKILL.md', access)).toBe(true)
   })
 })

@@ -204,7 +204,14 @@ import {
   normalizePluginVersion,
 } from './core/update/updateChecker'
 import { registerWebServerRoutes } from './core/web-server/registerWebServerRoutes'
+import { loadOrCreateShareTokenPepper } from './core/web-server/shareTokenPepperStore'
 import type { WebAgentLifecycleService } from './core/web-server/webAgentLifecycleService'
+import {
+  type CreateWorkspaceAgentShareTokenInput,
+  createWorkspaceAgentShareToken,
+  getWorkspaceAgentRootHash,
+  updateWorkspaceAgentShareToken,
+} from './core/web-server/workspaceAgentShareTokenManager'
 import { WebHttpServer } from './core/web-server/WebHttpServer'
 import { WebServerLifecycle } from './core/web-server/WebServerLifecycle'
 import { WebSseHub } from './core/web-server/WebSseHub'
@@ -5103,6 +5110,91 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
       return null
     }
     return normalizePath(`${vaultBasePath}/${getYoloBaseDir(this.settings)}`)
+  }
+
+  /**
+   * Desktop share-token management entry points consumed by the workspace
+   * agent settings UI (`AgentsSectionContent`). The UI calls these through
+   * optional chaining, so a missing method silently no-ops — keep all four
+   * wired (backup semantics).
+   */
+  async createWorkspaceAgentShareToken(
+    agentId: string,
+    input: Omit<
+      CreateWorkspaceAgentShareTokenInput,
+      'settings' | 'agentId' | 'pepper' | 'vaultIdentity'
+    >,
+  ): Promise<{ plaintext: string; publicTokenId: string }> {
+    const yoloBaseDir = this.resolveWebRuntimeBaseDir()
+    if (!yoloBaseDir) {
+      throw new Error('Cannot create a share token without a local vault path.')
+    }
+    const pepper = loadOrCreateShareTokenPepper(yoloBaseDir)
+    const nextSettings: YoloSettings = {
+      ...this.settings,
+      workspaceAgents: this.settings.workspaceAgents.map((agent) => ({
+        ...agent,
+        shareTokens:
+          agent.shareTokens == null ? undefined : [...agent.shareTokens],
+      })),
+    }
+    const created = createWorkspaceAgentShareToken({
+      settings: nextSettings,
+      agentId,
+      pepper,
+      vaultIdentity: this.app.vault.getName(),
+      ...input,
+    })
+    await this.setSettings(nextSettings)
+    return created
+  }
+
+  getWorkspaceAgentRootHash(agentId: string): string | null {
+    return getWorkspaceAgentRootHash({
+      settings: this.settings,
+      agentId,
+      vaultIdentity: this.app.vault.getName(),
+    })
+  }
+
+  async revokeWorkspaceAgentShareToken(
+    agentId: string,
+    tokenId: string,
+  ): Promise<void> {
+    if (!this.webAgentLifecycleService) {
+      throw new Error(
+        'Share tokens cannot be revoked while the web runtime is offline.',
+      )
+    }
+    await this.webAgentLifecycleService.revokeShareToken(agentId, tokenId)
+  }
+
+  async updateWorkspaceAgentShareToken(
+    agentId: string,
+    tokenId: string,
+    update: {
+      expiresAt?: number | null
+      disabled?: boolean
+      label?: string
+      scopeKind?: 'agent' | 'workspaceRoot'
+    },
+  ): Promise<void> {
+    const nextSettings: YoloSettings = {
+      ...this.settings,
+      workspaceAgents: this.settings.workspaceAgents.map((agent) => ({
+        ...agent,
+        shareTokens:
+          agent.shareTokens == null ? undefined : [...agent.shareTokens],
+      })),
+    }
+    updateWorkspaceAgentShareToken({
+      settings: nextSettings,
+      agentId,
+      tokenId,
+      vaultIdentity: this.app.vault.getName(),
+      ...update,
+    })
+    await this.setSettings(nextSettings)
   }
 
   private getWebServerLifecycle(): WebServerLifecycle<YoloSettings> {

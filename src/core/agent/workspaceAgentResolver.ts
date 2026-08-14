@@ -11,6 +11,8 @@ import type {
   WorkspaceAccessPolicy,
 } from '../../types/assistant.types'
 
+import { DEFAULT_ASSISTANT_ID, isDefaultAssistantId } from './default-assistant'
+
 /**
  * Workspace agent resolution (migrated from the local fork, simplified): a
  * workspace agent inherits an upstream Assistant template and overrides
@@ -22,9 +24,7 @@ function unique<T>(items: T[]): T[] {
   return [...new Set(items)]
 }
 
-function getTemplateEnabledToolNames(
-  template: Assistant,
-): string[] {
+function getTemplateEnabledToolNames(template: Assistant): string[] {
   const prefs = template.toolPreferences ?? {}
   const includeBuiltinTools = template.includeBuiltinTools !== false
   return Object.entries(prefs)
@@ -106,7 +106,9 @@ export function resolveWorkspaceAgentAssistant(
   templates: readonly Assistant[],
 ): Assistant | null {
   if (agent.disabled) return null
-  const template = templates.find((candidate) => candidate.id === agent.templateId)
+  const template = templates.find(
+    (candidate) => candidate.id === agent.templateId,
+  )
   if (!template) return null
   const overrides = agent.behaviorOverrides ?? {}
   const agentModeAllowed = overrides.agentModeAllowed ?? true
@@ -159,8 +161,7 @@ export function resolveWorkspaceAgentAssistant(
       overrides.promptOverride ??
       template.systemPrompt ??
       '',
-    enableTools:
-      (template.enableTools ?? true) && enabledToolNames.length > 0,
+    enableTools: (template.enableTools ?? true) && enabledToolNames.length > 0,
     enabledToolNames,
     toolPreferences,
     enabledSkills,
@@ -172,11 +173,25 @@ export function resolveWorkspaceAgentAssistant(
 /**
  * Unified agent list: upstream templates plus resolved workspace agents.
  * Downstream code that displays, selects, or looks up agents should use this.
+ *
+ * A template covered by a workspace agent is hidden from the list (backup
+ * semantics) so selectors show exactly one entry per runnable agent. The
+ * default assistant template always stays in the list, even if a workspace
+ * agent happens to reference it as its templateId — otherwise a stale or
+ * orphaned workspace agent silently hides the default assistant from every
+ * selector.
  */
 export function getUnifiedAgentList(settings: YoloSettings): Assistant[] {
   const templates = settings.assistants ?? []
-  const agents = settings.workspaceAgents ?? []
-  const merged: Assistant[] = [...templates]
+  const agents = (settings.workspaceAgents ?? []).filter((a) => !a.disabled)
+  const covered = new Set(
+    agents
+      .filter((wa) => !isDefaultAssistantId(wa.templateId))
+      .map((wa) => wa.templateId),
+  )
+  const merged: Assistant[] = templates
+    .filter((tpl) => !covered.has(tpl.id))
+    .map((tpl) => ({ ...tpl }))
   for (const agent of agents) {
     const resolved = resolveWorkspaceAgentAssistant(agent, templates)
     if (resolved) merged.push(resolved)
@@ -191,4 +206,46 @@ export function findUnifiedAgentById(
   return getUnifiedAgentList(settings).find(
     (assistant) => assistant.id === assistantId,
   )
+}
+
+/**
+ * Resolve the active "Assistant" the chat should run with (backup
+ * `resolveActiveAssistant` semantics). Workspace agents take priority; a
+ * workspace agent whose template is missing (orphaned) or an id that matches
+ * nothing falls back to the default assistant instead of resolving to null —
+ * a null active assistant would silently run the chat without any workspace
+ * boundary. Returns null only when no assistant template exists at all.
+ */
+export function resolveActiveAssistant(
+  settings: YoloSettings,
+  override?: { assistantId?: string },
+): Assistant | null {
+  const requestedId =
+    override?.assistantId ?? settings.currentAssistantId ?? DEFAULT_ASSISTANT_ID
+
+  // Workspace agents take priority — they're the "real" runnable entities.
+  const workspaceAgent = (settings.workspaceAgents ?? []).find(
+    (agent) => agent.id === requestedId,
+  )
+  if (workspaceAgent) {
+    const resolved = resolveWorkspaceAgentAssistant(
+      workspaceAgent,
+      settings.assistants ?? [],
+    )
+    if (resolved) return resolved
+    // No template → workspace agent is orphaned. Don't surface the template
+    // as the active assistant — that would let the chat run a config the
+    // workspace agent didn't intend. Fall back to default.
+  }
+
+  // Not a workspace agent id (or workspace agent was orphaned). Treat the id
+  // as a direct assistant template selection.
+  const assistants = settings.assistants ?? []
+  const fallback =
+    assistants.find((assistant) => assistant.id === requestedId) ??
+    assistants.find((assistant) => isDefaultAssistantId(assistant.id)) ??
+    assistants[0] ??
+    null
+
+  return fallback ?? null
 }
