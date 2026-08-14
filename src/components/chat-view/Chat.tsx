@@ -1594,7 +1594,6 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       if (!cliRuntimeScope) {
         throw new Error('CLI runtime is unavailable.')
       }
-      deletedConversationIdsRef.current.delete(conversationId)
       const identity = getCliSessionIdentity(ref)
       setDismissedNativeCliSessions((previous) => {
         if (!previous.has(identity)) return previous
@@ -1715,8 +1714,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
           // 删除只移除 YOLO overlay，provider 原生 transcript 仍在，discovery
           // 会再次发现该会话。不把身份记入 dismissedNativeCliSessions 的话，
           // 幽灵条目会立即回到历史列表，而 deletedConversationIdsRef 又禁止
-          // 重建 → 点击无反应。隐藏后用户想重新打开仍可（discovery 再刷新 +
-          // ensureNativeCliConversation 会解除 dismiss）。
+          // 重建 → 点击无反应。视图重建后 discovery 会重新提供该会话。
           const identity = getCliSessionIdentity(conversation.cliSession)
           setDismissedNativeCliSessions((previous) => {
             if (previous.has(identity)) return previous
