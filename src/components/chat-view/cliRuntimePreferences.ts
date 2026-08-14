@@ -75,13 +75,14 @@ export type CliModePreference = {
 }
 
 /**
- * Codex never exposes Plan in the product surface; collapse stray plan values.
+ * Runtimes without plan-mode support never expose Plan in the product
+ * surface; collapse stray plan values.
  */
 export const normalizeCliModeForRuntime = (
   runtimeId: CliRuntimeId,
   mode: CliChatMode,
 ): CliChatMode => {
-  if (runtimeId === 'codex' && mode === 'plan') {
+  if (!RUNTIME_CAPABILITIES[runtimeId].supportsPlanMode && mode === 'plan') {
     return 'agent'
   }
   return mode

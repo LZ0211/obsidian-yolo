@@ -2360,7 +2360,9 @@ export function QuickAskPanel({
                       model={model ?? null}
                       value={reasoningLevel}
                       onChange={handleReasoningLevelChange}
-                      onMenuOpenChange={(open) => setMenuOpen('reasoning', open)}
+                      onMenuOpenChange={(open) =>
+                        setMenuOpen('reasoning', open)
+                      }
                       container={popoverPortalHost ?? undefined}
                       side="bottom"
                       align="center"

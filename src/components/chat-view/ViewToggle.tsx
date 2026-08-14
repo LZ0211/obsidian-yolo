@@ -1,10 +1,12 @@
 import { Sparkles } from 'lucide-react'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 
-import anthropicLogo from '../../assets/provider-icons/anthropic.svg'
-import openaiLogo from '../../assets/provider-icons/openai.svg'
 import { useLanguage } from '../../contexts/language-context'
-import type { ChatRuntimeId, CliRuntimeId } from '../../core/cli-runtime'
+import {
+  type ChatRuntimeId,
+  type CliRuntimeId,
+  getCliRuntimeDescriptor,
+} from '../../core/cli-runtime'
 import RollerSelect, { type RollerOption } from '../common/RollerSelect'
 import { YoloOrbitIcon } from '../common/YoloOrbitIcon'
 
@@ -17,29 +19,6 @@ type ViewToggleProps = {
   runtimeOptions: readonly ChatRuntimeId[]
   showComposer?: boolean
   disabled?: boolean
-}
-
-const CLI_RUNTIME_META: Record<
-  CliRuntimeId,
-  {
-    labelKey: string
-    descriptionKey: string
-    src: string
-    provider: 'anthropic' | 'openai'
-  }
-> = {
-  'claude-code': {
-    labelKey: 'sidebar.runtimeSelector.claudeCodeLabel',
-    descriptionKey: 'sidebar.runtimeSelector.claudeCodeDescription',
-    src: anthropicLogo,
-    provider: 'anthropic',
-  },
-  codex: {
-    labelKey: 'sidebar.runtimeSelector.codexLabel',
-    descriptionKey: 'sidebar.runtimeSelector.codexDescription',
-    src: openaiLogo,
-    provider: 'openai',
-  },
 }
 
 const ViewToggle: React.FC<ViewToggleProps> = ({
@@ -68,22 +47,20 @@ const ViewToggle: React.FC<ViewToggleProps> = ({
 
   const pickerOptions = useMemo<RollerOption[]>(() => {
     const cliOptions = runtimeOptions
-      .filter(
-        (runtimeId): runtimeId is CliRuntimeId => runtimeId !== 'yolo',
-      )
+      .filter((runtimeId): runtimeId is CliRuntimeId => runtimeId !== 'yolo')
       .map((runtimeId) => {
-        const meta = CLI_RUNTIME_META[runtimeId]
+        const descriptor = getCliRuntimeDescriptor(runtimeId)
         return {
           value: runtimeId,
-          label: t(meta.labelKey),
-          description: t(meta.descriptionKey),
+          label: t(descriptor.labelKey),
+          description: t(descriptor.descriptionKey),
           icon: (
             <img
               className="yolo-runtime-selector__provider-logo"
-              src={meta.src}
+              src={descriptor.icon.src}
               alt=""
               draggable={false}
-              data-provider={meta.provider}
+              data-provider={descriptor.icon.provider}
             />
           ),
         }
@@ -231,7 +208,7 @@ const ViewToggle: React.FC<ViewToggleProps> = ({
             if (open) setHoveredView('chat')
           }}
           onChange={(value) => {
-            if (value !== 'yolo' && !(value in CLI_RUNTIME_META)) return
+            if (!runtimeOptions.includes(value as ChatRuntimeId)) return
             if (value === activeRuntimeId) return
             commitRuntimeChange(value as ChatRuntimeId)
           }}

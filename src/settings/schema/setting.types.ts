@@ -10,6 +10,7 @@ import {
   SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH,
 } from '../../core/agent/subagent/result-limit'
 import { DEFAULT_PARENT_SUBAGENT_TIMEOUT_CONFIG } from '../../core/agent/subagent/subagent-timeout-config'
+import { CLI_RUNTIME_IDS } from '../../core/cli-runtime/types'
 import { DEFAULT_LOCAL_MCP_SERVER_PORT } from '../../core/mcp/localMcpServerConfig'
 import { webSearchSettingsSchema } from '../../core/web-search/types'
 import {
@@ -31,7 +32,7 @@ import { llmProviderSchema } from '../../types/provider.types'
 import { REASONING_LEVELS, ReasoningLevel } from '../../types/reasoning'
 import { DEFAULT_CHAT_QUICK_ACCESS_ENTRIES } from '../chatQuickAccess'
 
-import { SETTINGS_SCHEMA_VERSION } from './migrations'
+import { SETTINGS_SCHEMA_VERSION } from './migrations/version'
 
 /**
  * MoA (Mixture of Agents) settings stored under `chatOptions.moa`. The
@@ -867,27 +868,18 @@ export const yoloSettingsSchema = z.object({
       // Last user-selected conversation surface and CLI provider. Kept
       // separately so returning to Chat does not forget the preferred CLI.
       lastChatSurface: z.enum(['chat', 'cli']).optional(),
-      lastCliRuntimeId: z.enum(['claude-code', 'codex']).optional(),
+      lastCliRuntimeId: z.enum(CLI_RUNTIME_IDS).optional(),
       cliModelIdByRuntime: z
-        .object({
-          'claude-code': z.string().optional(),
-          codex: z.string().optional(),
-        })
+        .record(z.enum(CLI_RUNTIME_IDS), z.string().optional())
         .optional(),
       cliReasoningEffortByModel: z.record(z.string(), z.string()).optional(),
       // Last CLI chat mode (agent/plan) remembered per CLI runtime.
       cliChatModeByRuntime: z
-        .object({
-          'claude-code': z.enum(['agent', 'plan']).optional(),
-          codex: z.enum(['agent', 'plan']).optional(),
-        })
+        .record(z.enum(CLI_RUNTIME_IDS), z.enum(['agent', 'plan']).optional())
         .optional(),
       // Last CLI YOLO flag remembered per CLI runtime.
       cliAgentYoloEnabledByRuntime: z
-        .object({
-          'claude-code': z.boolean().optional(),
-          codex: z.boolean().optional(),
-        })
+        .record(z.enum(CLI_RUNTIME_IDS), z.boolean().optional())
         .optional(),
       quickAccessEntries: resilientArraySchema(
         z.discriminatedUnion('type', [

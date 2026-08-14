@@ -178,10 +178,7 @@ export class ConversationPreferencesController {
 
   setPersistedChatMode = (action: SetStateActionLike<ChatMode>): void => {
     this.commit({
-      persistedChatMode: resolveNext(
-        action,
-        this.snapshot.persistedChatMode,
-      ),
+      persistedChatMode: resolveNext(action, this.snapshot.persistedChatMode),
     })
   }
 
