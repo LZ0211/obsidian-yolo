@@ -294,16 +294,11 @@ export function registerChatRuntimeRoutes(
           replayKey,
         )
         // 断线续传：先重放缓冲内 cursor 之后的事件；有 gap 时客户端会调用 /snapshot 重建。
-        // 重放期间连接可能已被 req close 关闭——必须在循环内检查 closed，
-        // 否则 writer.close() 之后仍继续写（close 后再触发 slow-consumer
-        // 分支或 res.end() 竞态）。
         for (const wire of entry.events) {
-          if (closed) return
           if (wire.sequence > cursor) {
             writer.write(`data: ${JSON.stringify(wire)}\n\n`)
           }
         }
-        if (closed) return
         const runtimeUnsubscribe = runtime.subscribe(
           (event: ChatRuntimeEvent) => {
             if (closed) return
