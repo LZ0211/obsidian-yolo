@@ -137,55 +137,34 @@ async function writeCache(
   return { markdown: raw.markdown, images }
 }
 
-type InFlightConversion = {
-  task: Promise<MinerUConversionResult>
-  controller: AbortController
-  callerCount: number
-  settled: boolean
-}
-
 // Same-hash conversions running concurrently share one network round-trip.
-const inFlightConversions = new Map<string, InFlightConversion>()
+const inFlightConversions = new Map<
+  string,
+  Promise<MinerUConversionResult>
+>()
 
 /**
- * Registers one caller against a shared conversion. A single cancellation only
- * rejects that caller; the shared task is cancelled once no callers remain.
+ * A caller can stop waiting without cancelling the shared request, which
+ * remains reusable because Obsidian requestUrl cannot cancel its HTTP work.
  */
-const waitForSharedConversion = (
-  inFlight: InFlightConversion,
+const withCallerAbort = <T>(
+  promise: Promise<T>,
   signal?: AbortSignal | null,
-): Promise<MinerUConversionResult> => {
-  if (signal?.aborted) return Promise.reject(createAbortError())
-
-  inFlight.callerCount += 1
-  let released = false
-  const release = (aborted: boolean): void => {
-    if (released) return
-    released = true
-    inFlight.callerCount -= 1
-    if (aborted && !inFlight.settled && inFlight.callerCount === 0) {
-      inFlight.controller.abort()
-    }
-  }
-
-  if (!signal) {
-    return inFlight.task.finally(() => release(false))
-  }
-  return new Promise<MinerUConversionResult>((resolve, reject) => {
+): Promise<T> => {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(createAbortError())
+  return new Promise<T>((resolve, reject) => {
     const onAbort = (): void => {
-      release(true)
       reject(createAbortError())
     }
     signal.addEventListener('abort', onAbort, { once: true })
-    inFlight.task.then(
+    promise.then(
       (value) => {
         signal.removeEventListener('abort', onAbort)
-        release(false)
         resolve(value)
       },
       (error: unknown) => {
         signal.removeEventListener('abort', onAbort)
-        release(false)
         reject(error instanceof Error ? error : new Error(String(error)))
       },
     )
@@ -227,15 +206,12 @@ export async function convertPdfViaMinerU(input: {
   const endpointHash = sha256HexSync(baseUrl).slice(0, 12)
   const cacheKey = `${hash16}-${endpointHash}`
   const cacheDir = getMineruCacheDir(hash16, input.settings, endpointHash)
+  if (signal?.aborted) throw createAbortError()
 
   const existing = inFlightConversions.get(cacheKey)
-  if (existing && !existing.controller.signal.aborted) {
-    return waitForSharedConversion(existing, signal)
-  }
-  if (existing) inFlightConversions.delete(cacheKey)
+  if (existing) return withCallerAbort(existing, signal)
 
-  const controller = new AbortController()
-  const rawTask = (async (): Promise<MinerUConversionResult> => {
+  const task = (async (): Promise<MinerUConversionResult> => {
     const cached = await readCacheIfComplete(app, cacheDir)
     if (cached) return cached
 
@@ -244,23 +220,12 @@ export async function convertPdfViaMinerU(input: {
       fileName: file.name,
       baseUrl,
       apiKey: options.apiKey,
-      signal: controller.signal,
     })
     return writeCache(app, cacheDir, raw)
-  })()
-  const inFlight: InFlightConversion = {
-    task: rawTask,
-    controller,
-    callerCount: 0,
-    settled: false,
-  }
-  inFlight.task = rawTask.finally(() => {
-    inFlight.settled = true
-    if (inFlightConversions.get(cacheKey) === inFlight) {
-      inFlightConversions.delete(cacheKey)
-    }
+  })().finally(() => {
+    inFlightConversions.delete(cacheKey)
   })
 
-  inFlightConversions.set(cacheKey, inFlight)
-  return waitForSharedConversion(inFlight, signal)
+  inFlightConversions.set(cacheKey, task)
+  return withCallerAbort(task, signal)
 }

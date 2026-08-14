@@ -356,11 +356,19 @@ describe('convertPdfViaMinerU', () => {
     await expect(promiseB).resolves.toMatchObject({ markdown: MARKDOWN })
   })
 
-  it('cancels and releases the shared conversion after its final caller aborts', async () => {
+  it('keeps the shared conversion available after its final caller stops waiting', async () => {
     mockedRequestUrl.mockReset()
-    mockedRequestUrl.mockImplementation(
+    let resolveStart: ((response: RequestUrlResponse) => void) | undefined
+    mockedRequestUrl.mockImplementationOnce(
       () =>
-        new Promise<RequestUrlResponse>(() => {}) as RequestUrlResponsePromise,
+        new Promise<RequestUrlResponse>((resolve) => {
+          resolveStart = resolve
+        }) as unknown as RequestUrlResponsePromise,
+    )
+    mockedRequestUrl.mockResolvedValueOnce(
+      responseWithText(
+        'data: {"type":"complete","output":{"data":["# shared"]}}',
+      ),
     )
     const controllerA = new AbortController()
 
@@ -374,23 +382,19 @@ describe('convertPdfViaMinerU', () => {
 
     controllerA.abort()
     await expect(promiseA).rejects.toMatchObject({ name: 'AbortError' })
-    await Promise.resolve()
-    await Promise.resolve()
 
-    const controllerC = new AbortController()
     const promiseC = convertPdfViaMinerU({
       app,
       file,
       options: OPTIONS,
-      signal: controllerC.signal,
     })
-    await waitUntil(() => mockedRequestUrl.mock.calls.length >= 2)
-    expect(mockedRequestUrl).toHaveBeenCalledTimes(2)
-    controllerC.abort()
-    await expect(promiseC).rejects.toMatchObject({ name: 'AbortError' })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(1)
+    resolveStart?.(responseWithText(JSON.stringify({ event_id: 'evt-shared' })))
+    await expect(promiseC).resolves.toMatchObject({ markdown: '# shared' })
 
     const cacheDir = await expectedCacheDir()
-    expect(await adapter.exists(`${cacheDir}/manifest.json`)).toBe(false)
+    expect(await adapter.exists(`${cacheDir}/manifest.json`)).toBe(true)
   })
 
   it('throws when MinerU is disabled or has no base url', async () => {
