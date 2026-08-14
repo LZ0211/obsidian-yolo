@@ -99,6 +99,33 @@ const CHUNKS_REBUILD_TABLE_SQL = `create table chunks_rebuild (
   tombstone INTEGER NOT NULL DEFAULT 0
 )`
 
+/**
+ * chunk_id prefix for the tombstoned "whole-file embedding failure" marker row
+ * written by `replaceFile` when a file's chunks are all empty (every chunk
+ * failed permanently). Real chunk ids embed the content hash (`path#page:line...`),
+ * so the `failed:` prefix can never collide with a genuine chunk id.
+ */
+export const FAILED_FILE_MARKER_PREFIX = 'failed:'
+
+/**
+ * Upsert a tombstoned failure marker for a file whose every chunk failed to
+ * embed permanently. The marker keeps the file's mtime (and content hash) in
+ * the chunks table so `getIndexedFiles` still reports it and the incremental
+ * diff skips it on later reconciles — without a marker the file vanishes from
+ * the index and every reconcile re-embeds the same doomed chunks. The row is
+ * never returned by search (tombstone = 1) and never appended to vectors.f32.
+ * A later successful rewrite tombstones the marker like any other row and
+ * inserts the real chunks (revive/insert path), restoring normal indexing.
+ */
+const INSERT_FAILED_FILE_MARKER_SQL = `insert into chunks (
+  chunk_id, file_path, file_mtime, file_content_hash, tombstone
+) values (?, ?, ?, ?, 1)
+on conflict(chunk_id) do update set
+  file_path = excluded.file_path,
+  file_mtime = excluded.file_mtime,
+  file_content_hash = excluded.file_content_hash,
+  tombstone = 1`
+
 type ChunkRow = {
   chunk_id: string
   file_path: string
@@ -1358,16 +1385,22 @@ export class ShardedVectorStore implements VectorStore {
         return indexed
       }
       for (const shard of manifest.shards) {
-        if (shard.state !== 'ready' || shard.vectorCount === 0) continue
+        if (shard.state !== 'ready') continue
         const runtime = await this.openShardRuntime(namespaceId, shard.id)
         try {
+          // Tombstoned rows are skipped, except whole-file failure markers
+          // (chunk_id = 'failed:' + path) which must keep their mtime visible
+          // so the incremental diff skips the file instead of re-embedding.
           const rows = runtime.query<{
             file_path: string
             file_mtime: number | null
             file_content_hash: string | null
           }>(
             `select file_path, max(file_mtime) as file_mtime, file_content_hash
-             from chunks where tombstone = 0 group by file_path`,
+             from chunks
+             where tombstone = 0 or chunk_id like ?
+             group by file_path`,
+            [FAILED_FILE_MARKER_PREFIX + '%'],
           )
           for (const row of rows) {
             const existing = indexed.get(row.file_path)
@@ -1590,6 +1623,38 @@ export class ShardedVectorStore implements VectorStore {
     try {
       if (manifest.shards.length > 0) {
         await this.tombstoneFileRows(manifest, namespaceId, file.path)
+      }
+
+      // Whole-file permanent failure (no chunk embedded): persist a tombstoned
+      // marker row carrying the new mtime so `getIndexedFiles` still sees the
+      // file and the incremental diff skips it — otherwise every reconcile
+      // re-embeds the same doomed chunks (wasted API calls). Old rows were
+      // tombstoned above; the marker is tombstoned again by the next rewrite
+      // of this file (idempotent) and reclaimed by vacuum.
+      if (file.chunks.length === 0) {
+        const markerShard = await this.ensureModelShard(
+          manifest,
+          namespaceId,
+          dimension,
+        )
+        const markerRuntime = await this.openShardRuntime(
+          namespaceId,
+          markerShard.id,
+        )
+        try {
+          markerRuntime.exec(INSERT_FAILED_FILE_MARKER_SQL, [
+            FAILED_FILE_MARKER_PREFIX + file.path,
+            file.path,
+            file.mtime,
+            file.contentHash ?? null,
+          ])
+        } finally {
+          await this.closeShardRuntime(markerRuntime)
+        }
+        if (manifest.shards.length > 0) {
+          await this.publishManifest(manifest)
+        }
+        return
       }
 
       // Pre-tombstoned rows are still in the table, so an unchanged chunk
