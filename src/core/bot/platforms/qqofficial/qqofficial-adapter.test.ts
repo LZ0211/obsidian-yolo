@@ -238,6 +238,24 @@ describe('QQOfficialAdapter — malformed gateway frames', () => {
     expect(() => ws.onmessage?.({ data: '{not-json' })).not.toThrow()
     await expect(errorPromise).resolves.toThrow(/JSON|unexpected/i)
   })
+
+  it('does not report message-handler failures as malformed gateway frames', async () => {
+    const { adapter, ws } = await startAdapter()
+    const errorHandler = jest.fn()
+    adapter.onError(errorHandler)
+    adapter.onMessage(() => {
+      throw new Error('message handler failed')
+    })
+
+    expect(() =>
+      sendDispatch(ws, 'C2C_MESSAGE_CREATE', {
+        author: { user_openid: 'u1' },
+        content: 'hello',
+        id: 'msg-1',
+      }),
+    ).toThrow('message handler failed')
+    expect(errorHandler).not.toHaveBeenCalled()
+  })
 })
 
 describe('QQOfficialAdapter — B1 intents', () => {

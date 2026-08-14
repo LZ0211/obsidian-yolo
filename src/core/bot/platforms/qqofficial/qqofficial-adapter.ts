@@ -236,17 +236,18 @@ export class QQOfficialAdapter implements PlatformAdapter {
     const ws = new WebSocket(url)
     this.ws = ws
     ws.onmessage = (event) => {
+      let payload: GatewayPayload
       try {
-        this.handleGatewayPayload(
-          JSON.parse(String(event.data)) as GatewayPayload,
-        )
+        payload = JSON.parse(String(event.data)) as GatewayPayload
       } catch (error) {
         this.fail(errorOf(error), {
           operation: 'receive',
           retryable: true,
           raw: event.data,
         })
+        return
       }
+      this.handleGatewayPayload(payload)
     }
     ws.onerror = () =>
       this.fail(new Error('QQ Gateway connection error.'), {
