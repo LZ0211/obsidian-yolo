@@ -385,8 +385,6 @@ export function createWebYoloRuntime({
           input.compaction == null
             ? []
             : normalizeChatConversationCompactionState(input.compaction)
-        const previousState =
-          agentStates.get(input.conversationId) ?? idleState(input.conversationId)
         emitState(input.conversationId, {
           conversationId: input.conversationId,
           status: 'running',
@@ -433,8 +431,11 @@ export function createWebYoloRuntime({
         } catch (error) {
           // 启动请求失败（503/网络错误）时回收 running 态——否则按钮一直显示
           // 停止生成且 abort 无 runId 可中止，UI 永久卡死只能刷新。
+          const currentState =
+            agentStates.get(input.conversationId) ??
+            idleState(input.conversationId)
           emitState(input.conversationId, {
-            ...previousState,
+            ...currentState,
             status: 'error',
             errorMessage: error instanceof Error ? error.message : String(error),
           })

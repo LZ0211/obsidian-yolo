@@ -395,6 +395,7 @@ describe('createWebYoloRuntime', () => {
       status?: string
       errorMessage?: string
       isRunning?: boolean
+      messageIds?: string[]
     }> = []
     const unsubscribe = runtime.agent.subscribe(
       'conv-1',
@@ -403,6 +404,7 @@ describe('createWebYoloRuntime', () => {
           status: state.status,
           errorMessage: state.errorMessage,
           isRunning: runtime.agent.isRunning('conv-1'),
+          messageIds: state.messages.map((message) => message.id),
         } as never)
       },
       { emitCurrent: false },
@@ -428,6 +430,7 @@ describe('createWebYoloRuntime', () => {
     expect(failed?.status).toBe('error')
     expect(failed?.errorMessage).toContain('503')
     expect(failed?.isRunning).toBe(false)
+    expect(failed?.messageIds).toEqual(['user-1'])
     expect(runtime.agent.isRunning('conv-1')).toBe(false)
   })
 
