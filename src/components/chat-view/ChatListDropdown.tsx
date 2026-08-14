@@ -1176,6 +1176,7 @@ export function ChatListDropdown({
   onTogglePinned,
   onRetryTitle,
   onExportConversation,
+  onOpen,
   openHandleRef,
   children,
 }: {
@@ -1191,6 +1192,7 @@ export function ChatListDropdown({
   onTogglePinned: (conversationId: string) => void | Promise<void>
   onRetryTitle: (conversationId: string) => void | Promise<void>
   onExportConversation: (conversationId: string) => void | Promise<void>
+  onOpen?: () => void | Promise<void>
   /**
    * issue #567 Step 2：外部（`ChatView` 的 view-header action / 命令 /
    * ⋯ 窗格菜单）需要以编程方式打开这个弹层，但它的 `open` 状态完全是本组件
@@ -1502,6 +1504,7 @@ export function ChatListDropdown({
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
       if (nextOpen) {
+        void onOpen?.()
         // 每次打开重新采样排序时间，这是列表顺序唯一的更新时机
         setOrderSnapshot(null)
         setActiveSection(rememberedHistorySection)
@@ -1541,6 +1544,7 @@ export function ChatListDropdown({
     [
       clearContentMatches,
       currentConversationId,
+      onOpen,
       pinnedSortedChatList,
       resetDeleteConfirmationState,
     ],

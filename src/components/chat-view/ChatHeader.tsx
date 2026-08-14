@@ -75,6 +75,7 @@ export type ChatHeaderProps = {
     conversationId: string,
     ref: ChatConversationCliSession,
   ) => Promise<void>
+  refreshNativeCliSessions: () => void | Promise<void>
   activeHistoryConversationId: string
   runSummariesByConversationId: Map<string, AgentConversationRunSummary>
   handleLoadConversation: (conversationId: string) => Promise<void>
@@ -136,6 +137,7 @@ export function ChatHeader({
   openNativeCliSession,
   ensureNativeCliSession,
   dismissNativeCliSession,
+  refreshNativeCliSessions,
   activeHistoryConversationId,
   runSummariesByConversationId,
   handleLoadConversation,
@@ -302,6 +304,7 @@ export function ChatHeader({
               currentConversationId={activeHistoryConversationId}
               runSummariesByConversationId={runSummariesByConversationId}
               openHandleRef={historyOpenHandleRef}
+              onOpen={refreshNativeCliSessions}
               onSelect={(conversationId) => {
                 if (conversationId === activeHistoryConversationId) return
                 const selected = chatList.find(

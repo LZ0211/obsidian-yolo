@@ -217,6 +217,34 @@ describe('ChatListDropdown', () => {
     expect(tryBeginChatListAction(inFlight, 'conversation-1')).toBe(true)
   })
 
+  it('requests an explicit history refresh when opened', () => {
+    const onOpen = jest.fn()
+    const tree = ChatListDropdown({
+      chatList: [],
+      currentConversationId: '',
+      runSummariesByConversationId: new Map(),
+      onSelect: jest.fn(),
+      onDelete: jest.fn(),
+      onUpdateTitle: jest.fn(),
+      onTogglePinned: jest.fn(),
+      onRetryTitle: jest.fn(),
+      onExportConversation: jest.fn(),
+      onOpen,
+      children: <span>History</span>,
+    } as Parameters<typeof ChatListDropdown>[0] & { onOpen: () => void })
+    const root = walkElements(tree).find(
+      (element) => typeof element.props.onOpenChange === 'function',
+    )
+    const onOpenChange = root?.props.onOpenChange as
+      | ((open: boolean) => void)
+      | undefined
+
+    expect(onOpenChange).toBeDefined()
+    onOpenChange?.(true)
+
+    expect(onOpen).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps title filtering and selection on the unified history list', async () => {
     mockSearchQuery = 'alpha'
     const onSelect = jest.fn()

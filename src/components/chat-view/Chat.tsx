@@ -1525,6 +1525,26 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     }
   }, [cliRuntimeAvailable, cliRuntimeScope])
 
+  const refreshNativeCliSessions = useCallback(async () => {
+    if (!cliRuntimeScope || !cliRuntimeAvailable) return
+    try {
+      const result = await cliRuntimeScope.sessionService.discoverSessions()
+      setCliHistoryDiscovery(
+        result.sessions.map((session) => ({
+          ref: session.ref,
+          title: session.title,
+          updatedAt: session.updatedAt,
+          isPinned: session.isPinned,
+          ...(session.pinnedAt !== undefined
+            ? { pinnedAt: session.pinnedAt }
+            : {}),
+        })),
+      )
+    } catch (error: unknown) {
+      console.warn('[YOLO] Failed to refresh native CLI sessions', error)
+    }
+  }, [cliRuntimeAvailable, cliRuntimeScope])
+
   const nativeCliConversationIds = useMemo(() => {
     const persisted = new Set(
       chatList
@@ -1980,6 +2000,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       openNativeCliSession={openNativeCliSession}
       ensureNativeCliSession={ensureNativeCliConversation}
       dismissNativeCliSession={dismissNativeCliSession}
+      refreshNativeCliSessions={refreshNativeCliSessions}
       activeHistoryConversationId={activeHistoryConversationId}
       runSummariesByConversationId={runSummariesByConversationId}
       handleLoadConversation={handleLoadConversation}
