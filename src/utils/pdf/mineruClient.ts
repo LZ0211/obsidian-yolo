@@ -36,6 +36,9 @@ export type MinerURawConversionResult = {
 /** Poll timeout for the gradio SSE event stream (single `requestUrl` call). */
 export const MINERU_EVENT_POLL_TIMEOUT_MS = 120_000
 
+/** Timeout for downloading the terminal FileData payload. */
+export const MINERU_FILE_DOWNLOAD_TIMEOUT_MS = 120_000
+
 export const MINERU_API_NAME = '/convert_to_markdown_stream'
 
 /**
@@ -320,14 +323,21 @@ async function resolveFileDataBytes(
     const url = fileData.url.startsWith('http')
       ? fileData.url
       : `${baseUrl}/${fileData.url.replace(/^\/+/, '')}`
-    const response = await withAbort(
-      requestUrl({
-        url,
-        method: 'GET',
-        headers: { Accept: 'application/octet-stream', ...authHeaders(apiKey) },
-        throw: true,
-      }),
-      signal,
+    const response = await withTimeout(
+      withAbort(
+        requestUrl({
+          url,
+          method: 'GET',
+          headers: {
+            Accept: 'application/octet-stream',
+            ...authHeaders(apiKey),
+          },
+          throw: true,
+        }),
+        signal,
+      ),
+      MINERU_FILE_DOWNLOAD_TIMEOUT_MS,
+      `MinerU FileData download timed out after ${MINERU_FILE_DOWNLOAD_TIMEOUT_MS / 1000}s`,
     )
     return new Uint8Array(response.arrayBuffer)
   }
