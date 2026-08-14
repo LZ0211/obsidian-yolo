@@ -2324,6 +2324,9 @@ export const it: DeepPartial<TranslationKeys> = {
     },
     etc: {
       title: 'Altro',
+      pluginUpdateNotice: 'Notifiche di aggiornamento',
+      pluginUpdateNoticeDesc:
+        'Se attivo, YOLO controlla le nuove versioni e te lo segnala.',
       pluginAutoUpdate: 'Scarica aggiornamenti automaticamente',
       pluginAutoUpdateDesc:
         'Se attivo, le nuove versioni rilevate vengono scaricate automaticamente in background.',
