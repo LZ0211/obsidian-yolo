@@ -26,6 +26,11 @@ import {
   PDF_INDEX_MAX_PAGES,
   extractPdfText,
 } from '../../../utils/pdf/extractPdfText'
+import { convertPdfViaMinerU } from '../../../utils/pdf/mineruCacheStore'
+import {
+  isMinerUEnabled,
+  markMinerUFailure,
+} from '../../../utils/pdf/mineruClient'
 import { createEmbeddingVectorNamespace } from '../rag/embeddingNamespace'
 import {
   type VectorChunkWrite,
@@ -45,6 +50,8 @@ import { adaptVectorHitsToLegacySimilarityRows } from './vectorHitAdapter'
 const PDF_PAGE_CHUNK_CHAR_THRESHOLD = 1500
 const SQLITE_FILE_WORKER_MAX = 8
 const PDF_PROJECTION_SOURCE_PARSER_VERSION = 'pdf-text-v1'
+/** Projection source parser version for MinerU markdown (T3 md-source path). */
+const MINERU_MD_PROJECTION_SOURCE_PARSER_VERSION = 'mineru-md-v1'
 
 export type ReconcileConfig = {
   chunkSize: number
@@ -115,24 +122,27 @@ export type VectorSimilarityTrace = {
   rerankSimilarityMs?: number
 }
 
+/**
+ * Settings snapshot consumed by VectorManager: embedding/rag config plus the
+ * YOLO settings fields the MinerU path needs (mineru config + cache dir
+ * resolution). The runtime object is the full `YoloSettings` (RAGEngine calls
+ * `setSettings` with it), so these fields are structurally available.
+ */
+type VectorManagerSettings = YoloSettingsLike & {
+  embeddingModels?: EmbeddingModel[]
+  ragBackendSettings?: {
+    rebuildRequired?: boolean
+  }
+}
+
 export class VectorManager {
   private app: App
   private vectorStore: VectorStore | null = null
-  private settings: {
-    embeddingModels?: EmbeddingModel[]
-    ragBackendSettings?: {
-      rebuildRequired?: boolean
-    }
-  } | null = null
+  private settings: VectorManagerSettings | null = null
 
   private static isOptionsLike(value: unknown): value is {
     vectorStore?: VectorStore | null
-    settings?: {
-      embeddingModels?: EmbeddingModel[]
-      ragBackendSettings?: {
-        rebuildRequired?: boolean
-      }
-    } | null
+    settings?: VectorManagerSettings | null
   } {
     return (
       !!value &&
@@ -146,12 +156,7 @@ export class VectorManager {
     legacyDbOrOptions?: unknown,
     options?: {
       vectorStore?: VectorStore | null
-      settings?: {
-        embeddingModels?: EmbeddingModel[]
-        ragBackendSettings?: {
-          rebuildRequired?: boolean
-        }
-      } | null
+      settings?: VectorManagerSettings | null
     },
   ) {
     this.app = app
@@ -175,14 +180,7 @@ export class VectorManager {
     return this.vectorStore.vacuum()
   }
 
-  setSettings(
-    settings: {
-      embeddingModels?: EmbeddingModel[]
-      ragBackendSettings?: {
-        rebuildRequired?: boolean
-      }
-    } | null,
-  ) {
+  setSettings(settings: VectorManagerSettings | null) {
     this.settings = settings
   }
 
@@ -399,6 +397,7 @@ export class VectorManager {
       return this.chunkifyPdf(
         file,
         chunkSize,
+        chunkOverlap,
         signal,
         settings,
         onPdfTextExtracted,
@@ -435,6 +434,7 @@ export class VectorManager {
   private async chunkifyPdf(
     file: TFile,
     chunkSize: number,
+    chunkOverlap: number,
     signal?: AbortSignal,
     settings?: YoloSettingsLike | null,
     onPdfTextExtracted?: ReconcileOptions['onPdfTextExtracted'],
@@ -444,6 +444,46 @@ export class VectorManager {
         `[YOLO] Skipping PDF (>${PDF_INDEX_MAX_BYTES} bytes): ${file.path}`,
       )
       return []
+    }
+
+    // MinerU 优先：开关开且接口可用时 PDF 先转 md（取代文本提取）；失败回退。
+    // 配置读取走 this.settings（RAGEngine.setSettings 传入完整 YoloSettings，
+    // 含 mineru 与 yolo 缓存路径配置）。
+    if (isMinerUEnabled(this.settings) && this.settings?.mineru) {
+      try {
+        const mineruResult = await convertPdfViaMinerU({
+          app: this.app,
+          file,
+          options: {
+            enabled: true,
+            baseUrl: this.settings.mineru.baseUrl ?? '',
+            apiKey: this.settings.mineru.apiKey ?? '',
+          },
+          settings: this.settings,
+          signal,
+        })
+        // md 文本作为嵌入源（图片不进索引）；onPdfTextExtracted 报 md 源。
+        return this.chunkifyMarkdownSource(
+          mineruResult.markdown,
+          file,
+          chunkSize,
+          chunkOverlap,
+          signal,
+          onPdfTextExtracted,
+        )
+      } catch (mineruErr) {
+        if (
+          mineruErr instanceof DOMException &&
+          mineruErr.name === 'AbortError'
+        ) {
+          throw mineruErr
+        }
+        markMinerUFailure()
+        console.warn(
+          '[YOLO] MinerU conversion failed for indexing, falling back to text extraction',
+          mineruErr,
+        )
+      }
     }
 
     let pages: { page: number; text: string }[]
@@ -522,6 +562,65 @@ export class VectorManager {
           })
         }
       }
+    }
+    return chunks
+  }
+
+  /**
+   * Chunkify MinerU markdown as the embedding source for a PDF (T3). Reuses
+   * the markdown chunk splitter (paragraph/heading-aware) with line metadata,
+   * mirroring how ordinary markdown files are chunkified; the projection
+   * source is reported as a single-page md source.
+   */
+  private async chunkifyMarkdownSource(
+    markdown: string,
+    file: TFile,
+    chunkSize: number,
+    chunkOverlap: number,
+    signal?: AbortSignal,
+    onPdfTextExtracted?: ReconcileOptions['onPdfTextExtracted'],
+  ): Promise<DesiredChunk[]> {
+    const sanitized = markdown.split('\u0000').join('')
+    const projectionSource = {
+      path: file.path,
+      contentHash: hashProjectionSource({
+        kind: 'markdown',
+        text: sanitized,
+      }),
+      sourceParserVersion: MINERU_MD_PROJECTION_SOURCE_PARSER_VERSION,
+      pages: [{ page: 1, text: sanitized }],
+      ...(signal ? { signal } : {}),
+    }
+    if (onPdfTextExtracted) {
+      try {
+        await onPdfTextExtracted(projectionSource)
+      } catch (error) {
+        console.warn(
+          `[YOLO] PDF projection callback failed: ${file.path}`,
+          error instanceof Error ? error.message : error,
+        )
+      }
+    }
+
+    const docs = await splitMarkdownIntoChunks(
+      sanitized,
+      chunkSize,
+      chunkOverlap,
+    )
+    const chunks: DesiredChunk[] = []
+    for (const doc of docs) {
+      const meta: VectorMetaData = {
+        startLine: doc.startLine,
+        endLine: doc.endLine,
+      }
+      const contentHash = await sha256HexPrefix16(doc.content)
+      chunks.push({
+        path: file.path,
+        content: doc.content,
+        contentHash,
+        metadata: meta,
+        mtime: Math.round(file.stat.mtime),
+      })
     }
     return chunks
   }

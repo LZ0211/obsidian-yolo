@@ -24,6 +24,10 @@ jest.mock('../../../utils/pdf/extractPdfText', () => ({
   extractPdfText: jest.fn(),
 }))
 
+jest.mock('../../../utils/pdf/mineruCacheStore', () => ({
+  convertPdfViaMinerU: jest.fn(),
+}))
+
 // Mock the markdown splitter so tests can assert call args, while still
 // delegating to the real implementation by default (other tests in this
 // file rely on actual chunking behavior).
@@ -42,6 +46,7 @@ import { splitMarkdownIntoChunks } from '../../../core/rag/markdownChunkSplitter
 import { hashProjectionSource } from '../../../core/search/index/projectionSegmenter'
 import type { VectorStore } from '../../../database/modules/rag/VectorStore'
 import { extractPdfText } from '../../../utils/pdf/extractPdfText'
+import { convertPdfViaMinerU } from '../../../utils/pdf/mineruCacheStore'
 
 import { VectorManager } from './VectorManager'
 
@@ -94,6 +99,7 @@ function createVectorStoreManager(
     content?: string
     size?: number
   }>,
+  settingsOverrides?: Record<string, unknown>,
 ) {
   const fileContent = new Map(
     files.map((file) => [file.path, file.content ?? '']),
@@ -127,6 +133,7 @@ function createVectorStoreManager(
           dimension: 3,
         },
       ],
+      ...settingsOverrides,
     } as never,
   })
   return { manager, app }
@@ -393,7 +400,11 @@ describe('VectorManager.reconcile', () => {
     ).join('\n\n')
     const { manager } = createVectorStoreManager(ragStore, [
       { path: 'notes/big.md', mtime: 100, content },
-      { path: 'notes/bigger.md', mtime: 200, content: `${content}\n\n${content}` },
+      {
+        path: 'notes/bigger.md',
+        mtime: 200,
+        content: `${content}\n\n${content}`,
+      },
     ])
     const onProgress = jest.fn()
 
@@ -603,6 +614,95 @@ describe('VectorManager.reconcile', () => {
     })
   })
 
+  it('with VectorStore, MinerU markdown is chunked and reported as the pdf source when MinerU is enabled', async () => {
+    const markdown = '# MinerU Title\n\nParagraph from MinerU conversion.'
+    ;(convertPdfViaMinerU as jest.Mock).mockResolvedValue({
+      markdown,
+      images: [],
+    })
+    const onPdfTextExtracted = jest.fn().mockResolvedValue(undefined)
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(new Map())
+    const { manager } = createVectorStoreManager(
+      ragStore,
+      [{ path: 'notes/a.pdf', extension: 'pdf', mtime: 100, size: 1024 }],
+      {
+        mineru: { enabled: true, baseUrl: 'http://localhost:7860', apiKey: '' },
+      },
+    )
+
+    await manager.reconcile(
+      embeddingModel,
+      { ...baseConfig, indexPdf: true },
+      {
+        scope: { kind: 'all' },
+        onPdfTextExtracted,
+      },
+    )
+
+    expect(convertPdfViaMinerU).toHaveBeenCalledTimes(1)
+    expect(convertPdfViaMinerU).toHaveBeenCalledWith(
+      expect.objectContaining({
+        app: expect.anything(),
+        file: expect.objectContaining({ path: 'notes/a.pdf' }),
+        options: {
+          enabled: true,
+          baseUrl: 'http://localhost:7860',
+          apiKey: '',
+        },
+        settings: expect.objectContaining({
+          mineru: {
+            enabled: true,
+            baseUrl: 'http://localhost:7860',
+            apiKey: '',
+          },
+        }),
+      }),
+    )
+    expect(extractPdfText).not.toHaveBeenCalled()
+    expect(onPdfTextExtracted).toHaveBeenCalledWith({
+      path: 'notes/a.pdf',
+      contentHash: hashProjectionSource({ kind: 'markdown', text: markdown }),
+      sourceParserVersion: expect.any(String),
+      pages: [{ page: 1, text: markdown }],
+    })
+    // Chunks come from the MinerU markdown.
+    expect(ragStore.replaceFile).toHaveBeenCalledTimes(1)
+    const [, fileWrite] = ragStore.replaceFile.mock.calls[0]
+    expect(
+      (fileWrite.chunks as Array<{ text: string }>)
+        .map((chunk) => chunk.text)
+        .join('\n'),
+    ).toContain('MinerU Title')
+  })
+
+  it('with VectorStore, falls back to extractPdfText when MinerU conversion fails', async () => {
+    ;(convertPdfViaMinerU as jest.Mock).mockRejectedValue(
+      new Error('mineru service unavailable'),
+    )
+    ;(extractPdfText as jest.Mock).mockResolvedValueOnce({
+      pages: [{ page: 1, text: 'Page one' }],
+    })
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(new Map())
+    const { manager } = createVectorStoreManager(
+      ragStore,
+      [{ path: 'notes/a.pdf', extension: 'pdf', mtime: 100, size: 1024 }],
+      {
+        mineru: { enabled: true, baseUrl: 'http://localhost:7860', apiKey: '' },
+      },
+    )
+
+    await manager.reconcile(
+      embeddingModel,
+      { ...baseConfig, indexPdf: true },
+      { scope: { kind: 'all' } },
+    )
+
+    expect(convertPdfViaMinerU).toHaveBeenCalledTimes(1)
+    expect(extractPdfText).toHaveBeenCalledTimes(1)
+  })
+
   it('with VectorStore, transient embedding failure rolls back the file and throws RagIndexIncompleteError', async () => {
     const ragStore = fakeVectorStore()
     ragStore.getIndexedFiles.mockResolvedValue(new Map())
@@ -694,9 +794,8 @@ describe('VectorManager.reconcile', () => {
     ragStore.getFileReadiness.mockResolvedValue(
       new Map([['notes/a.md', { path: 'notes/a.md', vectorReady: false }]]),
     )
-    const embedSpy = (
-      embeddingModel as unknown as { getEmbedding: jest.Mock }
-    ).getEmbedding
+    const embedSpy = (embeddingModel as unknown as { getEmbedding: jest.Mock })
+      .getEmbedding
     embedSpy.mockClear()
     await manager.reconcile(embeddingModel, baseConfig, {
       scope: { kind: 'all' },

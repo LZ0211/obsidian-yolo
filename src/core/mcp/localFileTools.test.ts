@@ -39,6 +39,34 @@ jest.mock('../search/metadataSearch', () => ({
   searchFilesByMetadataDsl: jest.fn(),
 }))
 
+// MinerU PDF conversion + legacy PDF pipeline mocks (fs_read MinerU branch).
+jest.mock('../../utils/pdf/mineruCacheStore', () => ({
+  convertPdfViaMinerU: jest.fn(),
+}))
+
+jest.mock('../../utils/pdf/slicePdfPages', () => ({
+  PdfSliceError: class PdfSliceError extends Error {
+    kind: string
+    constructor(kind: string, message: string) {
+      super(message)
+      this.kind = kind
+      this.name = 'PdfSliceError'
+    }
+  },
+  slicePdfPages: jest.fn(),
+}))
+
+jest.mock('../../utils/pdf/extractPdfText', () => ({
+  PDF_INDEX_MAX_BYTES: 50 * 1024 * 1024,
+  PDF_INDEX_MAX_PAGES: 500,
+  extractPdfText: jest.fn(),
+}))
+
+jest.mock('../../utils/llm/image', () => ({
+  ...jest.requireActual('../../utils/llm/image'),
+  tFileToImageDataUrl: jest.fn(async () => 'data:image/png;base64,fake'),
+}))
+
 import { App, TFile, TFolder } from 'obsidian'
 
 import type { YoloSettings } from '../../settings/schema/setting.types'
@@ -47,6 +75,9 @@ import {
   createCompleteToolCallArguments,
 } from '../../types/tool-call.types'
 import { editUndoSnapshotStore } from '../../utils/chat/editUndoSnapshotStore'
+import { extractPdfText } from '../../utils/pdf/extractPdfText'
+import { convertPdfViaMinerU } from '../../utils/pdf/mineruCacheStore'
+import { slicePdfPages } from '../../utils/pdf/slicePdfPages'
 import {
   getPendingDangerousBashApproval,
   resolveDangerousBashApproval,
@@ -2708,6 +2739,120 @@ describe('fs_read wikilink resolution', () => {
     expect(results[0]).toEqual(
       expect.objectContaining({ path: 'Skills/pkg/reference.md', ok: true }),
     )
+  })
+})
+
+describe('fs_read MinerU PDF integration', () => {
+  const makePdfFile = (path = 'docs/report.pdf'): TFile =>
+    Object.assign(new TFile(), {
+      path,
+      name: path.split('/').pop(),
+      extension: 'pdf',
+      stat: { size: 2048, mtime: 1000 },
+    })
+
+  const makeReadApp = (file: TFile): App =>
+    ({
+      vault: {
+        getFileByPath: jest
+          .fn()
+          .mockImplementation((path: string) =>
+            path === file.path ? file : null,
+          ),
+        readBinary: jest.fn().mockResolvedValue(new ArrayBuffer(4)),
+      },
+      metadataCache: {
+        getFirstLinkpathDest: jest.fn().mockReturnValue(null),
+        getFileCache: jest.fn().mockReturnValue(null),
+      },
+    }) as unknown as App
+
+  const mineruSettings = {
+    mineru: { enabled: true, baseUrl: 'http://localhost:7860', apiKey: '' },
+  } as unknown as YoloSettings
+
+  const parseSuccessResults = (result: {
+    status: ToolCallResponseStatus
+    text?: string
+  }): Array<Record<string, unknown>> => {
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    return (
+      JSON.parse((result as { text: string }).text) as {
+        results: Array<Record<string, unknown>>
+      }
+    ).results
+  }
+
+  beforeEach(() => {
+    ;(convertPdfViaMinerU as jest.Mock).mockReset()
+    ;(extractPdfText as jest.Mock).mockReset()
+    ;(slicePdfPages as jest.Mock).mockReset()
+  })
+
+  it('reads PDF content from MinerU markdown when MinerU is enabled (no slice/extract)', async () => {
+    ;(convertPdfViaMinerU as jest.Mock).mockResolvedValue({
+      markdown: '# MinerU Report\n\nConverted content.',
+      images: [],
+    })
+    const file = makePdfFile()
+
+    const result = await callLocalFileTool({
+      app: makeReadApp(file),
+      settings: mineruSettings,
+      toolName: 'fs_read',
+      args: { paths: ['docs/report.pdf'] },
+    })
+
+    const results = parseSuccessResults(result)
+    expect(results[0]).toEqual(
+      expect.objectContaining({
+        path: 'docs/report.pdf',
+        ok: true,
+        content: '# MinerU Report\n\nConverted content.',
+        effectiveModality: 'text',
+      }),
+    )
+    expect(convertPdfViaMinerU).toHaveBeenCalledTimes(1)
+    expect(convertPdfViaMinerU).toHaveBeenCalledWith(
+      expect.objectContaining({
+        app: expect.anything(),
+        file,
+        options: {
+          enabled: true,
+          baseUrl: 'http://localhost:7860',
+          apiKey: '',
+        },
+        settings: mineruSettings,
+      }),
+    )
+    expect(extractPdfText).not.toHaveBeenCalled()
+    expect(slicePdfPages).not.toHaveBeenCalled()
+  })
+
+  it('falls back to text extraction when MinerU conversion fails', async () => {
+    ;(convertPdfViaMinerU as jest.Mock).mockRejectedValue(
+      new Error('mineru service unavailable'),
+    )
+    ;(extractPdfText as jest.Mock).mockResolvedValue({
+      pages: [{ page: 1, text: 'Fallback page text' }],
+    })
+    const file = makePdfFile()
+
+    const result = await callLocalFileTool({
+      app: makeReadApp(file),
+      settings: mineruSettings,
+      toolName: 'fs_read',
+      args: { paths: ['docs/report.pdf'] },
+    })
+
+    const results = parseSuccessResults(result)
+    expect(results[0]).toEqual(
+      expect.objectContaining({
+        path: 'docs/report.pdf',
+        ok: true,
+      }),
+    )
+    expect(extractPdfText).toHaveBeenCalledTimes(1)
   })
 })
 

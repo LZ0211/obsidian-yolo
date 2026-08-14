@@ -298,6 +298,7 @@ import { isUntitledConversationTitle } from './utils/chat/conversationTitle'
 import { stableStringify } from './utils/json/stableStringify'
 import { applyKnownMaxContextTokensToChatModels } from './utils/llm/model-capability-registry'
 import { getMentionableBlockData } from './utils/obsidian'
+import { resetMinerUSessionState } from './utils/pdf/mineruClient'
 import { ensureBufferByteLengthCompat } from './utils/runtime/ensureBufferByteLengthCompat'
 import { YOLO_ICON_ID, YOLO_ICON_SVG } from './yoloIcon'
 
@@ -2300,6 +2301,8 @@ export default class YoloPlugin extends Plugin {
   async onload() {
     this.isUnloaded = false
     this.cliRuntimeCapabilityError = null
+    // 新会话（插件加载）重置 MinerU 会话级熔断计数。
+    resetMinerUSessionState()
     // YOLO itself is the injection target: other plugins can register tools
     // at any time (even after YOLO onload). Registration/unregistration
     // invalidates the MCP available-tools cache, so the next agent run sees

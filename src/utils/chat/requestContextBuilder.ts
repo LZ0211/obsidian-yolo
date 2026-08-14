@@ -98,6 +98,12 @@ import {
   extractPdfText,
   extractPdfTextFromBase64,
 } from '../pdf/extractPdfText'
+import { convertPdfViaMinerU } from '../pdf/mineruCacheStore'
+import {
+  isMinerUEnabled,
+  markMinerUFailure,
+  resolveMinerUImageRefs,
+} from '../pdf/mineruClient'
 import { prefixTimeContext } from '../prompt/timeContext'
 
 import {
@@ -300,6 +306,8 @@ type MentionedFileContextEntry = {
 }
 
 const MAX_MENTIONED_FILE_OUTLINES = 10
+/** 单份 MinerU 转换最多附带图片数（与 fs_read 分支一致）。 */
+const MINERU_ATTACHMENT_IMAGE_LIMIT = 8
 
 /**
  * Strip image_url content parts from messages when the target model does not
@@ -579,6 +587,22 @@ export class RequestContextBuilder {
 
   private getMentionContextMode(): MentionContextMode {
     return this.settings.chatOptions?.mentionContextMode ?? 'light'
+  }
+
+  /**
+   * Whether the active chat model accepts image input, resolved from settings
+   * (mirrors fs_read). Unknown model → allow; the request-time
+   * `stripUnsupportedImages` pass is the authoritative gate for the actual
+   * run model, so a stale/wrong id here can never ship images to a text-only
+   * endpoint.
+   */
+  private get chatModelAcceptsImages(): boolean {
+    const chatModelId = this.settings.chatModelId
+    const activeChatModel =
+      chatModelId && this.settings.chatModels
+        ? (this.settings.chatModels.find((m) => m.id === chatModelId) ?? null)
+        : null
+    return activeChatModel ? chatModelSupportsVision(activeChatModel) : true
   }
 
   /**
@@ -1643,10 +1667,18 @@ ${message.annotations
           },
         }),
       ),
+      ...filePrompt.imageDataUrls.map(
+        (data): ContentPart => ({
+          type: 'image_url',
+          image_url: {
+            url: data,
+          },
+        }),
+      ),
       ...pdfDocumentParts,
       {
         type: 'text',
-        text: `${filePrompt}${localFolderPrompt}${blockPrompt}${assistantQuotePrompt}${webSelectionPrompt}${officePrompt}${textAttachmentPrompt}${legacyPdfFallbackText}${selectedSkillsPrompt}\n\n${query}\n\n`,
+        text: `${filePrompt.text}${localFolderPrompt}${blockPrompt}${assistantQuotePrompt}${webSelectionPrompt}${officePrompt}${textAttachmentPrompt}${legacyPdfFallbackText}${selectedSkillsPrompt}\n\n${query}\n\n`,
       },
     ]
   }
@@ -2511,14 +2543,17 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
   }: {
     files: TFile[]
     folders: TFolder[]
-  }): Promise<string> {
+  }): Promise<{ text: string; imageDataUrls: string[] }> {
     const mentionContextMode = this.getMentionContextMode()
 
     if (mentionContextMode === 'light') {
-      return this.buildMentionedPathsPrompt({
-        files,
-        folders,
-      })
+      return {
+        text: await this.buildMentionedPathsPrompt({
+          files,
+          folders,
+        }),
+        imageDataUrls: [],
+      }
     }
 
     const folderPrompt = await this.buildMentionedPathsPrompt({
@@ -2529,23 +2564,27 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
       files,
     })
 
-    return `${folderPrompt}${fullFilePrompt}`
+    return {
+      text: `${folderPrompt}${fullFilePrompt.text}`,
+      imageDataUrls: fullFilePrompt.imageDataUrls,
+    }
   }
 
   private async buildFullMentionedFilesPrompt({
     files,
   }: {
     files: TFile[]
-  }): Promise<string> {
+  }): Promise<{ text: string; imageDataUrls: string[] }> {
     const uniqueFiles = this.collectMentionedFiles({
       files,
       folders: [],
     }).map(({ file }) => file)
 
     if (uniqueFiles.length === 0) {
-      return ''
+      return { text: '', imageDataUrls: [] }
     }
 
+    const mineruImageDataUrls: string[] = []
     const fileEntries = await Promise.all(
       uniqueFiles.map(async (file) => {
         try {
@@ -2557,14 +2596,10 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
           const ext = file.extension?.toLowerCase() ?? ''
           let rawContent: string
           if (ext === 'pdf') {
-            const { pages } = await extractPdfText(this.app, file, {
-              maxBinaryBytes: PDF_INDEX_MAX_BYTES,
-              maxPages: PDF_INDEX_MAX_PAGES,
-              settings: this.settings,
-            })
-            rawContent = pages
-              .map((p) => `<page ${p.page}>\n${p.text}\n</page ${p.page}>`)
-              .join('\n')
+            rawContent = await this.readMentionedPdfContent(
+              file,
+              mineruImageDataUrls,
+            )
           } else {
             rawContent = await readTFileContent(file, this.app.vault)
           }
@@ -2580,7 +2615,7 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
     )
 
     if (readableFileEntries.length === 0) {
-      return ''
+      return { text: '', imageDataUrls: mineruImageDataUrls }
     }
 
     const entriesWithMeta = readableFileEntries.map(({ file, content }) => {
@@ -2622,7 +2657,70 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
       })
       .join('')
 
-    return `${header}${body}`
+    return { text: `${header}${body}`, imageDataUrls: mineruImageDataUrls }
+  }
+
+  /**
+   * Reads a mentioned PDF for the full-content prompt: MinerU markdown when
+   * enabled (image refs resolved to data URLs and pushed to `imageDataUrls`
+   * when the active model accepts images), legacy per-page text extraction
+   * otherwise. Hard read failures propagate so the per-file catch in
+   * `buildFullMentionedFilesPrompt` drops the entry.
+   */
+  private async readMentionedPdfContent(
+    file: TFile,
+    imageDataUrls: string[],
+  ): Promise<string> {
+    // MinerU 优先：开关开且接口可用时 PDF 先转 md + 图片（取代文本提取）。
+    if (isMinerUEnabled(this.settings) && this.settings.mineru) {
+      try {
+        const mineruResult = await convertPdfViaMinerU({
+          app: this.app,
+          file,
+          options: this.settings.mineru,
+          settings: this.settings,
+        })
+        const { refs, markdown } = resolveMinerUImageRefs(
+          mineruResult.markdown,
+          mineruResult.images,
+          MINERU_ATTACHMENT_IMAGE_LIMIT,
+        )
+        if (this.chatModelAcceptsImages) {
+          for (const vaultPath of refs) {
+            const imageFile = this.app.vault.getFileByPath(vaultPath)
+            if (!imageFile) continue
+            try {
+              imageDataUrls.push(
+                await tFileToImageDataUrl(this.app, imageFile, {
+                  cache: { enabled: true, settings: this.settings },
+                }),
+              )
+            } catch (error) {
+              console.warn(
+                '[YOLO] Failed to read MinerU image',
+                vaultPath,
+                error,
+              )
+            }
+          }
+        }
+        return markdown
+      } catch (mineruErr) {
+        markMinerUFailure()
+        console.warn(
+          '[YOLO] MinerU conversion failed for mentioned PDF, falling back to text extraction',
+          mineruErr,
+        )
+      }
+    }
+    const { pages } = await extractPdfText(this.app, file, {
+      maxBinaryBytes: PDF_INDEX_MAX_BYTES,
+      maxPages: PDF_INDEX_MAX_PAGES,
+      settings: this.settings,
+    })
+    return pages
+      .map((p) => `<page ${p.page}>\n${p.text}\n</page ${p.page}>`)
+      .join('\n')
   }
 
   private collectMentionedFiles({
@@ -2823,7 +2921,9 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
       if (store.capability !== 'sqlite') return null
 
       const recentUserMessages = messages
-        .filter((message): message is ChatUserMessage => message.role === 'user')
+        .filter(
+          (message): message is ChatUserMessage => message.role === 'user',
+        )
         .slice(-MAX_RECALL_RECENT_USER_MESSAGES)
         .map((message) =>
           message.content

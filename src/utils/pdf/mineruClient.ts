@@ -455,6 +455,48 @@ export async function probeMinerU(
   }
 }
 
+/** Minimal structural view of the settings object the three-way integration
+ * reads MinerU config from (full `YoloSettings.mineru` is assignable). */
+type MinerUSettingsLike = {
+  mineru?: {
+    enabled?: boolean
+    baseUrl?: string
+    apiKey?: string
+  }
+}
+
+// Session-level circuit breaker shared by the three-way integration (fs_read /
+// RAG indexing / attachment context). A single conversion failure is transient
+// (server restart, timeout); three consecutive failures mark MinerU unavailable
+// for the rest of the session so slow paths fall back to the legacy PDF
+// pipeline without burning a network round-trip per call.
+let consecutiveFailures = 0
+let sessionUnavailable = false
+const MINERU_CONSECUTIVE_FAILURE_THRESHOLD = 3
+
+/** MinerU availability gate: switch on + baseUrl configured + not circuit-broken. */
+export function isMinerUEnabled(
+  settings: MinerUSettingsLike | null | undefined,
+): boolean {
+  if (sessionUnavailable) return false
+  const mineru = settings?.mineru
+  return Boolean(mineru?.enabled && (mineru.baseUrl ?? '').trim().length > 0)
+}
+
+/** Counts one conversion failure; the third consecutive one breaks the session. */
+export function markMinerUFailure(): void {
+  consecutiveFailures += 1
+  if (consecutiveFailures >= MINERU_CONSECUTIVE_FAILURE_THRESHOLD) {
+    sessionUnavailable = true
+  }
+}
+
+/** Clears the failure counter and the session break (call at session start). */
+export function resetMinerUSessionState(): void {
+  consecutiveFailures = 0
+  sessionUnavailable = false
+}
+
 const MARKDOWN_IMAGE_REF_RE = /!\[([^\]]*)\]\(([^)]+)\)/g
 
 /**

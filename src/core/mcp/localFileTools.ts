@@ -40,6 +40,7 @@ import { editUndoSnapshotStore } from '../../utils/chat/editUndoSnapshotStore'
 import { isContextPrunableToolName } from '../../utils/chat/tool-context-pruning'
 import { collectWikilinkPaths } from '../../utils/llm/annotate-wikilinks'
 import { extractMarkdownImages } from '../../utils/llm/extract-markdown-images'
+import { tFileToImageDataUrl } from '../../utils/llm/image'
 import {
   chatModelSupportsPdf,
   chatModelSupportsVision,
@@ -57,6 +58,12 @@ import {
   PDF_INDEX_MAX_PAGES,
   extractPdfText,
 } from '../../utils/pdf/extractPdfText'
+import { convertPdfViaMinerU } from '../../utils/pdf/mineruCacheStore'
+import {
+  isMinerUEnabled,
+  markMinerUFailure,
+  resolveMinerUImageRefs,
+} from '../../utils/pdf/mineruClient'
 import { renderPdfPagesToImages } from '../../utils/pdf/renderPdfPagesToImages'
 import { PdfSliceError, slicePdfPages } from '../../utils/pdf/slicePdfPages'
 import {
@@ -2552,6 +2559,81 @@ const findWorkspacePolicyViolation = ({
   return null
 }
 
+/** 单张 MinerU 图片（vault 路径）→ image_url content part；解析/读取失败跳过。 */
+async function buildMinerUImageParts(
+  app: App,
+  refs: string[],
+  settings: YoloSettings | undefined,
+): Promise<ContentPart[]> {
+  const parts: ContentPart[] = []
+  for (const vaultPath of refs) {
+    const imageFile = app.vault.getFileByPath(vaultPath)
+    if (!imageFile) continue
+    try {
+      const dataUrl = await tFileToImageDataUrl(app, imageFile, {
+        cache: { enabled: true, settings },
+      })
+      parts.push({ type: 'image_url', image_url: { url: dataUrl } })
+    } catch (error) {
+      console.warn('[YOLO] Failed to read MinerU image', vaultPath, error)
+    }
+  }
+  return parts
+}
+
+/**
+ * MinerU-first PDF read shared by the fs_read PDF branches: converts the PDF
+ * to markdown + images and resolves the image refs to content parts (capped at
+ * 8). Returns null when MinerU is disabled/unavailable or the conversion
+ * failed (callers fall back to the legacy pipeline). AbortError propagates so
+ * callers can return the Aborted status like the legacy extract path.
+ */
+async function readPdfViaMinerU({
+  app,
+  file,
+  settings,
+  signal,
+  includeImages,
+}: {
+  app: App
+  file: TFile
+  settings: YoloSettings | undefined
+  signal?: AbortSignal
+  includeImages: boolean
+}): Promise<{ markdown: string; imageParts: ContentPart[] } | null> {
+  if (!isMinerUEnabled(settings) || !settings?.mineru) {
+    return null
+  }
+  try {
+    const mineruResult = await convertPdfViaMinerU({
+      app,
+      file,
+      options: settings.mineru,
+      settings,
+      signal,
+    })
+    const { refs, markdown } = resolveMinerUImageRefs(
+      mineruResult.markdown,
+      mineruResult.images,
+      8, // 图片上限
+    )
+    const imageParts = includeImages
+      ? await buildMinerUImageParts(app, refs, settings)
+      : []
+    return { markdown, imageParts }
+  } catch (mineruErr) {
+    if (mineruErr instanceof DOMException && mineruErr.name === 'AbortError') {
+      throw mineruErr
+    }
+    markMinerUFailure()
+    console.warn(
+      '[YOLO] MinerU conversion failed, falling back to default PDF handling',
+      mineruErr,
+    )
+    return null
+  }
+}
+
 export async function callLocalFileTool({
   app,
   settings,
@@ -2792,7 +2874,9 @@ export async function callLocalFileTool({
           }
           default:
             // Unreachable: resolve+validate reject unknown actions above.
-            throw new Error(`Unsupported context_manage action: ${capability.action}`)
+            throw new Error(
+              `Unsupported context_manage action: ${capability.action}`,
+            )
         }
       }
 
@@ -3244,6 +3328,53 @@ export async function callLocalFileTool({
                 continue
               }
 
+              // MinerU 优先：开关开且接口可用时 PDF 先转 md + 图片（取代文本提取）。
+              let mineruResult: Awaited<
+                ReturnType<typeof readPdfViaMinerU>
+              > | null = null
+              try {
+                mineruResult = await readPdfViaMinerU({
+                  app,
+                  file,
+                  settings,
+                  signal,
+                  includeImages: chatModelAcceptsImages,
+                })
+              } catch (mineruErr) {
+                if (
+                  mineruErr instanceof DOMException &&
+                  mineruErr.name === 'AbortError'
+                ) {
+                  return { status: ToolCallResponseStatus.Aborted }
+                }
+                throw mineruErr
+              }
+              if (mineruResult) {
+                // MinerU 一次性返回整份 md，无分页语义；行号 = md 行数。
+                const totalLines =
+                  mineruResult.markdown.length === 0
+                    ? 0
+                    : mineruResult.markdown.split('\n').length
+                results.push({
+                  path,
+                  ok: true,
+                  totalLines,
+                  hasMoreBelow: false,
+                  nextStartLine: null,
+                  content: mineruResult.markdown,
+                  effectiveModality: 'text' as const,
+                  ...wikilinkResultFields,
+                  ...(subpathWarning ? { warning: subpathWarning } : {}),
+                })
+                if (mineruResult.imageParts.length > 0) {
+                  perFileAttachmentParts.push({
+                    path,
+                    parts: mineruResult.imageParts,
+                  })
+                }
+                continue
+              }
+
               // Slice failed — fall through to text extraction with a warning prefix.
               let pdfSliceFallbackPages: { page: number; text: string }[] = []
               try {
@@ -3401,6 +3532,53 @@ export async function callLocalFileTool({
                       ),
                     },
                   })),
+                })
+              }
+              continue
+            }
+
+            // MinerU 优先：开关开且接口可用时 PDF 先转 md + 图片（取代文本提取）。
+            let mineruResult: Awaited<
+              ReturnType<typeof readPdfViaMinerU>
+            > | null = null
+            try {
+              mineruResult = await readPdfViaMinerU({
+                app,
+                file,
+                settings,
+                signal,
+                includeImages: chatModelAcceptsImages,
+              })
+            } catch (mineruErr) {
+              if (
+                mineruErr instanceof DOMException &&
+                mineruErr.name === 'AbortError'
+              ) {
+                return { status: ToolCallResponseStatus.Aborted }
+              }
+              throw mineruErr
+            }
+            if (mineruResult) {
+              // MinerU 一次性返回整份 md，无分页语义；行号 = md 行数。
+              const totalLines =
+                mineruResult.markdown.length === 0
+                  ? 0
+                  : mineruResult.markdown.split('\n').length
+              results.push({
+                path,
+                ok: true,
+                totalLines,
+                hasMoreBelow: false,
+                nextStartLine: null,
+                content: mineruResult.markdown,
+                effectiveModality: 'text' as const,
+                ...wikilinkResultFields,
+                ...(subpathWarning ? { warning: subpathWarning } : {}),
+              })
+              if (mineruResult.imageParts.length > 0) {
+                perFileAttachmentParts.push({
+                  path,
+                  parts: mineruResult.imageParts,
                 })
               }
               continue

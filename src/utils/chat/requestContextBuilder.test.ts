@@ -18,6 +18,10 @@ jest.mock('../llm/image', () => ({
   tFileToImageDataUrl: jest.fn(async () => 'data:image/png;base64,fake'),
 }))
 
+jest.mock('../pdf/mineruCacheStore', () => ({
+  convertPdfViaMinerU: jest.fn(),
+}))
+
 jest.mock('../../core/skills/liteSkills', () => ({
   ...jest.requireActual('../../core/skills/liteSkills'),
   getLiteSkillDocument: jest.fn(),
@@ -37,6 +41,7 @@ import type { ChatModel } from '../../types/chat-model.types'
 import type { ContentPart, RequestMessage } from '../../types/llm/request'
 import { ToolCallResponseStatus } from '../../types/tool-call.types'
 import { createCompleteToolCallArguments } from '../../types/tool-call.types'
+import { convertPdfViaMinerU } from '../pdf/mineruCacheStore'
 
 import {
   RequestContextBuilder,
@@ -819,6 +824,96 @@ describe('RequestContextBuilder compileUserMessagePrompt', () => {
       '### `notes/empty.md` (full content, 0 lines)',
     )
     expect(textContent).toContain('```notes/empty.md\n\n```')
+  })
+})
+
+describe('RequestContextBuilder MinerU PDF mention integration', () => {
+  const visionModel = {
+    id: 'vision-model',
+    providerId: 'openai',
+    name: 'Vision',
+    modalities: ['text', 'vision'],
+  } as unknown as ChatModel
+  const textOnlyModel = {
+    id: 'text-model',
+    providerId: 'openai',
+    name: 'Text',
+    modalities: ['text'],
+  } as unknown as ChatModel
+
+  const MINERU_IMAGE_VAULT_PATH = 'YOLO/mineru-cache/abc/images/fig1.png'
+
+  const buildSettings = (model: ChatModel) =>
+    ({
+      systemPrompt: '',
+      currentAssistantId: undefined,
+      assistants: [],
+      chatModelId: model.id,
+      chatModels: [model],
+      chatOptions: {
+        includeCurrentFileContent: true,
+        mentionContextMode: 'full',
+      },
+      mineru: { enabled: true, baseUrl: 'http://localhost:7860', apiKey: '' },
+      skills: {},
+    }) as unknown as YoloSettings
+
+  beforeEach(() => {
+    ;(convertPdfViaMinerU as jest.Mock).mockReset()
+    ;(convertPdfViaMinerU as jest.Mock).mockResolvedValue({
+      markdown: '# MinerU PDF\n\n![figure](images/fig1.png)',
+      images: [{ name: 'fig1.png', vaultPath: MINERU_IMAGE_VAULT_PATH }],
+    })
+  })
+
+  const compilePdfMention = async (model: ChatModel) => {
+    const pdfFile = createMockFile('notes/paper.pdf')
+    const imageFile = createMockFile(MINERU_IMAGE_VAULT_PATH)
+    const app = createMockApp({
+      files: [pdfFile, imageFile],
+      fileContents: new Map(),
+    })
+    const builder = new RequestContextBuilder(
+      app as never,
+      buildSettings(model),
+    )
+    return builder.compileUserMessagePrompt({
+      message: createUserMessage([{ type: 'file', file: pdfFile }]),
+    })
+  }
+
+  it('includes md text + resolved image parts for a vision-capable model', async () => {
+    const result = await compilePdfMention(visionModel)
+
+    const parts = result.promptContent as ContentPart[]
+    expect(Array.isArray(parts)).toBe(true)
+    const textPart = parts.find((part) => part.type === 'text')
+    expect(textPart?.type === 'text' && textPart.text).toContain('# MinerU PDF')
+    // Image reference in the markdown was rewritten to the vault path.
+    expect(textPart?.type === 'text' && textPart.text).toContain(
+      `![figure](${MINERU_IMAGE_VAULT_PATH})`,
+    )
+    // No legacy per-page text extraction was used.
+    expect(textPart?.type === 'text' && textPart.text).not.toContain('<page ')
+    // Resolved ref is shipped as an image part.
+    expect(parts).toEqual(
+      expect.arrayContaining([
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/png;base64,fake' },
+        },
+      ]),
+    )
+    expect(convertPdfViaMinerU).toHaveBeenCalledTimes(1)
+  })
+
+  it('includes only md text for a text-only model (no image parts)', async () => {
+    const result = await compilePdfMention(textOnlyModel)
+
+    const parts = result.promptContent as ContentPart[]
+    expect(parts.some((part) => part.type === 'image_url')).toBe(false)
+    const textPart = parts.find((part) => part.type === 'text')
+    expect(textPart?.type === 'text' && textPart.text).toContain('# MinerU PDF')
   })
 })
 
@@ -2427,7 +2522,9 @@ describe('RequestContextBuilder system prompt freezing', () => {
   it('appends fixed runtime instructions and suppresses the catalogue when runtimeOverrides are set (S2 regression: delegated runs lost both)', async () => {
     const settings = {
       ...baseSettings,
-      assistants: [{ id: 'role-1', name: 'Research Analyst', delegatable: true }],
+      assistants: [
+        { id: 'role-1', name: 'Research Analyst', delegatable: true },
+      ],
     } as unknown as YoloSettings
     const builder = new RequestContextBuilder(makeApp(), settings, {
       includeSkills: false,
@@ -2449,9 +2546,7 @@ describe('RequestContextBuilder system prompt freezing', () => {
     // RED before S2: the builder had no runtime-override mechanism at all —
     // the isolation instructions were missing and the catalogue was always
     // injected, even into delegated child runs that cannot dispatch roles.
-    expect(systemContent).toContain(
-      'Isolate me from the parent conversation.',
-    )
+    expect(systemContent).toContain('Isolate me from the parent conversation.')
     expect(systemContent).not.toContain('delegatable_assistants')
     expect(systemContent).not.toContain('role-1')
   })
@@ -3257,7 +3352,9 @@ describe('RequestContextBuilder local-folder mentionables', () => {
     })
 
     const textContent = getTextContent(result.promptContent)
-    expect(textContent).toContain('## Mentioned Local Folders (outside the vault)')
+    expect(textContent).toContain(
+      '## Mentioned Local Folders (outside the vault)',
+    )
     expect(textContent).toContain('- `D:/workspace/project-a`')
     expect(textContent).toContain('- `D:/workspace/project-b`')
     expect(textContent).toContain(
