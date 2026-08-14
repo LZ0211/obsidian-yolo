@@ -15,7 +15,11 @@ import {
   chatCommandOk,
 } from '../../core/chat-runtime/contract'
 import type { CliSessionRef } from '../../core/cli-runtime/types'
-import { registerChatRuntimeRoutes } from '../../core/web-server/routes/chatRuntimeRoutes'
+import {
+  closeChatRuntimeSessionStreams,
+  disposeChatRuntimeRouteCaches,
+  registerChatRuntimeRoutes,
+} from '../../core/web-server/routes/chatRuntimeRoutes'
 import { WebRouter } from '../../core/web-server/WebRouter'
 
 import { createWebCliRuntimeScope } from './WebCliRuntimeScope'
@@ -150,7 +154,9 @@ function createFakeChatRuntime(conversationId: string) {
     }),
     dispose: async () => undefined,
   }
-  return { runtime }
+  // streamSubscriberCount 供会话撤销测试观察重连行为：撤销后不得产生新的
+  // 流订阅。挂在返回对象上而非 runtime 上（runtime 有 ChatRuntime 类型约束）。
+  return { runtime, streamSubscriberCount: () => listeners.size }
 }
 
 describe('WebCliRuntimeScope BS-mode e2e（真实 HTTP + SSE）', () => {
@@ -232,6 +238,69 @@ describe('WebCliRuntimeScope BS-mode e2e（真实 HTTP + SSE）', () => {
         { runtimeId: 'claude-code', nativeSessionId: 'web-1' },
         false,
       )
+    } finally {
+      await webScope?.dispose()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      ;(server as Server & { closeAllConnections?: () => void })
+        .closeAllConnections?.()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
+  it('terminates the stream on session revoke (session_closed) without reconnecting', async () => {
+    // chat-runtime 路由的 runtimeCache 是模块级且按空 conversationId 键控，
+    // 上一个用例的 fake runtime 会被本用例的流请求命中——先清缓存隔离。
+    await disposeChatRuntimeRouteCaches()
+    const conversationId = `scope-revoke-${Date.now()}`
+    const fake = createFakeChatRuntime(conversationId)
+    const router = new WebRouter()
+    registerChatRuntimeRoutes(router, {
+      getChatRuntime: () => fake.runtime,
+    })
+    const server: Server = createServer((req, res) => {
+      const method = req.method ?? 'GET'
+      const url = req.url ?? '/'
+      const resolved = router.resolve(method, url)
+      if (!resolved) {
+        res.statusCode = 404
+        res.end('not found')
+        return
+      }
+      void resolved.handler(req, res, resolved.params)
+    })
+    const port = await new Promise<number>((resolve) => {
+      server.listen(0, '127.0.0.1', () => {
+        resolve((server.address() as AddressInfo).port)
+      })
+    })
+
+    let webScope: ReturnType<typeof createWebCliRuntimeScope> | null = null
+    try {
+      webScope = createWebCliRuntimeScope({
+        baseUrl: `http://127.0.0.1:${port}`,
+        sessionId: 'e2e-session-1',
+        fetchImpl: (url, init) => globalThis.fetch(url, init),
+      })
+      const controller = webScope.selectConversationRuntime('claude-code')
+      // 连接建立后服务端注册了该会话的流；撤销会话 → 服务端写 session_closed
+      // 命名事件并关闭 → 客户端 transport 必须解析该事件并进入终态 error，
+      // 而不是把后续断流当成可重连的瞬时错误无限退避重连。
+      await waitFor(
+        () => fake.streamSubscriberCount() > 0,
+        'stream registered',
+      )
+      closeChatRuntimeSessionStreams('e2e-session-1', 'token_revoked')
+
+      await waitFor(
+        () => controller.getSnapshot().runState === 'error',
+        'snapshot runState error after session_closed',
+      )
+      expect(controller.getSnapshot().error).toContain('session has been closed')
+
+      // 撤销后不再重连：等待一个退避窗口，确认没有新的流订阅。
+      const subscriptionsAtRevoke = fake.streamSubscriberCount()
+      await new Promise((resolve) => setTimeout(resolve, 1200))
+      expect(fake.streamSubscriberCount()).toBe(subscriptionsAtRevoke)
     } finally {
       await webScope?.dispose()
       await new Promise((resolve) => setTimeout(resolve, 20))

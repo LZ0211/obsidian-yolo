@@ -5,7 +5,11 @@ import { RemoteChatRuntimeAdapter } from './RemoteChatRuntimeAdapter'
 type Handler = (event: MessageEvent) => void
 
 function createFakeTransport() {
-  const handlers: Record<string, Handler[]> = { message: [], error: [] }
+  const handlers: Record<string, Handler[]> = {
+    message: [],
+    error: [],
+    session_closed: [],
+  }
   const calls: string[] = []
   const transport = {
     onmessage: null as Handler | null,
@@ -25,6 +29,11 @@ function createFakeTransport() {
     },
     emitError: () => {
       handlers.error.forEach((handler) => handler({} as MessageEvent))
+    },
+    emitSessionClosed: () => {
+      handlers.session_closed.forEach((handler) =>
+        handler({ data: '{"code":"token_revoked"}' } as MessageEvent),
+      )
     },
   }
   return { transport, calls }
@@ -55,6 +64,42 @@ describe('RemoteChatRuntimeAdapter', () => {
     await expect(
       adapter.sendTurn({ content: 'hello', messageId: 'msg-1' }),
     ).rejects.toThrow('session expired')
+  })
+
+  it('does not reconnect after session_closed and surfaces a terminal error', () => {
+    const { transport, calls } = createFakeTransport()
+    const adapter = new RemoteChatRuntimeAdapter(
+      'claude-code',
+      {
+        open: () => transport,
+        post: async () => ({ ok: true, json: async () => ({}) }),
+        get: async () => ({ ok: true, json: async () => ({}) }),
+      },
+      'conv-1',
+    )
+    const runStates: Array<{ state: string; error?: string }> = []
+    adapter.subscribe((event) => {
+      if (event.type === 'run.state') {
+        runStates.push({
+          state: event.payload.state,
+          error: event.payload.error,
+        })
+      }
+    })
+    expect(calls).toContain('listen:session_closed')
+
+    transport.emitSessionClosed()
+
+    expect(adapter.getSnapshot().runState).toBe('error')
+    expect(adapter.getSnapshot().error).toContain('session has been closed')
+    expect(runStates).toEqual([
+      { state: 'error', error: expect.stringContaining('session has been closed') },
+    ])
+    // No reconnect scheduled: only the transport close from session_closed.
+    const closeCalls = calls.filter((call) => call === 'close')
+    expect(closeCalls.length).toBe(1)
+    expect(calls).not.toContain('close-error')
+    adapter.dispose()
   })
 
   it('emits a snapshot as the first event after connect', () => {

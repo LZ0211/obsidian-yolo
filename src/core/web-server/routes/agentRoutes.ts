@@ -21,6 +21,7 @@ import { type WebRouter } from '../WebRouter'
 import type { BufferedRunEvent, WebSseHub } from '../WebSseHub'
 
 import { WEB_SESSION_HEADER } from './authRoutes'
+import { registerChatRuntimeStream } from './chatRuntimeRoutes'
 import { type ApiError, apiError, readJsonBody } from './routeUtils'
 
 export type AgentRouteRunStatus = AgentRunTerminalStatus | 'queued'
@@ -507,6 +508,7 @@ export function registerAgentRoutes(
 
     let closed = false
     let heartbeat: ReturnType<typeof setInterval> | undefined
+    let unregisterStream: (() => void) | null = null
     const unsubscriptions: Array<() => void> = []
     const cleanup = () => {
       if (closed) return
@@ -515,20 +517,29 @@ export function registerAgentRoutes(
         clearInterval(heartbeat)
         heartbeat = undefined
       }
+      unregisterStream?.()
+      unregisterStream = null
       for (const unsubscribe of unsubscriptions.splice(0)) {
         unsubscribe()
       }
     }
-    const close = () => {
+    const close = (code?: string) => {
+      if (closed) return
+      if (code) {
+        writer.write(`event: session_closed\ndata: ${JSON.stringify({ code })}\n\n`)
+      }
       cleanup()
-      if (!res.writableEnded) {
-        res.end()
+      if (!writer.isClosed) {
+        writer.close()
       }
     }
     const writer = new SseResponseWriter(res, {
       maxPendingBytes: MAX_SSE_PENDING_BYTES,
       onClose: cleanup,
     })
+    // 会话撤销（token revoke / 登出）时与 chat-runtime 流一起关闭，否则
+    // 该 SSE 会无限挂起（revoke 只关 registerChatRuntimeStream 注册的流）。
+    unregisterStream = registerChatRuntimeStream(getSessionId(req.headers), close)
     heartbeat = setInterval(
       () => writer.write(': heartbeat\n\n'),
       SSE_HEARTBEAT_MS,

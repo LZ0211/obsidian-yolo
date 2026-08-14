@@ -9,6 +9,7 @@ import { WebSseHub } from '../WebSseHub'
 
 import { type AgentRoutesContext, registerAgentRoutes } from './agentRoutes'
 import { WEB_SESSION_HEADER } from './authRoutes'
+import { closeChatRuntimeSessionStreams } from './chatRuntimeRoutes'
 
 describe('agentRoutes', () => {
   it('requires an authenticated web session to start an agent run', async () => {
@@ -654,6 +655,34 @@ describe('agentRoutes', () => {
     expect(res.rawBody).toContain('"messages":[{"id":"u1"}]')
 
     req.emit('close')
+    expect(unsubscribePending).toHaveBeenCalled()
+    expect(unsubscribeAborted).toHaveBeenCalled()
+  })
+
+  it('closes the queue events stream with a session_closed frame on session revoke', async () => {
+    const unsubscribePending = jest.fn()
+    const unsubscribeAborted = jest.fn()
+    const { router } = createHarness({
+      subscribeToPendingBackgroundTaskResults: () => unsubscribePending,
+      subscribeToAbortedQueuedMessages: () => unsubscribeAborted as never,
+    })
+
+    const route = router.resolve('GET', '/api/agent/queue/events')
+    const req = createRequest({
+      method: 'GET',
+      url: '/api/agent/queue/events',
+      headers: {
+        [WEB_SESSION_HEADER]: 'session-1',
+      },
+    })
+    const res = createResponse()
+
+    await route?.handler(req as never, res as never, {})
+
+    closeChatRuntimeSessionStreams('session-1', 'token_revoked')
+
+    expect(res.rawBody).toContain('event: session_closed')
+    expect(res.rawBody).toContain('"code":"token_revoked"')
     expect(unsubscribePending).toHaveBeenCalled()
     expect(unsubscribeAborted).toHaveBeenCalled()
   })

@@ -25,14 +25,15 @@ import {
 export type RemoteTransport = {
   open: (url: string) => {
     addEventListener(
-      type: 'message',
+      type: 'message' | 'session_closed',
       handler: (event: MessageEvent) => void,
     ): void
     addEventListener(type: 'error', handler: (event: Event) => void): void
     removeEventListener(
-      type: 'message',
+      type: 'message' | 'session_closed',
       handler: (event: MessageEvent) => void,
     ): void
+    removeEventListener(type: 'error', handler: (event: Event) => void): void
     close(): void
   }
   post: (
@@ -371,6 +372,31 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
     this.eventSource.addEventListener('message', (event) => {
       this.reconnectAttempts = 0
       this.handleWireEvent(JSON.parse(String(event.data)) as WireEventEnvelope)
+    })
+    // 会话撤销（token revoke / 登出）：服务端发 `session_closed` 命名事件后
+    // 关闭流。这是终态——继续退避重连只会撞上 401 并无限循环。
+    this.eventSource.addEventListener('session_closed', () => {
+      this.eventSource?.close()
+      this.eventSource = null
+      if (this.reconnectTimer != null) {
+        clearTimeout(this.reconnectTimer)
+        this.reconnectTimer = null
+      }
+      const sessionClosedMessage =
+        'Web session has been closed (token revoked or expired). Reload to sign in again.'
+      this.currentSnapshot = {
+        ...this.currentSnapshot,
+        runState: 'error',
+        error: sessionClosedMessage,
+      }
+      for (const listener of [...this.listeners]) {
+        listener(
+          this.sequencer.next('run.state', {
+            state: 'error',
+            error: sessionClosedMessage,
+          }),
+        )
+      }
     })
     this.eventSource.addEventListener('error', () => {
       if (this.disposed) return

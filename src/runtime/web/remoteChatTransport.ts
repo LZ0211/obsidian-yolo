@@ -59,12 +59,26 @@ export const createWebRemoteTransport = ({
 
 type SseSource = ReturnType<RemoteTransport['open']>
 
-const parseSseFrameData = (frame: string): string | null => {
-  const dataLines = frame
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith('data:'))
-    .map((line) => line.slice(5).trimStart())
-  return dataLines.length > 0 ? dataLines.join('\n') : null
+type ParsedSseFrame = {
+  /** Named SSE event (`event:` line); undefined for default `message` frames. */
+  eventName?: string
+  data: string | null
+}
+
+const parseSseFrame = (frame: string): ParsedSseFrame => {
+  let eventName: string | undefined
+  const dataLines: string[] = []
+  for (const line of frame.split(/\r?\n/)) {
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trimStart()
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart())
+    }
+  }
+  return {
+    ...(eventName !== undefined ? { eventName } : {}),
+    data: dataLines.length > 0 ? dataLines.join('\n') : null,
+  }
 }
 
 /**
@@ -84,6 +98,7 @@ function createFetchSseSource({
 }): SseSource {
   const messageListeners = new Set<(event: MessageEvent) => void>()
   const errorListeners = new Set<(event: Event) => void>()
+  const sessionClosedListeners = new Set<(event: MessageEvent) => void>()
   const abortController = new AbortController()
   let closed = false
 
@@ -114,7 +129,20 @@ function createFetchSseSource({
         while (boundary >= 0) {
           const frame = buffer.slice(0, boundary)
           buffer = buffer.slice(boundary + 2)
-          const data = parseSseFrameData(frame)
+          const { eventName, data } = parseSseFrame(frame)
+          if (eventName === 'session_closed') {
+            // 会话撤销是终态：通知监听方后关闭流，不派发 error（error 会让
+            // 适配器按退避无限重连已撤销的会话）。
+            const event = new MessageEvent('session_closed', {
+              data: data ?? '',
+            })
+            for (const listener of [...sessionClosedListeners]) {
+              listener(event)
+            }
+            closed = true
+            abortController.abort()
+            return
+          }
           if (data !== null) {
             for (const listener of [...messageListeners]) {
               listener(new MessageEvent('message', { data }))
@@ -137,6 +165,8 @@ function createFetchSseSource({
         messageListeners.add(handler as (event: MessageEvent) => void)
       } else if (type === 'error') {
         errorListeners.add(handler as (event: Event) => void)
+      } else if (type === 'session_closed') {
+        sessionClosedListeners.add(handler as (event: MessageEvent) => void)
       }
     },
     removeEventListener: (type, handler) => {
@@ -144,6 +174,8 @@ function createFetchSseSource({
         messageListeners.delete(handler as (event: MessageEvent) => void)
       } else if (type === 'error') {
         errorListeners.delete(handler as (event: Event) => void)
+      } else if (type === 'session_closed') {
+        sessionClosedListeners.delete(handler as (event: MessageEvent) => void)
       }
     },
     close: () => {
