@@ -13,6 +13,10 @@ const policy: WorkspaceAccessPolicy = {
   readExtraIncludes: ['/References'],
   readExcludes: ['/Projects/private'],
   writeExcludes: ['/Projects/locked'],
+  protectedPaths: [
+    { kind: 'prefix', path: '/YOLO' },
+    { kind: 'namePrefix', dir: '/', name: 'sessions.sqlite' },
+  ],
 }
 
 describe('conversationFileScope', () => {
@@ -40,6 +44,10 @@ describe('conversationFileScope', () => {
         readExtraIncludes: ['/Projects', '/References'],
         readExcludes: ['/Projects/private'],
         writeExcludes: ['/Projects/locked'],
+        protectedPaths: [
+          { kind: 'prefix', path: '/YOLO' },
+          { kind: 'namePrefix', dir: '/', name: 'sessions.sqlite' },
+        ],
       },
     })
   })

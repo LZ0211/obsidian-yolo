@@ -115,6 +115,11 @@ export function resolveConversationFileScope(
       readExtraIncludes,
       readExcludes: activePolicy?.readExcludes ?? [],
       writeExcludes: activePolicy?.writeExcludes ?? [],
+      // 收窄工作目录只调整根与读取面；宿主托管保护路径（插件私有数据）
+      // 必须原样保留，否则 git-diff/fs/bash 的写排除会失效。
+      ...(activePolicy?.protectedPaths
+        ? { protectedPaths: activePolicy.protectedPaths }
+        : {}),
     },
   }
 }

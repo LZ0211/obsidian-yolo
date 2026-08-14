@@ -37,8 +37,8 @@ import {
   serializeMentionable,
 } from '../utils/chat/mentionable'
 
-import { useChatManager } from './useJsonManagers'
 import { shouldSkipCreatingEmptyConversation } from './chatHistoryPersistence'
+import { useChatManager } from './useJsonManagers'
 
 const AUTO_TITLE_WAIT_CONVERSATION_RETRIES = 15
 const AUTO_TITLE_WAIT_CONVERSATION_INTERVAL_MS = 200
@@ -113,6 +113,11 @@ export function useChatHistory(): UseChatHistory {
   const titleGenerationCooldownUntilRef = useRef<Map<string, number>>(new Map())
   const settingsRef = useRef(settings)
 
+  // persistConversationInternal 是整会话读改写（findById → updateChat），
+  // 「选目录立即保存」与「消息提交」并发时后写者会用自己读到的旧行覆盖前写者
+  // 的新消息。按会话串行化：后到的写等待前一写完成后基于最新行再读改写。
+  const persistQueuesRef = useRef<Map<string, Promise<unknown>>>(new Map())
+
   useEffect(() => {
     settingsRef.current = settings
   }, [settings])
@@ -168,6 +173,46 @@ export function useChatHistory(): UseChatHistory {
       assistantGroupBoundaryMessageIds?: string[],
       options?: { touchUpdatedAt?: boolean },
     ): Promise<void> => {
+      const queues = persistQueuesRef.current
+      const previous = queues.get(id) ?? Promise.resolve()
+      const run = (): Promise<void> =>
+        persistConversationOnce(
+          id,
+          messages,
+          overrides,
+          conversationModelId,
+          messageModelMap,
+          activeBranchByUserMessageId,
+          reasoningLevel,
+          compaction,
+          assistantGroupBoundaryMessageIds,
+          options,
+        )
+      const next = previous.then(run, run)
+      queues.set(id, next)
+      try {
+        await next
+      } finally {
+        if (queues.get(id) === next) {
+          queues.delete(id)
+        }
+      }
+    },
+    [app, chatManager, settings, persistQueuesRef],
+  )
+
+  const persistConversationOnce = async (
+    id: string,
+    messages: ChatMessage[],
+    overrides?: ConversationOverrideSettings | null,
+    conversationModelId?: string,
+    messageModelMap?: Record<string, string>,
+    activeBranchByUserMessageId?: Record<string, string>,
+    reasoningLevel?: string,
+    compaction?: ChatConversationCompactionLike | null,
+    assistantGroupBoundaryMessageIds?: string[],
+    options?: { touchUpdatedAt?: boolean },
+  ): Promise<void> => {
       const serializedMessages = messages.map(serializeChatMessage)
       const existingConversation = await chatManager.findById(id)
       // 「一条消息都没有」不等于「这个会话不该存在」：从未发过消息的新会话不建行，
@@ -279,9 +324,7 @@ export function useChatHistory(): UseChatHistory {
 
       emitChatHistoryUpdated()
       await fetchChatList()
-    },
-    [app, chatManager, emitChatHistoryUpdated, fetchChatList, settings],
-  )
+  }
 
   const debouncedCreateOrUpdateConversation = useMemo(
     () =>

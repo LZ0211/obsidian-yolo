@@ -476,6 +476,8 @@ describe('WebChatRuntimeAdapter.prepareRun', () => {
       readExtraIncludes: ['/Projects', '/References'],
       readExcludes: ['/Projects/secret'],
       writeExcludes: ['/Projects/locked'],
+      // 收窄工作目录必须保留宿主托管保护路径（P1-5 回归断言）。
+      protectedPaths: getProtectedVaultPathRules(),
     })
   })
 
