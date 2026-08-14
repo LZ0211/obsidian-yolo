@@ -99,6 +99,7 @@ import {
   BUILTIN_SKILL_PATH_PREFIX,
   buildAllowedSkillPathSet,
   collectToolCallPaths,
+  collectToolCallPathsWithModes,
   findPathOutsideScope,
   findPathWithinExcludedRoot,
   isCoveredBySkillPathExemption,
@@ -2575,10 +2576,17 @@ const findWorkspacePolicyViolation = ({
   exemptPaths?: ReadonlySet<string>
   isWriteTool: boolean
 }): string | null => {
-  for (const path of collectToolCallPaths(toolName, args)) {
+  // Per-key modes: read+write hybrids (mineru_convert) resolve inputPath with
+  // the read policy (readExcludes/readIncludes) and outputDir with the write
+  // policy — see TOOL_TOP_LEVEL_READ_PATH_KEYS in workspaceScope.ts.
+  for (const { path, mode } of collectToolCallPathsWithModes(
+    toolName,
+    args,
+    isWriteTool,
+  )) {
     if (exemptPaths?.has(path)) continue
     try {
-      if (isWriteTool) {
+      if (mode === 'write') {
         resolveWritablePath(path, policy)
       } else {
         resolveReadablePath(path, policy)

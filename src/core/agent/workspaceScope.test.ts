@@ -6,6 +6,7 @@ import { getProtectedVaultPathRules } from '../paths/protectedPaths'
 
 import {
   collectToolCallPaths,
+  collectToolCallPathsWithModes,
   findPathOutsideScope,
   isPathAllowedByScope,
   isReadablePath,
@@ -149,6 +150,65 @@ describe('collectToolCallPaths', () => {
         path: 'a/b',
       }),
     ).toEqual(['a/b'])
+  })
+})
+
+describe('collectToolCallPathsWithModes', () => {
+  it('marks every key read for a non-write tool', () => {
+    expect(
+      collectToolCallPathsWithModes(
+        'fs_read',
+        { paths: ['a.md', 'b.md'] },
+        false,
+      ),
+    ).toEqual([
+      { path: 'a.md', mode: 'read' },
+      { path: 'b.md', mode: 'read' },
+    ])
+  })
+
+  it('marks every key write for a write tool without read keys', () => {
+    expect(
+      collectToolCallPathsWithModes('fs_write', { path: 'a.md' }, true),
+    ).toEqual([{ path: 'a.md', mode: 'write' }])
+  })
+
+  it('marks mineru_convert inputPath read and outputDir write (read+write hybrid)', () => {
+    expect(
+      collectToolCallPathsWithModes(
+        'mineru_convert',
+        { inputPath: 'secret/plan.pdf', outputDir: 'out' },
+        true,
+      ),
+    ).toEqual([
+      { path: 'secret/plan.pdf', mode: 'read' },
+      { path: 'out', mode: 'write' },
+    ])
+    // The mode-less view keeps the plain path list contract.
+    expect(
+      collectToolCallPaths('mineru_convert', {
+        inputPath: 'secret/plan.pdf',
+        outputDir: 'out',
+      }),
+    ).toEqual(['secret/plan.pdf', 'out'])
+  })
+
+  it('resolves the hybrid input with the read policy and outputDir with the write policy', () => {
+    const access = {
+      enabled: true,
+      workspaceRoot: 'Work',
+      readExtraIncludes: [],
+      readExcludes: ['Work/Private'],
+      writeExcludes: [],
+    }
+    // inputPath honors readExcludes (read-denied → rejected).
+    expect(() => resolveReadablePath('Work/Private/plan.pdf', access)).toThrow(
+      /outside/i,
+    )
+    // outputDir is not read-gated; only the write policy applies to it.
+    expect(resolveWritablePath('Work/out', access)).toBe('Work/out')
+    // A readable input passes the read resolution.
+    expect(resolveReadablePath('Work/plan.pdf', access)).toBe('Work/plan.pdf')
   })
 })
 

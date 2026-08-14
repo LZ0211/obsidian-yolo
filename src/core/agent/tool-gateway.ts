@@ -78,7 +78,7 @@ import { GEMINI_STUB_ARGS_JSON_FIELD, isGeminiStubApiType } from './tool-stub'
 import type { AgentRunContext } from './types'
 import {
   buildAllowedSkillPathSet,
-  collectToolCallPaths,
+  collectToolCallPathsWithModes,
   resolveReadablePath,
   resolveWritablePath,
 } from './workspaceScope'
@@ -588,10 +588,17 @@ export class AgentToolGateway {
         ? buildAllowedSkillPathSet(this.allowedSkillPaths)
         : undefined
       const isWriteTool = isLocalFsWriteToolName(parsed.toolName)
-      for (const path of collectToolCallPaths(parsed.toolName, args)) {
+      // Per-key modes: read+write hybrids (mineru_convert) resolve inputPath
+      // with the read policy (readExcludes/readIncludes) and outputDir with
+      // the write policy — see TOOL_TOP_LEVEL_READ_PATH_KEYS in workspaceScope.
+      for (const { path, mode } of collectToolCallPathsWithModes(
+        parsed.toolName,
+        args,
+        isWriteTool,
+      )) {
         if (exemptPaths?.has(path)) continue
         try {
-          if (isWriteTool) {
+          if (mode === 'write') {
             resolveWritablePath(path, this.workspaceAccessPolicy)
           } else {
             resolveReadablePath(path, this.workspaceAccessPolicy)

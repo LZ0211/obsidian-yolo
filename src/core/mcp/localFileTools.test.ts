@@ -2997,6 +2997,68 @@ describe('mineru_convert tool', () => {
     expect(convertPdfToMarkdown).not.toHaveBeenCalled()
     expect(adapter.write).not.toHaveBeenCalled()
   })
+
+  it('rejects an inputPath inside a read-denied directory (read policy applies to the hybrid read key)', async () => {
+    // Regression: before the per-key read/write modes, mineru_convert was a
+    // write-classified tool so BOTH keys resolved with the write policy —
+    // readExcludes never applied to inputPath, letting an agent convert a
+    // read-denied PDF and read the result back through outputDir.
+    const adapter = {
+      write: jest.fn(),
+      writeBinary: jest.fn(),
+    }
+
+    const result = await callLocalFileTool({
+      app: makeApp({ file: null, adapter }),
+      settings: mineruSettings,
+      toolName: 'mineru_convert',
+      args: { inputPath: 'secret/plan.pdf', outputDir: 'out/mineru' },
+      workspaceAccessPolicy: {
+        enabled: true,
+        workspaceRoot: '',
+        readExtraIncludes: [],
+        readExcludes: ['secret/'],
+        writeExcludes: [],
+      },
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+    if (result.status === ToolCallResponseStatus.Error) {
+      expect(result.error).toMatch(/workspace (access policy|scope)/i)
+      expect(result.error).toMatch(/secret\/plan\.pdf/)
+    }
+    expect(convertPdfToMarkdown).not.toHaveBeenCalled()
+    expect(adapter.write).not.toHaveBeenCalled()
+  })
+
+  it('passes the workspace gate for a readable inputPath and a writable outputDir', async () => {
+    ;(convertPdfToMarkdown as jest.Mock).mockResolvedValue({
+      markdown: '# Converted',
+      images: [],
+    })
+    const file = makePdfFile()
+    const adapter = {
+      write: jest.fn().mockResolvedValue(undefined),
+      writeBinary: jest.fn().mockResolvedValue(undefined),
+    }
+
+    const result = await callLocalFileTool({
+      app: makeApp({ file, adapter }),
+      settings: mineruSettings,
+      toolName: 'mineru_convert',
+      args: { inputPath: 'docs/report.pdf', outputDir: 'out/mineru' },
+      workspaceAccessPolicy: {
+        enabled: true,
+        workspaceRoot: '',
+        readExtraIncludes: [],
+        readExcludes: ['secret/'],
+        writeExcludes: [],
+      },
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    expect(convertPdfToMarkdown).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('meta_search abort handling', () => {

@@ -250,9 +250,22 @@ const TOOL_TOP_LEVEL_PATH_KEYS: Record<string, readonly string[]> = {
   fs_move: ['oldPath', 'newPath'],
   fs_file_ops: ['path'],
   // mineru_convert reads the input PDF and writes converted markdown/images to
-  // outputDir — both are subject to the workspace scope (write resolution for
-  // outputDir, read for inputPath; see isLocalFsWriteToolName).
+  // outputDir — both are subject to the workspace scope (see
+  // TOOL_TOP_LEVEL_READ_PATH_KEYS for the read-side exception).
   mineru_convert: ['inputPath', 'outputDir'],
+}
+
+/**
+ * Read-semantics path keys for write-classified tools (the first read+write
+ * hybrid: `mineru_convert` reads its inputPath but is a write tool because it
+ * writes outputDir). Workspace-policy gates resolve these keys with
+ * `resolveReadablePath` (readExcludes/readIncludes apply) and every other key
+ * of a write tool with `resolveWritablePath` — without this, a read-denied
+ * PDF could be converted (write check ignores readExcludes) and its result
+ * read back through outputDir, bypassing the read policy.
+ */
+const TOOL_TOP_LEVEL_READ_PATH_KEYS: Record<string, readonly string[]> = {
+  mineru_convert: ['inputPath'],
 }
 
 // The consolidated fs_file_ops tool carries a top-level `action` discriminator.
@@ -275,17 +288,36 @@ function extractStringsFrom(value: unknown): string[] {
   return []
 }
 
+export type ToolCallPathMode = 'read' | 'write'
+
+export type ToolCallPathWithMode = { path: string; mode: ToolCallPathMode }
+
 /**
- * Collect every vault path referenced by a local fs_* tool call's args.
+ * Collect every vault path referenced by a local fs_* tool call's args with
+ * the workspace-policy resolution mode for each key. A non-write tool's keys
+ * are all read; a write-classified tool's keys are write except those listed
+ * in {@link TOOL_TOP_LEVEL_READ_PATH_KEYS} (read+write hybrids such as
+ * `mineru_convert`, where the input must honor readExcludes/readIncludes).
  * Returns an empty array for non-local or unrecognized tools; callers may
  * treat that as "no path constraints apply".
  */
-export function collectToolCallPaths(
+export function collectToolCallPathsWithModes(
   toolName: string,
   args: Record<string, unknown> | undefined,
-): string[] {
+  isWriteTool: boolean,
+): ToolCallPathWithMode[] {
   if (!args) return []
-  const paths: string[] = []
+  const paths: ToolCallPathWithMode[] = []
+  const push = (key: string): void => {
+    const mode: ToolCallPathMode =
+      !isWriteTool || TOOL_TOP_LEVEL_READ_PATH_KEYS[toolName]?.includes(key)
+        ? 'read'
+        : 'write'
+    for (const p of extractStringsFrom(args[key])) {
+      const trimmed = p.trim()
+      if (trimmed !== '') paths.push({ path: trimmed, mode })
+    }
+  }
   // The consolidated fs_file_ops tool is action-discriminated: resolve the
   // path keys from the action so a move inspects both oldPath and newPath and
   // delete/create_dir inspect path. Unknown/missing actions contribute nothing
@@ -297,10 +329,7 @@ export function collectToolCallPaths(
       ]
     if (actionKeys) {
       for (const key of actionKeys) {
-        for (const p of extractStringsFrom(args[key])) {
-          const trimmed = p.trim()
-          if (trimmed !== '') paths.push(trimmed)
-        }
+        push(key)
       }
     }
     return paths
@@ -308,13 +337,26 @@ export function collectToolCallPaths(
   const topKeys = TOOL_TOP_LEVEL_PATH_KEYS[toolName]
   if (topKeys) {
     for (const key of topKeys) {
-      for (const p of extractStringsFrom(args[key])) {
-        const trimmed = p.trim()
-        if (trimmed !== '') paths.push(trimmed)
-      }
+      push(key)
     }
   }
   return paths
+}
+
+/**
+ * Collect every vault path referenced by a local fs_* tool call's args
+ * (mode-less view; the resolution mode is `collectToolCallPathsWithModes`'s
+ * job). Returns an empty array for non-local or unrecognized tools; callers
+ * may treat that as "no path constraints apply".
+ */
+export function collectToolCallPaths(
+  toolName: string,
+  args: Record<string, unknown> | undefined,
+): string[] {
+  // Mode only depends on isWriteTool; path collection is identical either way.
+  return collectToolCallPathsWithModes(toolName, args, true).map(
+    ({ path }) => path,
+  )
 }
 
 /**
