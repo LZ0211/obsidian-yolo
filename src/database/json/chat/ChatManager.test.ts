@@ -128,6 +128,48 @@ describe('ChatManager', () => {
       }
     })
 
+    test('round-trips cli-native conversation ids in filenames', () => {
+      const cliNativeId =
+        'cli-native-claude-code-cafef00d-1234-5678-9abc-def012345678'
+      const chat: ChatConversation = {
+        id: cliNativeId,
+        title: 'Any Title',
+        messages: [],
+        createdAt: 1620000000000,
+        updatedAt: 1620000000000,
+        schemaVersion: CHAT_SCHEMA_VERSION,
+      }
+
+      const fileName = chatManager.generateFileNameForTest(chat)
+      expect(fileName).toBe(`v${CHAT_SCHEMA_VERSION}_${cliNativeId}.json`)
+
+      const metadata = chatManager.parseFileNameForTest(fileName)
+      expect(metadata).not.toBeNull()
+      if (metadata) {
+        expect(metadata.id).toBe(cliNativeId)
+        expect(metadata.schemaVersion).toBe(CHAT_SCHEMA_VERSION)
+      }
+    })
+
+    test('round-trips cli-native ids with percent-encoded native session ids', () => {
+      const cliNativeId = 'cli-native-codex-session%2Fwith%20spaces-abc123'
+      const chat: ChatConversation = {
+        id: cliNativeId,
+        title: 'Any Title',
+        messages: [],
+        createdAt: 1620000000000,
+        updatedAt: 1620000000000,
+        schemaVersion: CHAT_SCHEMA_VERSION,
+      }
+
+      const fileName = chatManager.generateFileNameForTest(chat)
+      const metadata = chatManager.parseFileNameForTest(fileName)
+      expect(metadata).not.toBeNull()
+      if (metadata) {
+        expect(metadata.id).toBe(cliNativeId)
+      }
+    })
+
     test('should parse legacy filename format', () => {
       const title = 'Legacy Chat Title'
       const encodedTitle = encodeURIComponent(title)

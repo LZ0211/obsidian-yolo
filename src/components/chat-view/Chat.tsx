@@ -150,8 +150,16 @@ const getCliSessionIdentity = (
   ref: Pick<CliSessionRef, 'runtimeId' | 'nativeSessionId'>,
 ): string => `${ref.runtimeId}:${ref.nativeSessionId}`
 
+// 会话 ID 同时用作会话文件名（ChatManager generateFileName 直接用 chat.id），
+// 必须全平台文件系统安全：旧格式的 `cli-native:...` 冒号在 Windows 文件名中
+// 非法（写入直接失败），且 encodeURIComponent 放行的 `*` 同样非法——统一转义。
+const encodeCliNativeSessionId = (value: string): string =>
+  encodeURIComponent(value).replace(/[!*'()~]/g, (char) =>
+    encodeURIComponent(char),
+  )
+
 const getNativeCliConversationId = (ref: CliSessionRef): string =>
-  `cli-native:${ref.runtimeId}:${encodeURIComponent(ref.nativeSessionId)}`
+  `cli-native-${ref.runtimeId}-${encodeCliNativeSessionId(ref.nativeSessionId)}`
 
 function useLatestRef<T>(value: T) {
   const ref = useRef(value)
@@ -427,7 +435,10 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     }
   }, [props.getCliRuntimeScope])
   const cliRuntimeScope = resolvedCliRuntimeScope ?? props.cliRuntimeScope
-  const cliRuntimeAvailable = isCliRuntimeAvailable()
+  // Web 端（props.getCliRuntimeScope 注入）scope 解析即视为可用：浏览器里
+  // Platform.isDesktop 为 false，桌面探测永远不可达，但宿主侧真实承载 CLI。
+  const cliRuntimeAvailable =
+    isCliRuntimeAvailable() || Boolean(resolvedCliRuntimeScope)
   const [cliRuntimeAvailability, setCliRuntimeAvailability] =
     useState<CliRuntimeAvailability>(() => ({
       'claude-code': false,
@@ -442,7 +453,12 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       return
     }
     let cancelled = false
-    void detectCliRuntimeAvailability(app).then((availability) => {
+    // Web 端走宿主侧探测（scope.probeAvailability → /api/cli/availability）；
+    // 桌面端沿用本地 FileSystemAdapter 探测。
+    const probe = cliRuntimeScope.probeAvailability
+      ? cliRuntimeScope.probeAvailability()
+      : detectCliRuntimeAvailability(app)
+    void probe.then((availability) => {
       if (!cancelled) setCliRuntimeAvailability(availability)
     })
     return () => {
@@ -1672,6 +1688,18 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
           await cliRuntimeScope.sessionService.removeOverlay(
             conversation.cliSession,
           )
+          // 删除只移除 YOLO overlay，provider 原生 transcript 仍在，discovery
+          // 会再次发现该会话。不把身份记入 dismissedNativeCliSessions 的话，
+          // 幽灵条目会立即回到历史列表，而 deletedConversationIdsRef 又禁止
+          // 重建 → 点击无反应。隐藏后用户想重新打开仍可（discovery 再刷新 +
+          // ensureNativeCliConversation 会解除 dismiss）。
+          const identity = getCliSessionIdentity(conversation.cliSession)
+          setDismissedNativeCliSessions((previous) => {
+            if (previous.has(identity)) return previous
+            const next = new Set(previous)
+            next.add(identity)
+            return next
+          })
         }
         if (conversationId !== activeHistoryConversationId) {
           return
@@ -1697,6 +1725,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       getConversationById,
       deleteConversation,
       cliRuntimeScope,
+      setDismissedNativeCliSessions,
       activeHistoryConversationId,
       activeRuntimeId,
       chatList,

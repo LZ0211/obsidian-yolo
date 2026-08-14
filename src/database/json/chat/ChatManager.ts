@@ -88,6 +88,22 @@ export class ChatManager extends AbstractJsonRepository<
       }
     }
 
+    // CLI 原生会话：id 为 `cli-native-<runtimeId>-<编码后的 nativeSessionId>`，
+    // 非 UUID 也不含冒号（Windows 文件名安全）。id 原样回传即可，无需解码。
+    const cliNativeRegex = new RegExp(
+      `^v${CHAT_SCHEMA_VERSION}_(cli-native-[a-z-]+-[a-zA-Z0-9%._-]+)\\.json$`,
+    )
+    const cliNativeMatch = fileName.match(cliNativeRegex)
+    if (cliNativeMatch) {
+      return {
+        id: cliNativeMatch[1],
+        schemaVersion: CHAT_SCHEMA_VERSION,
+        title: '',
+        updatedAt: 0,
+        origin: 'user',
+      }
+    }
+
     const legacyRegex = new RegExp(
       `^v${CHAT_SCHEMA_VERSION}_(.+)_(\\d+)_([0-9a-f-]+)\\.json$`,
     )
