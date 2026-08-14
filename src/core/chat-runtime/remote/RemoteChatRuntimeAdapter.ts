@@ -86,6 +86,9 @@ const createDefaultCapabilities = (
   }
 }
 
+const RECONNECT_BASE_MS = 1_000
+const RECONNECT_MAX_MS = 15_000
+
 export class RemoteChatRuntimeAdapter implements ChatRuntime {
   readonly runtimeId: 'yolo' | 'claude-code' | 'codex'
   readonly capabilities: ChatRuntimeCapabilities
@@ -93,6 +96,8 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
   private readonly listeners = new Set<(event: ChatRuntimeEvent) => void>()
   private readonly sequencer: ChatRuntimeEventSequencer
   private eventSource: ReturnType<RemoteTransport['open']> | null = null
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private reconnectAttempts = 0
   private lastSequence = 0
   private disposed = false
   private readonly submissionTrackers = new Map<string, ChatSubmissionTracker>()
@@ -116,7 +121,9 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
 
   subscribe(listener: (event: ChatRuntimeEvent) => void): () => void {
     this.listeners.add(listener)
-    if (this.eventSource === null) {
+    // A reconnect may already be scheduled (eventSource null while the
+    // backoff timer waits) — don't open a second connection.
+    if (this.eventSource === null && this.reconnectTimer === null) {
       this.connect()
     }
     return () => this.listeners.delete(listener)
@@ -324,12 +331,22 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
 
   async dispose(): Promise<void> {
     this.disposed = true
+    if (this.reconnectTimer != null) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
     this.eventSource?.close()
     this.eventSource = null
     this.listeners.clear()
   }
 
+  /**
+   * Opens the contract SSE stream. Reconnects with exponential backoff
+   * (1s → 15s cap) on transport error — EventSource-style auto-reconnect with
+   * the fetch-based web transport must not hammer the server in a tight loop.
+   */
   private connect(): void {
+    if (this.disposed) return
     const url = `${CHAT_RUNTIME_ENDPOINTS.stream(
       this.runtimeId,
     )}?cursor=${this.lastSequence}&conversationId=${encodeURIComponent(
@@ -337,10 +354,22 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
     )}`
     this.eventSource = this.transport.open(url)
     this.eventSource.addEventListener('message', (event) => {
+      this.reconnectAttempts = 0
       this.handleWireEvent(JSON.parse(String(event.data)) as WireEventEnvelope)
     })
     this.eventSource.addEventListener('error', () => {
-      if (!this.disposed) this.connect()
+      if (this.disposed) return
+      this.eventSource?.close()
+      this.eventSource = null
+      const delayMs = Math.min(
+        RECONNECT_BASE_MS * 2 ** this.reconnectAttempts,
+        RECONNECT_MAX_MS,
+      )
+      this.reconnectAttempts += 1
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null
+        this.connect()
+      }, delayMs)
     })
   }
 

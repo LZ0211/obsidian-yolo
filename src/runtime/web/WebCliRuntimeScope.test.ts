@@ -31,11 +31,38 @@ function jsonResponse(body: unknown, ok = true): Response {
   } as unknown as Response
 }
 
+/**
+ * 流式响应的 fetch mock：对 `/stream` URL 返回一个可喂 SSE 帧的 body，
+ * 替代旧 EventSource 全局 mock（transport 已改为 fetch 承载 SSE）。
+ */
 function createFetchMock() {
   const calls: Array<{ url: string; init?: RequestInit }> = []
+  const feeds: Array<{
+    url: string
+    feed: (frame: string) => void
+    closeStream: () => void
+  }> = []
   const fetch = jest.fn(
     async (url: RequestInfo | URL, init?: RequestInit) => {
       calls.push({ url: String(url), init })
+      if (String(url).includes('/stream')) {
+        let controller: ReadableStreamDefaultController<Uint8Array> | null =
+          null
+        const body = new ReadableStream<Uint8Array>({
+          start(streamController) {
+            controller = streamController
+          },
+        })
+        const encoder = new TextEncoder()
+        feeds.push({
+          url: String(url),
+          feed: (frame: string) => {
+            controller?.enqueue(encoder.encode(frame))
+          },
+          closeStream: () => controller?.close(),
+        })
+        return { ok: true, body } as unknown as Response
+      }
       if (String(url).includes('/sessions') && (init?.method ?? 'GET') === 'GET') {
         return jsonResponse({
           ok: true,
@@ -55,56 +82,14 @@ function createFetchMock() {
       return jsonResponse({ ok: true })
     },
   )
-  return { fetch, calls }
+  return { fetch, calls, feeds }
 }
 
-function installEventSourceMock() {
-  const instances: Array<{
-    url: string
-    listeners: Record<string, Array<(event: MessageEvent) => void>>
-    close: jest.Mock
-  }> = []
-  class FakeEventSource {
-    listeners: Record<string, Array<(event: MessageEvent) => void>> = {}
-    close = jest.fn()
-    constructor(public readonly url: string) {
-      instances.push(this)
-    }
-    addEventListener(type: string, listener: (event: MessageEvent) => void) {
-      ;(this.listeners[type] ??= []).push(listener)
-    }
-    emit(type: string, data: unknown) {
-      for (const listener of this.listeners[type] ?? []) {
-        listener({ data: JSON.stringify(data) } as MessageEvent)
-      }
-    }
-  }
-  const original = globalThis.EventSource
-  globalThis.EventSource = FakeEventSource as unknown as typeof EventSource
-  return {
-    instances: instances as Array<{
-      url: string
-      listeners: Record<string, Array<(event: MessageEvent) => void>>
-      close: jest.Mock
-      emit(type: string, data: unknown): void
-    }>,
-    restore: () => {
-      globalThis.EventSource = original
-    },
-  }
+const flushMicrotasks = async (): Promise<void> => {
+  await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）', () => {
-  let eventSource: ReturnType<typeof installEventSourceMock>
-
-  beforeEach(() => {
-    eventSource = installEventSourceMock()
-  })
-
-  afterEach(() => {
-    eventSource.restore()
-    jest.restoreAllMocks()
-  })
 
   it('discovers sessions via the chat-runtime protocol and maps pin state', async () => {
     const { fetch, calls } = createFetchMock()
@@ -112,7 +97,6 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
       baseUrl: 'http://localhost',
       fetchImpl: fetch,
       sessionId: 'session-1',
-      EventSourceImpl: undefined,
     })
     const sessionService = scope.sessionService as unknown as WebScopeSessionService
 
@@ -139,7 +123,6 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
       baseUrl: 'http://localhost',
       fetchImpl: fetch,
       sessionId: 'session-1',
-      EventSourceImpl: undefined,
     })
     const ref = { runtimeId: 'codex' as const, nativeSessionId: 'thread-1' }
     const sessionService = scope.sessionService as unknown as WebScopeSessionService
@@ -164,31 +147,75 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
   })
 
   it('selects a conversation runtime whose snapshot follows adapter SSE events', async () => {
-    const { fetch } = createFetchMock()
+    const { fetch, feeds } = createFetchMock()
     const scope = createWebCliRuntimeScope({
       baseUrl: 'http://localhost',
       fetchImpl: fetch,
       sessionId: 'session-1',
-      EventSourceImpl: undefined,
     })
     const controller = scope.selectConversationRuntime('codex')
     expect(controller.getSnapshot().runtimeId).toBe('codex')
 
-    const source = eventSource.instances[0]
+    const source = feeds[0]
     expect(source.url).toContain('/api/chat-runtime/codex/stream')
-    source.emit('message', {
-      protocolVersion: 1,
-      eventId: 'e1',
-      sequence: 1,
-      runId: 'run-1',
-      conversationId: '',
-      sessionRef: null,
-      timestamp: 1,
-      type: 'run.state',
-      payload: { state: 'running' },
-    })
+    expect(source.url).toContain('conversationId=')
+    source.feed(
+      `data: ${JSON.stringify({
+        protocolVersion: 1,
+        eventId: 'e1',
+        sequence: 1,
+        runId: 'run-1',
+        conversationId: '',
+        sessionRef: null,
+        timestamp: 1,
+        type: 'run.state',
+        payload: { state: 'running' },
+      })}\n\n`,
+    )
 
+    await flushMicrotasks()
     expect(controller.getSnapshot().runState).toBe('running')
+  })
+
+  it('forwards approval/question/permission and rejects unsupported commands (E5)', async () => {
+    const { fetch, calls } = createFetchMock()
+    const scope = createWebCliRuntimeScope({
+      baseUrl: 'http://localhost',
+      fetchImpl: fetch,
+      sessionId: 'session-1',
+    })
+    const controller = scope.selectConversationRuntime(
+      'codex',
+    ) as unknown as {
+      respondApproval: (response: unknown) => Promise<void>
+      respondQuestion: (response: unknown) => Promise<void>
+      updatePermissionProfile: (update: unknown) => Promise<void>
+      rewriteTurn: () => Promise<void>
+      rollbackToTurn: () => Promise<void>
+      compact: () => Promise<void>
+      listSkills: () => Promise<unknown[]>
+    }
+
+    await controller.respondApproval({
+      requestId: 'req-1',
+      decision: 'approve_once',
+    })
+    await controller.respondQuestion({ requestId: 'req-2', answer: 'yes' })
+    await controller.updatePermissionProfile({ mode: 'agent', yoloEnabled: true })
+
+    expect(calls.map((call) => call.url)).toEqual(
+      expect.arrayContaining([
+        'http://localhost/api/chat-runtime/codex/approval',
+        'http://localhost/api/chat-runtime/codex/question',
+        'http://localhost/api/chat-runtime/codex/permission',
+      ]),
+    )
+
+    // 无远端端点支撑的命令显式抛错，不再静默 no-op。
+    await expect(controller.rewriteTurn()).rejects.toThrow(/unsupported/)
+    await expect(controller.rollbackToTurn()).rejects.toThrow(/unsupported/)
+    await expect(controller.compact()).rejects.toThrow(/unsupported/)
+    await expect(controller.listSkills()).rejects.toThrow(/unsupported/)
   })
 
   it('getChatRuntime returns a ChatRuntime wired to the same transport', async () => {
@@ -197,7 +224,6 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
       baseUrl: 'http://localhost',
       fetchImpl: fetch,
       sessionId: 'session-1',
-      EventSourceImpl: undefined,
     })
     const runtime = scope.getChatRuntime('codex')
     await runtime.sendTurn({

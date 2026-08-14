@@ -2,6 +2,9 @@
  * @jest-environment jsdom
  */
 /* eslint-disable @microsoft/sdl/no-inner-html -- 测试 DOM fixture 直接赋值 innerHTML 是 jest+jsdom 标准做法 */
+/* eslint-disable import/no-nodejs-modules -- jsdom 无 ReadableStream，流 mock 用 node:stream/web 的 Web Streams 实现 */
+import { ReadableStream } from 'node:stream/web'
+
 import { Platform } from '../runtime/web/obsidianCompat'
 import type { YoloRuntime } from '../runtime/yoloRuntime.types'
 
@@ -327,31 +330,30 @@ describe('createChatTabManager', () => {
     const scope = await getCliRuntimeScope?.()
     expect(scope).toBeDefined()
 
-    const instances: Array<{ url: string; close: jest.Mock }> = []
-    class FakeEventSource {
-      close = jest.fn()
-      constructor(public readonly url: string) {
-        instances.push(this)
-      }
-      addEventListener(): void {}
-    }
-    const originalEventSource = globalThis.EventSource
-    globalThis.EventSource = FakeEventSource as unknown as typeof EventSource
+    // E1：事件流改走 fetch SSE（EventSource 无法带 session header），
+    // destroy 的关闭语义 = abort 在飞的流 fetch。
+    const streamAbortSignals: AbortSignal[] = []
     const originalFetch = globalThis.fetch
-    globalThis.fetch = jest.fn(async () => ({
-      ok: true,
-      json: async () => ({}),
-    })) as unknown as typeof fetch
+    globalThis.fetch = jest.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes('/stream')) {
+        if (init?.signal) streamAbortSignals.push(init.signal)
+        const body = new ReadableStream<Uint8Array>({
+          start() {},
+        })
+        return { ok: true, body } as unknown as Response
+      }
+      return { ok: true, json: async () => ({}) } as unknown as Response
+    }) as unknown as typeof fetch
 
     scope?.selectConversationRuntime('codex')
     await new Promise((r) => setTimeout(r, 0))
 
-    expect(instances.length).toBeGreaterThan(0)
+    expect(streamAbortSignals.length).toBeGreaterThan(0)
 
     manager.destroy()
+    await new Promise((r) => setTimeout(r, 0))
 
-    expect(instances[0]?.close).toHaveBeenCalled()
-    globalThis.EventSource = originalEventSource
+    expect(streamAbortSignals[0]?.aborted).toBe(true)
     globalThis.fetch = originalFetch
     shell.destroy()
   })

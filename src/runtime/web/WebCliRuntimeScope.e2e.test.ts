@@ -4,7 +4,7 @@
  * 发现/控制器快照/发送往返映射。
  */
 /* eslint-disable import/no-nodejs-modules -- 测试文件运行在 Node 环境，允许直接引入 node 内置模块进行 mock */
-import { type Server, createServer, request as httpRequest } from 'node:http'
+import { type Server, createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
 import {
@@ -19,50 +19,6 @@ import { registerChatRuntimeRoutes } from '../../core/web-server/routes/chatRunt
 import { WebRouter } from '../../core/web-server/WebRouter'
 
 import { createWebCliRuntimeScope } from './WebCliRuntimeScope'
-
-class MinimalEventSource {
-  private readonly listeners: Record<
-    string,
-    Array<(event: { data: string }) => void>
-  > = {}
-  private req: ReturnType<typeof httpRequest> | null = null
-
-  constructor(url: string) {
-    this.req = httpRequest(url, (res) => {
-      let buffer = ''
-      res.setEncoding('utf8')
-      res.on('data', (chunk: string) => {
-        buffer += chunk
-        const frames = buffer.split('\n\n')
-        buffer = frames.pop() ?? ''
-        for (const frame of frames) {
-          const data = frame
-            .split('\n')
-            .filter((line) => line.startsWith('data: '))
-            .map((line) => line.slice('data: '.length))
-            .join('\n')
-          if (data) {
-            for (const listener of this.listeners.message ?? []) {
-              listener({ data })
-            }
-          }
-        }
-      })
-    })
-    this.req.end()
-  }
-
-  addEventListener(
-    type: string,
-    listener: (event: { data: string }) => void,
-  ): void {
-    ;(this.listeners[type] ??= []).push(listener)
-  }
-
-  close(): void {
-    this.req?.destroy()
-  }
-}
 
 const waitFor = async (
   predicate: () => boolean,
@@ -227,7 +183,6 @@ describe('WebCliRuntimeScope BS-mode e2e（真实 HTTP + SSE）', () => {
       webScope = createWebCliRuntimeScope({
         baseUrl: `http://127.0.0.1:${port}`,
         fetchImpl: (url, init) => globalThis.fetch(url, init),
-        EventSourceImpl: MinimalEventSource as unknown as typeof EventSource,
       })
       // master 的 CliSessionService 类无 discoverSessions/setPinned（backup
       // 接口有）；web scope 的 sessionService 对象实际提供，经局部接口收窄。

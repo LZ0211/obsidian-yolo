@@ -4,7 +4,7 @@
  * + RemoteChatRuntimeAdapter 走完整线上协议。
  */
 /* eslint-disable import/no-nodejs-modules -- 测试文件运行在 Node 环境，直接使用 node 内置模块构造本地服务器 */
-import { type Server, createServer, request as httpRequest } from 'node:http'
+import { type Server, createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
 import { createWebRemoteTransport } from '../../../runtime/web/remoteChatTransport'
@@ -20,59 +20,6 @@ import {
 } from '../contract'
 
 import { RemoteChatRuntimeAdapter } from './RemoteChatRuntimeAdapter'
-
-// ── Node 端 EventSource 兼容实现（真实 HTTP SSE） ──────────────────────────────
-
-type NodeEventHandler = (event: { data: string }) => void
-
-class NodeEventSource {
-  private readonly listeners = new Map<string, Set<NodeEventHandler>>()
-  private buffer = ''
-  private req: ReturnType<typeof httpRequest> | null = null
-
-  constructor(url: string) {
-    this.req = httpRequest(url, (res) => {
-      res.setEncoding('utf8')
-      res.on('data', (chunk: string) => {
-        this.buffer += chunk
-        let frameEnd: number
-        while ((frameEnd = this.buffer.indexOf('\n\n')) >= 0) {
-          const frame = this.buffer.slice(0, frameEnd)
-          this.buffer = this.buffer.slice(frameEnd + 2)
-          this.dispatch(frame)
-        }
-      })
-    })
-    this.req.end()
-  }
-
-  addEventListener(type: string, handler: NodeEventHandler): void {
-    const set = this.listeners.get(type) ?? new Set()
-    set.add(handler)
-    this.listeners.set(type, set)
-  }
-
-  removeEventListener(type: string, handler: NodeEventHandler): void {
-    this.listeners.get(type)?.delete(handler)
-  }
-
-  close(): void {
-    this.req?.destroy()
-    this.req = null
-  }
-
-  private dispatch(frame: string): void {
-    const data = frame
-      .split('\n')
-      .filter((line) => line.startsWith('data: '))
-      .map((line) => line.slice('data: '.length))
-      .join('\n')
-    if (!data) return
-    for (const handler of this.listeners.get('message') ?? []) {
-      handler({ data })
-    }
-  }
-}
 
 // ── 服务器侧状态化 fake runtime ──────────────────────────────────────────────
 
@@ -274,7 +221,6 @@ describe('chat runtime BS-mode e2e（真实 HTTP + Web RemoteTransport）', () =
         baseUrl: `http://127.0.0.1:${port}`,
         // eslint-disable-next-line no-restricted-globals -- Node 测试环境的全局 fetch（Obsidian 内 requestUrl 禁令不适用）
         fetchImpl: fetch,
-        EventSourceImpl: NodeEventSource as unknown as typeof EventSource,
       })
       adapter = new RemoteChatRuntimeAdapter('codex', transport, conversationId)
       const seen: string[] = []

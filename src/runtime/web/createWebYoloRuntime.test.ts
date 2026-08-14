@@ -601,4 +601,174 @@ describe('createWebYoloRuntime', () => {
       toolCallId: 'tc-1',
     })
   })
+
+  it('reconnects the run stream with cursor replay after a mid-stream failure (E2)', async () => {
+    jest.useFakeTimers()
+    try {
+      const makeStream = () => {
+        let controller: ReadableStreamDefaultController<Uint8Array> | null =
+          null
+        const body = new ReadableStream<Uint8Array>({
+          start(streamController) {
+            controller = streamController
+          },
+        })
+        const encoder = new TextEncoder()
+        return {
+          body,
+          feed: (frame: string) => controller?.enqueue(encoder.encode(frame)),
+          error: (err: unknown) => controller?.error(err),
+          close: () => controller?.close(),
+        }
+      }
+      const firstStream = makeStream()
+      const secondStream = makeStream()
+
+      const api = {
+        getJson: jest.fn(async () => []),
+        getJsonOrNull: jest.fn(),
+        postJson: jest.fn(async () => ({
+          conversationId: 'conv-1',
+          runId: 'run-1',
+        })),
+        openSseFetch: jest
+          .fn()
+          .mockReturnValueOnce({
+            ok: true,
+            body: firstStream.body,
+          })
+          .mockReturnValueOnce({
+            ok: true,
+            body: secondStream.body,
+          }),
+      } as {
+        getJson: jest.Mock
+        getJsonOrNull: jest.Mock
+        postJson: jest.Mock
+        openSseFetch: jest.Mock
+      }
+
+      const runtime = createWebYoloRuntime({
+        api: api as never,
+        bootstrap: {
+          serverUrl: 'http://127.0.0.1:27123',
+          phase: 2,
+          workspaceAgentConfigured: true,
+          authRequired: false,
+          session: { agentId: 'agent-1' },
+          allowedAgents: [{ id: 'agent-1', name: 'Agent 1' }],
+          settings: { webRuntimeEnabled: true },
+        },
+        initialSettings: { version: 72 } as never,
+        initialVaultIndex: [],
+      })
+
+      const states: string[] = []
+      runtime.agent.subscribe(
+        'conv-1',
+        (state) => states.push(state.status),
+        { emitCurrent: false },
+      )
+
+      await runtime.agent.run({
+        conversationId: 'conv-1',
+        messages: [],
+      } as never)
+
+      // 首条流：先收到一个带 id 的事件（cursor=1），随后 mid-stream 断线。
+      firstStream.feed(
+        `id: 1\ndata: ${JSON.stringify({ type: 'state', status: 'running' })}\n\n`,
+      )
+      await jest.advanceTimersByTimeAsync(0)
+      firstStream.error(new Error('connection reset'))
+      await jest.advanceTimersByTimeAsync(0)
+
+      // 退避 1s 后重连，重放 cursor 之后的记录。
+      await jest.advanceTimersByTimeAsync(1_000)
+      expect(api.openSseFetch).toHaveBeenCalledTimes(2)
+      const secondUrl = api.openSseFetch.mock.calls[1]?.[0] as string
+      expect(secondUrl).toContain('/api/agent/stream/run-1')
+      expect(secondUrl).toContain('cursor=1')
+
+      // 重连流正常结束（终态）→ 收尾拉全量状态，绝不落入 error 态。
+      secondStream.feed(
+        `id: 2\ndata: ${JSON.stringify({ type: 'state', status: 'completed' })}\n\n`,
+      )
+      secondStream.close()
+      await jest.advanceTimersByTimeAsync(0)
+
+      expect(states).toContain('running')
+      expect(states).toContain('completed')
+      expect(states).not.toContain('error')
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('restarts the queue event stream after a failure (E2)', async () => {
+    jest.useFakeTimers()
+    try {
+      const makeStream = () => {
+        let controller: ReadableStreamDefaultController<Uint8Array> | null =
+          null
+        const body = new ReadableStream<Uint8Array>({
+          start(streamController) {
+            controller = streamController
+          },
+        })
+        return {
+          body,
+          close: () => controller?.close(),
+        }
+      }
+      const okStream = makeStream()
+
+      const api = {
+        getJson: jest.fn(async () => []),
+        getJsonOrNull: jest.fn(),
+        postJson: jest.fn(),
+        openSseFetch: jest
+          .fn()
+          .mockRejectedValueOnce(new Error('queue stream down'))
+          .mockReturnValueOnce({ ok: true, body: okStream.body }),
+      } as {
+        getJson: jest.Mock
+        getJsonOrNull: jest.Mock
+        postJson: jest.Mock
+        openSseFetch: jest.Mock
+      }
+
+      const runtime = createWebYoloRuntime({
+        api: api as never,
+        bootstrap: {
+          serverUrl: 'http://127.0.0.1:27123',
+          phase: 2,
+          workspaceAgentConfigured: true,
+          authRequired: false,
+          session: { agentId: 'agent-1' },
+          allowedAgents: [{ id: 'agent-1', name: 'Agent 1' }],
+          settings: { webRuntimeEnabled: true },
+        },
+        initialSettings: { version: 72 } as never,
+        initialVaultIndex: [],
+      })
+
+      const listener = jest.fn()
+      runtime.agent.subscribeToPendingExternalAgentResults(listener)
+      await jest.advanceTimersByTimeAsync(0)
+
+      // 首次连接失败 → 退避重试后第二次连接成功。
+      await jest.advanceTimersByTimeAsync(1_000)
+      expect(api.openSseFetch).toHaveBeenCalledTimes(2)
+
+      // 服务端关闭流 → started 标记复位，再次订阅会重新拉起连接。
+      okStream.close()
+      await jest.advanceTimersByTimeAsync(0)
+      runtime.agent.subscribeToPendingExternalAgentResults(jest.fn())
+      await jest.advanceTimersByTimeAsync(0)
+      expect(api.openSseFetch).toHaveBeenCalledTimes(3)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
 })

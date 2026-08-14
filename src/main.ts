@@ -204,6 +204,8 @@ import {
   normalizePluginVersion,
 } from './core/update/updateChecker'
 import { registerWebServerRoutes } from './core/web-server/registerWebServerRoutes'
+import type { WebAgentRunBridge } from './core/web-server/WebAgentRunBridge'
+import { disposeChatRuntimeRouteCaches } from './core/web-server/routes/chatRuntimeRoutes'
 import { loadOrCreateShareTokenPepper } from './core/web-server/shareTokenPepperStore'
 import type { WebAgentLifecycleService } from './core/web-server/webAgentLifecycleService'
 import {
@@ -381,6 +383,7 @@ export default class YoloPlugin extends Plugin {
   private localMcpSettingsUnsubscribe: (() => void) | null = null
   private webServerLifecycle: WebServerLifecycle<YoloSettings> | null = null
   private webAgentLifecycleService: WebAgentLifecycleService | null = null
+  private webAgentRunBridge: WebAgentRunBridge | null = null
   private webSseHub: WebSseHub | null = null
   private webAgentEventStore: AgentEventStore | null = null
   private chatManager: ChatManager | null = null
@@ -3022,7 +3025,7 @@ export default class YoloPlugin extends Plugin {
     })
   }
 
-  onunload() {
+  async onunload() {
     this.isUnloaded = true
     this.injectionBridgeUninstall?.()
     this.injectionBridgeUninstall = null
@@ -3103,8 +3106,19 @@ export default class YoloPlugin extends Plugin {
     this.mcpCoordinator?.cleanup()
     this.mcpCoordinator = null
     this.mcpManager = null
-    // Web Runtime cleanup（desktop HTTP server）
-    void this.webServerLifecycle?.stop()
+    // Web Runtime cleanup（desktop HTTP server）。F12：此前 `void stop()` 不
+    // await——stop 内部的 server.close/onStop（chat-runtime 缓存释放）会与
+    // 下面的字段置空竞态。先经 bridge 中止在飞 web run（F3 接线），再 await
+    // 整个 stop。
+    if (this.webAgentRunBridge) {
+      for (const run of this.webAgentEventStore?.listRuns() ?? []) {
+        if (run.status === 'running') {
+          this.webAgentRunBridge.abort(run.runId)
+        }
+      }
+      this.webAgentRunBridge = null
+    }
+    await this.webServerLifecycle?.stop()
     this.webServerLifecycle = null
     this.webAgentLifecycleService = null
     this.webAgentEventStore?.close()
@@ -5229,12 +5243,20 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
               getCliRuntimeScope: () => this.createCliRuntimeScope(),
             })
             this.webAgentLifecycleService = registered.lifecycleService
+            // F3：bridge 此前无人持有（registerWebServerRoutes 返回值
+            // 只取了 lifecycleService），unload 时无从中止在飞 web run。
+            this.webAgentRunBridge = registered.bridge
           } else {
             console.warn(
               '[YOLO] Web Runtime is unavailable because the vault file system path could not be resolved.',
             )
           }
           return server
+        },
+        // E3：server 停止/重启后释放 chat-runtime 实例缓存与重放缓冲，
+        // 旧 server 的订阅不得驻留在新实例上。
+        onStop: async () => {
+          await disposeChatRuntimeRouteCaches()
         },
       })
     }
