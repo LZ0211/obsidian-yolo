@@ -5331,6 +5331,13 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
       // snapshot/progress the settings page observes.
       getRagIndexService: () => this.getRagIndexService(),
     })
+    // NOTE (T4): `queuePolicy` is deliberately not wired here — the
+    // scheduledTasks settings schema has no maxConcurrent/queue-mode field
+    // yet, so the queue runs with its default (maxConcurrent 1, sequential).
+    // Wiring a real setting requires a settings-schema field + migration +
+    // UI entry; that is left for the settings-UI task rather than guessed
+    // from an unrelated field (webRuntime.maxConcurrentAgentRuns has
+    // different semantics).
     const service = new ScheduledTasksService({
       store,
       eventBus,

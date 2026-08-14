@@ -74,15 +74,28 @@ export function ScheduledTaskCard({
   }
 
   const handleDelete = () => {
+    // T1: warn when the task is executing — the run is cancelled (its record
+    // is kept as CANCELLED), not allowed to run to completion after deletion.
+    const runningWarning = isExecuting
+      ? t(
+          'settings.scheduledTasks.deleteTaskRunningWarning',
+          'This task is currently executing — its run will be cancelled and kept as cancelled in the run history.',
+        )
+      : ''
     new ConfirmModal(app, {
       title: t(
         'settings.scheduledTasks.deleteTaskTitle',
         'Delete scheduled task',
       ),
-      message: t(
-        'settings.scheduledTasks.deleteTaskMessage',
-        'Remove "{name}"? This cannot be undone.',
-      ).replace('{name}', task.name),
+      message: runningWarning
+        ? `${runningWarning}\n\n${t(
+            'settings.scheduledTasks.deleteTaskMessage',
+            'Remove "{name}"? This cannot be undone.',
+          ).replace('{name}', task.name)}`
+        : t(
+            'settings.scheduledTasks.deleteTaskMessage',
+            'Remove "{name}"? This cannot be undone.',
+          ).replace('{name}', task.name),
       ctaText: t('common.delete', 'Delete'),
       onConfirm: () => {
         if (!service) return

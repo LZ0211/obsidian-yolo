@@ -2126,6 +2126,8 @@ export const zh: TranslationKeys = {
       enable: '启用',
       deleteTaskTitle: '删除定时任务',
       deleteTaskMessage: '删除「{name}」？此操作无法撤销。',
+      deleteTaskRunningWarning:
+        '该任务正在执行中——本次运行将被取消，并在运行记录中保留为「已取消」。',
       runNowTaskNotFound: '任务不存在',
       runNowTaskDisabled: '任务已停用',
       runNowAlreadyQueued: '已在队列中或正在运行',

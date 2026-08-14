@@ -66,10 +66,8 @@ function makeRunInsert(overrides: Partial<TaskRunInsert> = {}): TaskRunInsert {
     completedAt: 1100,
     durationMs: 100,
     attempt: 1,
-    parentRunId: null,
     batchId: 'batch-1',
     conversationId: 'conv-1',
-    messagesCount: 3,
     output: null,
     exitCode: null,
     catchUpRunAt: null,
@@ -207,7 +205,7 @@ describe('ScheduledTasksStore', () => {
     }
   })
 
-  it('cascades task_runs deletion when the parent task is deleted', () => {
+  it('deletes a task and its run rows explicitly (no FK cascade)', () => {
     const dir = makeTempDir()
     try {
       const store = createScheduledTasksStore(dir)
@@ -219,7 +217,159 @@ describe('ScheduledTasksStore', () => {
       store.deleteTask('task-1')
 
       expect(store.getRun('run-1')).toBeNull()
+      expect(store.getTask('task-1')).toBeNull()
       store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  it('T1: keeps the cancelled in-flight run rows when deleting a task', () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      store.createTask('task-1', makeTaskConfig(), 1000)
+      store.insertRun(
+        makeRunInsert({
+          id: 'run-keep',
+          taskId: 'task-1',
+          status: TaskRunStatus.CANCELLED,
+        }),
+      )
+      store.insertRun(
+        makeRunInsert({
+          id: 'run-old',
+          taskId: 'task-1',
+          status: TaskRunStatus.COMPLETED,
+        }),
+      )
+
+      store.deleteTask('task-1', { keepRunIds: ['run-keep'] })
+
+      // The cancelled in-flight run survives for audit (its task_id is nulled
+      // by the FK's on delete set null); other runs are removed exactly like
+      // the old cascade behavior.
+      expect(store.getRun('run-keep')?.status).toBe(TaskRunStatus.CANCELLED)
+      expect(store.getRun('run-keep')?.taskId).toBeNull()
+      expect(store.getRun('run-old')).toBeNull()
+      expect(store.getTask('task-1')).toBeNull()
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  it('T1: migrates legacy task_runs tables from on delete cascade to restrict (dropping always-null columns)', () => {
+    const dir = makeTempDir()
+    try {
+      // Hand-build a database with the pre-fix shape: `on delete cascade` FK
+      // plus the never-written parent_run_id / messages_count columns.
+      const dbPath = path.join(dir, 'scheduled-tasks.sqlite')
+      const legacy = openSqliteRuntime({ dbPath })
+      legacy.exec('pragma foreign_keys = on;')
+      legacy.exec(`
+        create table scheduled_tasks (
+          id text primary key,
+          name text not null,
+          type text not null,
+          created_by text not null,
+          schedule_type text not null,
+          timezone text,
+          cron_expression text,
+          interval_seconds integer,
+          one_time_date_time integer,
+          next_run_time integer,
+          script_path text,
+          agent_prompt text,
+          agent_config text,
+          queue_group text,
+          depends_on text,
+          continue_on_dependency_failure integer not null default 0,
+          priority integer not null default 5,
+          timeout_seconds integer not null default 300,
+          max_retries integer not null default 3,
+          enabled integer not null default 1,
+          notify_on text not null default '[]',
+          created_at integer not null,
+          updated_at integer not null,
+          last_run_at integer,
+          last_run_status text,
+          last_error text
+        )
+      `)
+      legacy.exec(`
+        create table task_runs (
+          id text primary key,
+          task_id text not null references scheduled_tasks(id) on delete cascade,
+          status text not null,
+          result text,
+          error text,
+          scheduled_for integer not null,
+          triggered_by text not null,
+          started_at integer,
+          completed_at integer,
+          duration_ms integer,
+          attempt integer not null default 1,
+          parent_run_id text,
+          batch_id text not null,
+          conversation_id text,
+          messages_count integer,
+          output text,
+          exit_code integer,
+          catch_up_run_at integer,
+          logs text
+        )
+      `)
+      legacy.exec(
+        "insert into scheduled_tasks (id, name, type, created_by, schedule_type, notify_on, created_at, updated_at) values ('task-1', 'Legacy', 'agent', 'user', 'cron', '[]', 1000, 1000)",
+      )
+      legacy.exec(`
+        insert into task_runs (
+          id, task_id, status, result, error,
+          scheduled_for, triggered_by, started_at, completed_at, duration_ms,
+          attempt, parent_run_id, batch_id,
+          conversation_id, messages_count,
+          output, exit_code, catch_up_run_at, logs
+        ) values (
+          'run-1', 'task-1', 'completed', 'ok', null,
+          1000, 'schedule', 1000, 1100, 100,
+          1, null, 'batch-1',
+          null, null,
+          null, 0, null, null
+        )
+      `)
+      legacy.close()
+
+      const store = createScheduledTasksStore(dir)
+
+      // Data survived the rebuild.
+      expect(store.getRun('run-1')).toMatchObject({
+        id: 'run-1',
+        taskId: 'task-1',
+        status: TaskRunStatus.COMPLETED,
+        result: 'ok',
+      })
+      store.close()
+
+      // The table was rebuilt: no cascade FK, no dropped columns, and the
+      // new FK is on delete set null — deleting the task keeps the run row
+      // (task_id nulled) instead of silently destroying it.
+      const raw = openSqliteRuntime({ dbPath })
+      const tableSql =
+        raw.queryOne<{ sql: string | null }>(
+          "select sql from sqlite_master where type = 'table' and name = 'task_runs'",
+        )?.sql ?? ''
+      expect(tableSql).not.toContain('on delete cascade')
+      expect(tableSql).toContain('on delete set null')
+      expect(tableSql).not.toContain('parent_run_id')
+      expect(tableSql).not.toContain('messages_count')
+      raw.exec('delete from scheduled_tasks where id = ?', ['task-1'])
+      const orphaned = raw.queryOne<{ task_id: string | null }>(
+        'select task_id from task_runs where id = ?',
+        ['run-1'],
+      )
+      expect(orphaned?.task_id).toBeNull()
+      raw.close()
     } finally {
       cleanup(dir)
     }
