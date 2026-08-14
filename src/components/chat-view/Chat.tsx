@@ -1594,6 +1594,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       if (!cliRuntimeScope) {
         throw new Error('CLI runtime is unavailable.')
       }
+      deletedConversationIdsRef.current.delete(conversationId)
       const identity = getCliSessionIdentity(ref)
       setDismissedNativeCliSessions((previous) => {
         if (!previous.has(identity)) return previous
