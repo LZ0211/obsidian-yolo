@@ -1195,6 +1195,9 @@ export function useChatInputController({
         return
       }
       if (command.id !== 'compact-context') return
+      if (!RUNTIME_CAPABILITIES[activeRuntimeId].supportsContextCompaction) {
+        return
+      }
       if (
         activeRuntimeId === 'yolo' ||
         !late.cliConversationController ||
