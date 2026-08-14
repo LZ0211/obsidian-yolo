@@ -240,4 +240,34 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
       ]),
     )
   })
+
+  it('probes CLI availability from the host via /api/cli/availability', async () => {
+    const availabilityFetch = jest.fn(async () =>
+      jsonResponse({ 'claude-code': true, codex: false }),
+    )
+    const scope = createWebCliRuntimeScope({
+      baseUrl: 'http://localhost',
+      fetchImpl: availabilityFetch,
+      sessionId: 'session-1',
+    })
+    const availability = await scope.probeAvailability?.()
+    expect(availability).toEqual({ 'claude-code': true, codex: false })
+    expect(availabilityFetch).toHaveBeenCalledWith(
+      'http://localhost/api/cli/availability',
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'x-yolo-web-session-id': 'session-1' }),
+      }),
+    )
+  })
+
+  it('probeAvailability falls back to unavailable when the host request fails', async () => {
+    const availabilityFetch = jest.fn(async () => jsonResponse({}, false))
+    const scope = createWebCliRuntimeScope({
+      baseUrl: 'http://localhost',
+      fetchImpl: availabilityFetch,
+      sessionId: null,
+    })
+    const availability = await scope.probeAvailability?.()
+    expect(availability).toEqual({ 'claude-code': false, codex: false })
+  })
 })

@@ -256,6 +256,11 @@ export function createWebCliRuntimeScope(
     conversationId?: string | null,
   ): ChatRuntime
 } {
+  const probeTransport = createWebRemoteTransport({
+    baseUrl: options.baseUrl,
+    sessionId: options.sessionId,
+    fetchImpl: options.fetchImpl,
+  })
   const adapters = new Map<string, RemoteChatRuntimeAdapter>()
   const controllers = new Map<CliRuntimeId, WebCliConversationController>()
 
@@ -388,6 +393,22 @@ export function createWebCliRuntimeScope(
   return {
     sessionService,
     chatRuntimeActions: {} as never,
+    // 浏览器里 Platform.isDesktop 为 false，Chat 的桌面探测不可达——改问
+    // 服务端（桌面宿主）的实际探测结果。
+    probeAvailability: async () => {
+      const response = await probeTransport.get('/api/cli/availability')
+      if (!response.ok) {
+        return { 'claude-code': false, codex: false }
+      }
+      const payload = (await response.json().catch(() => null)) as {
+        'claude-code'?: boolean
+        codex?: boolean
+      } | null
+      return {
+        'claude-code': payload?.['claude-code'] === true,
+        codex: payload?.codex === true,
+      }
+    },
     resolveRuntime: toCliRuntime,
     selectConversationRuntime: (runtimeId) =>
       getController(runtimeId) as unknown as CliConversationController,

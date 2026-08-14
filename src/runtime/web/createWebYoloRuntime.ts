@@ -385,6 +385,8 @@ export function createWebYoloRuntime({
           input.compaction == null
             ? []
             : normalizeChatConversationCompactionState(input.compaction)
+        const previousState =
+          agentStates.get(input.conversationId) ?? idleState(input.conversationId)
         emitState(input.conversationId, {
           conversationId: input.conversationId,
           status: 'running',
@@ -411,21 +413,33 @@ export function createWebYoloRuntime({
           branchTarget,
           overrides,
         } = input
-        const response = await api.postJson<{
-          conversationId: string
-          runId: string
-        }>('/api/agent/run', {
-          conversationId,
-          conversationMessages,
-          messages,
-          requestMessages,
-          compaction,
-          modelId,
-          modelIds,
-          reasoningLevel,
-          branchTarget,
-          overrides,
-        })
+        let response: { conversationId: string; runId: string }
+        try {
+          response = await api.postJson<{
+            conversationId: string
+            runId: string
+          }>('/api/agent/run', {
+            conversationId,
+            conversationMessages,
+            messages,
+            requestMessages,
+            compaction,
+            modelId,
+            modelIds,
+            reasoningLevel,
+            branchTarget,
+            overrides,
+          })
+        } catch (error) {
+          // 启动请求失败（503/网络错误）时回收 running 态——否则按钮一直显示
+          // 停止生成且 abort 无 runId 可中止，UI 永久卡死只能刷新。
+          emitState(input.conversationId, {
+            ...previousState,
+            status: 'error',
+            errorMessage: error instanceof Error ? error.message : String(error),
+          })
+          throw error
+        }
         activeRunIdsByConversation.set(response.conversationId, response.runId)
         void consumeRunStream({
           api,

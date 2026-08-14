@@ -10,6 +10,7 @@ import { CodexAppServerHostPool } from './codex/host'
 import { type ResolvedCodexLaunch, resolveCodexLaunch } from './codex/launch'
 import type { CodexProcessOptions } from './codex/process'
 import { CliConversationController } from './conversation-controller'
+import type { CliRuntimeAvailability } from './desktop'
 import { loadLoginShellEnvironment } from './login-shell-env'
 import {
   CliModelCatalogService,
@@ -61,6 +62,12 @@ export type CliRuntimeCoordinatorOptions = Readonly<{
 export type CliRuntimeScope = {
   readonly sessionService: CliSessionService
   readonly chatRuntimeActions: ReturnType<typeof createCliChatRuntimeActions>
+
+  /**
+   * Web 端（浏览器）专用：探测宿主侧 CLI 运行时可用性。桌面 scope 不实现
+   * 该成员（Chat 在桌面直接走 detectCliRuntimeAvailability(app)）。
+   */
+  probeAvailability?(): Promise<CliRuntimeAvailability>
 
   resolveRuntime(runtimeId: CliRuntimeId): CliRuntime
   selectConversationRuntime(runtimeId: CliRuntimeId): CliConversationController

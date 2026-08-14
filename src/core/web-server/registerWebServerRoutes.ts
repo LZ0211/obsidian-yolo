@@ -16,6 +16,7 @@ import type { AgentEventStore } from '../agent/agentEventStore'
 import type { AgentConversationState, AgentService } from '../agent/service'
 import { createCliChatRuntime } from '../chat-runtime/cli/createCliChatRuntime'
 import type { CliRuntimeScope } from '../cli-runtime/coordinator'
+import { detectCliRuntimeAvailability } from '../cli-runtime/desktop'
 import type { McpManager } from '../mcp/mcpManager'
 import { getYoloBaseDir } from '../paths/yoloPaths'
 
@@ -48,6 +49,7 @@ import {
   workspaceAgentPolicyToRuntimeAccessPolicy,
 } from './WebChatRuntimeAdapter'
 import type { WebHttpServer } from './WebHttpServer'
+import { writeJson } from './WebHttpServer'
 import { WebRunScheduler } from './WebRunScheduler'
 import { WebSessionStore } from './webSessionStore'
 import type { WebSseHub } from './WebSseHub'
@@ -474,6 +476,19 @@ export function registerWebServerRoutes(
           })
         : null
     },
+  })
+
+  // Web 端 CLI 入口可见性探测。浏览器里 Platform.isDesktop 为 false 且
+  // adapter 不是 FileSystemAdapter，Chat 的桌面探测逻辑永远判定 CLI 不可用，
+  // 但服务端（桌面宿主）实际可以承载 CLI 契约 runtime——这里把宿主侧的探测
+  // 结果暴露给浏览器。
+  options.server.router.get('/api/cli/availability', async (req, res) => {
+    const scope = await (options.getCliRuntimeScope?.() ?? null)
+    if (!scope) {
+      writeJson(res, 200, { 'claude-code': false, codex: false })
+      return
+    }
+    writeJson(res, 200, await detectCliRuntimeAvailability(options.app))
   })
 
   registerCitationRoutes(options.server.router, {

@@ -357,6 +357,80 @@ describe('createWebYoloRuntime', () => {
     })
   })
 
+  it('recovers the running state when the run start request fails', async () => {
+    const api = {
+      getJson: jest.fn(async () => []),
+      getJsonOrNull: jest.fn(),
+      postJson: jest.fn(async () => {
+        throw new Error('upstream 503')
+      }),
+      openSseFetch: jest.fn(),
+    } as {
+      getJson: jest.Mock
+      getJsonOrNull: jest.Mock
+      postJson: jest.Mock
+      openSseFetch: jest.Mock
+    }
+
+    const runtime = createWebYoloRuntime({
+      api: api as never,
+      bootstrap: {
+        serverUrl: 'http://127.0.0.1:27123',
+        phase: 2,
+        workspaceAgentConfigured: true,
+        authRequired: false,
+        session: { agentId: 'agent-1' },
+        allowedAgents: [{ id: 'agent-1', name: 'Agent 1' }],
+        settings: {
+          webRuntimeEnabled: true,
+        },
+      },
+      initialSettings: {
+        version: 72,
+      } as never,
+      initialVaultIndex: [],
+    })
+
+    const states: Array<{
+      status?: string
+      errorMessage?: string
+      isRunning?: boolean
+    }> = []
+    const unsubscribe = runtime.agent.subscribe(
+      'conv-1',
+      (state) => {
+        states.push({
+          status: state.status,
+          errorMessage: state.errorMessage,
+          isRunning: runtime.agent.isRunning('conv-1'),
+        } as never)
+      },
+      { emitCurrent: false },
+    )
+
+    await expect(
+      runtime.agent.run({
+        conversationId: 'conv-1',
+        messages: [
+          {
+            role: 'user',
+            id: 'user-1',
+            content: null,
+            promptContent: null,
+          },
+        ],
+      } as never),
+    ).rejects.toThrow('upstream 503')
+
+    unsubscribe()
+
+    const failed = states[states.length - 1]
+    expect(failed?.status).toBe('error')
+    expect(failed?.errorMessage).toContain('503')
+    expect(failed?.isRunning).toBe(false)
+    expect(runtime.agent.isRunning('conv-1')).toBe(false)
+  })
+
   it('hydrates compat vault files from the vault index endpoint', async () => {
     const api = {
       getJson: jest.fn(async (path: string) => {
