@@ -37,7 +37,10 @@ import {
   serializeMentionable,
 } from '../utils/chat/mentionable'
 
-import { shouldSkipCreatingEmptyConversation } from './chatHistoryPersistence'
+import {
+  conversationMutationQueue,
+  shouldSkipCreatingEmptyConversation,
+} from './chatHistoryPersistence'
 import { useChatManager } from './useJsonManagers'
 
 const AUTO_TITLE_WAIT_CONVERSATION_RETRIES = 15
@@ -116,8 +119,6 @@ export function useChatHistory(): UseChatHistory {
   // persistConversationInternal 是整会话读改写（findById → updateChat），
   // 「选目录立即保存」与「消息提交」并发时后写者会用自己读到的旧行覆盖前写者
   // 的新消息。按会话串行化：后到的写等待前一写完成后基于最新行再读改写。
-  const persistQueuesRef = useRef<Map<string, Promise<unknown>>>(new Map())
-
   useEffect(() => {
     settingsRef.current = settings
   }, [settings])
@@ -172,33 +173,27 @@ export function useChatHistory(): UseChatHistory {
       compaction?: ChatConversationCompactionLike | null,
       assistantGroupBoundaryMessageIds?: string[],
       options?: { touchUpdatedAt?: boolean },
+      generation?: number,
     ): Promise<void> => {
-      const queues = persistQueuesRef.current
-      const previous = queues.get(id) ?? Promise.resolve()
-      const run = (): Promise<void> =>
-        persistConversationOnce(
-          id,
-          messages,
-          overrides,
-          conversationModelId,
-          messageModelMap,
-          activeBranchByUserMessageId,
-          reasoningLevel,
-          compaction,
-          assistantGroupBoundaryMessageIds,
-          options,
-        )
-      const next = previous.then(run, run)
-      queues.set(id, next)
-      try {
-        await next
-      } finally {
-        if (queues.get(id) === next) {
-          queues.delete(id)
-        }
-      }
+      await conversationMutationQueue.enqueue(
+        id,
+        generation ?? conversationMutationQueue.captureGeneration(id),
+        () =>
+          persistConversationOnce(
+            id,
+            messages,
+            overrides,
+            conversationModelId,
+            messageModelMap,
+            activeBranchByUserMessageId,
+            reasoningLevel,
+            compaction,
+            assistantGroupBoundaryMessageIds,
+            options,
+          ),
+      )
     },
-    [app, chatManager, settings, persistQueuesRef],
+    [app, chatManager, settings],
   )
 
   const persistConversationOnce = async (
@@ -363,6 +358,8 @@ export function useChatHistory(): UseChatHistory {
         reasoningLevel,
         compaction,
         assistantGroupBoundaryMessageIds,
+        undefined,
+        conversationMutationQueue.captureGeneration(id),
       ),
     [debouncedCreateOrUpdateConversation],
   )
@@ -392,6 +389,7 @@ export function useChatHistory(): UseChatHistory {
         compaction,
         assistantGroupBoundaryMessageIds,
         options,
+        conversationMutationQueue.captureGeneration(id),
       )
     },
     [debouncedCreateOrUpdateConversation, persistConversationInternal],
@@ -426,8 +424,11 @@ export function useChatHistory(): UseChatHistory {
 
   const deleteConversation = useCallback(
     async (id: string): Promise<void> => {
-      await chatManager.deleteChat(id)
-      plugin.getAgentService().dropConversation(id)
+      const generation = conversationMutationQueue.invalidate(id)
+      await conversationMutationQueue.enqueue(id, generation, async () => {
+        await chatManager.deleteChat(id)
+        plugin.getAgentService().dropConversation(id)
+      })
       emitChatHistoryUpdated()
       await fetchChatList()
     },
