@@ -458,6 +458,24 @@ describe('QQOfficialAdapter — group mention wake signal', () => {
     expect(received[0].mentionedBotId).toBeUndefined()
   })
 
+  it('wakes when @everyone is accompanied by a specific bot mention', async () => {
+    const { adapter, ws } = await startAdapter()
+    const received: PlatformMessageEvent[] = []
+    adapter.onMessage((event) => {
+      received.push(event)
+    })
+
+    sendDispatch(ws, 'GROUP_AT_MESSAGE_CREATE', {
+      group_openid: 'g1',
+      content: '<@everyone> <@!BOT_OPENID> please respond',
+      id: 'msg-2b',
+      author: { member_openid: 'm1', user_nick: 'Alice' },
+    })
+
+    expect(received).toHaveLength(1)
+    expect(received[0].mentionedBotId).toBe('qq_official')
+  })
+
   it('treats a guild private message as private without a mention wake signal', async () => {
     const { adapter, ws } = await startAdapter()
     const received: PlatformMessageEvent[] = []

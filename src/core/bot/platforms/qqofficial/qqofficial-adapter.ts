@@ -341,8 +341,9 @@ export class QQOfficialAdapter implements PlatformAdapter {
     // wake signal requires a specific `<@...>` mention tag (the bot's own
     // openid tag, or alongside other users' tags) so @everyone-only traffic
     // does not wake the bot.
-    const hasSpecificMention =
-      /<@!?[^>]+>/.test(rawContent) && !/<@!?everyone>/i.test(rawContent)
+    const hasSpecificMention = /<@!?[^>]+>/.test(
+      rawContent.replace(/<@!?everyone>/gi, ''),
+    )
     const event: PlatformMessageEvent = {
       platformName: 'qq_official',
       messageId: stringValue(data.id),
