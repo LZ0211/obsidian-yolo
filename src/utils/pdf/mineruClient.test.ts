@@ -524,8 +524,58 @@ describe('convertPdfToMarkdown job start timeout', () => {
 })
 
 describe('MinerU session circuit breaker', () => {
+  beforeEach(() => {
+    mockedRequestUrl.mockReset()
+    resetMinerUSessionState()
+  })
+
   afterEach(() => {
     resetMinerUSessionState()
+  })
+
+  it('counts failures from actual conversion attempts', async () => {
+    mockedRequestUrl.mockRejectedValue(new Error('network down'))
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await expect(
+        convertPdfToMarkdown({
+          pdfBytes: PDF_BYTES.buffer,
+          fileName: 'a.pdf',
+          baseUrl: BASE_URL,
+          apiKey: API_KEY,
+        }),
+      ).rejects.toThrow('network down')
+    }
+
+    expect(
+      isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }),
+    ).toBe(false)
+  })
+
+  it('clears prior failures after an actual conversion succeeds', async () => {
+    markMinerUFailure(BASE_URL)
+    markMinerUFailure(BASE_URL)
+    mockedRequestUrl
+      .mockResolvedValueOnce(
+        responseWithText(JSON.stringify({ event_id: 'evt-recovery' })),
+      )
+      .mockResolvedValueOnce(
+        responseWithText(
+          'data: {"type":"complete","output":{"data":["# recovered"]}}',
+        ),
+      )
+
+    await convertPdfToMarkdown({
+      pdfBytes: PDF_BYTES.buffer,
+      fileName: 'a.pdf',
+      baseUrl: BASE_URL,
+      apiKey: API_KEY,
+    })
+    markMinerUFailure(BASE_URL)
+
+    expect(
+      isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }),
+    ).toBe(true)
   })
 
   it('tracks consecutive failures per endpoint and recovers after success or cooldown', () => {
@@ -534,18 +584,21 @@ describe('MinerU session circuit breaker', () => {
       resetMinerUSessionState()
       markMinerUFailure(BASE_URL)
       markMinerUFailure(BASE_URL)
-      expect(isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }))
-        .toBe(true)
+      expect(
+        isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }),
+      ).toBe(true)
 
       markMinerUSuccess(BASE_URL)
       markMinerUFailure(BASE_URL)
       markMinerUFailure(BASE_URL)
-      expect(isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }))
-        .toBe(true)
+      expect(
+        isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }),
+      ).toBe(true)
 
       markMinerUFailure(BASE_URL)
-      expect(isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }))
-        .toBe(false)
+      expect(
+        isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }),
+      ).toBe(false)
       expect(
         isMinerUEnabled({
           mineru: { enabled: true, baseUrl: 'http://mineru-other.test' },
@@ -554,13 +607,15 @@ describe('MinerU session circuit breaker', () => {
 
       // 冷却窗口未过：仍然熔断。
       jest.advanceTimersByTime(MINERU_BREAKER_COOLDOWN_MS - 1000)
-      expect(isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }))
-        .toBe(false)
+      expect(
+        isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }),
+      ).toBe(false)
 
       // 冷却结束：自动恢复，无需重启插件。
       jest.advanceTimersByTime(2000)
-      expect(isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }))
-        .toBe(true)
+      expect(
+        isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }),
+      ).toBe(true)
     } finally {
       jest.useRealTimers()
     }

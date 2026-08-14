@@ -351,7 +351,7 @@ async function resolveFileDataBytes(
  * (markdown text plus extracted images). No caching here — see
  * `mineruCacheStore.convertPdfViaMinerU` for the cached entry point.
  */
-export async function convertPdfToMarkdown(input: {
+async function runMinerUConversion(input: {
   pdfBytes: ArrayBuffer
   fileName: string
   baseUrl: string
@@ -443,6 +443,26 @@ export async function convertPdfToMarkdown(input: {
     throw new Error('MinerU returned an empty result')
   }
   return { markdown, images: [] }
+}
+
+export async function convertPdfToMarkdown(input: {
+  pdfBytes: ArrayBuffer
+  fileName: string
+  baseUrl: string
+  apiKey: string
+  signal?: AbortSignal | null
+}): Promise<MinerURawConversionResult> {
+  const endpoint = normalizeMinerUEndpoint(input.baseUrl)
+  try {
+    const result = await runMinerUConversion(input)
+    markMinerUSuccess(endpoint)
+    return result
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === 'AbortError')) {
+      markMinerUFailure(endpoint)
+    }
+    throw error
+  }
 }
 
 /**

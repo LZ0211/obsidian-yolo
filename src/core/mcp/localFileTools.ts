@@ -63,8 +63,6 @@ import {
   type MinerURawConversionResult,
   convertPdfToMarkdown,
   isMinerUEnabled,
-  markMinerUFailure,
-  markMinerUSuccess,
   resolveMinerUImageRefs,
   toArrayBuffer,
 } from '../../utils/pdf/mineruClient'
@@ -2652,7 +2650,6 @@ async function readPdfViaMinerU({
       settings,
       signal,
     })
-    markMinerUSuccess(settings.mineru.baseUrl)
     const { refs, markdown } = resolveMinerUImageRefs(
       mineruResult.markdown,
       mineruResult.images,
@@ -2666,7 +2663,6 @@ async function readPdfViaMinerU({
     if (mineruErr instanceof DOMException && mineruErr.name === 'AbortError') {
       throw mineruErr
     }
-    markMinerUFailure(settings.mineru.baseUrl)
     console.warn(
       '[YOLO] MinerU conversion failed, falling back to default PDF handling',
       mineruErr,
@@ -4167,24 +4163,13 @@ export async function callLocalFileTool({
         }
 
         const pdfBytes = await app.vault.readBinary(file)
-        let raw: MinerURawConversionResult
-        try {
-          raw = await convertPdfToMarkdown({
-            pdfBytes,
-            fileName: file.name,
-            baseUrl: settings.mineru.baseUrl,
-            apiKey: settings.mineru.apiKey,
-            signal,
-          })
-          markMinerUSuccess(settings.mineru.baseUrl)
-        } catch (error) {
-          // Abort 语义与 fs_read MinerU 分支一致：透传不计数（请求已被取消）。
-          if (error instanceof DOMException && error.name === 'AbortError') {
-            throw error
-          }
-          markMinerUFailure(settings.mineru.baseUrl)
-          throw error
-        }
+        const raw: MinerURawConversionResult = await convertPdfToMarkdown({
+          pdfBytes,
+          fileName: file.name,
+          baseUrl: settings.mineru.baseUrl,
+          apiKey: settings.mineru.apiKey,
+          signal,
+        })
         if (signal?.aborted) {
           return { status: ToolCallResponseStatus.Aborted }
         }
