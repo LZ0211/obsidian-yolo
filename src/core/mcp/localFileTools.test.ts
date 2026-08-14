@@ -2889,7 +2889,14 @@ describe('mineru_convert tool', () => {
     adapter,
   }: {
     file: TFile | null
-    adapter: { write: jest.Mock; writeBinary: jest.Mock }
+    adapter: {
+      write: jest.Mock
+      writeBinary: jest.Mock
+      exists?: jest.Mock
+      read?: jest.Mock
+      readBinary?: jest.Mock
+      remove?: jest.Mock
+    }
   }): App =>
     ({
       vault: {
@@ -2900,7 +2907,13 @@ describe('mineru_convert tool', () => {
           ),
         readBinary: jest.fn().mockResolvedValue(new ArrayBuffer(8)),
         createFolder: jest.fn().mockResolvedValue(undefined),
-        adapter,
+        adapter: {
+          exists: jest.fn().mockResolvedValue(false),
+          read: jest.fn(),
+          readBinary: jest.fn(),
+          remove: jest.fn().mockResolvedValue(undefined),
+          ...adapter,
+        },
       },
     }) as unknown as App
 
@@ -2949,6 +2962,43 @@ describe('mineru_convert tool', () => {
       'out/mineru/images/fig1.png',
       new Uint8Array([1, 2, 3]).buffer,
     )
+  })
+
+  it('does not delete completed output paths when cancellation happens during image writes', async () => {
+    ;(convertPdfToMarkdown as jest.Mock).mockResolvedValue({
+      markdown: '# New markdown',
+      images: [{ name: 'fig1.png', data: new Uint8Array([1, 2, 3]) }],
+    })
+    const controller = new AbortController()
+    const file = makePdfFile()
+    const files = new Map<string, string | ArrayBuffer>([
+      ['out/mineru/result.md', '# Original markdown'],
+    ])
+    const adapter = {
+      write: jest.fn(async (path: string, content: string) => {
+        files.set(path, content)
+      }),
+      writeBinary: jest.fn(async (path: string, content: ArrayBuffer) => {
+        files.set(path, content)
+        controller.abort()
+      }),
+      remove: jest.fn(async (path: string) => {
+        files.delete(path)
+      }),
+    }
+
+    const result = await callLocalFileTool({
+      app: makeApp({ file, adapter }),
+      settings: mineruSettings,
+      toolName: 'mineru_convert',
+      args: { inputPath: 'docs/report.pdf', outputDir: 'out/mineru' },
+      signal: controller.signal,
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Aborted)
+    expect(files.get('out/mineru/result.md')).toBe('# New markdown')
+    expect(files.has('out/mineru/images/fig1.png')).toBe(true)
+    expect(adapter.remove).not.toHaveBeenCalled()
   })
 
   it('returns an Error when MinerU is not configured', async () => {
