@@ -91,6 +91,82 @@ const flushMicrotasks = async (): Promise<void> => {
 
 describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）', () => {
 
+  it('rejects session hydration when the remote open command fails', async () => {
+    const { fetch } = createFetchMock()
+    const originalFetch = fetch.getMockImplementation()
+    fetch.mockImplementation(async (url, init) => {
+      if (String(url).includes('/sessions/open')) {
+        return jsonResponse({
+          ok: false,
+          error: { kind: 'failed', message: 'provider session missing' },
+        })
+      }
+      if (!originalFetch) throw new Error('missing fetch mock')
+      return originalFetch(url, init)
+    })
+    const scope = createWebCliRuntimeScope({
+      baseUrl: 'http://localhost',
+      fetchImpl: fetch,
+      sessionId: 'session-1',
+    })
+    const controller = scope.selectConversationRuntime('codex')
+
+    await expect(
+      controller.hydrateSession({
+        runtimeId: 'codex',
+        nativeSessionId: 'missing-thread',
+      }),
+    ).rejects.toThrow('provider session missing')
+    await scope.dispose()
+  })
+
+  it('returns the provider snapshot after a successful remote open command', async () => {
+    const { fetch } = createFetchMock()
+    const originalFetch = fetch.getMockImplementation()
+    const ref = { runtimeId: 'codex' as const, nativeSessionId: 'thread-1' }
+    const message = {
+      role: 'assistant' as const,
+      id: 'assistant-1',
+      content: 'loaded from provider',
+    }
+    fetch.mockImplementation(async (url, init) => {
+      if (String(url).includes('/sessions/open')) {
+        return jsonResponse({ ok: true })
+      }
+      if (String(url).includes('/snapshot')) {
+        return jsonResponse({
+          snapshot: {
+            replayCursor: 2,
+            runId: 'remote:conversation-1',
+            conversationId: 'conversation-1',
+            sessionRef: ref,
+            messages: [message],
+            runState: 'idle',
+            error: null,
+            compactionBoundaries: [],
+            configuration: null,
+            capabilities: {},
+          },
+          cursor: 2,
+        })
+      }
+      if (!originalFetch) throw new Error('missing fetch mock')
+      return originalFetch(url, init)
+    })
+    const scope = createWebCliRuntimeScope({
+      baseUrl: 'http://localhost',
+      fetchImpl: fetch,
+      sessionId: 'session-1',
+    })
+    const controller = scope.selectConversationRuntime('codex')
+
+    await expect(controller.hydrateSession(ref)).resolves.toMatchObject({
+      ref,
+      messages: [message],
+    })
+    await scope.dispose()
+  })
+
   it('discovers sessions via the chat-runtime protocol and maps pin state', async () => {
     const { fetch, calls } = createFetchMock()
     const scope = createWebCliRuntimeScope({
@@ -114,6 +190,44 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
       title: 'Fix login',
       isPinned: true,
       hasOverlay: false,
+    })
+  })
+
+  it('reports per-runtime HTTP and transport failures during discovery', async () => {
+    const fetch = jest.fn(
+      async (url: RequestInfo | URL, init?: RequestInit) => {
+        if (String(url).includes('/stream')) {
+          return {
+            ok: true,
+            body: new ReadableStream<Uint8Array>(),
+          } as unknown as Response
+        }
+        if (String(url).includes('/claude-code/sessions')) {
+          throw new Error('network down')
+        }
+        if (String(url).includes('/codex/sessions')) {
+          return jsonResponse({
+            ok: false,
+            error: { kind: 'failed', message: 'host rejected discovery' },
+          })
+        }
+        return jsonResponse({ ok: true })
+      },
+    )
+    const scope = createWebCliRuntimeScope({
+      baseUrl: 'http://localhost',
+      fetchImpl: fetch,
+      sessionId: 'session-1',
+    })
+    const sessionService =
+      scope.sessionService as unknown as WebScopeSessionService
+
+    const discovery = await sessionService.discoverSessions()
+
+    expect(discovery.sessions).toEqual([])
+    expect(discovery.errors).toEqual({
+      'claude-code': 'network down',
+      codex: 'host rejected discovery',
     })
   })
 
@@ -218,6 +332,39 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
     await expect(controller.listSkills()).rejects.toThrow(/unsupported/)
   })
 
+  it('provides the controller methods used by staging and the MCP status UI', async () => {
+    const { fetch } = createFetchMock()
+    const scope = createWebCliRuntimeScope({
+      baseUrl: 'http://localhost',
+      fetchImpl: fetch,
+      sessionId: 'session-1',
+    })
+    const controller = scope.selectConversationRuntime('codex')
+
+    expect(controller.stageConfiguration({ modelId: 'gpt-test' })).toBeUndefined()
+    const staged = controller.stageTurn({
+      id: 'message-a',
+      role: 'user',
+      content: null,
+      promptContent: null,
+      mentionables: [],
+    })
+    expect(controller.getSnapshot().messages).toHaveLength(1)
+    controller.rejectStagedTurn(staged, new Error('rejected'))
+    expect(controller.getSnapshot()).toMatchObject({
+      runState: 'error',
+      error: 'rejected',
+    })
+
+    await expect(controller.mcpServerStatus()).rejects.toThrow(/unsupported/)
+    await expect(controller.toggleMcpServer('github', false)).rejects.toThrow(
+      /unsupported/,
+    )
+    await expect(controller.reconnectMcpServer('github')).rejects.toThrow(
+      /unsupported/,
+    )
+  })
+
   it('getChatRuntime returns a ChatRuntime wired to the same transport', async () => {
     const { fetch, calls } = createFetchMock()
     const scope = createWebCliRuntimeScope({
@@ -239,6 +386,63 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
         }),
       ]),
     )
+  })
+
+  it('rebinds the CLI controller transport when the presented conversation changes', async () => {
+    const { fetch, calls } = createFetchMock()
+    const scope = createWebCliRuntimeScope({
+      baseUrl: 'http://localhost',
+      fetchImpl: fetch,
+      sessionId: 'session-1',
+    })
+    const controller = scope.selectConversationRuntime('codex')
+
+    controller.bindConversation('conversation-a')
+    await controller.sendTurn({
+      userMessage: {
+        id: 'message-a',
+        role: 'user',
+        content: null,
+        promptContent: null,
+        mentionables: [],
+      },
+      content: 'first',
+    })
+    controller.bindConversation('conversation-b')
+    await controller.sendTurn({
+      userMessage: {
+        id: 'message-b',
+        role: 'user',
+        content: null,
+        promptContent: null,
+        mentionables: [],
+      },
+      content: 'second',
+    })
+
+    const turnCalls = calls.filter((call) => call.url.endsWith('/codex/turn'))
+    expect(turnCalls).toHaveLength(2)
+    expect(JSON.parse(String(turnCalls[0].init?.body))).toMatchObject({
+      conversationId: 'conversation-a',
+    })
+    expect(JSON.parse(String(turnCalls[1].init?.body))).toMatchObject({
+      conversationId: 'conversation-b',
+    })
+  })
+
+  it('keeps a newly created conversation controller selected', () => {
+    const { fetch } = createFetchMock()
+    const scope = createWebCliRuntimeScope({
+      baseUrl: 'http://localhost',
+      fetchImpl: fetch,
+      sessionId: 'session-1',
+    })
+    const previous = scope.selectConversationRuntime('codex')
+
+    const created = scope.createConversationRuntime('codex')
+
+    expect(created).not.toBe(previous)
+    expect(scope.selectConversationRuntime('codex')).toBe(created)
   })
 
   it('probes CLI availability from the host via /api/cli/availability', async () => {

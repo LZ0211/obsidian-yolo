@@ -8,23 +8,39 @@
  * 指向同一服务端 runtime（服务端按 runtimeId:conversationId 缓存实例），状态一致。
  */
 import type {
+  ChatCommandError,
   ChatRuntime,
   ChatRuntimeId,
   ChatRuntimeSnapshot,
   ChatSessionSummary,
 } from '../../core/chat-runtime/contract'
 import { RemoteChatRuntimeAdapter } from '../../core/chat-runtime/remote/RemoteChatRuntimeAdapter'
-import type { CliConversationController } from '../../core/cli-runtime/conversation-controller'
+import {
+  CliConversationController,
+  type CliConversationRewriteTurn,
+  type CliConversationTurn,
+  type CliStagedConversationTurn,
+} from '../../core/cli-runtime/conversation-controller'
 import type { CliRuntimeScope } from '../../core/cli-runtime/coordinator'
-import type { CliSessionService } from '../../core/cli-runtime/session-service'
 import type {
+  CliSessionDiscoveryResult,
+  CliSessionService,
+} from '../../core/cli-runtime/session-service'
+import type {
+  CliAssistantBinding,
+  CliPermissionProfileUpdate,
   CliRuntime,
   CliRuntimeConfiguration,
+  CliRuntimeConfigurationUpdate,
   CliRuntimeId,
+  CliRuntimeMcpServerStatus,
   CliRuntimeRunState,
+  CliRuntimeSkill,
   CliSessionHydration,
+  CliSessionOverlay,
   CliSessionRef,
 } from '../../core/cli-runtime/types'
+import type { ChatMessage, ChatUserMessage } from '../../types/chat'
 
 import { createWebRemoteTransport } from './remoteChatTransport'
 
@@ -71,45 +87,98 @@ const toSessionListItem = (
   isPinned: summary.isPinned === true,
 })
 
+const getDiscoveryErrorMessage = (error: ChatCommandError): string => {
+  if (error.kind === 'failed' && error.message) return error.message
+  if (error.kind === 'rejected') return error.reason
+  if (error.kind === 'unsupported' && error.reason) return error.reason
+  return `Session discovery failed (${error.kind}).`
+}
+
+const getSessionCommandErrorMessage = (error: ChatCommandError): string => {
+  if (error.kind === 'failed' && error.message) return error.message
+  if (error.kind === 'rejected') return error.reason
+  if (error.kind === 'unsupported' && error.reason) return error.reason
+  return `CLI session command failed (${error.kind}).`
+}
+
+const createUnsupportedWebRuntime = (runtimeId: CliRuntimeId): CliRuntime => {
+  const unsupported = async (): Promise<never> => {
+    throw new Error(`${runtimeId} operation is unsupported on the web CLI runtime`)
+  }
+  return {
+    runtimeId,
+    openSession: unsupported,
+    ensureReady: unsupported,
+    getConfiguration: unsupported,
+    updateConfiguration: unsupported,
+    sendTurn: unsupported,
+    rewriteTurn: unsupported,
+    cancel: unsupported,
+    respondApproval: unsupported,
+    respondQuestion: unsupported,
+    subscribe: () => () => undefined,
+    dispose: async () => undefined,
+  }
+}
+
 /** 编排层用的 CliConversationController：契约 adapter 快照/事件/命令的薄包装。 */
-class WebCliConversationController {
+class WebCliConversationController extends CliConversationController {
   private currentSnapshot: CliSnapshot
-  private readonly listeners = new Set<() => void>()
-  private readonly unsubscribe: () => void
+  private readonly webListeners = new Set<() => void>()
+  private unsubscribe: () => void
+  private webConversationEpoch = 0
+  private pendingStagedUserMessageId: string | null = null
 
   constructor(
-    private readonly adapter: RemoteChatRuntimeAdapter,
+    private adapter: RemoteChatRuntimeAdapter,
+    private readonly getAdapter: (
+      conversationId?: string | null,
+    ) => RemoteChatRuntimeAdapter,
     runtimeId: CliRuntimeId,
   ) {
-    this.currentSnapshot = toCliSnapshot(adapter.getSnapshot(), runtimeId)
-    this.unsubscribe = adapter.subscribe(() => {
-      this.currentSnapshot = toCliSnapshot(adapter.getSnapshot(), runtimeId)
-      for (const listener of [...this.listeners]) listener()
+    super(createUnsupportedWebRuntime(runtimeId))
+    this.currentSnapshot = toCliSnapshot(this.adapter.getSnapshot(), runtimeId)
+    this.unsubscribe = this.adapter.subscribe(() => {
+      this.currentSnapshot = toCliSnapshot(this.adapter.getSnapshot(), runtimeId)
+      for (const listener of [...this.webListeners]) listener()
     })
   }
 
-  getSnapshot(): CliSnapshot {
-    return this.currentSnapshot
+  override getSnapshot = (): CliSnapshot => this.currentSnapshot
+
+  override getConversationId = (): string | null =>
+    this.adapter.getSnapshot().conversationId || null
+
+  override getConversationEpoch = (): number => this.webConversationEpoch
+
+  override subscribe = (listener: () => void): (() => void) => {
+    this.webListeners.add(listener)
+    return () => this.webListeners.delete(listener)
   }
 
-  getConversationId(): string | null {
-    return this.currentSnapshot.sessionRef?.nativeSessionId ?? null
+  override bindConversation(conversationId: string): void {
+    if (this.adapter.getSnapshot().conversationId === conversationId) return
+    this.webConversationEpoch += 1
+    this.pendingStagedUserMessageId = null
+    this.unsubscribe()
+    this.adapter = this.getAdapter(conversationId)
+    this.currentSnapshot = toCliSnapshot(
+      this.adapter.getSnapshot(),
+      this.currentSnapshot.runtimeId,
+    )
+    this.unsubscribe = this.adapter.subscribe(() => {
+      this.currentSnapshot = toCliSnapshot(
+        this.adapter.getSnapshot(),
+        this.currentSnapshot.runtimeId,
+      )
+      for (const listener of [...this.webListeners]) listener()
+    })
+    for (const listener of [...this.webListeners]) listener()
   }
 
-  getConversationEpoch(): number {
-    return 0
-  }
-
-  subscribe(listener: () => void): () => void {
-    this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
-  }
-
-  bindConversation(_conversationId: string): void {
-    // Web 端会话由服务端 runtime 绑定，本地无 conversation 绑定。
-  }
-
-  resetSession(): void {
+  override resetSession(): void {
+    this.webConversationEpoch += 1
+    this.pendingStagedUserMessageId = null
     this.currentSnapshot = {
       ...this.currentSnapshot,
       sessionRef: null,
@@ -118,58 +187,108 @@ class WebCliConversationController {
       runState: 'idle',
       error: null,
     }
-    for (const listener of [...this.listeners]) listener()
+    for (const listener of [...this.webListeners]) listener()
   }
 
-  async hydrateSession(ref: CliSessionRef): Promise<CliSessionHydration> {
-    await this.adapter.openSession(ref)
+  override async hydrateSession(
+    ref: CliSessionRef,
+    restoreMessages?: (
+      messages: readonly ChatMessage[],
+    ) => Promise<readonly ChatMessage[] | CliSessionOverlay>,
+  ): Promise<CliSessionHydration> {
+    const result = await this.adapter.openSession(ref)
+    if (!result.ok) {
+      throw new Error(getSessionCommandErrorMessage(result.error))
+    }
     // 会话绑定经 SSE session.changed 异步到达；等待它落到本地快照。
+    let snapshot =
+      (await this.adapter.refreshSnapshot()) ?? this.adapter.getSnapshot()
     const deadline = Date.now() + 2000
     while (
-      (this.adapter.getSnapshot().sessionRef as CliSessionRef | null) === null &&
+      (snapshot.sessionRef as CliSessionRef | null) === null &&
       Date.now() < deadline
     ) {
       await new Promise((resolve) => setTimeout(resolve, 10))
+      snapshot = this.adapter.getSnapshot()
     }
-    const snapshot = this.adapter.getSnapshot()
+    const sessionRef = snapshot.sessionRef as CliSessionRef | null
+    if (sessionRef === null) {
+      throw new Error('CLI session open did not produce an active session.')
+    }
+    if (
+      sessionRef.runtimeId !== ref.runtimeId ||
+      sessionRef.nativeSessionId !== ref.nativeSessionId
+    ) {
+      throw new Error('CLI session open produced a different session.')
+    }
+    const restored = restoreMessages
+      ? await restoreMessages(snapshot.messages)
+      : snapshot.messages
+    const messages = Array.isArray(restored)
+      ? restored
+      : (restored as CliSessionOverlay).messages
+    this.currentSnapshot = {
+      ...toCliSnapshot(snapshot, this.currentSnapshot.runtimeId),
+      messages: Object.freeze([...messages]),
+      ...(!Array.isArray(restored)
+        ? {
+            turnConfigurationByUserMessageId: (
+              restored as CliSessionOverlay
+            ).turnConfigurationByUserMessageId,
+          }
+        : {}),
+    }
+    this.notifyWebListeners()
     return {
-      ref: (snapshot.sessionRef as CliSessionRef | null) ?? ref,
-      messages: [...snapshot.messages],
+      ref: sessionRef,
+      messages: [...messages],
       compactionBoundaries: [...(snapshot.compactionBoundaries ?? [])],
     }
   }
 
-  async ensureReady(): Promise<void> {
-    return undefined
+  override async ensureReady(
+    initialConfiguration?: CliRuntimeConfigurationUpdate,
+    _assistant?: CliAssistantBinding,
+  ): Promise<void> {
+    if (initialConfiguration) {
+      await this.updateConfiguration(initialConfiguration)
+    }
   }
 
-  async sendTurn({
+  override async sendTurn({
     userMessage,
     content,
-  }: {
-    userMessage: { id: string }
-    content: string
-  }): Promise<void> {
+    selectedSkills,
+  }: CliConversationTurn): Promise<void> {
     await this.adapter.sendTurn({
       content,
       messageId: userMessage.id,
       baseRevision: 0,
       messageGeneration: 0,
+      ...(selectedSkills ? { selectedSkills } : {}),
     })
   }
 
-  async updateConfiguration(update: {
-    modelId?: string | null
-    reasoningEffort?: string | null
-  }): Promise<void> {
+  override async updateConfiguration(
+    update: CliRuntimeConfigurationUpdate,
+  ): Promise<CliRuntimeConfiguration | undefined> {
     await this.adapter.updateConfiguration(update)
+    const current = this.currentSnapshot.configuration
+    if (!current) return undefined
+    const configuration = { ...current, ...update }
+    this.publishWebSnapshot({
+      ...this.currentSnapshot,
+      configuration,
+      error: null,
+    })
+    return configuration
   }
 
-  async cancel(): Promise<void> {
+  override async cancel(): Promise<void> {
     await this.adapter.cancel()
   }
 
-  async rewriteTurn(): Promise<void> {
+  override async rewriteTurn(_turn: CliConversationRewriteTurn): Promise<void> {
     // 远端契约 runtime 的 rewrite 走 UI 事务层，不提供远端 rewrite 端点——
     // 显式抛错而不是静默 no-op（E5）。
     const result = await this.adapter.rewriteTurn()
@@ -209,30 +328,118 @@ class WebCliConversationController {
     }
   }
 
-  async updatePermissionProfile(update: {
-    mode: 'ask' | 'agent' | 'plan'
-    yoloEnabled: boolean
-  }): Promise<void> {
+  override async updatePermissionProfile(
+    update: CliPermissionProfileUpdate,
+  ): Promise<void> {
     const result = await this.adapter.updatePermissionProfile(update)
     if (!result.ok) {
       throw new Error('failed to update the permission profile')
     }
   }
 
-  async compact(): Promise<void> {
+  override async compact(): Promise<void> {
     const result = await this.adapter.compact()
     if (!result.ok) {
       throw new Error(`compact is unsupported on the web CLI runtime`)
     }
   }
 
-  async listSkills(): Promise<unknown[]> {
+  override async listSkills(): Promise<readonly CliRuntimeSkill[]> {
     throw new Error('listSkills is unsupported on the web CLI runtime')
+  }
+
+  override async reloadPlugins(): Promise<void> {
+    throw new Error('reloadPlugins is unsupported on the web CLI runtime')
+  }
+
+  override async mcpServerStatus(): Promise<
+    readonly CliRuntimeMcpServerStatus[]
+  > {
+    throw new Error('mcpServerStatus is unsupported on the web CLI runtime')
+  }
+
+  override async toggleMcpServer(
+    _name: string,
+    _enabled: boolean,
+  ): Promise<void> {
+    throw new Error('toggleMcpServer is unsupported on the web CLI runtime')
+  }
+
+  override async reconnectMcpServer(_name: string): Promise<void> {
+    throw new Error('reconnectMcpServer is unsupported on the web CLI runtime')
+  }
+
+  override stageTurn(userMessage: ChatUserMessage): CliStagedConversationTurn {
+    const staged = Object.freeze({
+      surfaceId: this.currentSnapshot.surfaceId,
+      conversationEpoch: this.webConversationEpoch,
+      userMessageId: userMessage.id,
+    })
+    this.pendingStagedUserMessageId = userMessage.id
+    const index = this.currentSnapshot.messages.findIndex(
+      (message) => message.id === userMessage.id,
+    )
+    const messages = [...this.currentSnapshot.messages]
+    if (index < 0) messages.push(userMessage)
+    else messages[index] = userMessage
+    this.publishWebSnapshot({
+      ...this.currentSnapshot,
+      messages: Object.freeze(messages),
+      runState: 'running',
+      error: null,
+    })
+    return staged
+  }
+
+  override rejectStagedTurn(
+    stagedTurn: CliStagedConversationTurn,
+    error: unknown,
+  ): void {
+    if (
+      stagedTurn.surfaceId !== this.currentSnapshot.surfaceId ||
+      stagedTurn.conversationEpoch !== this.webConversationEpoch ||
+      stagedTurn.userMessageId !== this.pendingStagedUserMessageId
+    ) {
+      return
+    }
+    this.publishWebSnapshot({
+      ...this.currentSnapshot,
+      runState: 'error',
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  override stageConfiguration(
+    update: CliRuntimeConfigurationUpdate = {},
+  ): CliRuntimeConfiguration | undefined {
+    const current = this.currentSnapshot.configuration
+    if (!current) return undefined
+    const configuration = { ...current, ...update }
+    this.publishWebSnapshot({
+      ...this.currentSnapshot,
+      configuration,
+      error: null,
+    })
+    return configuration
   }
 
   close(): void {
     this.unsubscribe()
-    this.listeners.clear()
+    this.webListeners.clear()
+  }
+
+  override dispose(): void {
+    this.close()
+    super.dispose()
+  }
+
+  private publishWebSnapshot(snapshot: CliSnapshot): void {
+    this.currentSnapshot = snapshot
+    this.notifyWebListeners()
+  }
+
+  private notifyWebListeners(): void {
+    for (const listener of [...this.webListeners]) listener()
   }
 }
 
@@ -263,6 +470,7 @@ export function createWebCliRuntimeScope(
   })
   const adapters = new Map<string, RemoteChatRuntimeAdapter>()
   const controllers = new Map<CliRuntimeId, WebCliConversationController>()
+  const allControllers = new Set<WebCliConversationController>()
 
   const getAdapter = (
     runtimeId: ChatRuntimeId,
@@ -289,43 +497,52 @@ export function createWebCliRuntimeScope(
     return adapter
   }
 
-  const getController = (
+  const createController = (
     runtimeId: CliRuntimeId,
   ): WebCliConversationController => {
+    const controller = new WebCliConversationController(
+      getAdapter(runtimeId),
+      (conversationId) => getAdapter(runtimeId, conversationId),
+      runtimeId,
+    )
+    allControllers.add(controller)
+    return controller
+  }
+
+  const getController = (runtimeId: CliRuntimeId) => {
     let controller = controllers.get(runtimeId)
     if (!controller) {
-      controller = new WebCliConversationController(
-        getAdapter(runtimeId),
-        runtimeId,
-      )
+      controller = createController(runtimeId)
       controllers.set(runtimeId, controller)
     }
     return controller
   }
 
-  const listSessions = async (): Promise<CliSessionListItem[]> => {
+  const listSessions = async (): Promise<CliSessionDiscoveryResult> => {
+    const errors: CliSessionDiscoveryResult['errors'] = {}
     const results = await Promise.all(
       RUNTIME_IDS.map(async (runtimeId) => {
         try {
           const result = await getAdapter(runtimeId).listSessions()
-          return result.ok ? result.sessions : []
-        } catch {
+          if (result.ok) return result.sessions
+          errors[runtimeId] = getDiscoveryErrorMessage(result.error)
+          return []
+        } catch (error) {
+          errors[runtimeId] =
+            error instanceof Error ? error.message : String(error)
           return []
         }
       }),
     )
-    return results.flat().map(toSessionListItem)
+    return { sessions: results.flat().map(toSessionListItem), errors }
   }
 
   const sessionService = {
     listSessions: async () => {
-      const items = await listSessions()
-      return items.map((item) => item.ref) as never
+      const result = await listSessions()
+      return result.sessions.map((item) => item.ref) as never
     },
-    discoverSessions: async () => {
-      const sessions = await listSessions()
-      return { sessions, errors: {} }
-    },
+    discoverSessions: listSessions,
     recordOpenedSession: async () => undefined,
     recordUserDisplay: async () => undefined,
     getRememberedConfiguration: async () => ({}),
@@ -410,12 +627,13 @@ export function createWebCliRuntimeScope(
       }
     },
     resolveRuntime: toCliRuntime,
-    selectConversationRuntime: (runtimeId) =>
-      getController(runtimeId) as unknown as CliConversationController,
-    createConversationRuntime: (runtimeId) =>
-      getController(runtimeId) as unknown as CliConversationController,
-    selectConversationSession: (ref) =>
-      getController(ref.runtimeId) as unknown as CliConversationController,
+    selectConversationRuntime: (runtimeId) => getController(runtimeId),
+    createConversationRuntime: (runtimeId) => {
+      const controller = createController(runtimeId)
+      controllers.set(runtimeId, controller)
+      return controller
+    },
+    selectConversationSession: (ref) => getController(ref.runtimeId),
     getModelCatalogSnapshot: () => new Map(),
     subscribeToModelCatalog: () => () => undefined,
     warmModelCatalog: async () => undefined,
@@ -423,7 +641,8 @@ export function createWebCliRuntimeScope(
     getChatRuntime: (runtimeId, conversationId) =>
       getAdapter(runtimeId, conversationId),
     dispose: async () => {
-      for (const controller of controllers.values()) controller.close()
+      for (const controller of allControllers) controller.dispose()
+      allControllers.clear()
       controllers.clear()
       for (const adapter of adapters.values()) await adapter.dispose()
       adapters.clear()

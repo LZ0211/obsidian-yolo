@@ -102,7 +102,7 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
   private lastSequence = 0
   private highestSequenceSeen = 0
   private disposed = false
-  private recoveryInFlight: Promise<void> | null = null
+  private recoveryInFlight: Promise<ChatRuntimeSnapshot | null> | null = null
   private readonly submissionTrackers = new Map<string, ChatSubmissionTracker>()
   /** 客户端侧事件聚合快照：SSE 事件流驱动，与其他 adapter 语义一致。 */
   private currentSnapshot: ChatRuntimeSnapshot
@@ -289,6 +289,10 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
       CHAT_RUNTIME_ENDPOINTS.sessionOpen(this.runtimeId),
       { ref, conversationId: this.conversationId },
     )
+  }
+
+  async refreshSnapshot(): Promise<ChatRuntimeSnapshot | null> {
+    return this.reconnectFromSnapshot()
   }
   async renameSession(
     ref: ChatSessionRef,
@@ -533,18 +537,18 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
       })
   }
 
-  private async reconnectFromSnapshot(): Promise<void> {
+  private async reconnectFromSnapshot(): Promise<ChatRuntimeSnapshot | null> {
     const response = await this.transport.get(
       `${CHAT_RUNTIME_ENDPOINTS.snapshot(
         this.runtimeId,
       )}?conversationId=${encodeURIComponent(this.conversationId)}`,
     )
-    if (!response.ok) return
+    if (!response.ok) return null
     const body = (await response.json()) as {
       snapshot: ChatRuntimeSnapshot
       cursor: number
     }
-    if (body.cursor < this.lastSequence) return
+    if (body.cursor < this.lastSequence) return this.currentSnapshot
     this.lastSequence = body.cursor
     const snapshot = {
       ...body.snapshot,
@@ -557,6 +561,7 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
       sequence: body.cursor,
     }
     this.listeners.forEach((listener) => listener(event))
+    return snapshot
   }
 }
 
