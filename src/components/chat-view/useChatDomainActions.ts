@@ -482,6 +482,10 @@ export function useChatDomainActions({
               // `ToolCallRequest.metadata.executionConstraints`.
               bashReadOnly:
                 request.metadata?.executionConstraints?.bashReadOnly,
+              bashApprovalMode:
+                request.metadata?.executionConstraints?.bashApprovalMode,
+              allowedSkillPaths:
+                request.metadata?.executionConstraints?.allowedSkillPaths,
             }),
           getResponseBody: (response) => response,
         })
