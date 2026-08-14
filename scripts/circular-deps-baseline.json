@@ -1,5 +1,5 @@
 {
-  "cycles": 292,
+  "cycles": 294,
   "cycleKeys": [
     "ChatView.tsx -> components/chat-view/Chat.tsx -> components/chat-view/ChatHeader.tsx -> components/chat-view/AssistantSelector.tsx -> components/settings/modals/AssistantsModal.tsx -> components/common/ReactModal.tsx -> contexts/plugin-context.tsx -> main.ts",
     "ChatView.tsx -> components/chat-view/Chat.tsx -> components/chat-view/ChatHeader.tsx -> components/chat-view/AssistantSelector.tsx -> components/settings/modals/AssistantsModal.tsx -> components/common/ReactModal.tsx -> contexts/plugin-context.tsx -> main.ts -> features/chat/chatViewNavigator.ts",
@@ -289,6 +289,8 @@
     "settings/schema/migrations/80_to_81.ts -> settings/schema/setting.types.ts -> settings/schema/migrations/index.ts",
     "settings/schema/migrations/81_to_82.ts -> settings/schema/setting.types.ts -> settings/schema/migrations/index.ts",
     "settings/schema/migrations/82_to_83.ts -> settings/schema/setting.types.ts -> settings/schema/migrations/index.ts",
+    "settings/schema/migrations/83_to_84.ts -> settings/schema/setting.types.ts -> settings/schema/migrations/index.ts",
+    "settings/schema/migrations/84_to_85.ts -> settings/schema/setting.types.ts -> settings/schema/migrations/index.ts",
     "settings/schema/migrations/8_to_9.ts -> settings/schema/setting.types.ts -> settings/schema/migrations/index.ts",
     "settings/schema/migrations/9_to_10.ts -> settings/schema/setting.types.ts -> settings/schema/migrations/index.ts",
     "settings/schema/migrations/index.ts -> settings/schema/setting.types.ts",
