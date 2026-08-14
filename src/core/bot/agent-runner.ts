@@ -346,7 +346,10 @@ export async function runBotAgentTurn(
           const refs =
             useStreaming && streamHandle
               ? await streamHandle.finish(replyContent)
-              : await adapter.sendMessage(sessionKey, replyContent)
+              : await adapter.sendMessage(
+                  sessionKey,
+                  withReplyTarget(replyContent),
+                )
           registerSent(refs)
           break
         }
