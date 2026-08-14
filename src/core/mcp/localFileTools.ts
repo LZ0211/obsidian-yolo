@@ -4174,38 +4174,24 @@ export async function callLocalFileTool({
           return { status: ToolCallResponseStatus.Aborted }
         }
 
-        // Write markdown first, then images. Cancellation stops subsequent
-        // writes but leaves completed outputs in place: these paths may have
-        // existed before this call, so deleting them would lose user data.
+        // Once output starts, finish the set so cancellation cannot leave a
+        // new markdown file paired with only part of its images.
         await ensureFolderPathExists(app, `${outputDir}/images`)
         const resultPath = normalizePath(`${outputDir}/result.md`)
         const adapter = app.vault.adapter
-        try {
-          await adapter.write(resultPath, raw.markdown)
-          const imageFiles: string[] = []
-          for (const image of raw.images) {
-            if (signal?.aborted) {
-              return { status: ToolCallResponseStatus.Aborted }
-            }
-            const vaultPath = normalizePath(`${outputDir}/images/${image.name}`)
-            await adapter.writeBinary(vaultPath, toArrayBuffer(image.data))
-            imageFiles.push(vaultPath)
-            if (signal?.aborted) {
-              return { status: ToolCallResponseStatus.Aborted }
-            }
-          }
-          return {
-            status: ToolCallResponseStatus.Success,
-            text: JSON.stringify({
-              markdownFiles: [resultPath],
-              imageFiles,
-            }),
-          }
-        } catch (error) {
-          if (signal?.aborted) {
-            return { status: ToolCallResponseStatus.Aborted }
-          }
-          throw error
+        await adapter.write(resultPath, raw.markdown)
+        const imageFiles: string[] = []
+        for (const image of raw.images) {
+          const vaultPath = normalizePath(`${outputDir}/images/${image.name}`)
+          await adapter.writeBinary(vaultPath, toArrayBuffer(image.data))
+          imageFiles.push(vaultPath)
+        }
+        return {
+          status: ToolCallResponseStatus.Success,
+          text: JSON.stringify({
+            markdownFiles: [resultPath],
+            imageFiles,
+          }),
         }
       }
 

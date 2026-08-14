@@ -2964,10 +2964,13 @@ describe('mineru_convert tool', () => {
     )
   })
 
-  it('does not delete completed output paths when cancellation happens during image writes', async () => {
+  it('finishes the output once writing has started', async () => {
     ;(convertPdfToMarkdown as jest.Mock).mockResolvedValue({
       markdown: '# New markdown',
-      images: [{ name: 'fig1.png', data: new Uint8Array([1, 2, 3]) }],
+      images: [
+        { name: 'fig1.png', data: new Uint8Array([1, 2, 3]) },
+        { name: 'fig2.png', data: new Uint8Array([4, 5, 6]) },
+      ],
     })
     const controller = new AbortController()
     const file = makePdfFile()
@@ -2995,9 +2998,10 @@ describe('mineru_convert tool', () => {
       signal: controller.signal,
     })
 
-    expect(result.status).toBe(ToolCallResponseStatus.Aborted)
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
     expect(files.get('out/mineru/result.md')).toBe('# New markdown')
     expect(files.has('out/mineru/images/fig1.png')).toBe(true)
+    expect(files.has('out/mineru/images/fig2.png')).toBe(true)
     expect(adapter.remove).not.toHaveBeenCalled()
   })
 
