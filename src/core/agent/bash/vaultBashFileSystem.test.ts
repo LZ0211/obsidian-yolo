@@ -2,6 +2,7 @@ jest.mock('obsidian')
 
 import { App, TFile, TFolder } from 'obsidian'
 
+import type { AssistantWorkspaceScope } from '../../../types/assistant.types'
 import { createVaultBashFileSystem } from './vaultBashFileSystem'
 
 const basename = (path: string) => path.split('/').pop() ?? path

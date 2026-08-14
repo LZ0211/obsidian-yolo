@@ -114,6 +114,7 @@ describe('workspacePolicyToUpstreamScope', () => {
       workspaceRoot: '',
       readExtraIncludes: [],
       readExcludes: ['private/excluded.md'],
+      writeExcludes: [],
       protectedPaths: [
         { kind: 'exact', path: 'YOLO/sessions.sqlite' },
         { kind: 'prefix', path: 'YOLO/data' },
@@ -142,6 +143,7 @@ describe('workspacePolicyToUpstreamScope', () => {
         workspaceRoot: '/',
         readExtraIncludes: [],
         readExcludes: [],
+        writeExcludes: [],
       }),
     ).toBeUndefined()
   })
