@@ -129,7 +129,16 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
     if (this.eventSource === null && this.reconnectTimer === null) {
       this.connect()
     }
-    return () => this.listeners.delete(listener)
+    return () => {
+      this.listeners.delete(listener)
+      if (this.listeners.size > 0) return
+      if (this.reconnectTimer != null) {
+        clearTimeout(this.reconnectTimer)
+        this.reconnectTimer = null
+      }
+      this.eventSource?.close()
+      this.eventSource = null
+    }
   }
 
   getSnapshot(): ChatRuntimeSnapshot {

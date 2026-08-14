@@ -119,6 +119,36 @@ describe('RemoteChatRuntimeAdapter', () => {
     adapter.dispose()
   })
 
+  it('closes the stream when its last subscriber leaves and reconnects on demand', () => {
+    const opened: ReturnType<typeof createFakeTransport>[] = []
+    const adapter = new RemoteChatRuntimeAdapter(
+      'claude-code',
+      {
+        open: () => {
+          const source = createFakeTransport()
+          opened.push(source)
+          return source.transport
+        },
+        post: async () => ({ ok: true, json: async () => ({}) }),
+        get: async () => ({ ok: true, json: async () => ({}) }),
+      },
+      'conv-1',
+    )
+
+    const unsubscribeFirst = adapter.subscribe(() => undefined)
+    const unsubscribeSecond = adapter.subscribe(() => undefined)
+    expect(opened).toHaveLength(1)
+
+    unsubscribeFirst()
+    expect(opened[0].calls).not.toContain('close')
+    unsubscribeSecond()
+    expect(opened[0].calls).toContain('close')
+
+    adapter.subscribe(() => undefined)
+    expect(opened).toHaveLength(2)
+    void adapter.dispose()
+  })
+
   it('forwards snapshot and run.state payloads into contract events', () => {
     const { transport } = createFakeTransport()
     const adapter = new RemoteChatRuntimeAdapter(
