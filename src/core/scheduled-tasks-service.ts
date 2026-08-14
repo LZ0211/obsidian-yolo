@@ -54,10 +54,6 @@ export type IScheduledTasksService = {
   getQueueStatus(): QueueStatus
   getPendingTasks(): TaskQueueItem[]
   getExecutingTasks(): TaskRunRuntimeState[]
-  /** RUNNING runs in the shared store — including runs another Obsidian
-   * window started (the delete-task UI warning covers cross-window
-   * executions, T1 fix-round-1). */
-  listRunningRuns(): TaskRun[]
 
   getTaskRun(runId: string): Promise<TaskRun>
   listTaskRuns(
@@ -313,10 +309,6 @@ export class ScheduledTasksService implements IScheduledTasksService {
 
   getExecutingTasks(): TaskRunRuntimeState[] {
     return this.scheduler.getExecutingTasks()
-  }
-
-  listRunningRuns(): TaskRun[] {
-    return this.scheduler.listRunningRuns()
   }
 
   // ---- history ----

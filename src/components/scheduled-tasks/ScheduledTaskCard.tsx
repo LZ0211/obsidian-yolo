@@ -76,13 +76,7 @@ export function ScheduledTaskCard({
   const handleDelete = () => {
     // T1: warn when the task is executing — the run is cancelled (its record
     // is kept as CANCELLED), not allowed to run to completion after deletion.
-    // fix-round-1: the check covers OTHER windows too — a RUNNING row in the
-    // shared store (listRunningRuns) has no local queue state, so isExecuting
-    // alone would miss it and the warning would be silent while the other
-    // window's run gets cancelled by deleteTask.
-    const runningElsewhere =
-      service?.listRunningRuns().some((run) => run.taskId === task.id) ?? false
-    const runningWarning = isExecuting || runningElsewhere
+    const runningWarning = isExecuting
       ? t(
           'settings.scheduledTasks.deleteTaskRunningWarning',
           'This task is currently executing — its run will be cancelled and kept as cancelled in the run history.',

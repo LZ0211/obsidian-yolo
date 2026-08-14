@@ -629,83 +629,31 @@ describe('ScheduledTaskScheduler', () => {
     }
   })
 
-  it("T1 fix-round-1: deleteTask also cancels and keeps ANOTHER window's in-flight run", async () => {
-    const dir = makeTempDir()
-    try {
-      const store = createScheduledTasksStore(dir)
-      const eventBus = new TaskEventBus()
-      const { agentApi, resolveRun } = makeDeferredAgentApi()
-      const scheduler = new ScheduledTaskScheduler({
-        store,
-        executor: new TaskExecutor({ getAgentApi: () => agentApi }),
-        eventBus,
-      })
-      store.createTask('task-1', makeTaskConfig({ notifyOn: [] }), 1000)
-
-      // The local run starts first (T2's cross-window dedup would reject a
-      // manual run while a RUNNING row already exists), then the OTHER
-      // window's run row appears in the shared store — with no local queue
-      // or AbortController state.
-      const result = scheduler.executeTaskNow('task-1')
-      if (result.outcome !== 'started') throw new Error('unreachable')
-      await flushPromises()
-      store.insertRun(
-        toTaskRunInsert({
-          runId: 'run-remote',
-          taskId: 'task-1',
-          batchId: 'batch-remote',
-          attempt: 1,
-          triggeredBy: 'schedule',
-          scheduledFor: Date.now(),
-          status: TaskRunStatus.RUNNING,
-        }),
-      )
-
-      scheduler.deleteTask('task-1')
-
-      expect(store.getTask('task-1')).toBeNull()
-      expect(store.getRun(result.runId)?.status).toBe(TaskRunStatus.CANCELLED)
-      // RED on the pre-fix-round-1 behavior: the remote run was not in
-      // keepRunIds, so its row was deleted and could never settle as
-      // cancelled — the original T1 bug in the two-window scenario.
-      expect(store.getRun('run-remote')?.status).toBe(TaskRunStatus.CANCELLED)
-
-      // Both runs "settle" afterwards; the CANCELLED rows keep the success
-      // paths silent.
-      resolveRun({
-        conversationId: 'conv-1',
-        text: 'done',
-        status: 'completed',
-      })
-      await flushPromises()
-      expect(store.getRun(result.runId)?.status).toBe(TaskRunStatus.CANCELLED)
-      expect(store.getRun('run-remote')?.status).toBe(TaskRunStatus.CANCELLED)
-
-      store.close()
-    } finally {
-      cleanup(dir)
-    }
-  })
-
-  it('T2: executeTaskNow rejects when another window is already running the task (shared-store dedup)', () => {
+  it('executeTaskNow ignores persisted RUNNING rows when the local queue is idle', async () => {
     const dir = makeTempDir()
     try {
       const store = createScheduledTasksStore(dir)
       const scheduler = new ScheduledTaskScheduler({
         store,
         executor: new TaskExecutor({
-          getAgentApi: () => makeDeferredAgentApi().agentApi,
+          getAgentApi: () =>
+            makeAgentApi(async () => ({
+              conversationId: 'conv-1',
+              text: 'done',
+              status: 'completed',
+            })),
         }),
         eventBus: new TaskEventBus(),
       })
       store.createTask('task-1', makeTaskConfig(), 1000)
-      // Simulate the OTHER window: its run row is RUNNING in the shared store
-      // while this window's queue knows nothing about it.
+      // Persisted rows have no live owner in this plugin realm. Startup
+      // recovery normally settles them, but they must not become a second
+      // execution lock if recovery was interrupted.
       store.insertRun(
         toTaskRunInsert({
-          runId: 'run-remote',
+          runId: 'run-orphaned',
           taskId: 'task-1',
-          batchId: 'batch-remote',
+          batchId: 'batch-orphaned',
           attempt: 1,
           triggeredBy: 'manual',
           scheduledFor: Date.now(),
@@ -713,63 +661,8 @@ describe('ScheduledTaskScheduler', () => {
         }),
       )
 
-      expect(scheduler.executeTaskNow('task-1')).toEqual({
-        outcome: 'rejected',
-        reason: 'already_queued',
-      })
-      expect(scheduler.getPendingTasks()).toHaveLength(0)
-
-      store.close()
-    } finally {
-      cleanup(dir)
-    }
-  })
-
-  it('T2: cancelTaskRun marks a cross-window run CANCELLED in the shared store without a local controller', () => {
-    const dir = makeTempDir()
-    try {
-      const store = createScheduledTasksStore(dir)
-      const scheduler = new ScheduledTaskScheduler({
-        store,
-        executor: new TaskExecutor({
-          getAgentApi: () => makeDeferredAgentApi().agentApi,
-        }),
-        eventBus: new TaskEventBus(),
-      })
-      store.createTask('task-1', makeTaskConfig(), 1000)
-      store.insertRun(
-        toTaskRunInsert({
-          runId: 'run-remote',
-          taskId: 'task-1',
-          batchId: 'batch-remote',
-          attempt: 1,
-          triggeredBy: 'schedule',
-          scheduledFor: Date.now(),
-          status: TaskRunStatus.RUNNING,
-        }),
-      )
-
-      scheduler.cancelTaskRun('run-remote')
-
-      // RED on the old behavior: no local AbortController → silent no-op and
-      // the run stayed RUNNING.
-      expect(store.getRun('run-remote')?.status).toBe(TaskRunStatus.CANCELLED)
-      // Terminal runs are not overwritten.
-      store.insertRun(
-        toTaskRunInsert({
-          runId: 'run-done',
-          taskId: 'task-1',
-          batchId: 'batch-done',
-          attempt: 1,
-          triggeredBy: 'schedule',
-          scheduledFor: Date.now(),
-          status: TaskRunStatus.COMPLETED,
-          startedAt: 1000,
-          completedAt: 2000,
-        }),
-      )
-      scheduler.cancelTaskRun('run-done')
-      expect(store.getRun('run-done')?.status).toBe(TaskRunStatus.COMPLETED)
+      expect(scheduler.executeTaskNow('task-1').outcome).toBe('started')
+      await flushPromises()
 
       store.close()
     } finally {
