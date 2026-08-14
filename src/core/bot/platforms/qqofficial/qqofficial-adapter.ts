@@ -204,7 +204,6 @@ export class QQOfficialAdapter implements PlatformAdapter {
       // live and identified, so the adapter is running and the reconnect
       // backoff resets after a stable period (same policy as Feishu/DingTalk).
       this.status = 'running'
-      this.reconnectAttempt = 0
       this.clearStableTimer()
       this.stableTimer = setTimeout(() => {
         this.reconnectAttempt = 0

@@ -201,7 +201,9 @@ describe('QQOfficialAdapter — reconnect', () => {
     const secondWs = latestSocket()
     sendHello(secondWs)
     secondWs.onclose?.()
-    await jest.advanceTimersByTimeAsync(20_000)
+    await jest.advanceTimersByTimeAsync(10_000)
+    expect(MockWebSocket.instances).toHaveLength(2)
+    await jest.advanceTimersByTimeAsync(10_000)
     expect(MockWebSocket.instances).toHaveLength(3)
 
     const thirdWs = latestSocket()
