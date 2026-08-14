@@ -209,8 +209,8 @@ export const it: DeepPartial<TranslationKeys> = {
       codexDescription: 'Codex su questo dispositivo',
       hermesLabel: 'Hermes',
       hermesDescription: 'Hermes su questo dispositivo',
-      piLabel: 'pi',
-      piDescription: 'pi su questo dispositivo',
+      piLabel: 'Pi',
+      piDescription: 'Pi su questo dispositivo',
       chatLabel: 'Agent',
       exitCli: 'Esci da CLI',
 
@@ -1207,7 +1207,7 @@ export const it: DeepPartial<TranslationKeys> = {
       hermesCliPathName: 'Percorso CLI di Hermes',
       hermesCliPathDesc:
         'Percorso personalizzato dell\'eseguibile hermes — incolla l\'output di "which hermes". Lascia vuoto per il rilevamento automatico. Salvato solo su questo dispositivo.',
-      piCliPathName: 'Percorso CLI di pi',
+      piCliPathName: 'Percorso CLI di Pi',
       piCliPathDesc:
         'Percorso personalizzato dell\'eseguibile pi — incolla l\'output di "which pi". Lascia vuoto per il rilevamento automatico. Salvato solo su questo dispositivo.',
       cliPathMissing:
