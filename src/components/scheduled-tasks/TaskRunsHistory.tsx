@@ -89,12 +89,6 @@ function TaskRunsHistoryComponent({
     return service.subscribeToTask(task.id, () => load())
   }, [service, task.id, load])
 
-  useEffect(() => {
-    return () => {
-      loadSeq.current += 1
-    }
-  }, [])
-
   const filterOptions: Record<string, string> = {
     [FILTER_ALL]: t('settings.scheduledTasks.filterAll', 'All'),
     [TaskRunStatus.PENDING]: t(
@@ -300,12 +294,6 @@ function AllRunsHistoryComponent({
     if (!service) return
     return service.subscribeToAllTaskEvents(() => load())
   }, [service, load])
-
-  useEffect(() => {
-    return () => {
-      loadSeq.current += 1
-    }
-  }, [])
 
   const filterOptions: Record<string, string> = {
     [FILTER_ALL]: t('settings.scheduledTasks.filterAll', 'All'),
