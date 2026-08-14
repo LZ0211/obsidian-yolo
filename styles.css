@@ -23580,7 +23580,7 @@ button.yolo-todo-panel__icon-button svg {
   min-height: 0;
 }
 /*
- * Short CLI runtime marker (CC / Codex).
+ * Short CLI runtime marker (CC / Codex / Hermes / Pi).
  *
  * Shared by every surface that attributes a conversation or a live run to its
  * runtime — the chat list popover and the background activity status panel.
@@ -23619,6 +23619,16 @@ button.yolo-todo-panel__icon-button svg {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.yolo-runtime-badge--hermes {
+  background: color-mix(in srgb, var(--color-blue) 15%, transparent);
+  color: color-mix(in srgb, var(--color-blue) 82%, var(--text-normal));
+}
+
+.yolo-runtime-badge--pi {
+  background: color-mix(in srgb, var(--color-purple) 14%, transparent);
+  color: color-mix(in srgb, var(--color-purple) 82%, var(--text-normal));
 }
 
 /* The Smart Space floating panel itself was removed (superseded by Quick
