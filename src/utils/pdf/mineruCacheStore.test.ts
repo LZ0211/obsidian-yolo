@@ -103,6 +103,17 @@ const responseWithArrayBuffer = (arrayBuffer: ArrayBuffer) => ({
   text: '',
 })
 
+const waitUntil = async (
+  condition: () => boolean,
+  timeoutMs = 2000,
+): Promise<void> => {
+  const start = Date.now()
+  while (!condition()) {
+    if (Date.now() - start > timeoutMs) throw new Error('waitUntil timed out')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
 let adapter: MockAdapter
 let app: App
 let file: TFile
@@ -281,21 +292,33 @@ describe('convertPdfViaMinerU', () => {
   it('an aborted caller does not cancel a shared in-flight conversion of the same content', async () => {
     const controllerA = new AbortController()
     const controllerB = new AbortController()
-    // 完整转换流程（POST → SSE → zip 下载）挂起，直到显式推进。
-    const deferredSteps: Array<() => void> = []
-    const makePending = (): Promise<RequestUrlResponsePromise> =>
-      new Promise<RequestUrlResponse>((resolve) => {
-        deferredSteps.push(() =>
-          resolve(responseWithText(JSON.stringify({ event_id: 'evt-shared' }))),
-        )
-      }) as unknown as Promise<RequestUrlResponsePromise>
-    mockedRequestUrl.mockImplementationOnce(() => makePending() as never)
+    let resolveStart: ((response: RequestUrlResponse) => void) | undefined
+    mockedRequestUrl.mockReset()
+    mockedRequestUrl.mockImplementationOnce(
+      () =>
+        new Promise<RequestUrlResponse>((resolve) => {
+          resolveStart = resolve
+        }) as unknown as RequestUrlResponsePromise,
+    )
     const zipBody = await buildZip({
       'result.md': MARKDOWN,
       'images/1.png': PNG_BYTES,
     })
     mockedRequestUrl
-      .mockImplementationOnce(() => new Promise(() => {}) as never)
+      .mockResolvedValueOnce(
+        responseWithText(
+          [
+            'data: {"type":"heartbeat"}',
+            '',
+            `data: {"type":"complete","output":{"data":[${JSON.stringify({
+              path: '/tmp/x.zip',
+              url: `${BASE_URL}/gradio_api/file=zip-shared`,
+              orig_name: 'x.zip',
+              meta: { _type: 'gradio.FileData' },
+            })}]}}`,
+          ].join('\n\n'),
+        ),
+      )
       .mockResolvedValueOnce(responseWithArrayBuffer(zipBody))
 
     const promiseA = convertPdfViaMinerU({
@@ -304,20 +327,59 @@ describe('convertPdfViaMinerU', () => {
       options: OPTIONS,
       signal: controllerA.signal,
     })
+    await waitUntil(() => mockedRequestUrl.mock.calls.length === 1)
     const promiseB = convertPdfViaMinerU({
       app,
       file,
       options: OPTIONS,
       signal: controllerB.signal,
     })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(1)
 
     // A 取消：只拒绝 A 自己的 promise，共享任务继续，B 不受影响。
     controllerA.abort()
     await expect(promiseA).rejects.toMatchObject({ name: 'AbortError' })
 
-    for (const step of deferredSteps.splice(0)) step()
-    // 推进共享任务完成（前两次 requestUrl 调用属于 A 触发、B 共享的转换）。
+    resolveStart?.(responseWithText(JSON.stringify({ event_id: 'evt-shared' })))
     await expect(promiseB).resolves.toMatchObject({ markdown: MARKDOWN })
+  })
+
+  it('cancels and releases the shared conversion after its final caller aborts', async () => {
+    mockedRequestUrl.mockReset()
+    mockedRequestUrl.mockImplementation(
+      () =>
+        new Promise<RequestUrlResponse>(() => {}) as RequestUrlResponsePromise,
+    )
+    const controllerA = new AbortController()
+
+    const promiseA = convertPdfViaMinerU({
+      app,
+      file,
+      options: OPTIONS,
+      signal: controllerA.signal,
+    })
+    await waitUntil(() => mockedRequestUrl.mock.calls.length === 1)
+
+    controllerA.abort()
+    await expect(promiseA).rejects.toMatchObject({ name: 'AbortError' })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const controllerC = new AbortController()
+    const promiseC = convertPdfViaMinerU({
+      app,
+      file,
+      options: OPTIONS,
+      signal: controllerC.signal,
+    })
+    await waitUntil(() => mockedRequestUrl.mock.calls.length >= 2)
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(2)
+    controllerC.abort()
+    await expect(promiseC).rejects.toMatchObject({ name: 'AbortError' })
+
+    const cacheDir = await expectedCacheDir()
+    expect(await adapter.exists(`${cacheDir}/manifest.json`)).toBe(false)
   })
 
   it('throws when MinerU is disabled or has no base url', async () => {

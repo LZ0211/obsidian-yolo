@@ -106,6 +106,9 @@ async function readCacheIfComplete(
   }
 }
 
+const createAbortError = (): DOMException =>
+  new DOMException('The MinerU conversion was aborted.', 'AbortError')
+
 async function writeCache(
   app: App,
   cacheDir: string,
@@ -134,36 +137,55 @@ async function writeCache(
   return { markdown: raw.markdown, images }
 }
 
+type InFlightConversion = {
+  task: Promise<MinerUConversionResult>
+  controller: AbortController
+  callerCount: number
+  settled: boolean
+}
+
 // Same-hash conversions running concurrently share one network round-trip.
-const inFlightConversions = new Map<string, Promise<MinerUConversionResult>>()
+const inFlightConversions = new Map<string, InFlightConversion>()
 
 /**
- * 调用方侧的 abort 包装：只拒绝该调用方的 promise，不取消共享任务——并发
- * 同 hash 请求中一个 abort 不得让其他调用方一起失败（此前共享任务的 signal
- * 是首个调用方的，任何一方 abort 都会连带拒绝所有人）。
+ * Registers one caller against a shared conversion. A single cancellation only
+ * rejects that caller; the shared task is cancelled once no callers remain.
  */
-const withCallerAbort = <T>(
-  promise: Promise<T>,
+const waitForSharedConversion = (
+  inFlight: InFlightConversion,
   signal?: AbortSignal | null,
-): Promise<T> => {
-  if (!signal) return promise
-  if (signal.aborted) {
-    return Promise.reject(
-      new DOMException('The MinerU conversion was aborted.', 'AbortError'),
-    )
+): Promise<MinerUConversionResult> => {
+  if (signal?.aborted) return Promise.reject(createAbortError())
+
+  inFlight.callerCount += 1
+  let released = false
+  const release = (aborted: boolean): void => {
+    if (released) return
+    released = true
+    inFlight.callerCount -= 1
+    if (aborted && !inFlight.settled && inFlight.callerCount === 0) {
+      inFlight.controller.abort()
+    }
   }
-  return new Promise<T>((resolve, reject) => {
+
+  if (!signal) {
+    return inFlight.task.finally(() => release(false))
+  }
+  return new Promise<MinerUConversionResult>((resolve, reject) => {
     const onAbort = (): void => {
-      reject(new DOMException('The MinerU conversion was aborted.', 'AbortError'))
+      release(true)
+      reject(createAbortError())
     }
     signal.addEventListener('abort', onAbort, { once: true })
-    promise.then(
+    inFlight.task.then(
       (value) => {
         signal.removeEventListener('abort', onAbort)
+        release(false)
         resolve(value)
       },
       (error: unknown) => {
         signal.removeEventListener('abort', onAbort)
+        release(false)
         reject(error instanceof Error ? error : new Error(String(error)))
       },
     )
@@ -189,6 +211,7 @@ export async function convertPdfViaMinerU(input: {
   signal?: AbortSignal | null
 }): Promise<MinerUConversionResult> {
   const { app, file, options, signal } = input
+  if (signal?.aborted) throw createAbortError()
   if (!options.enabled) {
     throw new Error('MinerU is disabled; enable it in settings first')
   }
@@ -207,25 +230,39 @@ export async function convertPdfViaMinerU(input: {
   const cacheKey = `${hash16}-${endpointHash}`
   const cacheDir = getMineruCacheDir(hash16, input.settings, endpointHash)
 
-  const inFlight = inFlightConversions.get(cacheKey)
-  if (inFlight) return withCallerAbort(inFlight, signal)
+  const existing = inFlightConversions.get(cacheKey)
+  if (existing && !existing.controller.signal.aborted) {
+    return waitForSharedConversion(existing, signal)
+  }
+  if (existing) inFlightConversions.delete(cacheKey)
 
-  const task = (async (): Promise<MinerUConversionResult> => {
+  const controller = new AbortController()
+  const rawTask = (async (): Promise<MinerUConversionResult> => {
     const cached = await readCacheIfComplete(app, cacheDir)
     if (cached) return cached
 
-    // 共享任务不带 signal：abort 由每个调用方在自己的 await 边界处理。
     const raw = await convertPdfToMarkdown({
       pdfBytes,
       fileName: file.name,
       baseUrl,
       apiKey: options.apiKey,
+      signal: controller.signal,
     })
     return writeCache(app, cacheDir, raw)
-  })().finally(() => {
-    inFlightConversions.delete(cacheKey)
+  })()
+  const inFlight: InFlightConversion = {
+    task: rawTask,
+    controller,
+    callerCount: 0,
+    settled: false,
+  }
+  inFlight.task = rawTask.finally(() => {
+    inFlight.settled = true
+    if (inFlightConversions.get(cacheKey) === inFlight) {
+      inFlightConversions.delete(cacheKey)
+    }
   })
 
-  inFlightConversions.set(cacheKey, task)
-  return withCallerAbort(task, signal)
+  inFlightConversions.set(cacheKey, inFlight)
+  return waitForSharedConversion(inFlight, signal)
 }
