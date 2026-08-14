@@ -1,9 +1,10 @@
 import type { ChatMessage } from '../../../types/chat'
 import type { Mentionable } from '../../../types/mentionable'
+import type { CliRuntimeId } from '../../cli-runtime/types'
 import type { ChatRuntimeRunFailure, ChatRuntimeRunState } from '../contract'
 
 export type CliBackendSessionRef = Readonly<{
-  runtimeId: 'claude-code' | 'codex'
+  runtimeId: CliRuntimeId
   nativeSessionId: string
   sessionPathHint?: string
 }>

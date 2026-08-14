@@ -5,6 +5,7 @@ import {
   type ChatRuntimeCapabilities,
   type ChatRuntimeEvent,
   ChatRuntimeEventSequencer,
+  type ChatRuntimeId,
   type ChatRuntimeSnapshot,
   type ChatSessionListResult,
   type ChatSessionRef,
@@ -44,7 +45,7 @@ export type RemoteTransport = {
 }
 
 const createDefaultCapabilities = (
-  runtimeId: 'yolo' | 'claude-code' | 'codex',
+  runtimeId: ChatRuntimeId,
 ): ChatRuntimeCapabilities => {
   const isCli = runtimeId !== 'yolo'
   return {
@@ -91,7 +92,7 @@ const RECONNECT_BASE_MS = 1_000
 const RECONNECT_MAX_MS = 15_000
 
 export class RemoteChatRuntimeAdapter implements ChatRuntime {
-  readonly runtimeId: 'yolo' | 'claude-code' | 'codex'
+  readonly runtimeId: ChatRuntimeId
   readonly capabilities: ChatRuntimeCapabilities
 
   private readonly listeners = new Set<(event: ChatRuntimeEvent) => void>()
@@ -108,7 +109,7 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
   private currentSnapshot: ChatRuntimeSnapshot
 
   constructor(
-    runtimeId: 'yolo' | 'claude-code' | 'codex',
+    runtimeId: ChatRuntimeId,
     private readonly transport: RemoteTransport,
     private readonly conversationId: string,
   ) {

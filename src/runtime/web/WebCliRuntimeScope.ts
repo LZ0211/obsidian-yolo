@@ -556,15 +556,17 @@ export function createWebCliRuntimeScope(
     probeAvailability: async () => {
       const response = await probeTransport.get('/api/cli/availability')
       if (!response.ok) {
-        return { 'claude-code': false, codex: false }
+        return { 'claude-code': false, codex: false, hermes: false }
       }
       const payload = (await response.json().catch(() => null)) as {
         'claude-code'?: boolean
         codex?: boolean
+        hermes?: boolean
       } | null
       return {
         'claude-code': payload?.['claude-code'] === true,
         codex: payload?.codex === true,
+        hermes: payload?.hermes === true,
       }
     },
     resolveRuntime: toCliRuntime,

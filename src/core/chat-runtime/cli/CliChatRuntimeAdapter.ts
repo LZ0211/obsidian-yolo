@@ -1,3 +1,4 @@
+import type { CliRuntimeId } from '../../cli-runtime/types'
 import {
   type ChatCommandResult,
   type ChatRewriteTurnInput,
@@ -91,7 +92,7 @@ const CLI_CAPABILITIES: ChatRuntimeCapabilities = {
 }
 
 export class CliChatRuntimeAdapter implements ChatRuntime {
-  readonly runtimeId: 'claude-code' | 'codex'
+  readonly runtimeId: CliRuntimeId
   readonly capabilities: ChatRuntimeCapabilities
 
   private readonly listeners = new Set<(event: ChatRuntimeEvent) => void>()
@@ -115,7 +116,7 @@ export class CliChatRuntimeAdapter implements ChatRuntime {
      * 不随已绑定会话变化——sessionRef.runtimeId 属于会话绑定，与表面身份
      * 是两回事（此前从后端快照派生，未绑定时会错误回落为 claude-code）。
      */
-    runtimeId: 'claude-code' | 'codex' = 'claude-code',
+    runtimeId: CliRuntimeId = 'claude-code',
     capabilities?: ChatRuntimeCapabilities,
   ) {
     const snapshot = backend.getSnapshot()

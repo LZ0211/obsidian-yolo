@@ -31,8 +31,9 @@ import type { ContentPart } from '../../types/llm/request'
 import type { Mentionable } from '../../types/mentionable'
 import type { ReasoningLevel } from '../../types/reasoning'
 import type { ToolCallRequest } from '../../types/tool-call.types'
+import type { ChatRuntimeId } from '../cli-runtime/types'
 
-export type ChatRuntimeId = 'yolo' | 'claude-code' | 'codex'
+export type { ChatRuntimeId } from '../cli-runtime/types'
 
 export type ChatCapabilityId =
   | 'hostHistory'

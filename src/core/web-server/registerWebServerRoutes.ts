@@ -561,7 +561,11 @@ export function registerWebServerRoutes(
   options.server.router.get('/api/cli/availability', async (req, res) => {
     const scope = await (options.getCliRuntimeScope?.() ?? null)
     if (!scope) {
-      writeJson(res, 200, { 'claude-code': false, codex: false })
+      writeJson(res, 200, {
+        'claude-code': false,
+        codex: false,
+        hermes: false,
+      })
       return
     }
     writeJson(res, 200, await detectCliRuntimeAvailability(options.app))

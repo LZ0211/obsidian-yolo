@@ -87,6 +87,8 @@ export const zh: TranslationKeys = {
       claudeCodeDescription: '本机 Claude Code 运行时',
       codexLabel: 'Codex',
       codexDescription: '本机 Codex 运行时',
+      hermesLabel: 'Hermes',
+      hermesDescription: '本机 Hermes 运行时',
       chatLabel: 'Agent',
       exitCli: '退出 CLI',
     },
@@ -1018,6 +1020,9 @@ export const zh: TranslationKeys = {
       codexCliPathName: 'Codex CLI 路径',
       codexCliPathDesc:
         '自定义 codex 可执行文件路径，可粘贴 which codex（Windows 为 where codex）的输出。留空则自动检测；仅保存在本设备，不随库同步。',
+      hermesCliPathName: 'Hermes CLI 路径',
+      hermesCliPathDesc:
+        '自定义 hermes 可执行文件路径，可粘贴 which hermes 的输出。留空则自动检测；仅保存在本设备，不随库同步。',
       cliPathMissing: '该路径在本设备上不存在，将回退到自动检测。',
       autoContextCompactionBlockTitle: '上下文压缩',
       autoContextCompaction: '自动压缩上下文',
@@ -2219,8 +2224,7 @@ export const zh: TranslationKeys = {
       enable: '启用',
       deleteTaskTitle: '删除定时任务',
       deleteTaskMessage: '删除「{name}」？此操作无法撤销。',
-      deleteTaskRunningWarning:
-        '该任务正在执行中。删除任务将取消本次运行。',
+      deleteTaskRunningWarning: '该任务正在执行中。删除任务将取消本次运行。',
       runNowTaskNotFound: '任务不存在',
       runNowTaskDisabled: '任务已停用',
       runNowAlreadyQueued: '已在队列中或正在运行',

@@ -207,6 +207,8 @@ export const it: DeepPartial<TranslationKeys> = {
       claudeCodeDescription: 'Claude Code su questo dispositivo',
       codexLabel: 'Codex',
       codexDescription: 'Codex su questo dispositivo',
+      hermesLabel: 'Hermes',
+      hermesDescription: 'Hermes su questo dispositivo',
       chatLabel: 'Agent',
       exitCli: 'Esci da CLI',
 
@@ -1200,6 +1202,9 @@ export const it: DeepPartial<TranslationKeys> = {
       codexCliPathName: 'Percorso CLI di Codex',
       codexCliPathDesc:
         'Percorso personalizzato dell\'eseguibile codex — incolla l\'output di "which codex" ("where codex" su Windows). Lascia vuoto per il rilevamento automatico. Salvato solo su questo dispositivo.',
+      hermesCliPathName: 'Percorso CLI di Hermes',
+      hermesCliPathDesc:
+        'Percorso personalizzato dell\'eseguibile hermes — incolla l\'output di "which hermes". Lascia vuoto per il rilevamento automatico. Salvato solo su questo dispositivo.',
       cliPathMissing:
         'Questo percorso non esiste su questo dispositivo; verrà usato il rilevamento automatico.',
       autoContextCompactionBlockTitle: 'Compattazione contesto',

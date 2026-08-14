@@ -5,6 +5,7 @@ import type {
   ChatCommandResult,
   ChatRuntime,
   ChatRuntimeEvent,
+  ChatRuntimeId,
   ChatRuntimeSnapshot,
   ChatSessionRef,
 } from '../../chat-runtime/contract'
@@ -12,6 +13,7 @@ import {
   type WireEventEnvelope,
   eventToWire,
 } from '../../chat-runtime/remote/remoteProtocol'
+import { CLI_RUNTIME_IDS } from '../../cli-runtime/types'
 import { SseResponseWriter } from '../SseResponseWriter'
 import { writeJson } from '../WebHttpServer'
 import type { WebRouter } from '../WebRouter'
@@ -24,7 +26,7 @@ export type ChatRuntimeRoutesContext = {
    * 桌面会话内组装：CLI -> createCliChatRuntime(scope)，native -> createNativeChatRuntime(agentService)。
    */
   getChatRuntime: (
-    runtimeId: 'yolo' | 'claude-code' | 'codex',
+    runtimeId: ChatRuntimeId,
     conversationId: string | null,
   ) => Promise<ChatRuntime | null> | ChatRuntime | null
   authorizeChatRuntime?: (
@@ -33,12 +35,12 @@ export type ChatRuntimeRoutesContext = {
   ) => Promise<boolean> | boolean
 }
 
-const RUNTIME_IDS = ['yolo', 'claude-code', 'codex'] as const
+const RUNTIME_IDS = ['yolo', ...CLI_RUNTIME_IDS] as const
 
-function resolveRuntimeId(
-  value: string,
-): 'yolo' | 'claude-code' | 'codex' | null {
-  return RUNTIME_IDS.includes(value as 'yolo') ? (value as 'yolo') : null
+function resolveRuntimeId(value: string): ChatRuntimeId | null {
+  return (RUNTIME_IDS as readonly string[]).includes(value)
+    ? (value as ChatRuntimeId)
+    : null
 }
 
 /** 每个 runtime 的重放缓冲：snapshot + 最近事件（含 cursor）。 */
@@ -128,14 +130,14 @@ export function registerChatRuntimeStream(
 }
 
 function runtimeCacheKey(
-  runtimeId: 'yolo' | 'claude-code' | 'codex',
+  runtimeId: ChatRuntimeId,
   conversationId: string | null,
 ): string {
   return `${runtimeId}:${conversationId ?? ''}`
 }
 
 async function resolveCachedRuntime(
-  runtimeId: 'yolo' | 'claude-code' | 'codex',
+  runtimeId: ChatRuntimeId,
   conversationId: string | null,
   context: ChatRuntimeRoutesContext,
 ): Promise<ChatRuntime | null> {
@@ -225,7 +227,7 @@ export function registerChatRuntimeRoutes(
 ): void {
   const requireRuntime = async (
     req: Pick<IncomingMessage, 'headers'>,
-    runtimeId: 'yolo' | 'claude-code' | 'codex',
+    runtimeId: ChatRuntimeId,
     conversationId: string | null,
   ): Promise<ChatRuntime | null> => {
     const sessionId = getHeader(req.headers['x-yolo-web-session-id'])

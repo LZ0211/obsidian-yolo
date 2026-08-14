@@ -7,7 +7,10 @@ import { resolveCliAssistantBinding } from '../../cli-runtime/assistant-binding'
 import type { CliConversationController } from '../../cli-runtime/conversation-controller'
 import type { CliRuntimeScope } from '../../cli-runtime/coordinator'
 import { buildCliTurnContent } from '../../cli-runtime/turn-input'
-import type { CliRuntime, CliSessionRef } from '../../cli-runtime/types'
+import type {
+  CliRuntimeId,
+  CliSessionRef,
+} from '../../cli-runtime/types'
 import type { McpManager } from '../../mcp/mcpManager'
 import { deriveMcpSharingCapability } from '../../mcp/sharing/mcpSharingCapability'
 import type {
@@ -31,7 +34,7 @@ import type {
  * 改动面就是这个函数 + 工厂返回分支；契约 `ChatRuntime` 与 UI 不受影响。
  */
 export function deriveCliCapabilities(
-  runtimeId: 'claude-code' | 'codex',
+  runtimeId: CliRuntimeId,
 ): ChatRuntimeCapabilities {
   return {
     transport: 'local',
@@ -155,7 +158,7 @@ function findReconciledUserMessage(
 
 function createBackendFromScope(
   scope: CliRuntimeScope,
-  runtimeId: 'claude-code' | 'codex',
+  runtimeId: CliRuntimeId,
   context?: {
     app?: App
     settings?: YoloSettings
@@ -354,7 +357,7 @@ function createBackendFromScope(
 
 export async function createCliChatRuntime(
   scope: CliRuntimeScope,
-  runtimeId: 'claude-code' | 'codex',
+  runtimeId: CliRuntimeId,
   context?: {
     app?: App
     settings?: YoloSettings

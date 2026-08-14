@@ -9,6 +9,7 @@ import type {
   AgentConversationState,
   EnqueueUserMessageResult,
 } from '../core/agent/service'
+import type { CliRuntimeId } from '../core/cli-runtime/types'
 import type { ChatConversationMetadata } from '../database/json/chat/types'
 import type { YoloSettings } from '../settings/schema/setting.types'
 import type {
@@ -89,7 +90,7 @@ export type YoloChatRecord = {
 
   origin?: 'user' | 'external-agent'
   cliSession?: {
-    runtimeId: 'claude-code' | 'codex'
+    runtimeId: CliRuntimeId
     nativeSessionId: string
     sessionPathHint?: string
   }

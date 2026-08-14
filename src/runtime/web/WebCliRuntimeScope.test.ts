@@ -558,7 +558,7 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
 
   it('probes CLI availability from the host via /api/cli/availability', async () => {
     const availabilityFetch = jest.fn(async () =>
-      jsonResponse({ 'claude-code': true, codex: false }),
+      jsonResponse({ 'claude-code': true, codex: false, hermes: true }),
     )
     const scope = createWebCliRuntimeScope({
       baseUrl: 'http://localhost',
@@ -566,7 +566,11 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
       sessionId: 'session-1',
     })
     const availability = await scope.probeAvailability?.()
-    expect(availability).toEqual({ 'claude-code': true, codex: false })
+    expect(availability).toEqual({
+      'claude-code': true,
+      codex: false,
+      hermes: true,
+    })
     expect(availabilityFetch).toHaveBeenCalledWith(
       'http://localhost/api/cli/availability',
       expect.objectContaining({
@@ -583,6 +587,10 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
       sessionId: null,
     })
     const availability = await scope.probeAvailability?.()
-    expect(availability).toEqual({ 'claude-code': false, codex: false })
+    expect(availability).toEqual({
+      'claude-code': false,
+      codex: false,
+      hermes: false,
+    })
   })
 })

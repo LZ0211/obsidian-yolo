@@ -444,12 +444,14 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     useState<CliRuntimeAvailability>(() => ({
       'claude-code': false,
       codex: false,
+      hermes: false,
     }))
   useEffect(() => {
     if (!cliRuntimeAvailable || !cliRuntimeScope) {
       setCliRuntimeAvailability({
         'claude-code': false,
         codex: false,
+        hermes: false,
       })
       return
     }

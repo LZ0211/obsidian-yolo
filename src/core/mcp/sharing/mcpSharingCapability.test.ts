@@ -66,4 +66,11 @@ describe('deriveMcpSharingCapability', () => {
     })
     expect(empty.supported).toBe(false)
   })
+
+  it('keeps Hermes unsupported without an MCP process projection', () => {
+    const capability = deriveMcpSharingCapability(servers, 'hermes', {
+      processInjectionWired: true,
+    })
+    expect(capability.supported).toBe(false)
+  })
 })

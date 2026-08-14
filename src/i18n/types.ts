@@ -95,6 +95,8 @@ export type TranslationKeys = {
       claudeCodeDescription: string
       codexLabel: string
       codexDescription: string
+      hermesLabel: string
+      hermesDescription: string
       chatLabel?: string
       exitCli?: string
       claudeCodeShortLabel?: string
@@ -859,6 +861,8 @@ export type TranslationKeys = {
       claudeCliPathDesc?: string
       codexCliPathName?: string
       codexCliPathDesc?: string
+      hermesCliPathName?: string
+      hermesCliPathDesc?: string
       cliPathMissing?: string
       autoContextCompactionBlockTitle?: string
       autoContextCompaction?: string

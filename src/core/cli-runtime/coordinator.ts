@@ -10,6 +10,7 @@ import type { CodexRuntimeOptions } from './codex/factory'
 import { createCodexRuntimeFactory } from './codex/factory'
 import { CliConversationController } from './conversation-controller'
 import type { CliRuntimeAvailability } from './desktop'
+import { createHermesRuntimeFactory } from './hermes/factory'
 import {
   CliModelCatalogService,
   type CliModelCatalogSnapshot,
@@ -133,13 +134,15 @@ const resolveWorkingDirectory = (
 const defaultLoadRuntimeFactories = async (
   deps: CliRuntimeFactoriesLoaderDeps,
 ): Promise<CliRuntimeFactories> => {
-  const [claudeFactory, codexFactory] = await Promise.all([
+  const [claudeFactory, codexFactory, hermesFactory] = await Promise.all([
     createClaudeRuntimeFactory(deps),
     createCodexRuntimeFactory(deps),
+    createHermesRuntimeFactory(deps),
   ])
   return {
     'claude-code': claudeFactory,
     codex: codexFactory,
+    hermes: hermesFactory,
   }
 }
 

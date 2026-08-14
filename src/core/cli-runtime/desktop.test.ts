@@ -6,6 +6,9 @@ jest.mock('./claude/process', () => ({
 jest.mock('./codex/launch', () => ({
   resolveCodexLaunch: jest.fn(),
 }))
+jest.mock('./hermes/resolve-command', () => ({
+  resolveHermesCommand: jest.fn(),
+}))
 jest.mock('./login-shell-env', () => ({
   loadLoginShellEnvironment: jest.fn(async () => ({})),
 }))
@@ -15,6 +18,7 @@ jest.mock('./cli-path-override', () => ({
 
 import { resolveClaudeProcessSupport } from './claude/process'
 import { resolveCodexLaunch } from './codex/launch'
+import { resolveHermesCommand } from './hermes/resolve-command'
 import {
   assertCliRuntimeAvailable,
   detectCliRuntimeAvailability,
@@ -26,6 +30,7 @@ const mockedResolveClaudeProcessSupport = jest.mocked(
   resolveClaudeProcessSupport,
 )
 const mockedResolveCodexLaunch = jest.mocked(resolveCodexLaunch)
+const mockedResolveHermesCommand = jest.mocked(resolveHermesCommand)
 
 class TestFileSystemAdapter extends FileSystemAdapter {
   getBasePath(): string {
@@ -73,10 +78,15 @@ describe('CLI runtime desktop gate', () => {
       runtimeCwd: '/vault',
       spawnCwd: '/vault',
     })
+    mockedResolveHermesCommand.mockResolvedValue({
+      command: '/bin/hermes',
+      args: ['acp'],
+    })
 
     await expect(detectCliRuntimeAvailability(desktopApp)).resolves.toEqual({
       'claude-code': true,
       codex: false,
+      hermes: true,
     })
   })
 
@@ -88,8 +98,9 @@ describe('CLI runtime desktop gate', () => {
         runtimeAvailability: {
           'claude-code': true,
           codex: false,
+          hermes: true,
         },
       }),
-    ).toEqual(['yolo', 'claude-code'])
+    ).toEqual(['yolo', 'claude-code', 'hermes'])
   })
 })
