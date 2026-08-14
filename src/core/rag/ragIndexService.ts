@@ -327,15 +327,14 @@ export class RagIndexService {
       throw new RagIndexBusyError()
     }
     if (this.hasWebLocks()) {
-      // Cross-window single-writer: another Obsidian window may already be
-      // indexing this vault (SQLite namespace is shared). Reject fast with the
-      // existing busy error — callers already handle RagIndexBusyError.
       const lockName = this.getIndexLockName()
-      if (await this.isIndexLockHeld(lockName)) {
-        throw new RagIndexBusyError()
-      }
-      return navigator.locks.request(lockName, { mode: 'exclusive' }, () =>
-        this.runIndexLocked(options, attempt),
+      return navigator.locks.request(
+        lockName,
+        { mode: 'exclusive', ifAvailable: true },
+        (lock) => {
+          if (!lock) throw new RagIndexBusyError()
+          return this.runIndexLocked(options, attempt)
+        },
       )
     }
     // No Web Locks (older runtimes, Jest node env): instance-scoped mutual
@@ -598,15 +597,6 @@ export class RagIndexService {
   private getIndexLockName(): string {
     const vaultName = this.app.vault?.getName?.()
     return `${INDEX_LOCK_PREFIX}${vaultName || 'default'}`
-  }
-
-  private async isIndexLockHeld(lockName: string): Promise<boolean> {
-    const locks = navigator.locks
-    if (typeof locks.query !== 'function') {
-      return false
-    }
-    const state = await locks.query()
-    return (state.held ?? []).some((lock) => lock.name === lockName)
   }
 
   private async persistSnapshot(): Promise<void> {

@@ -61,6 +61,7 @@ jobs:
           npm run build
           mkdir core-release
           cp main.js manifest.json styles.css core-release/
+          node scripts/package-web-ui.mjs web-ui core-release/web-ui.zip
           cp latest-release-note.md core-release/release-note.md
 
       - name: Require a monotonically newer Core version

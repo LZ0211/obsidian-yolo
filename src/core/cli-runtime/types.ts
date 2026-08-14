@@ -292,6 +292,7 @@ export type CliRuntimeEventListener = (event: CliRuntimeEvent) => void
 export type CliRuntime = {
   readonly runtimeId: CliRuntimeId
 
+  listSessions?(): Promise<CliSessionMetadata[]>
   listModels?(): Promise<CliRuntimeModel[]>
   listSkills?(): Promise<CliRuntimeSkill[]>
   /**

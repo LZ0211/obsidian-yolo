@@ -105,4 +105,19 @@ describe('WebSseHub', () => {
 
     expect(closed).toEqual(['run_closed'])
   })
+
+  it('closes all subscribers when the hub is cleared', () => {
+    const hub = new WebSseHub()
+    const closed: string[] = []
+    hub.subscribe('run-1', jest.fn(), {
+      onClose: (code) => closed.push(code),
+    })
+    hub.subscribe('run-2', jest.fn(), {
+      onClose: (code) => closed.push(code),
+    })
+
+    hub.clear()
+
+    expect(closed).toEqual(['agent_unavailable', 'agent_unavailable'])
+  })
 })

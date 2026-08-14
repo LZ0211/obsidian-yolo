@@ -285,6 +285,22 @@ describe('RAG log settings entry points', () => {
     }
   })
 
+  it('disables desktop-only RAG maintenance controls on mobile', () => {
+    mockPlatform.isDesktop = false
+    try {
+      renderToStaticMarkup(
+        <RAGSection app={{} as never} plugin={plugin as never} />,
+      )
+
+      const manageButton = mockObsidianButton.mock.calls
+        .map(([props]) => props as { text?: string; disabled?: boolean })
+        .find((props) => props.text === '管理')
+      expect(manageButton?.disabled).toBe(true)
+    } finally {
+      mockPlatform.isDesktop = true
+    }
+  })
+
   it('renders the auto-update toggle and last-sync row', () => {
     mockUseSettings.mockReturnValue({
       settings: {

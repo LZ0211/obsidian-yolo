@@ -11,6 +11,7 @@ import {
   SALIENCE_DECAY_LAMBDA,
   calcEffectiveSalience,
 } from './decay'
+import { MemoryEmbeddingStore } from './memoryEmbeddings'
 import {
   MAX_GRAPH_CANDIDATES,
   MAX_GRAPH_DEGREE,
@@ -28,7 +29,6 @@ import {
   initializeMemoryIndexSchema,
   trimMemoryMaintenanceLog,
 } from './memoryIndexSchema'
-import { MemoryEmbeddingStore } from './memoryEmbeddings'
 import type { MemorySettingsLike, MemorySourceSnapshot } from './memoryManager'
 import { normalizeMemoryText } from './memoryTokenizer'
 import type {
@@ -397,7 +397,7 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
     try {
       const module = await import('../../database/sqlite/sqliteNativeRuntime')
       return module.openSqliteRuntime({ dbPath: absolutePath })
-    } catch (error) {
+    } catch {
       // No node:sqlite (mobile) or it failed to load: fall back to the
       // sqlite-engine runtime component (sql.js in-memory + vault file).
       // Same pattern as shardedSqlite's toVaultRelativePath: without a
@@ -537,7 +537,10 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
       const changedLocalIds = new Set<string>()
       const priorFingerprintById = new Map(
         runtime
-          .query<{ local_id: string; entry_fingerprint: string }>(
+          .query<{
+            local_id: string
+            entry_fingerprint: string
+          }>(
             'select local_id, entry_fingerprint from memory_index where partition_key = ?',
             [input.partition.partitionKey],
           )
@@ -886,24 +889,47 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
       const queryMatchOrder = queryKeywords.length
         ? `(${contentMatchOrder}) + ${keywordMatchOrder}`
         : '(select 0)'
-      const rows = runtime.query<MemoryIndexRow>(
-        `select * from memory_index where partition_key = ? and source_file_fingerprint = ?
+      const memoryKeys = input.memoryKeys?.length
+        ? [...new Set(input.memoryKeys)].slice(0, MAX_QUERY_KEYWORDS)
+        : []
+      const baseWhere = `select * from memory_index where partition_key = ? and source_file_fingerprint = ?
          and category in (${categories.map(() => '?').join(',')}) and scope in (${scopes.map(() => '?').join(',')})
-         and not (salience <= ? and (last_recalled_at is null or last_recalled_at < strftime('%s','now')*1000 - ?))
-         order by case category when 'preferences' then 0 when 'profile' then 1 else 2 end,
-         ${queryMatchOrder} desc, salience desc, updated_at desc limit ?`,
-        [
-          input.partition.partitionKey,
-          input.sourceFileFingerprint,
-          ...categories,
-          ...scopes,
-          COLD_ARCHIVE_SALIENCE,
-          COLD_ARCHIVE_MS,
-          ...queryKeywords,
-          ...queryKeywords,
-          maxEntries,
-        ],
-      )
+         and not (salience <= ? and (last_recalled_at is null or last_recalled_at < strftime('%s','now')*1000 - ?))`
+      const rows = memoryKeys.length
+        ? runtime.query<MemoryIndexRow>(
+            `${baseWhere}
+             and memory_key in (${memoryKeys.map(() => '?').join(',')})
+             order by case memory_key ${memoryKeys
+               .map((_, index) => `when ? then ${index}`)
+               .join(' ')} else ${memoryKeys.length} end limit ?`,
+            [
+              input.partition.partitionKey,
+              input.sourceFileFingerprint,
+              ...categories,
+              ...scopes,
+              COLD_ARCHIVE_SALIENCE,
+              COLD_ARCHIVE_MS,
+              ...memoryKeys,
+              ...memoryKeys,
+              maxEntries,
+            ],
+          )
+        : runtime.query<MemoryIndexRow>(
+            `${baseWhere}
+             order by case category when 'preferences' then 0 when 'profile' then 1 else 2 end,
+             ${queryMatchOrder} desc, salience desc, updated_at desc limit ?`,
+            [
+              input.partition.partitionKey,
+              input.sourceFileFingerprint,
+              ...categories,
+              ...scopes,
+              COLD_ARCHIVE_SALIENCE,
+              COLD_ARCHIVE_MS,
+              ...queryKeywords,
+              ...queryKeywords,
+              maxEntries,
+            ],
+          )
       const result: IndexedMemoryEntry[] = []
       let chars = 0
       for (const row of rows) {

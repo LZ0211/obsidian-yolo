@@ -18,12 +18,14 @@ import {
   type CliSessionIndexEntry,
   type CliSessionIndexStore,
   createCliSessionIndexEntry,
+  getCliSessionIndexKey,
   toCliSessionRef,
 } from './session-index'
 import { attachCliTurnEditSummary } from './turn-edit-summary'
 import { stripCliEnvironmentContext } from './turn-input'
 import type {
   CliContextUsage,
+  CliRuntime,
   CliRuntimeId,
   CliSessionHydration,
   CliSessionMetadata,
@@ -91,16 +93,30 @@ export class CliSessionService {
   constructor({
     app,
     indexStore,
+    runtimes,
+    runtimeProviders,
   }: {
     app: App
     indexStore: CliSessionIndexStore
+    runtimes?: Iterable<CliRuntime>
+    runtimeProviders?: Iterable<readonly [CliRuntimeId, () => CliRuntime]>
   }) {
     this.app = app
     this.indexStore = indexStore
+    const providers = new Map(
+      [...(runtimes ?? [])].map(
+        (runtime) => [runtime.runtimeId, () => runtime] as const,
+      ),
+    )
+    for (const [runtimeId, provider] of runtimeProviders ?? []) {
+      providers.set(runtimeId, provider)
+    }
+    this.runtimeProviders = providers
   }
 
   private readonly indexStore: CliSessionIndexStore
   private readonly app: App
+  private readonly runtimeProviders: ReadonlyMap<CliRuntimeId, () => CliRuntime>
 
   /**
    * Lists CLI sessions the host has interacted with, as recorded in the thin
@@ -124,24 +140,72 @@ export class CliSessionService {
    */
   async discoverSessions(): Promise<CliSessionDiscoveryResult> {
     const entries = await this.listSessions()
+    const overlays = new Map(
+      entries.map((entry) => [getCliSessionIndexKey(entry), entry]),
+    )
+    const errors: Partial<Record<CliRuntimeId, string>> = {}
+    const discovered = await Promise.all(
+      [...this.runtimeProviders.entries()].map(
+        async ([runtimeId, provider]) => {
+          try {
+            const runtime = provider()
+            if (!runtime.listSessions) return []
+            return await runtime.listSessions()
+          } catch (error) {
+            errors[runtimeId] =
+              error instanceof Error ? error.message : String(error)
+            return []
+          }
+        },
+      ),
+    )
+    const sessions = new Map<string, CliSessionListItem>()
+    for (const metadata of discovered.flat()) {
+      const overlay = overlays.get(getCliSessionIndexKey(metadata.ref))
+      sessions.set(getCliSessionIndexKey(metadata.ref), {
+        ...metadata,
+        ...(overlay?.title ? { title: overlay.title } : {}),
+        hasOverlay: overlay !== undefined,
+        ...(overlay?.assistantId !== undefined
+          ? { assistantId: overlay.assistantId }
+          : {}),
+        isPinned: overlay?.isPinned === true,
+        ...(overlay?.pinnedAt !== undefined
+          ? { pinnedAt: overlay.pinnedAt }
+          : {}),
+      })
+    }
+    for (const entry of entries) {
+      const key = getCliSessionIndexKey(entry)
+      if (sessions.has(key)) continue
+      sessions.set(key, {
+        ref: toCliSessionRef(entry),
+        title: entry.title ?? entry.nativeSessionId,
+        updatedAt: 0,
+        hasOverlay: true,
+        ...(entry.assistantId !== undefined
+          ? { assistantId: entry.assistantId }
+          : {}),
+        isPinned: entry.isPinned === true,
+        ...(entry.pinnedAt !== undefined ? { pinnedAt: entry.pinnedAt } : {}),
+      })
+    }
+    const sortedSessions = [...sessions.values()].sort((left, right) => {
+      if (left.isPinned !== right.isPinned) {
+        return left.isPinned ? -1 : 1
+      }
+      if (left.isPinned && right.isPinned) {
+        const pinOrder = (right.pinnedAt ?? 0) - (left.pinnedAt ?? 0)
+        if (pinOrder !== 0) return pinOrder
+      }
+      return right.updatedAt - left.updatedAt
+    })
     return {
-      sessions: entries.map((entry) => {
-        const session: CliSessionListItem = {
-          ref: toCliSessionRef(entry),
-          title: entry.title ?? entry.nativeSessionId,
-          updatedAt: 0,
-          hasOverlay: true,
-          isPinned: entry.isPinned === true,
-        }
-        if (entry.assistantId !== undefined) {
-          session.assistantId = entry.assistantId
-        }
-        if (entry.pinnedAt !== undefined) {
-          session.pinnedAt = entry.pinnedAt
-        }
-        return session
-      }),
-      errors: {},
+      sessions:
+        this.runtimeProviders.size > 0
+          ? sortedSessions
+          : [...sessions.values()],
+      errors,
     }
   }
 

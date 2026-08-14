@@ -244,6 +244,8 @@ function TaskEditorModalComponent({
   const fieldRefs = useRef<Partial<Record<FieldName, HTMLDivElement | null>>>(
     {},
   )
+  const savingRef = useRef(false)
+  const [isSaving, setIsSaving] = useState(false)
 
   const initialConfigRef = useRef<TaskConfig>(
     task ? taskToConfig(task) : createDefaultTaskConfig(),
@@ -252,11 +254,9 @@ function TaskEditorModalComponent({
   // Dirty tracking for the close guard: any difference from the initial
   // config marks the form as having unsaved changes (ESC/×/Cancel then ask
   // for confirmation in the modal class's onClose).
-  const [dirty, setDirty] = useState(false)
   useEffect(() => {
     const isDirty =
       JSON.stringify(formData) !== JSON.stringify(initialConfigRef.current)
-    setDirty(isDirty)
     if (closeGuardRef) {
       closeGuardRef.current.dirty = isDirty
     }
@@ -380,6 +380,7 @@ function TaskEditorModalComponent({
   }
 
   const handleSubmit = () => {
+    if (savingRef.current) return
     const validationErrors = validateFormData(formData)
     const errorList = FIELD_FOCUS_ORDER.filter(
       (field) => validationErrors[field] != null,
@@ -403,18 +404,20 @@ function TaskEditorModalComponent({
       return
     }
 
+    savingRef.current = true
+    setIsSaving(true)
     const execute = async () => {
-      const service = plugin.getScheduledTasksService()
-      if (!service) {
-        new Notice(
-          t(
-            'settings.scheduledTasks.errorServiceUnavailable',
-            'Scheduled tasks service is not available yet',
-          ),
-        )
-        return
-      }
       try {
+        const service = plugin.getScheduledTasksService()
+        if (!service) {
+          new Notice(
+            t(
+              'settings.scheduledTasks.errorServiceUnavailable',
+              'Scheduled tasks service is not available yet',
+            ),
+          )
+          return
+        }
         if (task) {
           await service.updateTask(task.id, formData)
         } else {
@@ -432,6 +435,9 @@ function TaskEditorModalComponent({
         onClose()
       } catch (error) {
         new Notice(error instanceof Error ? error.message : String(error))
+      } finally {
+        savingRef.current = false
+        setIsSaving(false)
       }
     }
     void execute()
@@ -906,9 +912,14 @@ function TaskEditorModalComponent({
         <ObsidianButton
           cta
           text={task ? t('common.save', 'Save') : t('common.create', 'Create')}
+          disabled={isSaving}
           onClick={handleSubmit}
         />
-        <ObsidianButton text={t('common.cancel', 'Cancel')} onClick={onClose} />
+        <ObsidianButton
+          text={t('common.cancel', 'Cancel')}
+          disabled={isSaving}
+          onClick={onClose}
+        />
       </ObsidianSetting>
     </div>
   )

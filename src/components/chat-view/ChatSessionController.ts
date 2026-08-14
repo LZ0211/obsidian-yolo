@@ -34,10 +34,7 @@ import { groupAssistantAndToolMessages } from '../../utils/chat/message-groups'
 import type { RequestContextBuilder } from '../../utils/chat/requestContextBuilder'
 import { stampUserMessageTimeContext } from '../../utils/prompt/timeContext'
 
-import {
-  isModuleChatMode,
-  type ChatMode,
-} from './chat-input/ChatModeSelect'
+import { isModuleChatMode, type ChatMode } from './chat-input/ChatModeSelect'
 import {
   buildAssistantErrorContinuation,
   buildRetrySubmissionMessages,
@@ -131,6 +128,7 @@ export type ChatSessionCliContext = {
   consumeAcceptedCliDraft: (
     acceptedDraft: NonNullable<CliChatOperationSnapshot['acceptedDraft']>,
   ) => void
+  isConversationDeleted: (conversationId: string) => boolean
   isMounted: () => boolean
 }
 
@@ -992,6 +990,9 @@ export class ChatSessionController {
           },
         })
         const historyConversationId = cliContext.cliConversationId ?? uuidv4()
+        if (cliContext.isConversationDeleted(historyConversationId)) {
+          return { kind: 'aborted' }
+        }
         await cliContext.createOrTouchCliConversation(
           historyConversationId,
           {
@@ -1003,6 +1004,9 @@ export class ChatSessionController {
           },
           this.preferencesController.getSnapshot().conversationOverrides,
         )
+        if (cliContext.isConversationDeleted(historyConversationId)) {
+          return { kind: 'aborted' }
+        }
         if (cliContext.cliConversationId === null && cliContext.isMounted()) {
           cliContext.setCliConversationId(historyConversationId)
         }

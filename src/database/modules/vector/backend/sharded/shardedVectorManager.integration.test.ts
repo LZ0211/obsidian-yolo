@@ -29,6 +29,8 @@ jest.mock('../../../../../utils/pdf/extractPdfText', () => ({
 }))
 
 import { VectorManager } from '../../VectorManager'
+import { createEmbeddingVectorNamespace } from '../../../rag/embeddingNamespace'
+import { vectorNamespaceId } from '../../../rag/namespaceId'
 
 import { getShardedManifestPath, getShardedShardRoot } from './shardedPaths'
 import { openShardSqliteNode } from './shardedSqlite'
@@ -306,7 +308,13 @@ const embeddingModel = {
 } as never
 
 const BASE_DIR = '/vault/.yolo'
-const NAMESPACE_ID = 'text-embedding-3-large-d8'
+const NAMESPACE_ID = vectorNamespaceId(
+  createEmbeddingVectorNamespace({
+    model: 'text-embedding-3-large',
+    dimension: EMBEDDING_DIMENSION,
+    providerId: 'openai',
+  }),
+)
 
 const baseConfig = {
   chunkSize: 1000,

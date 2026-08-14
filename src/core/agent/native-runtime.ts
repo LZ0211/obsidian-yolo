@@ -299,7 +299,10 @@ export class NativeAgentRuntime implements AgentRuntime {
      * false immediately when no policy is registered (byte-for-byte default).
      */
     const shouldStopByLoopPolicy = async (
-      message: Extract<AgentWorkerOutbound, { type: 'llm_request' | 'tool_phase' }>,
+      message: Extract<
+        AgentWorkerOutbound,
+        { type: 'llm_request' | 'tool_phase' }
+      >,
     ): Promise<boolean> => {
       const policy = this.loopConfig.policy
       if (!policy) return false
@@ -623,6 +626,7 @@ export class NativeAgentRuntime implements AgentRuntime {
                       tools: currentTurnRequestTools,
                       reasoningLevel: currentTurnRequestReasoning,
                       debugTraceId: currentDebugTraceId,
+                      signal: abortSignal,
                     })
                     const nextCompaction =
                       await buildCompactedConversationState({
@@ -834,7 +838,10 @@ export class NativeAgentRuntime implements AgentRuntime {
     input: AgentRuntimeRunInput
     messages: ChatMessage[]
     promptedTier: AutoContextCompactionNoticeTier | null
-  }): { message: RequestMessage; tier: AutoContextCompactionNoticeTier } | null {
+  }): {
+    message: RequestMessage
+    tier: AutoContextCompactionNoticeTier
+  } | null {
     if (!this.loopConfig.enableTools || !input.autoContextCompaction) {
       return null
     }

@@ -245,6 +245,10 @@ class DesktopCliRuntimeWorkspace {
     this.sessionServiceInstance ??= new CliSessionService({
       app: this.options.app,
       indexStore: this.indexStore,
+      runtimeProviders: [
+        ['claude-code', () => this.resolveRuntime('claude-code')],
+        ['codex', () => this.resolveRuntime('codex')],
+      ],
     })
     return this.sessionServiceInstance
   }

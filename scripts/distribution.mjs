@@ -352,6 +352,19 @@ async function describeCoreRelease(repository, release, token, fetchImpl) {
       bytes,
     )
   }
+  const webUiAsset = release.assets?.find(
+    (asset) => asset.name === 'web-ui.zip',
+  )
+  if (webUiAsset) {
+    const bytes = await downloadReleaseAsset(webUiAsset, token, fetchImpl)
+    assets.webUiZip = describeAsset(
+      repository,
+      release.tag_name,
+      'web-ui.zip',
+      `core/${version}/web-ui.zip`,
+      bytes,
+    )
+  }
   const manifest = JSON.parse(
     (
       await downloadReleaseAsset(

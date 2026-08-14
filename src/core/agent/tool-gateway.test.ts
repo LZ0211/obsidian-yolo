@@ -1344,7 +1344,7 @@ describe('AgentToolGateway', () => {
       allowedToolNames: ['yolo_local__fs_read'],
       workspaceAccessPolicy: {
         enabled: true,
-        workspaceRoot: '',
+        workspaceRoot: 'Notes',
         readExtraIncludes: ['Notes'],
         readExcludes: [],
         writeExcludes: [],
@@ -1362,6 +1362,41 @@ describe('AgentToolGateway', () => {
         },
       ],
       conversationId: 'conv-1',
+    })
+
+    expect(message.toolCalls[0]?.response.status).not.toBe(
+      ToolCallResponseStatus.Rejected,
+    )
+  })
+
+  it('does not reject browser page paths during workspace preflight', () => {
+    const mcpManager = {
+      isToolExecutionAllowed: jest.fn().mockReturnValue(true),
+      getJsSandboxSettings: jest.fn().mockReturnValue({}),
+    } as unknown as McpManager
+
+    const gateway = new AgentToolGateway(mcpManager, {
+      allowedToolNames: ['yolo_local__fs_read'],
+      workspaceAccessPolicy: {
+        enabled: true,
+        workspaceRoot: 'Notes',
+        readExtraIncludes: [],
+        readExcludes: ['Notes/browser:'],
+        writeExcludes: [],
+      },
+    })
+
+    const message = gateway.createToolMessage({
+      toolCallRequests: [
+        {
+          id: 'tool-browser',
+          name: 'yolo_local__fs_read',
+          arguments: createCompleteToolCallArguments({
+            value: { paths: ['browser://page_ab12cd34_ef56gh78'] },
+          }),
+        },
+      ],
+      conversationId: 'conv-browser',
     })
 
     expect(message.toolCalls[0]?.response.status).not.toBe(

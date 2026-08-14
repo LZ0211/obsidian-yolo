@@ -31,8 +31,39 @@ function normalizeCorpus(corpus: string | undefined): string | null {
   return normalized || null
 }
 
+function normalizeEndpointIdentity(
+  endpoint: string | undefined,
+): string | null {
+  const value = endpoint?.trim()
+  if (!value) return null
+  try {
+    const url = new URL(value)
+    url.username = ''
+    url.password = ''
+    url.hash = ''
+    url.hostname = url.hostname.toLowerCase()
+    if (
+      (url.protocol === 'http:' && url.port === '80') ||
+      (url.protocol === 'https:' && url.port === '443')
+    ) {
+      url.port = ''
+    }
+    url.pathname = url.pathname.replace(/\/+$/g, '') || '/'
+    return url.toString().replace(/\/$/u, '')
+  } catch {
+    return value.replace(/\/+$/g, '')
+  }
+}
+
 export function vectorNamespaceId(namespace: VectorNamespace): string {
-  const baseId = `${normalizeNamespaceModel(namespace.model)}-d${namespace.dimension}`
+  const identity = [
+    namespace.providerIdentity?.trim(),
+    normalizeEndpointIdentity(namespace.endpointIdentity ?? undefined),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join('\u0000')
+  const identitySuffix = identity ? `-i${sha256HexPrefix12(identity)}` : ''
+  const baseId = `${normalizeNamespaceModel(namespace.model)}-d${namespace.dimension}${identitySuffix}`
   const encodedId =
     namespace.embeddingEncoding == null
       ? baseId

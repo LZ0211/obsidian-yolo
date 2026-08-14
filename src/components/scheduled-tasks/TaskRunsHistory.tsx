@@ -2,14 +2,14 @@ import { App } from 'obsidian'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useLanguage } from '../../contexts/language-context'
-import { useScheduledTasks } from '../../hooks/useScheduledTasksEvents'
-import type { ScheduledTask } from '../../core/scheduler/scheduledTasksStore'
 import {
+  type ScheduledTask,
   type TaskRun,
-  type TaskTriggeredBy,
   TaskRunStatus,
   type TaskStatistics,
+  type TaskTriggeredBy,
 } from '../../core/scheduler/scheduledTasksStore'
+import { useScheduledTasks } from '../../hooks/useScheduledTasksEvents'
 import YoloPlugin from '../../main'
 import { formatRelativeTime } from '../../utils/common/relative-time'
 import { ObsidianButton } from '../common/ObsidianButton'
@@ -88,6 +88,12 @@ function TaskRunsHistoryComponent({
     if (!service) return
     return service.subscribeToTask(task.id, () => load())
   }, [service, task.id, load])
+
+  useEffect(() => {
+    return () => {
+      loadSeq.current += 1
+    }
+  }, [])
 
   const filterOptions: Record<string, string> = {
     [FILTER_ALL]: t('settings.scheduledTasks.filterAll', 'All'),
@@ -294,6 +300,12 @@ function AllRunsHistoryComponent({
     if (!service) return
     return service.subscribeToAllTaskEvents(() => load())
   }, [service, load])
+
+  useEffect(() => {
+    return () => {
+      loadSeq.current += 1
+    }
+  }, [])
 
   const filterOptions: Record<string, string> = {
     [FILTER_ALL]: t('settings.scheduledTasks.filterAll', 'All'),

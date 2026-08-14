@@ -225,12 +225,27 @@ describe('QQOfficialAdapter — reconnect', () => {
   })
 })
 
+describe('QQOfficialAdapter — malformed gateway frames', () => {
+  it('reports malformed JSON without throwing from the WebSocket callback', async () => {
+    const { adapter, ws } = await startAdapter()
+    const errorPromise = new Promise<Error>((resolve) => {
+      const unsubscribe = adapter.onError((error) => {
+        unsubscribe()
+        resolve(error)
+      })
+    })
+
+    expect(() => ws.onmessage?.({ data: '{not-json' })).not.toThrow()
+    await expect(errorPromise).resolves.toThrow(/JSON|unexpected/i)
+  })
+})
+
 describe('QQOfficialAdapter — B1 intents', () => {
   function intentsFromHello(ws: MockWebSocket): number {
     const hello = ws.sent
       .map((message) => JSON.parse(message) as { op: number; d?: unknown })
       .find((payload) => payload.op === 2)
-    return ((hello?.d as { intents?: number } | undefined)?.intents ?? -1)
+    return (hello?.d as { intents?: number } | undefined)?.intents ?? -1
   }
 
   it('subscribes GUILD_MESSAGES | DIRECT_MESSAGE | GROUP_AND_C2C_EVENT when every channel is enabled', async () => {
@@ -352,9 +367,7 @@ describe('QQOfficialAdapter — sendMessage', () => {
       }
       if (url.includes('/v2/')) {
         const body =
-          typeof request === 'string'
-            ? ''
-            : String(request.body ?? '')
+          typeof request === 'string' ? '' : String(request.body ?? '')
         bodies.push(JSON.parse(body) as { content: string; msg_seq?: number })
         return { json: { id: 'msg-ok' } }
       }

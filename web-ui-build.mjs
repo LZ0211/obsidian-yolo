@@ -167,6 +167,11 @@ if (prod) {
   ])
   console.log('[web-ui] Done → web-ui')
 } else {
+  await fs.promises.mkdir(webUiDir, { recursive: true })
+  await fs.promises.copyFile(
+    'src/web-ui/index.html',
+    path.join(webUiDir, 'index.html'),
+  )
   console.log('[web-ui] Watching src/web-ui/index.tsx for changes...')
   await ctx.watch()
 }

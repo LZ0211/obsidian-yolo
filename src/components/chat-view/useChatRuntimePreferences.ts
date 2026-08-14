@@ -88,7 +88,7 @@ export type CliRuntimeSwitchLateState = {
   // 工作目录领域（fork 特有扩展——backup 语义，非上游字段）
   conversationWorkingDirectoryLocked: boolean
   conversationWorkingDirectory: string | undefined
-  setConversationWorkingDirectory: (directory: string | undefined) => void
+  persistConversationWorkingDirectory: (directory: string | undefined) => void
   selectedAssistantFilePolicy: WorkspaceAccessPolicy | undefined
 }
 
@@ -670,7 +670,7 @@ export function useChatRuntimePreferences({
       const late = getCliLate()
       if (late.conversationWorkingDirectoryLocked) return
       if (folderPath === undefined) {
-        late.setConversationWorkingDirectory(undefined)
+        late.persistConversationWorkingDirectory(undefined)
         return
       }
       if (!isWorkingDirectorySelectable(folderPath)) {
@@ -683,7 +683,7 @@ export function useChatRuntimePreferences({
         return
       }
       const directory = normalizeConversationWorkingDirectory(folderPath || '/')
-      late.setConversationWorkingDirectory(directory)
+      late.persistConversationWorkingDirectory(directory)
     },
     [getCliLate, isWorkingDirectorySelectable, t],
   )

@@ -120,6 +120,7 @@ export class VectorManager {
   private vectorStore: VectorStore | null = null
   private settings: {
     embeddingModels?: EmbeddingModel[]
+    providers?: Array<{ id: string; baseUrl?: string }>
     ragBackendSettings?: {
       rebuildRequired?: boolean
     }
@@ -129,6 +130,7 @@ export class VectorManager {
     vectorStore?: VectorStore | null
     settings?: {
       embeddingModels?: EmbeddingModel[]
+      providers?: Array<{ id: string; baseUrl?: string }>
       ragBackendSettings?: {
         rebuildRequired?: boolean
       }
@@ -148,6 +150,7 @@ export class VectorManager {
       vectorStore?: VectorStore | null
       settings?: {
         embeddingModels?: EmbeddingModel[]
+        providers?: Array<{ id: string; baseUrl?: string }>
         ragBackendSettings?: {
           rebuildRequired?: boolean
         }
@@ -178,6 +181,7 @@ export class VectorManager {
   setSettings(
     settings: {
       embeddingModels?: EmbeddingModel[]
+      providers?: Array<{ id: string; baseUrl?: string }>
       ragBackendSettings?: {
         rebuildRequired?: boolean
       }
@@ -238,10 +242,7 @@ export class VectorManager {
         continue
       }
       await this.vectorStore.dropNamespace?.(
-        createEmbeddingVectorNamespace({
-          model: model.model,
-          dimension: model.dimension,
-        }),
+        this.getVectorNamespace({ id: model.id, dimension: model.dimension }),
       )
     }
   }
@@ -1057,6 +1058,10 @@ export class VectorManager {
     return createEmbeddingVectorNamespace({
       model: configuredModel?.model ?? embeddingModel.id,
       dimension: embeddingModel.dimension,
+      providerId: configuredModel?.providerId,
+      endpoint: this.settings?.providers?.find(
+        (provider) => provider.id === configuredModel?.providerId,
+      )?.baseUrl,
     })
   }
 

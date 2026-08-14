@@ -185,6 +185,7 @@ export class ScheduledTasksService implements IScheduledTasksService {
 
   shutdown(): void {
     this.scheduler.shutdown()
+    this.eventBus.dispose()
     this.initialized = false
   }
 

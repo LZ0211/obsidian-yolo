@@ -30,17 +30,23 @@ export type WebAgentRunBridgeOptions = {
 
 /** 终态 run 记录保留 TTL（E6-F5）：超过后随下一次 start 惰性清理。 */
 const RUN_RECORD_RETENTION_TTL_MS = 24 * 60 * 60 * 1000
+const BRIDGE_DISPOSE_TIMEOUT_MS = 5_000
 
 export class WebAgentRunBridge {
   private readonly now: () => number
   private readonly abortControllersByRun = new Map<string, AbortController>()
   private readonly abortRunCallbacksByRun = new Map<string, () => boolean>()
+  private readonly activeRuns = new Map<string, Promise<void>>()
+  private disposed = false
 
   constructor(private readonly options: WebAgentRunBridgeOptions) {
     this.now = options.now ?? (() => Date.now())
   }
 
   start(input: StartWebAgentRunInput): Promise<void> {
+    if (this.disposed) {
+      return Promise.reject(new Error('web agent run bridge is disposed'))
+    }
     const startedAtMs = input.startedAtMs ?? this.now()
     // E6-F5：新 run 到来时顺带清理过期终态记录（events 级联删除）。
     this.options.eventStore.sweepExpiredRuns(
@@ -60,10 +66,25 @@ export class WebAgentRunBridge {
     this.abortControllersByRun.set(input.runId, abortController)
     this.abortRunCallbacksByRun.set(input.runId, input.abort)
 
-    return this.consumeRun(input, abortController).finally(() => {
+    const completion = this.consumeRun(input, abortController).finally(() => {
       this.abortControllersByRun.delete(input.runId)
       this.abortRunCallbacksByRun.delete(input.runId)
+      this.activeRuns.delete(input.runId)
     })
+    this.activeRuns.set(input.runId, completion)
+    return completion
+  }
+
+  async dispose(): Promise<void> {
+    if (this.disposed) {
+      await this.waitForActiveRuns()
+      return
+    }
+    this.disposed = true
+    for (const runId of this.activeRuns.keys()) {
+      this.abort(runId)
+    }
+    await this.waitForActiveRuns()
   }
 
   abort(runId: string): { found: boolean; status: AgentRunTerminalStatus } {
@@ -92,14 +113,21 @@ export class WebAgentRunBridge {
       await input.execute({
         abortSignal: abortController.signal,
         onEvent: (event) => {
+          if (this.disposed || abortController.signal.aborted) return
           sequence += 1
-          this.options.eventStore.insertEvent({
-            runId: input.runId,
-            sequence,
-            eventType: event.type,
-            eventJson: event,
-            createdAtMs: this.now(),
-          })
+          if (!this.options.eventStore.isOpen) return
+          try {
+            this.options.eventStore.insertEvent({
+              runId: input.runId,
+              sequence,
+              eventType: event.type,
+              eventJson: event,
+              createdAtMs: this.now(),
+            })
+          } catch (error) {
+            if (this.options.eventStore.isOpen) throw error
+            return
+          }
           this.options.sseHub.publish(input.runId, {
             sequence,
             eventType: event.type,
@@ -118,6 +146,7 @@ export class WebAgentRunBridge {
       })
     } catch (error) {
       finalStatus = abortController.signal.aborted ? 'aborted' : 'error'
+      if (this.disposed || !this.options.eventStore.isOpen) return
       sequence += 1
       const message = error instanceof Error ? error.message : String(error)
       const event = {
@@ -143,15 +172,44 @@ export class WebAgentRunBridge {
         createdAtMs: this.now(),
       })
     } finally {
-      this.options.eventStore.updateRunStatus(
-        input.runId,
-        finalStatus,
-        this.now(),
-      )
+      this.persistTerminalStatus(input.runId, finalStatus)
       // Run 已终态：主动关闭该 run 的 SSE 流，让客户端 consumeRunStream
       // 收到 done 后走 refreshAgentState 拉全量状态兜底。否则事件交付依赖
       // 首条连接上的实时推送竞态（浏览器可能只收到首块），回复会丢。
-      this.options.sseHub.clearRun(input.runId)
+      if (!this.disposed) this.options.sseHub.clearRun(input.runId)
+    }
+  }
+
+  private persistTerminalStatus(
+    runId: string,
+    status: AgentRunTerminalStatus,
+  ): void {
+    if (this.disposed || !this.options.eventStore.isOpen) return
+    try {
+      const run = this.options.eventStore.getRun(runId)
+      if (run?.status === 'running') {
+        this.options.eventStore.updateRunStatus(runId, status, this.now())
+      }
+    } catch (error) {
+      if (this.options.eventStore.isOpen) {
+        console.error('[YOLO] Failed to persist web agent run status:', error)
+      }
+    }
+  }
+
+  private async waitForActiveRuns(): Promise<void> {
+    const activeRuns = Promise.allSettled([...this.activeRuns.values()])
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        activeRuns,
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, BRIDGE_DISPOSE_TIMEOUT_MS)
+          ;(timeout as unknown as { unref?: () => void }).unref?.()
+        }),
+      ])
+    } finally {
+      if (timeout != null) clearTimeout(timeout)
     }
   }
 }

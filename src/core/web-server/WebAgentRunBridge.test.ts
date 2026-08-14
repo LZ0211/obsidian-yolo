@@ -177,6 +177,118 @@ describe('WebAgentRunBridge', () => {
     await completion
     expect(eventStore.getRun('run-1')?.status).toBe('completed')
   })
+
+  it('keeps an aborted run aborted when execution resolves afterward', async () => {
+    eventStore = createAgentEventStore(tempDir)
+    const execution = deferred<void>()
+    const bridge = new WebAgentRunBridge({
+      eventStore,
+      sseHub: new WebSseHub(),
+    })
+
+    const completion = bridge.start({
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      workspaceId: null,
+      agentInstanceId: null,
+      abort: jest.fn(() => true),
+      execute: async () => execution.promise,
+    })
+
+    expect(bridge.abort('run-1')).toEqual({
+      found: true,
+      status: 'aborted',
+    })
+    execution.resolve()
+    await completion
+
+    expect(eventStore.getRun('run-1')?.status).toBe('aborted')
+  })
+
+  it('does not reject when terminal status persistence fails', async () => {
+    eventStore = createAgentEventStore(tempDir)
+    const logError = jest.spyOn(console, 'error').mockImplementation(() => {})
+    jest
+      .spyOn(eventStore, 'updateRunStatus')
+      .mockImplementation(() => {
+        throw new Error('terminal status write failed')
+      })
+    const bridge = new WebAgentRunBridge({
+      eventStore,
+      sseHub: new WebSseHub(),
+    })
+
+    await expect(
+      bridge.start({
+        runId: 'run-1',
+        conversationId: 'conv-1',
+        workspaceId: null,
+        agentInstanceId: null,
+        abort: jest.fn(() => false),
+        execute: async () => undefined,
+      }),
+    ).resolves.toBeUndefined()
+    expect(logError).toHaveBeenCalledWith(
+      '[YOLO] Failed to persist web agent run status:',
+      expect.any(Error),
+    )
+    logError.mockRestore()
+  })
+
+  it('bounds dispose when an execution ignores abort', async () => {
+    jest.useFakeTimers()
+    eventStore = createAgentEventStore(tempDir)
+    const execution = deferred<void>()
+    const bridge = new WebAgentRunBridge({
+      eventStore,
+      sseHub: new WebSseHub(),
+    })
+    const completion = bridge.start({
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      workspaceId: null,
+      agentInstanceId: null,
+      abort: jest.fn(() => true),
+      execute: async () => execution.promise,
+    })
+    let disposed = false
+    const disposePromise = bridge.dispose().then(() => {
+      disposed = true
+    })
+
+    try {
+      await jest.advanceTimersByTimeAsync(5000)
+      expect(disposed).toBe(true)
+    } finally {
+      execution.resolve()
+      await completion
+      await disposePromise
+      jest.useRealTimers()
+    }
+  })
+
+  it('does not write a late terminal state after the event store closes', async () => {
+    eventStore = createAgentEventStore(tempDir)
+    const execution = deferred<void>()
+    const bridge = new WebAgentRunBridge({
+      eventStore,
+      sseHub: new WebSseHub(),
+    })
+
+    const completion = bridge.start({
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      workspaceId: null,
+      agentInstanceId: null,
+      abort: jest.fn(() => false),
+      execute: async () => execution.promise,
+    })
+
+    eventStore.close()
+    execution.resolve()
+
+    await expect(completion).resolves.toBeUndefined()
+  })
 })
 
 function deferred<T>() {

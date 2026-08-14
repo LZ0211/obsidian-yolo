@@ -422,6 +422,7 @@ export class BotService {
     // Step 3: dedupe.
     const dedupeKey = buildDedupeKey({
       platformName: event.platformName,
+      platformInstanceId: platformConfig.id,
       sessionKey: event.sessionKey,
       threadId: event.threadId,
       messageId: event.messageId,
@@ -433,7 +434,12 @@ export class BotService {
     const isReplyToBot = event.message.components.some(
       (component) =>
         component.type === 'reply_to' &&
-        this.sentRegistry.isSentByBot(component.messageId),
+        this.sentRegistry.isSentByBot(
+          component.messageId,
+          this.now(),
+          event.sessionKey,
+          platformConfig.id,
+        ),
     )
 
     // Step 5: whitelist auth.
@@ -468,6 +474,7 @@ export class BotService {
       event,
       decoded.chatId,
       decoded.threadId,
+      platformConfig.id,
     )
     if (!conversationId) return
 
@@ -489,6 +496,8 @@ export class BotService {
     this.runBotTurn({
       conversationId,
       sessionKey: event.sessionKey,
+      replyToMessageId: event.messageId,
+      queueKey: this.sessionRuntimeKey(platformConfig.id, event.sessionKey),
       chatType: event.chatType,
       platformConfig,
       adapter,
@@ -683,6 +692,8 @@ export class BotService {
   private runBotTurn(params: {
     conversationId: string
     sessionKey: string
+    replyToMessageId: string
+    queueKey: string
     chatType: 'private' | 'group'
     platformConfig: BotPlatformConfig
     adapter: PlatformAdapter
@@ -690,7 +701,7 @@ export class BotService {
     mentionables: Mentionable[]
   }): void {
     if (!this.acceptingEvents) return
-    const previous = this.turnQueues.get(params.sessionKey) ?? Promise.resolve()
+    const previous = this.turnQueues.get(params.queueKey) ?? Promise.resolve()
     const abortController = new AbortController()
     // Whole-turn duration budget: a stuck agent loop must not occupy the
     // per-session serial queue forever (see agent-runner.ts). The abort
@@ -724,6 +735,7 @@ export class BotService {
           conversationId: params.conversationId,
           sessionKey: params.sessionKey,
           chatType: params.chatType,
+          replyToMessageId: params.replyToMessageId,
           platformConfig: params.platformConfig,
           promptContent: params.promptContent,
           mentionables: params.mentionables,
@@ -739,10 +751,10 @@ export class BotService {
           emitBotConversationUpdated(params.conversationId)
         }
       })
-    this.turnQueues.set(params.sessionKey, current)
+    this.turnQueues.set(params.queueKey, current)
     void current.then(() => {
-      if (this.turnQueues.get(params.sessionKey) === current) {
-        this.turnQueues.delete(params.sessionKey)
+      if (this.turnQueues.get(params.queueKey) === current) {
+        this.turnQueues.delete(params.queueKey)
       }
     })
   }
@@ -751,16 +763,27 @@ export class BotService {
     event: PlatformMessageEvent,
     chatId: string,
     threadId: string | undefined,
+    platformInstanceId: string,
   ): Promise<string | null> {
-    const pending = this.sessionResolutionQueues.get(event.sessionKey)
+    const queueKey = this.sessionRuntimeKey(
+      platformInstanceId,
+      event.sessionKey,
+    )
+    const pending = this.sessionResolutionQueues.get(queueKey)
     if (pending) return pending
-    const resolution = this.resolveConversationId(event, chatId, threadId)
-    this.sessionResolutionQueues.set(event.sessionKey, resolution)
+    const resolution = this.resolveConversationId(
+      event,
+      chatId,
+      threadId,
+      platformInstanceId,
+      queueKey,
+    )
+    this.sessionResolutionQueues.set(queueKey, resolution)
     try {
       return await resolution
     } finally {
-      if (this.sessionResolutionQueues.get(event.sessionKey) === resolution) {
-        this.sessionResolutionQueues.delete(event.sessionKey)
+      if (this.sessionResolutionQueues.get(queueKey) === resolution) {
+        this.sessionResolutionQueues.delete(queueKey)
       }
     }
   }
@@ -769,8 +792,17 @@ export class BotService {
     event: PlatformMessageEvent,
     chatId: string,
     threadId: string | undefined,
+    platformInstanceId: string,
+    runtimeSessionKey: string,
   ): Promise<string | null> {
-    const existing = this.sessionMapper.getSessionByKey(event.sessionKey)
+    const allowLegacyInstance = this.canUseLegacySessionMapping(
+      event.platformName,
+    )
+    const existing = this.sessionMapper.getSessionByKey(
+      event.sessionKey,
+      platformInstanceId,
+      allowLegacyInstance,
+    )
     if (existing) {
       if (existing.disabled) return null
 
@@ -786,31 +818,40 @@ export class BotService {
           now,
         )
         const replacement = await this.createConversation(title)
-        await this.sessionMapper.upsertSession({
-          ...existing,
-          platformName: event.platformName,
-          chatType: event.chatType,
-          platformChatId: chatId,
-          threadId,
-          conversationId: replacement,
-          conversationTitle: title,
-          lastActiveAt: now,
-          archivedAt: undefined,
-        })
-        this.sessionTouchAt.set(event.sessionKey, now)
+        await this.sessionMapper.upsertSession(
+          {
+            ...existing,
+            platformInstanceId,
+            platformName: event.platformName,
+            chatType: event.chatType,
+            platformChatId: chatId,
+            threadId,
+            conversationId: replacement,
+            conversationTitle: title,
+            lastActiveAt: now,
+            archivedAt: undefined,
+          },
+          allowLegacyInstance,
+        )
+        this.sessionTouchAt.set(runtimeSessionKey, now)
         return replacement
       }
 
       const now = this.now()
-      const lastTouch = this.sessionTouchAt.get(event.sessionKey)
+      const lastTouch = this.sessionTouchAt.get(runtimeSessionKey)
       if (
         existing.archivedAt !== undefined ||
         lastTouch === undefined ||
         now < lastTouch ||
         now - lastTouch >= SESSION_TOUCH_INTERVAL_MS
       ) {
-        await this.sessionMapper.touchActiveSession(event.sessionKey, now)
-        this.sessionTouchAt.set(event.sessionKey, now)
+        await this.sessionMapper.touchActiveSession(
+          event.sessionKey,
+          platformInstanceId,
+          now,
+          allowLegacyInstance,
+        )
+        this.sessionTouchAt.set(runtimeSessionKey, now)
       }
       return existing.conversationId
     }
@@ -827,6 +868,7 @@ export class BotService {
     const conversation = await this.createConversation(title)
     const mapping: SessionMapping = {
       sessionKey: event.sessionKey,
+      platformInstanceId,
       platformName: event.platformName,
       chatType: event.chatType,
       platformChatId: chatId,
@@ -836,8 +878,8 @@ export class BotService {
       createdAt: now,
       lastActiveAt: now,
     }
-    await this.sessionMapper.upsertSession(mapping)
-    this.sessionTouchAt.set(event.sessionKey, now)
+    await this.sessionMapper.upsertSession(mapping, allowLegacyInstance)
+    this.sessionTouchAt.set(runtimeSessionKey, now)
     return conversation
   }
 
@@ -855,7 +897,11 @@ export class BotService {
         await adapter.sendMessage(event.sessionKey, { text: HELP_TEXT })
         return true
       case 'status': {
-        const session = this.sessionMapper.getSessionByKey(event.sessionKey)
+        const session = this.sessionMapper.getSessionByKey(
+          event.sessionKey,
+          platformConfig.id,
+          this.canUseLegacySessionMapping(event.platformName),
+        )
         const text = session
           ? `Session bound to conversation ${session.conversationId}. Last active: ${new Date(session.lastActiveAt).toISOString()}.`
           : 'No conversation bound to this session yet.'
@@ -879,18 +925,25 @@ export class BotService {
           now,
         )
         const conversation = await this.createConversation(title)
-        await this.sessionMapper.upsertSession({
-          sessionKey: event.sessionKey,
-          platformName: event.platformName,
-          chatType: event.chatType,
-          platformChatId: decoded.chatId,
-          threadId: decoded.threadId,
-          conversationId: conversation,
-          conversationTitle: title,
-          createdAt: now,
-          lastActiveAt: now,
-        })
-        this.sessionTouchAt.set(event.sessionKey, now)
+        await this.sessionMapper.upsertSession(
+          {
+            sessionKey: event.sessionKey,
+            platformInstanceId: platformConfig.id,
+            platformName: event.platformName,
+            chatType: event.chatType,
+            platformChatId: decoded.chatId,
+            threadId: decoded.threadId,
+            conversationId: conversation,
+            conversationTitle: title,
+            createdAt: now,
+            lastActiveAt: now,
+          },
+          this.canUseLegacySessionMapping(event.platformName),
+        )
+        this.sessionTouchAt.set(
+          this.sessionRuntimeKey(platformConfig.id, event.sessionKey),
+          now,
+        )
         await adapter.sendMessage(event.sessionKey, {
           text: 'Conversation has been reset.',
         })
@@ -903,6 +956,21 @@ export class BotService {
 
   private isAdmin(event: PlatformMessageEvent): boolean {
     return this.getBotsSettings().adminUsers.includes(event.senderId)
+  }
+
+  private sessionRuntimeKey(
+    platformInstanceId: string,
+    sessionKey: string,
+  ): string {
+    return `${platformInstanceId}\u0000${sessionKey}`
+  }
+
+  private canUseLegacySessionMapping(platformName: string): boolean {
+    let instances = 0
+    for (const config of this.startedConfigs.values()) {
+      if (config.platformType === platformName) instances += 1
+    }
+    return instances <= 1
   }
 
   /**

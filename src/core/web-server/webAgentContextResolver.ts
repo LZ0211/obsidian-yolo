@@ -434,10 +434,17 @@ export function createWebAgentContextResolver(input: {
         if (!resolved) {
           return null
         }
+        const template = settings.assistants.find(
+          (candidate) => candidate.id === agent.templateId,
+        )
+        const effective = template
+          ? resolveEffectiveAgent(agent, template)
+          : undefined
         return {
           id: agent.id,
           name: resolved.name ?? agent.name,
-          agentModeAllowed: true,
+          agentModeAllowed:
+            effective?.ok === true ? effective.agent.agentModeAllowed : true,
         }
       })
       .filter((agent): agent is PublicWorkspaceAgentSummary => agent != null)

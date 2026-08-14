@@ -224,6 +224,40 @@ describe('WeixinOCAdapter — start()', () => {
       await adapter.stop()
     }
   })
+
+  it('does not begin polling when stop() lands during notifyStart', async () => {
+    let releaseNotifyStart!: (value: unknown) => void
+    const notifyStartGate = new Promise((resolve) => {
+      releaseNotifyStart = resolve
+    })
+    mockedRequestUrl.mockImplementation(((request) => {
+      const param = asRequestUrlParam(request)
+      if (param.url.includes('/ilink/bot/msg/notifystart')) {
+        return notifyStartGate as RequestUrlResponsePromise
+      }
+      return hangForever()
+    }) as typeof requestUrl)
+
+    const adapter = new WeixinOCAdapter()
+    const starting = adapter.start(makeConfig({ botToken: 'saved-token' }))
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(
+      mockedRequestUrl.mock.calls.some(([request]) =>
+        asRequestUrlParam(request).url.includes('/ilink/bot/msg/notifystart'),
+      ),
+    ).toBe(true)
+
+    await adapter.stop()
+    releaseNotifyStart({ json: { ret: 0 } })
+    await starting
+
+    expect(adapter.health()).toBe('stopped')
+    expect(
+      mockedRequestUrl.mock.calls.some(([request]) =>
+        asRequestUrlParam(request).url.includes('/ilink/bot/getupdates'),
+      ),
+    ).toBe(false)
+  })
 })
 
 describe('WeixinOCAdapter — QR login', () => {
@@ -957,7 +991,13 @@ describe('WeixinOCAdapter — sendMessage', () => {
 
     const adapter = new WeixinOCAdapter({
       app: {
-        vault: { adapter: { readBinary: jest.fn(async () => new Uint8Array(Buffer.from('hello')).buffer) } },
+        vault: {
+          adapter: {
+            readBinary: jest.fn(
+              async () => new Uint8Array(Buffer.from('hello')).buffer,
+            ),
+          },
+        },
       } as unknown as import('obsidian').App,
     })
     const messagePromise = waitForNextMessage(adapter)
@@ -989,8 +1029,7 @@ describe('WeixinOCAdapter — sendMessage', () => {
       return (
         count +
         body.msg.item_list.filter(
-          (item) =>
-            (item as { type?: number }).type === 2,
+          (item) => (item as { type?: number }).type === 2,
         ).length
       )
     }, 0)
@@ -1112,13 +1151,17 @@ describe('WeixinOCAdapter — sendMessage', () => {
     // fix-round-1: text and media go out as separate requests — the text
     // chunk must not re-attach the image (that would send it N times).
     expect(sendCalls).toHaveLength(2)
-    const textBody = JSON.parse(bodyAsString(asRequestUrlParam(sendCalls[0][0]))) as {
+    const textBody = JSON.parse(
+      bodyAsString(asRequestUrlParam(sendCalls[0][0])),
+    ) as {
       msg: { item_list: unknown[] }
     }
     expect(textBody.msg.item_list).toEqual([
       { type: 1, text_item: { text: 'Here is the chart.' } },
     ])
-    const mediaBody = JSON.parse(bodyAsString(asRequestUrlParam(sendCalls[1][0]))) as {
+    const mediaBody = JSON.parse(
+      bodyAsString(asRequestUrlParam(sendCalls[1][0])),
+    ) as {
       msg: {
         item_list: Array<{
           type: number

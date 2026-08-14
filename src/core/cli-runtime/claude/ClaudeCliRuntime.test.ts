@@ -634,7 +634,9 @@ describe('ClaudeCliRuntime', () => {
       nativeSessionId: 'session-1',
     })
 
-    expect(getSessionMessages).toHaveBeenCalledWith('session-1')
+    expect(getSessionMessages).toHaveBeenCalledWith('session-1', {
+      dir: '/vault',
+    })
     expect(hydration.messages).toHaveLength(5)
     expect(hydration.messages[0]).toMatchObject({
       role: 'user',

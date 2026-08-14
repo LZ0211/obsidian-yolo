@@ -380,6 +380,42 @@ describe('FeishuAdapter — start()', () => {
     expect(adapter.health()).toBe('stopped')
     expect(MockWebSocket.instances).toHaveLength(0)
   })
+
+  it('does not let a stale start create a second connection after restart', async () => {
+    let releaseFirstHandshake!: () => void
+    const firstHandshake = new Promise<void>((resolve) => {
+      releaseFirstHandshake = resolve
+    })
+    let handshakeCount = 0
+    mockRoutes({
+      'callback/ws/endpoint': () => {
+        handshakeCount += 1
+        const response = {
+          json: {
+            code: 0,
+            msg: 'ok',
+            data: { URL: DEFAULT_WS_URL, ClientConfig: { PingInterval: 120 } },
+          },
+        }
+        return handshakeCount === 1
+          ? firstHandshake.then(() => response)
+          : response
+      },
+    })
+
+    const adapter = new FeishuAdapter(makeApp())
+    liveAdapters.push(adapter)
+    const firstStart = adapter.start(makeConfig())
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(handshakeCount).toBe(1)
+
+    await adapter.stop()
+    const secondStart = adapter.start(makeConfig())
+    releaseFirstHandshake()
+    await Promise.all([firstStart, secondStart])
+
+    expect(MockWebSocket.instances).toHaveLength(1)
+  })
 })
 
 describe('FeishuAdapter — WS frame handling', () => {
@@ -831,6 +867,61 @@ describe('FeishuAdapter — sendMessage()', () => {
       content: JSON.stringify({ file_key: 'file_key_up_1' }),
       reply_in_thread: false,
     })
+  })
+
+  it('uses the reply target captured for the turn', async () => {
+    mockRoutes({
+      reply: () => ({
+        json: { code: 0, msg: 'ok', data: { message_id: 'om_reply_target' } },
+      }),
+    })
+    const { adapter, ws } = await startAdapter()
+    const firstEvent = await receiveMessage(adapter, ws)
+    await receiveMessage(adapter, ws, { message_id: 'om_msg_2' })
+
+    await adapter.sendMessage(firstEvent.sessionKey, {
+      text: 'reply to the first turn',
+      replyToMessageId: firstEvent.messageId,
+    })
+
+    const sendCall = mockedRequestUrl.mock.calls.find((c) =>
+      asRequestUrlParam(c[0]).url.includes('/messages/om_msg_1/reply'),
+    )
+    expect(sendCall).toBeDefined()
+  })
+
+  it('rejects an oversized base64 file before uploading it', async () => {
+    mockRoutes({
+      tenant_access_token: () => ({
+        json: {
+          code: 0,
+          msg: 'ok',
+          tenant_access_token: 'tok-1',
+          expire: 7200,
+        },
+      }),
+    })
+    const { adapter, ws } = await startAdapter()
+    const event = await receiveMessage(adapter, ws)
+
+    await expect(
+      adapter.sendMessage(event.sessionKey, {
+        files: [
+          {
+            source: 'base64',
+            dataBase64: Buffer.alloc(30 * 1024 * 1024 + 1).toString('base64'),
+            mimeType: 'application/pdf',
+            name: 'large.pdf',
+          },
+        ],
+      }),
+    ).rejects.toThrow(/exceeds.*file.*limit/i)
+
+    expect(
+      mockedRequestUrl.mock.calls.some((c) =>
+        asRequestUrlParam(c[0]).url.includes('im/v1/files'),
+      ),
+    ).toBe(false)
   })
 
   it('throws when sendMessage is called with no text/images/files content', async () => {

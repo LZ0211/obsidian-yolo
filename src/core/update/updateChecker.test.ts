@@ -208,6 +208,33 @@ describe('parseReleaseAssets', () => {
   it('returns null for non-array input', () => {
     expect(parseReleaseAssets(undefined)).toBeNull()
   })
+
+  it('parses the optional Web UI archive when a release provides it', () => {
+    const result = parseReleaseAssets([
+      {
+        name: 'main.js',
+        browser_download_url: 'https://github.com/example/main.js',
+      },
+      {
+        name: 'manifest.json',
+        browser_download_url: 'https://github.com/example/manifest.json',
+      },
+      {
+        name: 'styles.css',
+        browser_download_url: 'https://github.com/example/styles.css',
+      },
+      {
+        name: 'web-ui.zip',
+        browser_download_url: 'https://github.com/example/web-ui.zip',
+        size: 123,
+      },
+    ])
+
+    expect(result?.webUiZip).toEqual({
+      url: 'https://github.com/example/web-ui.zip',
+      size: 123,
+    })
+  })
 })
 
 describe('buildReleaseAssets', () => {
@@ -223,6 +250,10 @@ describe('buildReleaseAssets', () => {
       },
       stylesCss: {
         url: 'https://github.com/Lapis0x0/obsidian-yolo/releases/download/1.5.12.2/styles.css',
+        size: 0,
+      },
+      webUiZip: {
+        url: 'https://github.com/Lapis0x0/obsidian-yolo/releases/download/1.5.12.2/web-ui.zip',
         size: 0,
       },
     })

@@ -50,8 +50,8 @@
       "descriptionKey": "settings.modules.runtimeComponents.sqliteEngine.description",
       "impactKey": "settings.modules.runtimeComponents.sqliteEngine.impact",
       "entry": "runtime-components/sqlite-engine/dist/entry.js",
-      "byteSize": 927634,
-      "sha256": "4e629c6353bc38b5f7838f17c77a5d16fe8e63cfa9c657703004736be51a5587"
+      "byteSize": 927818,
+      "sha256": "df09be2bf406cb829ae9502f26542ef7df37933611adc1da21affe530d0dfb14"
     },
     {
       "id": "tokenizer",

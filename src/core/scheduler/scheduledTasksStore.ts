@@ -341,6 +341,13 @@ const CREATE_SCHEMA_SQL = `
     on task_runs(batch_id);
   create index if not exists idx_task_runs_status
     on task_runs(status);
+
+  create table if not exists task_execution_claims (
+    task_id text primary key,
+    owner_id text not null,
+    claimed_at integer not null,
+    expires_at integer not null
+  );
 `
 
 export class ScheduledTasksStore {
@@ -584,6 +591,40 @@ export class ScheduledTasksStore {
   close(): void {
     this.runtime?.close()
     this.runtime = null
+  }
+
+  tryClaimTaskExecution(
+    taskId: string,
+    ownerId: string,
+    claimedAt: number,
+    expiresAt: number,
+  ): boolean {
+    return this.db.transaction((database) => {
+      database.exec(
+        `
+          insert into task_execution_claims(task_id, owner_id, claimed_at, expires_at)
+          values (?, ?, ?, ?)
+          on conflict(task_id) do update set
+            owner_id = excluded.owner_id,
+            claimed_at = excluded.claimed_at,
+            expires_at = excluded.expires_at
+          where task_execution_claims.expires_at <= excluded.claimed_at
+        `,
+        [taskId, ownerId, claimedAt, expiresAt],
+      )
+      const row = database.queryOne<{ owner_id: string }>(
+        'select owner_id from task_execution_claims where task_id = ?',
+        [taskId],
+      )
+      return row?.owner_id === ownerId
+    })
+  }
+
+  releaseTaskExecutionClaim(taskId: string, ownerId: string): void {
+    this.db.exec(
+      'delete from task_execution_claims where task_id = ? and owner_id = ?',
+      [taskId, ownerId],
+    )
   }
 
   createTask(id: string, config: TaskConfig, now: number): ScheduledTask {

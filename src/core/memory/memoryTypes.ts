@@ -43,6 +43,7 @@ export type MemoryIndexQuery = Readonly<{
   partition: MemoryPartition
   sourceFileFingerprint: string
   target: MemoryRecallTarget
+  memoryKeys?: readonly string[]
   maxEntries: number
   maxChars: number
 }>

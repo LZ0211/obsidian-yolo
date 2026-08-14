@@ -43,6 +43,13 @@ import type {
 import type { ConversationOverrideSettings } from '../../types/conversation-settings.types'
 import type { MentionableBlockData } from '../../types/mentionable'
 import type { ReasoningLevel } from '../../types/reasoning'
+
+export const clearConversationLoadingIfCurrent = (
+  isCurrent: () => boolean,
+  setIsLoadingConversation: (isLoading: boolean) => void,
+): void => {
+  if (isCurrent()) setIsLoadingConversation(false)
+}
 import { normalizeHydratedConversationMessages } from '../../utils/chat/conversationHydration'
 import {
   collectSelectionHighlightIdsFromMessages,
@@ -812,7 +819,7 @@ export function useYoloChatSession({
         new Notice('Failed to load conversation')
         console.error('Failed to load conversation', error)
       } finally {
-        setIsLoadingConversation(false)
+        clearConversationLoadingIfCurrent(isCurrent, setIsLoadingConversation)
       }
     },
     [

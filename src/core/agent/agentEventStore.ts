@@ -104,6 +104,10 @@ export class AgentEventStore {
     this.runtime = null
   }
 
+  get isOpen(): boolean {
+    return this.runtime != null
+  }
+
   createRun(row: CreateRunInput): void {
     this.db.exec(
       `

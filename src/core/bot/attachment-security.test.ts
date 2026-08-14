@@ -1,4 +1,7 @@
-import { validateAttachmentPath } from './attachment-security'
+import {
+  validateAttachmentPath,
+  validateOutgoingAttachmentSize,
+} from './attachment-security'
 
 const underDir = (dir: string) => (path: string) =>
   dir === '' || path === dir || path.startsWith(`${dir}/`)
@@ -85,5 +88,32 @@ describe('validateAttachmentPath', () => {
       isAllowed: underDir('charts'),
     })
     expect(result.ok).toBe(false)
+  })
+})
+
+describe('validateOutgoingAttachmentSize', () => {
+  it('accepts an attachment at the platform limit', () => {
+    expect(
+      validateOutgoingAttachmentSize({
+        kind: 'image',
+        byteLength: 10,
+        maxBytes: 10,
+        name: 'diagram.png',
+      }),
+    ).toEqual({ ok: true })
+  })
+
+  it('rejects an attachment larger than the platform limit', () => {
+    expect(
+      validateOutgoingAttachmentSize({
+        kind: 'file',
+        byteLength: 11,
+        maxBytes: 10,
+        name: 'report.pdf',
+      }),
+    ).toEqual({
+      ok: false,
+      error: expect.stringContaining('report.pdf'),
+    })
   })
 })

@@ -1,6 +1,41 @@
-import { Platform } from 'obsidian'
+import { type App, FileSystemAdapter, Platform } from 'obsidian'
 
-import { assertCliRuntimeAvailable, isCliRuntimeAvailable } from './desktop'
+jest.mock('./claude/process', () => ({
+  resolveClaudeProcessSupport: jest.fn(),
+}))
+jest.mock('./codex/launch', () => ({
+  resolveCodexLaunch: jest.fn(),
+}))
+jest.mock('./login-shell-env', () => ({
+  loadLoginShellEnvironment: jest.fn(async () => ({})),
+}))
+jest.mock('./cli-path-override', () => ({
+  getCliPathOverride: jest.fn(),
+}))
+
+import { resolveClaudeProcessSupport } from './claude/process'
+import { resolveCodexLaunch } from './codex/launch'
+import {
+  assertCliRuntimeAvailable,
+  detectCliRuntimeAvailability,
+  isCliRuntimeAvailable,
+  resolveAvailableChatRuntimeIds,
+} from './desktop'
+
+const mockedResolveClaudeProcessSupport = jest.mocked(
+  resolveClaudeProcessSupport,
+)
+const mockedResolveCodexLaunch = jest.mocked(resolveCodexLaunch)
+
+class TestFileSystemAdapter extends FileSystemAdapter {
+  getBasePath(): string {
+    return '/vault'
+  }
+}
+
+const desktopApp = {
+  vault: { adapter: new TestFileSystemAdapter() },
+} as unknown as App
 
 describe('CLI runtime desktop gate', () => {
   const originalIsDesktop = Platform.isDesktop
@@ -23,5 +58,38 @@ describe('CLI runtime desktop gate', () => {
 
     expect(isCliRuntimeAvailable()).toBe(true)
     expect(() => assertCliRuntimeAvailable('claude-code')).not.toThrow()
+  })
+
+  it('reports provider availability from the actual executable probes', async () => {
+    Platform.isDesktop = true
+    mockedResolveClaudeProcessSupport.mockResolvedValue({
+      cliPath: '/bin/claude',
+      env: {},
+      createAbortController: () => new AbortController(),
+      spawnClaudeCodeProcess: jest.fn(),
+    })
+    mockedResolveCodexLaunch.mockResolvedValue({
+      command: undefined,
+      runtimeCwd: '/vault',
+      spawnCwd: '/vault',
+    })
+
+    await expect(detectCliRuntimeAvailability(desktopApp)).resolves.toEqual({
+      'claude-code': true,
+      codex: false,
+    })
+  })
+
+  it('filters the runtime selector to detected providers', () => {
+    expect(
+      resolveAvailableChatRuntimeIds({
+        cliRuntimeAvailable: true,
+        hasCliRuntimeScope: true,
+        runtimeAvailability: {
+          'claude-code': true,
+          codex: false,
+        },
+      }),
+    ).toEqual(['yolo', 'claude-code'])
   })
 })

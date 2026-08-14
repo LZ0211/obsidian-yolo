@@ -9,6 +9,7 @@ import { ToolCallResponseStatus } from '../../../types/tool-call.types'
 import type { McpManager } from '../../mcp/mcpManager'
 import type { ResolvedWebAgentContext } from '../webAgentTypes'
 import { WebRouter } from '../WebRouter'
+import { getProtectedVaultPathRules } from '../../paths/protectedPaths'
 
 import { type McpRoutesContext, registerMcpRoutes } from './mcpRoutes'
 
@@ -374,6 +375,7 @@ describe('mcpRoutes', () => {
           readExtraIncludes: ['A.md'],
           readExcludes: [],
           writeExcludes: [],
+          protectedPaths: getProtectedVaultPathRules(parseYoloSettings({})),
         },
         allowedSkillPaths: ['builtin://skill-b'],
       }),

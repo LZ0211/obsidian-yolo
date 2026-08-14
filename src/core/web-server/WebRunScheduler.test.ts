@@ -80,6 +80,31 @@ describe('WebRunScheduler', () => {
     expect(scheduler.getRun('run-2')).toMatchObject({ status: 'aborted' })
   })
 
+  it('notifies terminal observers when a queued run is aborted', () => {
+    const terminalRuns: string[] = []
+    const scheduler = new WebRunScheduler({
+      maxConcurrent: 1,
+      onTerminal: (run) => terminalRuns.push(`${run.runId}:${run.status}`),
+    })
+    const first = deferred<void>()
+
+    scheduler.enqueue({
+      runId: 'run-1',
+      conversationId: 'conversation-1',
+      execute: async () => first.promise,
+    })
+    scheduler.enqueue({
+      runId: 'run-2',
+      conversationId: 'conversation-2',
+      execute: async () => undefined,
+    })
+
+    scheduler.abort('run-2')
+
+    expect(terminalRuns).toEqual(['run-2:aborted'])
+    first.resolve()
+  })
+
   it('releases capacity after a run fails', async () => {
     const scheduler = new WebRunScheduler({ maxConcurrent: 1 })
     const started: string[] = []

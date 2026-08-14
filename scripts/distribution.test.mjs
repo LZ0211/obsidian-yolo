@@ -76,6 +76,7 @@ test('rebuilds the complete current snapshot from published Releases', async () 
         asset('1.7.0', 'main.js', 'main'),
         asset('1.7.0', 'manifest.json', coreManifest),
         asset('1.7.0', 'styles.css', 'style'),
+        asset('1.7.0', 'web-ui.zip', 'web-ui archive'),
       ],
     },
     {
@@ -119,6 +120,10 @@ test('rebuilds the complete current snapshot from published Releases', async () 
     current: null,
   })
   assert.equal(snapshot.core.version, '1.7.0')
+  assert.equal(
+    snapshot.core.assets.webUiZip.mirrorPath,
+    'core/1.7.0/web-ui.zip',
+  )
   assert.equal(snapshot.modules[0].version, '0.2.0')
   assert.equal(snapshot.modules[0].icon, 'book-open')
   assert.equal(snapshot.modules[0].localizations.en.name, 'Released Learning')

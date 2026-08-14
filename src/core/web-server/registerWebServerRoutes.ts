@@ -24,7 +24,10 @@ import { registerApplyRoutes } from './routes/applyRoutes'
 import { registerAuthRoutes } from './routes/authRoutes'
 import { registerBootstrapRoutes } from './routes/bootstrapRoutes'
 import { registerChatRoutes } from './routes/chatRoutes'
-import { registerChatRuntimeRoutes } from './routes/chatRuntimeRoutes'
+import {
+  closeChatRuntimeSessionStreams,
+  registerChatRuntimeRoutes,
+} from './routes/chatRuntimeRoutes'
 import { registerCitationRoutes } from './routes/citationRoutes'
 import { registerMcpRoutes } from './routes/mcpRoutes'
 import { apiError } from './routes/routeUtils'
@@ -76,13 +79,17 @@ export type RegisterWebServerRoutesOptions = {
    * 未提供或返回 null 时，CLI 面（claude-code/codex）的 chat-runtime 端点回
    * 404 runtime_unavailable；yolo 分支恒 null（native 走 /api/agent/*）。
    */
-  getCliRuntimeScope?: () => Promise<CliRuntimeScope | null> | CliRuntimeScope | null
+  getCliRuntimeScope?: () =>
+    | Promise<CliRuntimeScope | null>
+    | CliRuntimeScope
+    | null
   now?: () => number
 }
 
 export type RegisteredWebServerRoutes = {
   bridge: WebAgentRunBridge
   lifecycleService: WebAgentLifecycleService
+  dispose: () => Promise<void>
 }
 
 const DEFAULT_WEB_AGENT_MAX_CONCURRENT = 12
@@ -123,6 +130,7 @@ export function registerWebServerRoutes(
   const sessionStore = new WebSessionStore({ now: options.now })
   sessionStore.onSessionClosed((event) => {
     options.sseHub.closeSession(event.sessionId, event.code)
+    closeChatRuntimeSessionStreams(event.sessionId, event.code)
   })
   const pepper = loadOrCreateShareTokenPepper(
     resolveAbsoluteYoloBaseDir(options.app, options.getSettings()),
@@ -157,6 +165,9 @@ export function registerWebServerRoutes(
   const runScheduler = new WebRunScheduler({
     maxConcurrent: DEFAULT_WEB_AGENT_MAX_CONCURRENT,
     now: options.now,
+    onTerminal: (run) => {
+      options.sseHub.clearRun(run.runId)
+    },
   })
   const adapter = new WebChatRuntimeAdapter({
     app: options.app,
@@ -429,6 +440,7 @@ export function registerWebServerRoutes(
           ),
           workspaceAccessPolicy: workspaceAgentPolicyToRuntimeAccessPolicy(
             resolved.context.activeAgent.workspacePolicy,
+            options.getSettings(),
           ),
         },
       }
@@ -818,7 +830,16 @@ export function registerWebServerRoutes(
     },
   })
 
-  return { bridge, lifecycleService }
+  return {
+    bridge,
+    lifecycleService,
+    dispose: async () => {
+      runScheduler.dispose()
+      await bridge.dispose()
+      sessionStore.dispose()
+      options.sseHub.clear()
+    },
+  }
 }
 
 function canUseWebConversation(

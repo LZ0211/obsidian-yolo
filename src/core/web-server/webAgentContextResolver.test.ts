@@ -846,7 +846,7 @@ describe('createWebAgentContextResolver', () => {
       {
         id: 'agent-3',
         name: 'Restricted Modes',
-        agentModeAllowed: true,
+        agentModeAllowed: false,
       },
     ])
   })

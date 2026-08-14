@@ -3,8 +3,11 @@ import { createHash } from 'node:crypto'
 export const queryEmbeddingCacheKey = (
   modelId: string,
   query: string,
+  dimension?: number,
 ): string =>
-  createHash('sha256').update(`${modelId}\u0000${query}`).digest('hex')
+  createHash('sha256')
+    .update(`${modelId}\u0000${dimension ?? 0}\u0000${query}`)
+    .digest('hex')
 
 export const QUERY_EMBEDDING_CACHE_MAX_ENTRIES = 2_000
 

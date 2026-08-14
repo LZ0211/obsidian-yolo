@@ -2,6 +2,8 @@ export type VectorBackend = 'sqlite'
 
 export type VectorNamespace = {
   provider: string
+  providerIdentity?: string
+  endpointIdentity?: string
   model: string
   dimension: number
   distanceMetric: 'cosine'

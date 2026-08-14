@@ -516,6 +516,8 @@ async function runChildAgent(
     taskId: record.taskId,
     runtime,
     mcpManager: parent.mcpManager,
+    workspaceAccessPolicy: runInput.workspaceAccessPolicy,
+    abortSignal: runInput.abortSignal ?? abortController.signal,
     parentConversationId: record.conversationId,
     parentToolCallId,
     resumeRun,

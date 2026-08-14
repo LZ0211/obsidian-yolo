@@ -15,7 +15,7 @@ import {
   Star,
   Trash2,
 } from 'lucide-react'
-import { Platform, Scope } from 'obsidian'
+import { Notice, Platform, Scope } from 'obsidian'
 import {
   memo,
   useCallback,
@@ -69,6 +69,15 @@ function useLatestRef<T>(value: T) {
   const ref = useRef(value)
   ref.current = value
   return ref
+}
+
+export const tryBeginChatListAction = (
+  inFlightConversationIds: Set<string>,
+  conversationId: string,
+): boolean => {
+  if (inFlightConversationIds.has(conversationId)) return false
+  inFlightConversationIds.add(conversationId)
+  return true
 }
 
 /**
@@ -619,6 +628,7 @@ const ChatListItem = memo(function ChatListItem({
   shouldScrollIntoView,
   isEditing,
   isUpdatingTitle,
+  isTogglingPin,
   isPinned,
   canPin,
   canRetryTitle,
@@ -654,6 +664,7 @@ const ChatListItem = memo(function ChatListItem({
   shouldScrollIntoView: boolean
   isEditing: boolean
   isUpdatingTitle: boolean
+  isTogglingPin: boolean
   isPinned: boolean
   canPin: boolean
   canRetryTitle: boolean
@@ -1011,6 +1022,7 @@ const ChatListItem = memo(function ChatListItem({
                 className={`clickable-icon yolo-chat-list-pin-button${
                   isPinned ? ' is-pinned' : ''
                 }`}
+                disabled={isTogglingPin}
                 aria-label={
                   isPinned
                     ? t('sidebar.chatList.unpinConversation', 'Unpin')
@@ -1216,6 +1228,7 @@ export function ChatListDropdown({
   const [retryingConversationIds, setRetryingConversationIds] = useState<
     Set<string>
   >(new Set())
+  const [togglingPinIds, setTogglingPinIds] = useState<Set<string>>(new Set())
   const [moreMenuConversationId, setMoreMenuConversationId] = useState<
     string | null
   >(null)
@@ -1250,6 +1263,7 @@ export function ChatListDropdown({
    * 真的变化的那一帧才开始——提前动就是和还停在旧位的 DOM 打架。
    */
   const pinFlightIdRef = useRef<string | null>(null)
+  const pinInFlightIdsRef = useRef<Set<string>>(new Set())
   const previousDisplayIndexRef = useRef<Map<string, number>>(new Map())
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null)
   const [menuPosition, setMenuPosition] = useState<{
@@ -1283,6 +1297,14 @@ export function ChatListDropdown({
   // CSS 侧的过渡有 tokens/motion.css 的全局兜底，这里额外用它跳过整段重排
   // FLIP：过渡被压成 0 之后，飞行态只剩「亮一下底色」的副作用，没有意义。
   const reduceMotion = useReducedMotion()
+  const showHistoryActionError = useCallback(() => {
+    new Notice(
+      t(
+        'sidebar.chatList.actionFailed',
+        'Could not update chat history. Please try again.',
+      ),
+    )
+  }, [t])
 
   const deleteConversation = useCallback(
     (conversationId: string) => {
@@ -1305,6 +1327,7 @@ export function ChatListDropdown({
       setPendingDeletionIds((previous) => new Set(previous).add(conversationId))
       void Promise.resolve(onDelete(conversationId)).catch((error) => {
         console.error('Failed to delete conversation', error)
+        showHistoryActionError()
         // 没删成就把条目放回列表，不能让它凭空消失
         setPendingDeletionIds((previous) => {
           if (!previous.has(conversationId)) return previous
@@ -1314,7 +1337,7 @@ export function ChatListDropdown({
         })
       })
     },
-    [onDelete],
+    [onDelete, showHistoryActionError],
   )
 
   // issue #567 Step 5：删除两步确认的复位（超时/移出行/切换 tab/关闭弹层都
@@ -1650,6 +1673,7 @@ export function ChatListDropdown({
           })
           .catch((error) => {
             console.error('Failed to select conversation', error)
+            showHistoryActionError()
           })
       },
       // issue #567 Step 5：两步确认——沿用 resolveChatListDeleteConfirmation
@@ -1677,15 +1701,33 @@ export function ChatListDropdown({
         itemActionsRef.current.deleteConversation(conversationId)
       },
       onTogglePinned: (conversationId: string) => {
+        if (
+          !tryBeginChatListAction(pinInFlightIdsRef.current, conversationId)
+        ) {
+          return
+        }
         setMoreMenuConversationId(null)
         // 行内星标、Mod+Shift+S、右键菜单三个入口都走这里，重排位移因此只需
         // 在这一处挂号（真正开始位移的时机见 pinFlightIdRef 旁的 layout effect）
         pinFlightIdRef.current = conversationId
+        setTogglingPinIds((previous) => new Set(previous).add(conversationId))
         void Promise.resolve(
           itemActionsRef.current.onTogglePinned(conversationId),
-        ).catch((error) => {
-          console.error('Failed to toggle pin', error)
-        })
+        )
+          .catch((error) => {
+            console.error('Failed to toggle pin', error)
+            pinFlightIdRef.current = null
+            showHistoryActionError()
+          })
+          .finally(() => {
+            pinInFlightIdsRef.current.delete(conversationId)
+            setTogglingPinIds((previous) => {
+              if (!previous.has(conversationId)) return previous
+              const next = new Set(previous)
+              next.delete(conversationId)
+              return next
+            })
+          })
       },
       onRetryTitle: (conversationId: string) => {
         if (
@@ -1703,6 +1745,7 @@ export function ChatListDropdown({
               'Failed to retry conversation title generation',
               error,
             )
+            showHistoryActionError()
           })
           .finally(() => {
             const elapsed = Date.now() - retryStartedAt
@@ -1725,6 +1768,7 @@ export function ChatListDropdown({
           itemActionsRef.current.onExportConversation(conversationId),
         ).catch((error) => {
           console.error('Failed to export conversation', error)
+          showHistoryActionError()
         })
       },
       onStartEdit: (conversationId: string) => {
@@ -1748,6 +1792,7 @@ export function ChatListDropdown({
           })
           .catch((error) => {
             console.error('Failed to update conversation title', error)
+            showHistoryActionError()
           })
           .finally(() => {
             setUpdatingTitleIds((prev) => {
@@ -1788,7 +1833,12 @@ export function ChatListDropdown({
         openContextMenu(conversationId, cardEl, { clientX, clientY })
       },
     }),
-    [itemActionsRef, openContextMenu, resetDeleteConfirmationState],
+    [
+      itemActionsRef,
+      openContextMenu,
+      resetDeleteConfirmationState,
+      showHistoryActionError,
+    ],
   )
 
   useEffect(() => {
@@ -2039,13 +2089,7 @@ export function ChatListDropdown({
     onOpen: () => {
       const conversationId = focusedConversationId ?? renderedChatList[0]?.id
       if (!conversationId) return
-      void Promise.resolve(onSelect(conversationId))
-        .then(() => {
-          handleOpenChange(false)
-        })
-        .catch((error) => {
-          console.error('Failed to select conversation from list', error)
-        })
+      itemHandlers.onSelect(conversationId)
     },
     onDelete: () => {
       if (!focusedConversationId) return
@@ -2068,7 +2112,9 @@ export function ChatListDropdown({
   // DOM 监听根本收不到；scope 跨窗口有效（issue #567，pjeby）。
   useEffect(() => {
     if (!open) return
-    const panelScope = new Scope((app.keymap as unknown as { scope: Scope }).scope)
+    const panelScope = new Scope(
+      (app.keymap as unknown as { scope: Scope }).scope,
+    )
     registerChatListPanelKeys(panelScope, {
       onEscape: () => panelKeyHandlersRef.current.onEscape(),
       shouldIgnoreListKeys: () =>
@@ -2094,7 +2140,10 @@ export function ChatListDropdown({
   // 刚 push 的弹层 scope，菜单关掉后自动回到弹层那一层。
   useEffect(() => {
     if (activeMenuId === null) return
-    const menuScope = new Scope(panelScopeRef.current ?? (app.keymap as unknown as { scope: Scope }).scope)
+    const menuScope = new Scope(
+      panelScopeRef.current ??
+        (app.keymap as unknown as { scope: Scope }).scope,
+    )
     registerChatListMenuKeys(menuScope, {
       onEscape: closeContextMenu,
       onMove: (key) => {
@@ -2343,6 +2392,7 @@ export function ChatListDropdown({
                     }
                     isEditing={editingId === chat.id}
                     isUpdatingTitle={updatingTitleIds.has(chat.id)}
+                    isTogglingPin={togglingPinIds.has(chat.id)}
                     isPinned={Boolean(chat.isPinned)}
                     canPin={activeSection === 'user'}
                     canRetryTitle={!chat.cliSession}
@@ -2483,11 +2533,7 @@ export function ChatListDropdown({
                       setActiveMenuId(null)
                       setMenuPosition(null)
                       setMoreMenuConversationId(null)
-                      void Promise.resolve(
-                        onExportConversation(activeMenuChat.id),
-                      ).catch((error) => {
-                        console.error('Failed to export conversation', error)
-                      })
+                      itemHandlers.onExport(activeMenuChat.id)
                     }}
                   >
                     <Download size={16} />

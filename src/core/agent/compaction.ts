@@ -201,7 +201,9 @@ export const shouldPromptAutoContextCompactionTier = ({
   if (promptedTier === null) {
     return true
   }
-  return AUTO_COMPACTION_TIER_RANK[tier] > AUTO_COMPACTION_TIER_RANK[promptedTier]
+  return (
+    AUTO_COMPACTION_TIER_RANK[tier] > AUTO_COMPACTION_TIER_RANK[promptedTier]
+  )
 }
 
 export const getLatestAssistantContextUsage = ({
@@ -280,7 +282,20 @@ export const getAutoContextCompactionPromptTrigger = ({
 
   const assistantMessageId = latestContextUsage.assistantMessage.id
   const latestCompaction = getLatestChatConversationCompaction(compactionState)
-  if (latestCompaction?.anchorMessageId === assistantMessageId) {
+  const latestCompactionAnchorIndex = latestCompaction
+    ? messages.findIndex(
+        (message) => message.id === latestCompaction.anchorMessageId,
+      )
+    : -1
+  const latestCompactionAssistantId =
+    latestCompactionAnchorIndex > 0 &&
+    messages[latestCompactionAnchorIndex - 1]?.role === 'assistant'
+      ? messages[latestCompactionAnchorIndex - 1]?.id
+      : undefined
+  if (
+    latestCompaction?.anchorMessageId === assistantMessageId ||
+    latestCompactionAssistantId === assistantMessageId
+  ) {
     return null
   }
   if (promptedAssistantMessageIds?.has(assistantMessageId)) {
@@ -701,6 +716,7 @@ export const createConversationCompactionSummary = async ({
   tools,
   reasoningLevel,
   debugTraceId,
+  signal,
 }: {
   providerClient: BaseLLMProvider<LLMProvider>
   model: ChatModel
@@ -710,6 +726,7 @@ export const createConversationCompactionSummary = async ({
   tools?: RequestTool[]
   reasoningLevel?: ReasoningLevel
   debugTraceId?: string
+  signal?: AbortSignal
 }): Promise<string> => {
   const messages: RequestMessage[] = [
     ...requestMessages,
@@ -740,6 +757,7 @@ export const createConversationCompactionSummary = async ({
       deliveryMode: 'buffered',
       purpose: 'standard',
       debugTraceId,
+      signal,
     })
 
     // Several providers (Gemini, OpenAI-compatible via extra_body, Bedrock) do
@@ -756,7 +774,11 @@ export const createConversationCompactionSummary = async ({
   try {
     summary = await runCompaction()
   } catch (firstError) {
-    if (isRequestErrorNonRetryable(firstError)) {
+    if (
+      signal?.aborted ||
+      (firstError instanceof Error && firstError.name === 'AbortError') ||
+      isRequestErrorNonRetryable(firstError)
+    ) {
       throw firstError
     }
     console.warn(

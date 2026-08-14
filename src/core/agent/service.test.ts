@@ -1,5 +1,9 @@
 import { ChatMessage, ChatUserMessage } from '../../types/chat'
-import { ToolCallResponseStatus } from '../../types/tool-call.types'
+import type { WorkspaceAccessPolicy } from '../../types/assistant.types'
+import {
+  ToolCallResponseStatus,
+  type ToolCallRequest,
+} from '../../types/tool-call.types'
 
 import { backgroundTaskCompletionBus } from './background-task/completion-bus'
 import { AgentService, RUNNING_PERSIST_MIN_INTERVAL_MS } from './service'
@@ -1133,9 +1137,7 @@ describe('AgentService dropConversation', () => {
       expect(internals.conversationEntries.has(record.conversationId)).toBe(
         false,
       )
-      const indexed = subagentTaskRegistry.get(
-        record.taskId,
-      )
+      const indexed = subagentTaskRegistry.get(record.taskId)
       expect(indexed).not.toHaveProperty('liveTranscript')
       expect(indexed?.result?.transcript).toBeUndefined()
     } finally {
@@ -1516,9 +1518,7 @@ describe('AgentService background subagent results', () => {
         taskId: record.taskId,
         transcript: record.liveTranscript,
       })
-      const indexed = subagentTaskRegistry.get(
-        record.taskId,
-      )
+      const indexed = subagentTaskRegistry.get(record.taskId)
       expect(indexed).not.toHaveProperty('liveTranscript')
       expect(indexed?.result?.transcript).toBeUndefined()
     } finally {
@@ -1703,9 +1703,7 @@ describe('AgentService subagent result truncation', () => {
     ...overrides,
   })
 
-  const pushAndGetContent = (
-    record: SubagentTaskCompletionRecord,
-  ): string => {
+  const pushAndGetContent = (record: SubagentTaskCompletionRecord): string => {
     const service = new AgentService()
     service.startBackgroundTaskResultListener()
     try {
@@ -1730,8 +1728,7 @@ describe('AgentService subagent result truncation', () => {
     // budget = 8000 - marker length; the marker is additive on top, so the
     // injected total is exactly the configured cap.
     const headChars = Math.floor(
-      (SUBAGENT_RESULT_MAX_CHARS -
-        SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH) /
+      (SUBAGENT_RESULT_MAX_CHARS - SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH) /
         2,
     )
     expect(content.length).toBe(SUBAGENT_RESULT_MAX_CHARS)
@@ -1827,9 +1824,9 @@ describe('AgentService parent subagent deadline settlement', () => {
       })
 
       expect(hasParentSubagentDeadline('subagent-call-completed')).toBe(false)
-      expect(
-        isParentSubagentDelegationBlocked('conv-subagent-completed'),
-      ).toBe(false)
+      expect(isParentSubagentDelegationBlocked('conv-subagent-completed')).toBe(
+        false,
+      )
     } finally {
       service.stopBackgroundTaskResultListener()
     }
@@ -2502,9 +2499,9 @@ describe('AgentService mid-run user message queue', () => {
     expect(service.enqueueUserMessage('conv-drain-history', queued)).toBe(
       'enqueued',
     )
-    expect(
-      runtime.getRunInput()?.drainPendingUserMessages?.(),
-    ).toMatchObject({ messages: [queued] })
+    expect(runtime.getRunInput()?.drainPendingUserMessages?.()).toMatchObject({
+      messages: [queued],
+    })
 
     // NativeAgentRuntime publishes only its run-local tail here.
     runtime.emitSnapshot([currentAssistant, queued])
@@ -2745,7 +2742,10 @@ describe('AgentService subagent approval routing', () => {
     getMessages: jest.Mock
   }
 
-  const makeFakeRuntime = (toolCallId: string): FakeRuntime => {
+  const makeFakeRuntime = (
+    toolCallId: string,
+    requestMetadata?: ToolCallRequest['metadata'],
+  ): FakeRuntime => {
     const messages: ChatMessage[] = [
       {
         role: 'tool',
@@ -2757,6 +2757,7 @@ describe('AgentService subagent approval routing', () => {
               id: toolCallId,
               name: 'yolo_local__fs_edit',
               arguments: undefined,
+              ...(requestMetadata ? { metadata: requestMetadata } : {}),
             },
             response: { status: ToolCallResponseStatus.PendingApproval },
           },
@@ -2797,11 +2798,20 @@ describe('AgentService subagent approval routing', () => {
   const registerEntry = ({
     taskId = 'sub_test',
     toolCallId = 'tool-call-x',
-  }: { taskId?: string; toolCallId?: string } = {}) => {
-    const runtime = makeFakeRuntime(toolCallId)
+    requestMetadata,
+    workspaceAccessPolicy,
+    abortSignal,
+  }: {
+    taskId?: string
+    toolCallId?: string
+    requestMetadata?: ToolCallRequest['metadata']
+    workspaceAccessPolicy?: WorkspaceAccessPolicy
+    abortSignal?: AbortSignal
+  } = {}) => {
+    const runtime = makeFakeRuntime(toolCallId, requestMetadata)
     const mcpManager = makeFakeMcpManager()
     const resumeRun = jest.fn().mockResolvedValue(undefined)
-    subagentRuntimeRegistry.register({
+    const entry = {
       taskId,
       runtime: runtime as unknown as Parameters<
         typeof subagentRuntimeRegistry.register
@@ -2812,7 +2822,9 @@ describe('AgentService subagent approval routing', () => {
       parentConversationId: 'conv-parent',
       parentToolCallId: 'parent-call-1',
       resumeRun,
-    })
+    }
+    subagentRuntimeRegistry.register(entry)
+    Object.assign(entry as object, { workspaceAccessPolicy, abortSignal })
     registeredRuntimeTaskIds.add(taskId)
     return { taskId, toolCallId, runtime, mcpManager, resumeRun }
   }
@@ -2853,6 +2865,35 @@ describe('AgentService subagent approval routing', () => {
       expect.objectContaining({ status: ToolCallResponseStatus.Success }),
     )
     expect(resumeRun).toHaveBeenCalledTimes(1)
+  })
+
+  it('approveToolCall forwards the persisted workspace policy and subagent abort signal', async () => {
+    const abortController = new AbortController()
+    const workspaceAccessPolicy: WorkspaceAccessPolicy = {
+      enabled: true,
+      workspaceRoot: 'Notes',
+      readExtraIncludes: [],
+      readExcludes: [],
+      writeExcludes: ['Notes/private'],
+    }
+    const { toolCallId, mcpManager } = registerEntry({
+      requestMetadata: { workspaceAccessPolicy },
+      workspaceAccessPolicy,
+      abortSignal: abortController.signal,
+    })
+    const service = new AgentService()
+
+    await service.approveToolCall({
+      conversationId: 'irrelevant-parent-conv',
+      toolCallId,
+    })
+
+    expect(mcpManager.callTool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceAccessPolicy,
+        signal: abortController.signal,
+      }),
+    )
   })
 
   it('approveToolCall with allowForConversation scopes the allow to the parent conv', async () => {

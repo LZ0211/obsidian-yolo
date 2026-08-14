@@ -59,9 +59,13 @@ export class DedupeStore {
  */
 export function buildDedupeKey(params: {
   platformName: string
+  platformInstanceId?: string
   sessionKey: string
   threadId?: string
   messageId: string
 }): string {
-  return `${params.platformName}:${params.sessionKey}:${params.threadId ?? ''}:${params.messageId}`
+  const instance = params.platformInstanceId
+    ? `:${params.platformInstanceId}`
+    : ''
+  return `${params.platformName}${instance}:${params.sessionKey}:${params.threadId ?? ''}:${params.messageId}`
 }

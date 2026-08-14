@@ -77,6 +77,7 @@ import type { WorkspaceAccessPolicy } from '../../types/assistant.types'
 import type { ChatConversation } from '../../types/chat'
 import type { ChatMessage } from '../../types/chat'
 import { RequestContextBuilder } from '../../utils/chat/requestContextBuilder'
+import { getProtectedVaultPathRules } from '../paths/protectedPaths'
 import { estimateContextBreakdown } from '../agent/contextBreakdown'
 import { estimateContinuationRequestContextTokens } from '../agent/requestContextEstimate'
 import type { AgentService } from '../agent/service'
@@ -104,6 +105,7 @@ describe('workspaceAgentPolicyToRuntimeAccessPolicy', () => {
       readExtraIncludes: ['/Shared'],
       readExcludes: ['/Project/Private'],
       writeExcludes: ['/Project/Locked'],
+      protectedPaths: getProtectedVaultPathRules(),
     })
   })
 })
@@ -419,6 +421,19 @@ describe('WebChatRuntimeAdapter.buildContextBreakdown', () => {
 })
 
 describe('WebChatRuntimeAdapter.prepareRun', () => {
+  it('rejects client agent mode when the active agent disallows agent mode', async () => {
+    await expect(
+      makeAdapter().prepareRun(
+        {
+          conversationId: 'conv-1',
+          messages: [makeMessage('user-1', 'user', 'hi')],
+          overrides: { chatMode: 'agent' },
+        },
+        makeActiveAgent({ agentModeAllowed: false }),
+      ),
+    ).rejects.toThrow('agent_mode_not_allowed')
+  })
+
   it('composes the stored working directory with the current Agent policy', async () => {
     const conversation = {
       id: 'conv-1',

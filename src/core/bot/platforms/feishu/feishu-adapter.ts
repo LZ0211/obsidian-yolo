@@ -58,6 +58,7 @@ import { App, FileSystemAdapter, Platform, requestUrl } from 'obsidian'
 
 import type { BotPlatformFeishuConfig } from '../../../../settings/schema/setting.types'
 import { BoundedTtlMap } from '../../bounded-ttl-map'
+import { validateOutgoingAttachmentSize } from '../../attachment-security'
 import { splitTextAtBoundaries } from '../../text-chunking'
 import {
   type DownloadedFile,
@@ -366,6 +367,7 @@ export class FeishuAdapter implements PlatformAdapter {
   private ws: WebSocket | null = null
   private status: 'stopped' | 'running' | 'degraded' | 'failed' = 'stopped'
   private stopping = false
+  private lifecycleGeneration = 0
   private reconnectAttempt = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private stableTimer: ReturnType<typeof setTimeout> | null = null
@@ -400,13 +402,15 @@ export class FeishuAdapter implements PlatformAdapter {
     if (Platform.isMobile) {
       throw new Error('The Feishu bot platform is desktop-only.')
     }
+    const generation = ++this.lifecycleGeneration
     this.config = config as unknown as BotPlatformFeishuConfig
     this.stopping = false
     this.reconnectAttempt = 0
-    await this.connect()
+    await this.connect(generation)
   }
 
   async stop(): Promise<void> {
+    this.lifecycleGeneration += 1
     this.stopping = true
     this.status = 'stopped'
     this.clearStableTimer()
@@ -466,6 +470,8 @@ export class FeishuAdapter implements PlatformAdapter {
         `No Feishu session binding found for sessionKey "${sessionKey}" — the bot must have received a message from this chat first.`,
       )
     }
+    const replyTargetMessageId =
+      content.replyToMessageId ?? binding.lastMessageId
 
     try {
       const token = await this.getAccessToken(config)
@@ -491,7 +497,7 @@ export class FeishuAdapter implements PlatformAdapter {
         )) {
           const messageId = await this.replyMessage(
             token,
-            binding.lastMessageId,
+            replyTargetMessageId,
             'text',
             { text: chunk },
           )
@@ -508,7 +514,7 @@ export class FeishuAdapter implements PlatformAdapter {
         const imageKey = await this.uploadImage(token, image)
         const messageId = await this.replyMessage(
           token,
-          binding.lastMessageId,
+          replyTargetMessageId,
           'image',
           { image_key: imageKey },
         )
@@ -524,7 +530,7 @@ export class FeishuAdapter implements PlatformAdapter {
         const fileKey = await this.uploadFile(token, file)
         const messageId = await this.replyMessage(
           token,
-          binding.lastMessageId,
+          replyTargetMessageId,
           'file',
           { file_key: fileKey },
         )
@@ -604,7 +610,7 @@ export class FeishuAdapter implements PlatformAdapter {
 
   // ─────────────────────────── Connection lifecycle ───────────────────────────
 
-  private async connect(): Promise<void> {
+  private async connect(generation = this.lifecycleGeneration): Promise<void> {
     const config = this.config
     if (!config) return
 
@@ -626,10 +632,11 @@ export class FeishuAdapter implements PlatformAdapter {
       }
       handshake = body.data
     } catch (error) {
+      if (generation !== this.lifecycleGeneration || this.stopping) return
       const err = toError(error)
       this.status = 'degraded'
       this.emitError(err, { operation: 'start', retryable: true, raw: error })
-      this.scheduleReconnect()
+      this.scheduleReconnect(generation)
       return
     }
 
@@ -637,9 +644,9 @@ export class FeishuAdapter implements PlatformAdapter {
     // was in flight must not create a socket that resurrects the adapter —
     // stop() already cleared the timers and nulled `ws`; connecting again
     // would leave a live socket with no lifecycle owner.
-    if (this.stopping) return
+    if (generation !== this.lifecycleGeneration || this.stopping) return
     await this.resolveBotIdentity(config)
-    if (this.stopping) return
+    if (generation !== this.lifecycleGeneration || this.stopping) return
 
     const wsUrl = new URL(handshake.URL)
     const serviceId = Number(wsUrl.searchParams.get('service_id'))
@@ -649,10 +656,10 @@ export class FeishuAdapter implements PlatformAdapter {
 
     const ws = new WebSocket(handshake.URL)
     ws.binaryType = 'arraybuffer'
-    ws.onopen = () => this.handleOpen()
-    ws.onmessage = (event) => this.handleMessage(event)
-    ws.onclose = () => this.handleClose()
-    ws.onerror = (event) => this.handleSocketError(event)
+    ws.onopen = () => this.handleOpen(ws, generation)
+    ws.onmessage = (event) => this.handleMessage(ws, generation, event)
+    ws.onclose = () => this.handleClose(ws, generation)
+    ws.onerror = (event) => this.handleSocketError(ws, generation, event)
     this.ws = ws
   }
 
@@ -717,8 +724,15 @@ export class FeishuAdapter implements PlatformAdapter {
     return undefined
   }
 
-  private handleOpen(): void {
-    if (this.stopping) return
+  private handleOpen(ws: WebSocket, generation: number): void {
+    if (
+      this.stopping ||
+      generation !== this.lifecycleGeneration ||
+      this.ws !== ws
+    ) {
+      ws.close(1000)
+      return
+    }
     this.status = 'running'
     this.reconnectAttempt = 0
     this.clearStableTimer()
@@ -729,7 +743,8 @@ export class FeishuAdapter implements PlatformAdapter {
     this.pingTimer = setInterval(() => this.sendPing(), this.pingIntervalMs)
   }
 
-  private handleClose(): void {
+  private handleClose(ws: WebSocket, generation: number): void {
+    if (this.ws !== ws || generation !== this.lifecycleGeneration) return
     this.ws = null
     this.clearStableTimer()
     this.clearPingTimer()
@@ -738,10 +753,15 @@ export class FeishuAdapter implements PlatformAdapter {
       return
     }
     this.status = 'degraded'
-    this.scheduleReconnect()
+    this.scheduleReconnect(generation)
   }
 
-  private handleSocketError(event: Event): void {
+  private handleSocketError(
+    ws: WebSocket,
+    generation: number,
+    event: Event,
+  ): void {
+    if (this.ws !== ws || generation !== this.lifecycleGeneration) return
     this.emitError(new Error('Feishu WebSocket connection error.'), {
       operation: 'receive',
       retryable: true,
@@ -749,8 +769,13 @@ export class FeishuAdapter implements PlatformAdapter {
     })
   }
 
-  private scheduleReconnect(): void {
-    if (this.stopping || this.reconnectTimer) return
+  private scheduleReconnect(generation = this.lifecycleGeneration): void {
+    if (
+      this.stopping ||
+      generation !== this.lifecycleGeneration ||
+      this.reconnectTimer
+    )
+      return
     this.reconnectAttempt += 1
     const delay = Math.min(
       RECONNECT_BASE_DELAY_MS * 2 ** (this.reconnectAttempt - 1),
@@ -758,7 +783,8 @@ export class FeishuAdapter implements PlatformAdapter {
     )
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
-      void this.connect()
+      if (generation !== this.lifecycleGeneration || this.stopping) return
+      void this.connect(generation)
     }, delay)
   }
 
@@ -791,7 +817,17 @@ export class FeishuAdapter implements PlatformAdapter {
 
   // ─────────────────────────── Frame handling ───────────────────────────
 
-  private handleMessage(event: MessageEvent): void {
+  private handleMessage(
+    ws: WebSocket,
+    generation: number,
+    event: MessageEvent,
+  ): void {
+    if (
+      this.stopping ||
+      generation !== this.lifecycleGeneration ||
+      this.ws !== ws
+    )
+      return
     let frame: DecodedFrame
     try {
       frame = decodeFrame(new Uint8Array(event.data as ArrayBuffer))
@@ -1053,6 +1089,13 @@ export class FeishuAdapter implements PlatformAdapter {
 
   private async uploadImage(token: string, ref: ImageRef): Promise<string> {
     const { data, fileName } = await this.resolveMediaBytes(ref)
+    const validation = validateOutgoingAttachmentSize({
+      kind: 'image',
+      byteLength: data.byteLength,
+      maxBytes: this.capabilities.maxImageSize,
+      name: fileName,
+    })
+    if (!validation.ok) throw new Error(validation.error)
     const { body, contentType } = this.buildMultipartBody(
       [{ name: 'image_type', value: 'message' }],
       'image',
@@ -1076,6 +1119,13 @@ export class FeishuAdapter implements PlatformAdapter {
 
   private async uploadFile(token: string, ref: FileRef): Promise<string> {
     const { data, fileName } = await this.resolveMediaBytes(ref)
+    const validation = validateOutgoingAttachmentSize({
+      kind: 'file',
+      byteLength: data.byteLength,
+      maxBytes: this.capabilities.maxFileSize,
+      name: fileName,
+    })
+    if (!validation.ok) throw new Error(validation.error)
     const fileType = fileName.includes('.')
       ? (fileName.split('.').pop() ?? 'stream')
       : 'stream'

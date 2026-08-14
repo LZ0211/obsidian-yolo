@@ -57,6 +57,7 @@ const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000
 const RUNS_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 /** After the age cutoff, each task keeps at most this many most-recent runs. */
 const RUNS_KEEP_LAST_N_PER_TASK = 50
+const TASK_EXECUTION_CLAIM_MIN_TTL_MS = 60_000
 
 /**
  * Startup quiet window: the catch-up pass is deferred this long after
@@ -195,6 +196,8 @@ export class ScheduledTaskScheduler {
     this.checkInterval = undefined
     this.releaseLeaderLock?.()
     this.releaseLeaderLock = undefined
+    this.releasePendingExecutionClaims()
+    this.queue.clear()
   }
 
   /** Stops polling and prevents in-flight completions from touching a store that
@@ -382,6 +385,9 @@ export class ScheduledTaskScheduler {
    * scenario.
    */
   deleteTask(id: string): void {
+    for (const item of this.queue.getPendingTasks()) {
+      if (item.taskId === id) this.releaseExecutionClaim(item)
+    }
     this.queue.removePendingTask(id)
     const cancelledRunIds = new Set<string>()
     for (const run of this.queue.getExecutingTasks()) {
@@ -444,24 +450,37 @@ export class ScheduledTaskScheduler {
       return { outcome: 'rejected', reason: 'already_queued' }
 
     const batchId = crypto.randomUUID()
+    const executionClaimId = crypto.randomUUID()
+    if (!this.tryClaimExecution(task, executionClaimId)) {
+      return { outcome: 'rejected', reason: 'already_queued' }
+    }
 
-    this.queue.enqueue({
-      taskId: task.id,
-      batchId,
-      queueGroup: task.queueGroup ?? undefined,
-      scheduleTime: Date.now(),
-      enqueuedAt: Date.now(),
-      priority: 10, // highest priority for manual triggers
-      dependency: task.dependsOn?.length
-        ? {
-            dependsOn: task.dependsOn,
-            continueOnDependencyFailure: task.continueOnDependencyFailure,
-          }
-        : undefined,
-      attempt: 1,
-      maxRetries: task.maxRetries,
-      source: 'manual',
-    })
+    try {
+      this.queue.enqueue({
+        taskId: task.id,
+        executionClaimId,
+        batchId,
+        queueGroup: task.queueGroup ?? undefined,
+        scheduleTime: Date.now(),
+        enqueuedAt: Date.now(),
+        priority: 10, // highest priority for manual triggers
+        dependency: task.dependsOn?.length
+          ? {
+              dependsOn: task.dependsOn,
+              continueOnDependencyFailure: task.continueOnDependencyFailure,
+            }
+          : undefined,
+        attempt: 1,
+        maxRetries: task.maxRetries,
+        source: 'manual',
+      })
+    } catch (error) {
+      this.releaseExecutionClaim({
+        taskId: task.id,
+        executionClaimId,
+      } as TaskQueueItem)
+      throw error
+    }
 
     // enqueue() synchronously calls tryProcessNext() internally; runId only exists once the
     // item is actually dequeued (see task-queue.ts), so it can't be pre-generated and compared
@@ -544,6 +563,7 @@ export class ScheduledTaskScheduler {
   }
 
   clearQueue(): void {
+    this.releasePendingExecutionClaims()
     this.queue.clear()
     this.deps.eventBus.emit({ type: 'queue_changed' })
   }
@@ -569,6 +589,38 @@ export class ScheduledTaskScheduler {
 
   // ---- internals ----
 
+  private tryClaimExecution(task: ScheduledTask, ownerId: string): boolean {
+    const now = Date.now()
+    const expiresAt =
+      now +
+      Math.max(
+        TASK_EXECUTION_CLAIM_MIN_TTL_MS,
+        task.timeoutSeconds * 1000 + TASK_EXECUTION_CLAIM_MIN_TTL_MS,
+      )
+    return this.deps.store.tryClaimTaskExecution(
+      task.id,
+      ownerId,
+      now,
+      expiresAt,
+    )
+  }
+
+  private releaseExecutionClaim(
+    item: Pick<TaskQueueItem, 'taskId' | 'executionClaimId'>,
+  ): void {
+    if (!item.executionClaimId) return
+    this.deps.store.releaseTaskExecutionClaim(
+      item.taskId,
+      item.executionClaimId,
+    )
+  }
+
+  private releasePendingExecutionClaims(): void {
+    for (const item of this.queue.getPendingTasks()) {
+      this.releaseExecutionClaim(item)
+    }
+  }
+
   /**
    * T2: whether the shared store has a RUNNING run for `taskId` — i.e. a run
    * is live in ANOTHER Obsidian window (this window's own live runs are
@@ -577,7 +629,9 @@ export class ScheduledTaskScheduler {
    * same task concurrently.
    */
   private hasRunningRunInAnotherWindow(taskId: string): boolean {
-    return this.deps.store.listRunningRuns().some((run) => run.taskId === taskId)
+    return this.deps.store
+      .listRunningRuns()
+      .some((run) => run.taskId === taskId)
   }
 
   private checkAndEnqueueScheduledTasks(): void {
@@ -722,25 +776,33 @@ export class ScheduledTaskScheduler {
     // T2: a run is live in another window — skip; it stays due and the next
     // tick re-evaluates once that run's RUNNING row settles.
     if (this.hasRunningRunInAnotherWindow(task.id)) return
+    const executionClaimId = crypto.randomUUID()
+    if (!this.tryClaimExecution(task, executionClaimId)) return
     const catchUpAt = Date.now()
-    this.queue.enqueue({
-      taskId: task.id,
-      batchId,
-      queueGroup: task.queueGroup ?? undefined,
-      scheduleTime: missedTrigger, // the missed trigger point, not "now" — run history shows which fire is being made up
-      enqueuedAt: catchUpAt,
-      priority: task.priority,
-      dependency: task.dependsOn?.length
-        ? {
-            dependsOn: task.dependsOn,
-            continueOnDependencyFailure: task.continueOnDependencyFailure,
-          }
-        : undefined,
-      attempt: 1,
-      maxRetries: task.maxRetries,
-      source: 'schedule',
-      catchUpRunAt: catchUpAt, // audit marker on the run record
-    })
+    try {
+      this.queue.enqueue({
+        taskId: task.id,
+        executionClaimId,
+        batchId,
+        queueGroup: task.queueGroup ?? undefined,
+        scheduleTime: missedTrigger, // the missed trigger point, not "now" — run history shows which fire is being made up
+        enqueuedAt: catchUpAt,
+        priority: task.priority,
+        dependency: task.dependsOn?.length
+          ? {
+              dependsOn: task.dependsOn,
+              continueOnDependencyFailure: task.continueOnDependencyFailure,
+            }
+          : undefined,
+        attempt: 1,
+        maxRetries: task.maxRetries,
+        source: 'schedule',
+        catchUpRunAt: catchUpAt, // audit marker on the run record
+      })
+    } catch (error) {
+      this.releaseExecutionClaim({ taskId: task.id, executionClaimId })
+      throw error
+    }
     // Single catch-up, then the schedule resumes from now (skip-missed).
     this.deps.store.updateTask(
       task.id,
@@ -762,28 +824,36 @@ export class ScheduledTaskScheduler {
     // T2: a run is live in another window (e.g. a manual run started there) —
     // skip this tick; the run stays due and is picked up once it settles.
     if (this.hasRunningRunInAnotherWindow(task.id)) return
+    const executionClaimId = crypto.randomUUID()
+    if (!this.tryClaimExecution(task, executionClaimId)) return
 
     // Compute the next time / whether to disable before enqueueing: even if the follow-up
     // updateTask fails, the enqueue has already happened, so a "recompute failure" won't
     // cause this run to be silently repeated next tick.
     const isOneTime = task.scheduleType === 'once'
-    this.queue.enqueue({
-      taskId: task.id,
-      batchId,
-      queueGroup: task.queueGroup ?? undefined,
-      scheduleTime: now,
-      enqueuedAt: now,
-      priority: task.priority,
-      dependency: task.dependsOn?.length
-        ? {
-            dependsOn: task.dependsOn,
-            continueOnDependencyFailure: task.continueOnDependencyFailure,
-          }
-        : undefined,
-      attempt: 1,
-      maxRetries: task.maxRetries,
-      source: 'schedule',
-    })
+    try {
+      this.queue.enqueue({
+        taskId: task.id,
+        executionClaimId,
+        batchId,
+        queueGroup: task.queueGroup ?? undefined,
+        scheduleTime: now,
+        enqueuedAt: now,
+        priority: task.priority,
+        dependency: task.dependsOn?.length
+          ? {
+              dependsOn: task.dependsOn,
+              continueOnDependencyFailure: task.continueOnDependencyFailure,
+            }
+          : undefined,
+        attempt: 1,
+        maxRetries: task.maxRetries,
+        source: 'schedule',
+      })
+    } catch (error) {
+      this.releaseExecutionClaim({ taskId: task.id, executionClaimId })
+      throw error
+    }
 
     this.deps.store.updateTask(
       task.id,
@@ -839,6 +909,7 @@ export class ScheduledTaskScheduler {
   ): Promise<void> {
     const task = this.deps.store.getTask(item.taskId)
     if (!task) {
+      this.releaseExecutionClaim(item)
       this.queue.markFailed(item.taskId, item.batchId, false)
       return
     }
@@ -987,6 +1058,9 @@ export class ScheduledTaskScheduler {
       }
     } finally {
       this.runAbortControllers.delete(runId)
+      if (!this.queue.isTaskQueued(item.taskId)) {
+        this.releaseExecutionClaim(item)
+      }
     }
   }
 
@@ -1003,6 +1077,7 @@ export class ScheduledTaskScheduler {
   ): (entry: TaskRunLogEntry) => void {
     let lastFlushAt = Date.now()
     return (entry: TaskRunLogEntry) => {
+      if (this.shuttingDown || !this.runAbortControllers.has(runId)) return
       run.logs = [...(run.logs ?? []), entry]
       const now = Date.now()
       if (run.logs.length % 20 === 0 || now - lastFlushAt >= 500) {
@@ -1051,6 +1126,7 @@ export class ScheduledTaskScheduler {
     missingDependencyTaskId: string,
     reason: 'missing' | 'failed',
   ): void {
+    this.releaseExecutionClaim(item)
     const task = this.deps.store.getTask(item.taskId)
     if (!task) return
 

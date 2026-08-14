@@ -192,6 +192,7 @@ import {
   canSelfUpdate,
   downloadReleaseToStaging,
   downloadRepairFilesToStaging,
+  ensureWebUiAssets,
   getRepairStagingStatus,
   getStagingDir,
   getStagingStatus,
@@ -203,7 +204,10 @@ import {
   checkForUpdate,
   normalizePluginVersion,
 } from './core/update/updateChecker'
-import { registerWebServerRoutes } from './core/web-server/registerWebServerRoutes'
+import {
+  registerWebServerRoutes,
+  type RegisteredWebServerRoutes,
+} from './core/web-server/registerWebServerRoutes'
 import type { WebAgentRunBridge } from './core/web-server/WebAgentRunBridge'
 import { disposeChatRuntimeRouteCaches } from './core/web-server/routes/chatRuntimeRoutes'
 import { loadOrCreateShareTokenPepper } from './core/web-server/shareTokenPepperStore'
@@ -397,6 +401,7 @@ export default class YoloPlugin extends Plugin {
   private webAgentRunBridge: WebAgentRunBridge | null = null
   private webSseHub: WebSseHub | null = null
   private webAgentEventStore: AgentEventStore | null = null
+  private webUiBootstrapPromise: Promise<boolean> | null = null
   private chatManager: ChatManager | null = null
   private scheduledTasksService: ScheduledTasksService | null = null
   private scheduledTasksStore: ScheduledTasksStore | null = null
@@ -2413,12 +2418,11 @@ export default class YoloPlugin extends Plugin {
       previousScheduledTasksEnabled = nextScheduledTasksEnabled
     })
     // Memory index: 助手删除 → 清其分区；关闭高级索引 → 关 runtime；否则全分区
-    // 重 reconcile（backup main.ts:3850-3890 行为——设置变化时把存量记忆重新
-    // 对账，保证改名/重名索引漂移被拾取；监听器首次触发即承担初始全量 reconcile）。
+    // 重 reconcile（backup main.ts:3850-3890 行为——设置变化时把存量记忆重新对账）。
     let previousMemoryAssistantIds = new Set(
       this.settings.assistants.map((assistant) => assistant.id),
     )
-    this.addSettingsChangeListener((settings) => {
+    const reconcileMemorySettings = (settings: YoloSettings): void => {
       const plan = planMemorySettingsReconcile({
         previousAssistantIds: [...previousMemoryAssistantIds],
         settings,
@@ -2437,7 +2441,9 @@ export default class YoloPlugin extends Plugin {
       for (const reconcile of plan.reconciles) {
         runtime.onSourceCommitted(reconcile)
       }
-    })
+    }
+    this.addSettingsChangeListener(reconcileMemorySettings)
+    reconcileMemorySettings(this.settings)
     // Bot: 「服务本体没建 → 应该建」时惰性启动（desktop 门控在 startBotService
     // 内）。触发条件与 onload 的启动门完全一致：enabled 且存在启用中的平台；
     // 任一维度从 false→true（enabled 翻转，或全局开着但此前没有任何平台启用）
@@ -5231,6 +5237,7 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
 
   private getWebServerLifecycle(): WebServerLifecycle<YoloSettings> {
     if (!this.webServerLifecycle) {
+      let registeredRoutes: RegisteredWebServerRoutes | null = null
       this.webServerLifecycle = new WebServerLifecycle<YoloSettings>({
         getSettings: () => this.settings,
         saveSettings: async (settings) => {
@@ -5244,7 +5251,7 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
           })
           const eventStore = this.getWebAgentEventStore()
           if (eventStore) {
-            const registered = registerWebServerRoutes({
+            registeredRoutes = registerWebServerRoutes({
               server,
               app: this.app,
               plugin: this,
@@ -5260,10 +5267,10 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
               // Platform.isDesktop 门控，移动端返回 null → CLI 端点 404）。
               getCliRuntimeScope: () => this.createCliRuntimeScope(),
             })
-            this.webAgentLifecycleService = registered.lifecycleService
+            this.webAgentLifecycleService = registeredRoutes.lifecycleService
             // F3：bridge 此前无人持有（registerWebServerRoutes 返回值
             // 只取了 lifecycleService），unload 时无从中止在飞 web run。
-            this.webAgentRunBridge = registered.bridge
+            this.webAgentRunBridge = registeredRoutes.bridge
           } else {
             console.warn(
               '[YOLO] Web Runtime is unavailable because the vault file system path could not be resolved.',
@@ -5274,6 +5281,9 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
         // E3：server 停止/重启后释放 chat-runtime 实例缓存与重放缓冲，
         // 旧 server 的订阅不得驻留在新实例上。
         onStop: async () => {
+          const routes = registeredRoutes
+          registeredRoutes = null
+          await routes?.dispose()
           await disposeChatRuntimeRouteCaches()
         },
       })
@@ -5292,6 +5302,7 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
           await this.getWebServerLifecycle().reconcile()
           return
         }
+        await this.ensureWebUiAssetsOnDisk()
         await this.warmupAgentService()
         if (this.isUnloaded) return
         await this.getWebServerLifecycle().reconcile()
@@ -5299,6 +5310,30 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
         console.error('[YOLO] Failed to reconcile Web Runtime server.', error)
       }
     })()
+  }
+
+  private ensureWebUiAssetsOnDisk(): Promise<boolean> {
+    const pluginDir = this.manifest.dir
+    if (!pluginDir) {
+      return Promise.resolve(false)
+    }
+    if (!this.webUiBootstrapPromise) {
+      const promise = ensureWebUiAssets({
+        adapter: this.app.vault.adapter,
+        pluginDir,
+        version: this.manifest.version,
+      }).catch((error: unknown) => {
+        console.warn('[YOLO] Web UI bootstrap failed:', error)
+        return false
+      })
+      const trackedPromise = promise.finally(() => {
+        if (this.webUiBootstrapPromise === trackedPromise) {
+          this.webUiBootstrapPromise = null
+        }
+      })
+      this.webUiBootstrapPromise = trackedPromise
+    }
+    return this.webUiBootstrapPromise
   }
 
   /**
@@ -5340,7 +5375,9 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
     const store = createScheduledTasksStore(
       normalizePath(`${vaultBasePath}/${getYoloBaseDir(this.settings)}`),
     )
-    const eventBus = new TaskEventBus()
+    const eventBus = new TaskEventBus({
+      channelName: `yolo-scheduled-task-events:${normalizePath(vaultBasePath)}`,
+    })
     const executor = new TaskExecutor({
       getAgentApi: () => this.getAgentApi(),
       getVaultBasePath: () => this.resolveVaultBasePath(),

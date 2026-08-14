@@ -24,7 +24,13 @@ describe('McpManager mobile built-in tool behavior', () => {
 
   function createManager(
     openApplyReview: (state: unknown) => Promise<boolean> = jest.fn(),
-    builtinToolOptions: Record<string, { disabled?: boolean }> = {},
+    builtinToolOptions: Record<
+      string,
+      {
+        disabled?: boolean
+        actionOptions?: Record<string, { disabled?: boolean }>
+      }
+    > = {},
   ) {
     const file = Object.assign(new TFile(), {
       path: 'note.md',
@@ -112,6 +118,61 @@ describe('McpManager mobile built-in tool behavior', () => {
 
     expect(toolNames).not.toContain('yolo_local__fs_edit')
     expect(toolNames).not.toContain('yolo_local__fs_write')
+  })
+
+  it('enforces consolidated action disabled state at execution time', () => {
+    const manager = createManager(jest.fn(), {
+      scheduled_task_ops: {
+        actionOptions: { create: { disabled: true } },
+      },
+    })
+
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__scheduled_task_ops',
+        conversationId: 'chat-1',
+        requestArgs: { action: 'create' },
+        requireAutoExecution: true,
+      }),
+    ).toBe(false)
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__scheduled_task_ops',
+        conversationId: 'chat-1',
+        requestArgs: { action: 'list' },
+        requireAutoExecution: true,
+      }),
+    ).toBe(true)
+  })
+
+  it('scopes consolidated standing approvals to the approved action', () => {
+    const manager = createManager()
+
+    manager.allowToolForConversation(
+      'yolo_local__scheduled_task_ops',
+      'chat-1',
+      { action: 'create', prompt: 'backup' },
+    )
+
+    expect(manager.getAllowedTools('chat-1')).toEqual([
+      'yolo_local__scheduled_task_ops::create',
+    ])
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__scheduled_task_ops',
+        conversationId: 'chat-1',
+        requestArgs: { action: 'create', prompt: 'backup' },
+        requireAutoExecution: false,
+      }),
+    ).toBe(true)
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: 'yolo_local__scheduled_task_ops',
+        conversationId: 'chat-1',
+        requestArgs: { action: 'delete', taskId: 'task-1' },
+        requireAutoExecution: false,
+      }),
+    ).toBe(false)
   })
 
   it('executes built-in tools on mobile', async () => {
@@ -361,9 +422,14 @@ describe('McpManager per-conversation tool allowance lifecycle', () => {
   it('scopes and clears one-time allowances per conversation', () => {
     const manager = createManager()
 
-    manager.allowToolForConversation('yolo_local__fs_read', 'chat-1', undefined, {
-      oneTime: true,
-    })
+    manager.allowToolForConversation(
+      'yolo_local__fs_read',
+      'chat-1',
+      undefined,
+      {
+        oneTime: true,
+      },
+    )
 
     // Never leaks into another conversation.
     expect(
@@ -390,9 +456,14 @@ describe('McpManager per-conversation tool allowance lifecycle', () => {
     ).toBe(false)
 
     // Revocation clears unconsumed one-time grants too (idempotent).
-    manager.allowToolForConversation('yolo_local__fs_read', 'chat-1', undefined, {
-      oneTime: true,
-    })
+    manager.allowToolForConversation(
+      'yolo_local__fs_read',
+      'chat-1',
+      undefined,
+      {
+        oneTime: true,
+      },
+    )
     manager.removeAllowedTools('chat-1')
     expect(
       manager.isToolExecutionAllowed({
@@ -420,9 +491,7 @@ describe('McpManager per-conversation tool allowance lifecycle', () => {
       }),
     ).toBe(false)
     // The other conversation's grant is untouched.
-    expect(manager.getAllowedTools('chat-2')).toEqual([
-      'yolo_local__fs_read',
-    ])
+    expect(manager.getAllowedTools('chat-2')).toEqual(['yolo_local__fs_read'])
     expect(
       manager.isToolExecutionAllowed({
         requestToolName: 'yolo_local__fs_read',

@@ -105,6 +105,11 @@ export class WebSseHub {
   }
 
   clear(): void {
+    for (const subscribers of this.subscribersByRun.values()) {
+      for (const subscriber of subscribers) {
+        subscriber.onClose?.('agent_unavailable')
+      }
+    }
     this.eventsByRun.clear()
     this.subscribersByRun.clear()
   }
