@@ -30,6 +30,7 @@ function fixture() {
         mainJs: asset('main.js', 'core/1.7.0/main.js'),
         manifestJson: asset('manifest.json', 'core/1.7.0/manifest.json'),
         stylesCss: asset('styles.css', 'core/1.7.0/styles.css'),
+        webUiZip: asset('web-ui.zip', 'core/1.7.0/web-ui.zip'),
       },
     },
     modules: [

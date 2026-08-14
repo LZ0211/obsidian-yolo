@@ -27,6 +27,7 @@ import type {
 import { App, FileSystemAdapter, Platform } from 'obsidian'
 
 import type { BotPlatformTelegramConfig } from '../../../../settings/schema/setting.types'
+import { validateOutgoingAttachmentSize } from '../../attachment-security'
 import { splitTextAtBoundaries } from '../../text-chunking'
 import {
   type DownloadedFile,
@@ -117,12 +118,14 @@ export class TelegramAdapter implements PlatformAdapter {
   private readonly errorHandlers: ErrorHandler[] = []
   private pollingFailures = 0
   private lastPollingFailureAt = 0
+  private lifecycleGeneration = 0
 
   constructor(app: App) {
     this.app = app
   }
 
   async start(config: BotPlatformTelegramConfig): Promise<void> {
+    const generation = ++this.lifecycleGeneration
     if (Platform.isMobile) {
       throw new Error('The Telegram bot platform is desktop-only.')
     }
@@ -158,7 +161,20 @@ export class TelegramAdapter implements PlatformAdapter {
           raw: stopError,
         })
       }
+      if (this.lifecycleGeneration !== generation) return
       throw err
+    }
+
+    if (this.lifecycleGeneration !== generation) {
+      try {
+        await bot.stopPolling()
+      } catch (stopError) {
+        this.emitError(toError(stopError), {
+          operation: 'stop',
+          raw: stopError,
+        })
+      }
+      return
     }
 
     this.bot = bot
@@ -168,6 +184,7 @@ export class TelegramAdapter implements PlatformAdapter {
   }
 
   async stop(): Promise<void> {
+    this.lifecycleGeneration += 1
     const bot = this.bot
     this.bot = null
     this.status = 'stopped'
@@ -243,6 +260,17 @@ export class TelegramAdapter implements PlatformAdapter {
 
       for (const image of content.images ?? []) {
         const input = await this.resolveOutgoingFile(image)
+        const imageSize =
+          typeof input === 'string' ? undefined : input.byteLength
+        if (imageSize !== undefined) {
+          const validation = validateOutgoingAttachmentSize({
+            kind: 'image',
+            byteLength: imageSize,
+            maxBytes: this.capabilities.maxImageSize,
+            name: image.label ?? 'image',
+          })
+          if (!validation.ok) throw new Error(validation.error)
+        }
         const sent = await bot.sendPhoto(targetChatId, input, {
           message_thread_id: messageThreadId,
           caption: image.label,
@@ -258,6 +286,17 @@ export class TelegramAdapter implements PlatformAdapter {
 
       for (const file of content.files ?? []) {
         const input = await this.resolveOutgoingFile(file)
+        const fileSize =
+          typeof input === 'string' ? file.size : input.byteLength
+        if (fileSize !== undefined) {
+          const validation = validateOutgoingAttachmentSize({
+            kind: 'file',
+            byteLength: fileSize,
+            maxBytes: this.capabilities.maxFileSize,
+            name: file.name,
+          })
+          if (!validation.ok) throw new Error(validation.error)
+        }
         const sent = await bot.sendDocument(
           targetChatId,
           input,

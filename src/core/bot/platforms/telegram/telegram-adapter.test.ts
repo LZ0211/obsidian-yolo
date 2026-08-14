@@ -1,4 +1,10 @@
 const fakeBotInstances: FakeTelegramBot[] = []
+let pendingGetMe: Promise<{
+  id: number
+  is_bot: boolean
+  first_name: string
+  username: string
+}> | null = null
 
 class FakeTelegramBot {
   readonly token: string
@@ -52,6 +58,7 @@ class FakeTelegramBot {
   }
 
   async getMe() {
+    if (pendingGetMe) return pendingGetMe
     return this.getMeMock()
   }
 
@@ -153,6 +160,7 @@ async function startAdapter(
 
 beforeEach(() => {
   fakeBotInstances.length = 0
+  pendingGetMe = null
 })
 
 describe('TelegramAdapter — message conversion', () => {
@@ -464,6 +472,24 @@ describe('TelegramAdapter — sendMessage', () => {
       contentType: 'text/plain',
     })
   })
+
+  it('rejects an oversized base64 image before calling Telegram', async () => {
+    const { adapter, bot } = await startAdapter()
+
+    await expect(
+      adapter.sendMessage('telegram:private:555', {
+        images: [
+          {
+            source: 'base64',
+            dataBase64: Buffer.alloc(10 * 1024 * 1024 + 1).toString('base64'),
+            mimeType: 'image/png',
+          },
+        ],
+      }),
+    ).rejects.toThrow(/exceeds.*image.*limit/i)
+
+    expect(bot.sendPhotoMock).not.toHaveBeenCalled()
+  })
 })
 
 describe('TelegramAdapter — downloadFile', () => {
@@ -503,6 +529,36 @@ describe('TelegramAdapter — downloadFile', () => {
 })
 
 describe('TelegramAdapter — lifecycle', () => {
+  it('does not resurrect a bot when stop() lands during getMe()', async () => {
+    let releaseGetMe!: (value: {
+      id: number
+      is_bot: boolean
+      first_name: string
+      username: string
+    }) => void
+    pendingGetMe = new Promise((resolve) => {
+      releaseGetMe = resolve
+    })
+
+    const adapter = new TelegramAdapter(makeFakeApp())
+    const starting = adapter.start(makeConfig())
+    await new Promise((resolve) => setImmediate(resolve))
+    const bot = fakeBotInstances[0]
+    expect(bot).toBeDefined()
+
+    await adapter.stop()
+    releaseGetMe({
+      id: 1,
+      is_bot: true,
+      first_name: 'Test',
+      username: 'TestBot',
+    })
+    await starting
+
+    expect(adapter.health()).toBe('stopped')
+    expect(bot.stopPollingMock).toHaveBeenCalled()
+  })
+
   it('reports stopped health before start and after stop', async () => {
     const adapter = new TelegramAdapter(makeFakeApp())
     expect(adapter.health()).toBe('stopped')

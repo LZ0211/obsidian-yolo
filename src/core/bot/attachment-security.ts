@@ -104,3 +104,24 @@ export function validateAttachmentPath(
 
   return { ok: true, normalizedPath }
 }
+
+export type OutgoingAttachmentSizeValidationInput = {
+  kind: 'image' | 'file'
+  byteLength: number
+  maxBytes: number
+  name: string
+}
+
+export type OutgoingAttachmentSizeValidationResult =
+  | { ok: true }
+  | { ok: false; error: string }
+
+export function validateOutgoingAttachmentSize(
+  input: OutgoingAttachmentSizeValidationInput,
+): OutgoingAttachmentSizeValidationResult {
+  if (input.byteLength <= input.maxBytes) return { ok: true }
+  return {
+    ok: false,
+    error: `Outgoing ${input.kind} "${input.name}" exceeds the ${input.kind} size limit of ${input.maxBytes} bytes (${input.byteLength} bytes).`,
+  }
+}

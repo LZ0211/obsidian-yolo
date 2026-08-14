@@ -29,6 +29,7 @@ import type {
   CliRuntimeModel,
   CliRuntimeReadyInput,
   CliRuntimeSkill,
+  CliSessionMetadata,
   CliSessionHydration,
   CliSessionRef,
   CliSlashCommand,
@@ -69,6 +70,7 @@ import {
   type ModelListResponse,
   type SkillsListResponse,
   type ThreadCompactStartResponse,
+  type ThreadListResponse,
   type ThreadReadResponse,
   type ThreadResumeResponse,
   type ThreadRollbackResponse,
@@ -78,17 +80,67 @@ import {
 } from './protocol'
 
 const CODEX_SLASH_COMMANDS: readonly CliSlashCommand[] = [
-  { id: 'skills', label: '/skills', description: 'Manage and list skills', source: 'sdk' },
-  { id: 'compact', label: '/compact', description: 'Compact the current session', source: 'sdk' },
-  { id: 'model', label: '/model', description: 'Switch the active model', source: 'sdk' },
-  { id: 'clear', label: '/clear', description: 'Clear the current session', source: 'sdk' },
-  { id: 'help', label: '/help', description: 'Show in-session help', source: 'sdk' },
-  { id: 'undo', label: '/undo', description: 'Undo the last change', source: 'sdk' },
-  { id: 'redo', label: '/redo', description: 'Redo an undone change', source: 'sdk' },
+  {
+    id: 'skills',
+    label: '/skills',
+    description: 'Manage and list skills',
+    source: 'sdk',
+  },
+  {
+    id: 'compact',
+    label: '/compact',
+    description: 'Compact the current session',
+    source: 'sdk',
+  },
+  {
+    id: 'model',
+    label: '/model',
+    description: 'Switch the active model',
+    source: 'sdk',
+  },
+  {
+    id: 'clear',
+    label: '/clear',
+    description: 'Clear the current session',
+    source: 'sdk',
+  },
+  {
+    id: 'help',
+    label: '/help',
+    description: 'Show in-session help',
+    source: 'sdk',
+  },
+  {
+    id: 'undo',
+    label: '/undo',
+    description: 'Undo the last change',
+    source: 'sdk',
+  },
+  {
+    id: 'redo',
+    label: '/redo',
+    description: 'Redo an undone change',
+    source: 'sdk',
+  },
   { id: 'login', label: '/login', description: 'Manage login', source: 'sdk' },
-  { id: 'logout', label: '/logout', description: 'Remove stored credentials', source: 'sdk' },
-  { id: 'review', label: '/review', description: 'Review the working tree', source: 'sdk' },
-  { id: 'reset', label: '/reset', description: 'Reset the current session', source: 'sdk' },
+  {
+    id: 'logout',
+    label: '/logout',
+    description: 'Remove stored credentials',
+    source: 'sdk',
+  },
+  {
+    id: 'review',
+    label: '/review',
+    description: 'Review the working tree',
+    source: 'sdk',
+  },
+  {
+    id: 'reset',
+    label: '/reset',
+    description: 'Reset the current session',
+    source: 'sdk',
+  },
 ]
 
 type PendingServerRequest = {
@@ -183,6 +235,20 @@ const toSessionRef = (
   nativeSessionId: thread.id,
   ...(thread.path
     ? { sessionPathHint: mapRuntimePathToHost?.(thread.path) ?? thread.path }
+    : {}),
+})
+
+const toSessionMetadata = (
+  thread: CodexThread,
+  mapRuntimePathToHost?: (runtimePath: string) => string,
+): CliSessionMetadata => ({
+  ref: toSessionRef(thread, mapRuntimePathToHost),
+  title: thread.name || thread.preview || thread.id,
+  ...(thread.preview ? { preview: thread.preview } : {}),
+  createdAt: thread.createdAt,
+  updatedAt: thread.updatedAt,
+  ...(thread.cwd
+    ? { cwd: mapRuntimePathToHost?.(thread.cwd) ?? thread.cwd }
     : {}),
 })
 
@@ -295,6 +361,29 @@ export class CodexCliRuntime implements CliRuntime {
   constructor(private readonly options: CodexCliRuntimeOptions) {
     this.cliChatMode = options.cliChatMode ?? 'agent'
     this.yoloEnabled = options.yoloEnabled ?? false
+  }
+
+  async listSessions(): Promise<CliSessionMetadata[]> {
+    const host = await this.getHost()
+    const sessions: CliSessionMetadata[] = []
+    let cursor: string | null = null
+    do {
+      const response: ThreadListResponse =
+        await host.request<ThreadListResponse>('thread/list', {
+          cursor,
+          limit: 100,
+          sortKey: 'updated_at',
+          sortDirection: 'desc',
+          cwd: this.options.cwd,
+        })
+      sessions.push(
+        ...response.data.map((thread) =>
+          toSessionMetadata(thread, this.options.mapRuntimePathToHost),
+        ),
+      )
+      cursor = response.nextCursor
+    } while (cursor)
+    return sessions
   }
 
   private resolveSandboxConfig() {

@@ -119,6 +119,7 @@ export type RunBotAgentTurnParams = {
   conversationId: string
   sessionKey: string
   chatType: 'private' | 'group'
+  replyToMessageId?: string
   platformConfig: BotPlatformConfig
   promptContent: string
   mentionables: Mentionable[]
@@ -178,6 +179,7 @@ export async function runBotAgentTurn(
     conversationId,
     sessionKey,
     platformConfig,
+    replyToMessageId,
     promptContent,
     mentionables,
   } = params
@@ -308,8 +310,12 @@ export async function runBotAgentTurn(
     sentMessageRegistry.registerAll(
       refs.map((ref) => ref.platformMessageId),
       sessionKey,
+      Date.now(),
+      platformConfig.id,
     )
   }
+  const withReplyTarget = (content: ReplyContent): ReplyContent =>
+    replyToMessageId ? { ...content, replyToMessageId } : content
 
   try {
     for await (const event of streamResolvedAgentRunEvents({
@@ -329,16 +335,21 @@ export async function runBotAgentTurn(
           break
 
         case 'completed': {
-          const replyContent = buildReplyContentForCompletedTurn({
-            agentService,
-            conversationId,
-            sourceUserMessageId,
-            text: event.text,
-          })
+          const replyContent = withReplyTarget(
+            buildReplyContentForCompletedTurn({
+              agentService,
+              conversationId,
+              sourceUserMessageId,
+              text: event.text,
+            }),
+          )
           const refs =
             useStreaming && streamHandle
               ? await streamHandle.finish(replyContent)
-              : await adapter.sendMessage(sessionKey, replyContent)
+              : await adapter.sendMessage(
+                  sessionKey,
+                  withReplyTarget(replyContent),
+                )
           registerSent(refs)
           break
         }
@@ -350,17 +361,21 @@ export async function runBotAgentTurn(
             // surfaces here as an error event (see agent-api.ts), not via the
             // outer catch.
             if (isTurnTimeoutAbort(runAbortSignal)) {
-              const refs = await adapter.sendMessage(sessionKey, {
-                text: BOT_TURN_TIMEOUT_REPLY,
-              })
+              const refs = await adapter.sendMessage(
+                sessionKey,
+                withReplyTarget({ text: BOT_TURN_TIMEOUT_REPLY }),
+              )
               registerSent(refs)
             }
             break
           }
           console.error('[YOLO Bot] Agent run error:', event.message)
-          const refs = await adapter.sendMessage(sessionKey, {
-            text: `Sorry, something went wrong: ${event.message.split('\n')[0]}`,
-          })
+          const refs = await adapter.sendMessage(
+            sessionKey,
+            withReplyTarget({
+              text: `Sorry, something went wrong: ${event.message.split('\n')[0]}`,
+            }),
+          )
           registerSent(refs)
           break
         }
@@ -378,9 +393,10 @@ export async function runBotAgentTurn(
       // rejects/throws instead of settling into an error event).
       if (isTurnTimeoutAbort(runAbortSignal)) {
         try {
-          const refs = await adapter.sendMessage(sessionKey, {
-            text: BOT_TURN_TIMEOUT_REPLY,
-          })
+          const refs = await adapter.sendMessage(
+            sessionKey,
+            withReplyTarget({ text: BOT_TURN_TIMEOUT_REPLY }),
+          )
           registerSent(refs)
         } catch (sendError) {
           console.error('[YOLO Bot] Failed to send timeout reply:', sendError)
@@ -396,9 +412,10 @@ export async function runBotAgentTurn(
       })
     }
     try {
-      const refs = await adapter.sendMessage(sessionKey, {
-        text: `Sorry, something went wrong: ${message}`,
-      })
+      const refs = await adapter.sendMessage(
+        sessionKey,
+        withReplyTarget({ text: `Sorry, something went wrong: ${message}` }),
+      )
       registerSent(refs)
     } catch (sendError) {
       console.error('[YOLO Bot] Failed to send agent error reply:', sendError)

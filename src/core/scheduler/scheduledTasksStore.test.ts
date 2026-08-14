@@ -77,6 +77,31 @@ function makeRunInsert(overrides: Partial<TaskRunInsert> = {}): TaskRunInsert {
 }
 
 describe('ScheduledTasksStore', () => {
+  it('atomically grants one execution claim across store connections', () => {
+    const dir = makeTempDir()
+    try {
+      const first = createScheduledTasksStore(dir)
+      const second = createScheduledTasksStore(dir)
+
+      expect(first.tryClaimTaskExecution('task-1', 'owner-1', 1000, 5000)).toBe(
+        true,
+      )
+      expect(
+        second.tryClaimTaskExecution('task-1', 'owner-2', 1000, 5000),
+      ).toBe(false)
+
+      first.releaseTaskExecutionClaim('task-1', 'owner-1')
+      expect(
+        second.tryClaimTaskExecution('task-1', 'owner-2', 1000, 5000),
+      ).toBe(true)
+
+      first.close()
+      second.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
   it('creates a task and round-trips JSON-typed columns', () => {
     const dir = makeTempDir()
     try {

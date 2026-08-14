@@ -45,6 +45,7 @@ export type ReleaseAssets = {
   mainJs: ReleaseAssetMeta
   manifestJson: ReleaseAssetMeta
   stylesCss: ReleaseAssetMeta
+  webUiZip?: ReleaseAssetMeta
 }
 
 /** @deprecated Use ReleaseAssets */
@@ -366,6 +367,7 @@ const RELEASE_ASSET_NAMES = {
   mainJs: 'main.js',
   manifestJson: 'manifest.json',
   stylesCss: 'styles.css',
+  webUiZip: 'web-ui.zip',
 } as const
 
 function releaseAssetDownloadUrl(version: string, fileName: string): string {
@@ -392,6 +394,10 @@ export function buildReleaseAssets(version: string): ReleaseAssets | null {
     },
     stylesCss: {
       url: releaseAssetDownloadUrl(normalized, RELEASE_ASSET_NAMES.stylesCss),
+      size: 0,
+    },
+    webUiZip: {
+      url: releaseAssetDownloadUrl(normalized, RELEASE_ASSET_NAMES.webUiZip),
       size: 0,
     },
   }
@@ -441,7 +447,13 @@ export function parseReleaseAssets(
     return null
   }
 
-  return { mainJs, manifestJson, stylesCss }
+  const webUiZip = parseReleaseAssetMeta(assets, RELEASE_ASSET_NAMES.webUiZip)
+  return {
+    mainJs,
+    manifestJson,
+    stylesCss,
+    ...(webUiZip ? { webUiZip } : {}),
+  }
 }
 
 /** @deprecated Use parseReleaseAssets */
@@ -520,6 +532,9 @@ export async function checkForUpdate(
         mainJs: feedReleaseAsset(core.assets.mainJs),
         manifestJson: feedReleaseAsset(core.assets.manifestJson),
         stylesCss: feedReleaseAsset(core.assets.stylesCss),
+        ...(core.assets.webUiZip
+          ? { webUiZip: feedReleaseAsset(core.assets.webUiZip) }
+          : {}),
       },
     }
   } catch (error) {

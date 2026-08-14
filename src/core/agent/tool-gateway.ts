@@ -77,6 +77,7 @@ import {
 import { GEMINI_STUB_ARGS_JSON_FIELD, isGeminiStubApiType } from './tool-stub'
 import type { AgentRunContext } from './types'
 import {
+  BROWSER_READ_PATH_PREFIX,
   buildAllowedSkillPathSet,
   collectToolCallPathsWithModes,
   resolveReadablePath,
@@ -596,6 +597,7 @@ export class AgentToolGateway {
         args,
         isWriteTool,
       )) {
+        if (path.startsWith(BROWSER_READ_PATH_PREFIX)) continue
         if (exemptPaths?.has(path)) continue
         try {
           if (mode === 'write') {

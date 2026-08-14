@@ -619,6 +619,9 @@ export function registerAgentRoutes(
     }
 
     let unsubscribe: (() => void) | null = null
+    let replaying = true
+    const pendingEvents: BufferedRunEvent[] = []
+    let lastWrittenSequence = cursor.cursorExclusive
     let heartbeat: ReturnType<typeof setInterval> | undefined
     const close = () => {
       if (heartbeat) {
@@ -641,13 +644,47 @@ export function registerAgentRoutes(
     )
     unrefHeartbeat(heartbeat)
 
+    const deliverEvent = (event: BufferedRunEvent) => {
+      if (replaying) {
+        pendingEvents.push(event)
+        return
+      }
+      if (event.sequence <= lastWrittenSequence) return
+      writeSseEvent(writer, event)
+      lastWrittenSequence = event.sequence
+    }
+
+    unsubscribe = context.sseHub.subscribe(params.runId, deliverEvent, {
+      sessionId: sessionId ?? undefined,
+      onClose: (code) => {
+        writeSimpleSseEvent(writer, {
+          type: code,
+        })
+        close()
+      },
+    })
+    req.on('close', close)
+    res.on('close', close)
+
     try {
       const replayEvents = await context.getRunEvents(
         params.runId,
         cursor.cursorExclusive,
       )
       for (const event of replayEvents) {
+        if (event.sequence <= lastWrittenSequence) continue
         writeSseEvent(writer, event)
+        lastWrittenSequence = event.sequence
+      }
+      if (writer.isClosed) {
+        close()
+        return
+      }
+
+      replaying = false
+      pendingEvents.sort((left, right) => left.sequence - right.sequence)
+      for (const event of pendingEvents.splice(0)) {
+        deliverEvent(event)
       }
       if (writer.isClosed) {
         close()
@@ -663,24 +700,6 @@ export function registerAgentRoutes(
         close()
         return
       }
-
-      unsubscribe = context.sseHub.subscribe(
-        params.runId,
-        (event) => {
-          writeSseEvent(writer, event)
-        },
-        {
-          sessionId: sessionId ?? undefined,
-          onClose: (code) => {
-            writeSimpleSseEvent(writer, {
-              type: code,
-            })
-            close()
-          },
-        },
-      )
-      req.on('close', close)
-      res.on('close', close)
     } catch (error) {
       close()
       throw error

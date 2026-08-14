@@ -50,11 +50,16 @@ const replayByRuntime = new Map<
   }
 >()
 
+type ChatRuntimeStreamCloser = (code: string) => void
+const streamsBySession = new Map<string, Set<ChatRuntimeStreamCloser>>()
+const activeStreams = new Set<ChatRuntimeStreamCloser>()
+
 /**
  * 释放缓存的 runtime 实例与重放缓冲（E3）。server 停止/重启时调用——旧
  * runtime 的订阅若驻留，会在新 server 上继续推送已死会话的事件。
  */
 export async function disposeChatRuntimeRouteCaches(): Promise<void> {
+  closeAllChatRuntimeStreams('agent_unavailable')
   const runtimes = [...runtimeCache.values()]
   runtimeCache.clear()
   replayByRuntime.clear()
@@ -63,6 +68,40 @@ export async function disposeChatRuntimeRouteCaches(): Promise<void> {
       .filter((runtime) => typeof runtime.dispose === 'function')
       .map((runtime) => runtime.dispose().catch(() => undefined)),
   )
+}
+
+export function closeChatRuntimeSessionStreams(
+  sessionId: string,
+  code: string,
+): void {
+  for (const close of [...(streamsBySession.get(sessionId) ?? [])]) {
+    close(code)
+  }
+}
+
+function closeAllChatRuntimeStreams(code: string): void {
+  for (const close of [...activeStreams]) {
+    close(code)
+  }
+}
+
+function registerChatRuntimeStream(
+  sessionId: string | null,
+  close: ChatRuntimeStreamCloser,
+): () => void {
+  activeStreams.add(close)
+  if (sessionId) {
+    const streams = streamsBySession.get(sessionId) ?? new Set()
+    streams.add(close)
+    streamsBySession.set(sessionId, streams)
+  }
+  return () => {
+    activeStreams.delete(close)
+    if (!sessionId) return
+    const streams = streamsBySession.get(sessionId)
+    streams?.delete(close)
+    if (streams?.size === 0) streamsBySession.delete(sessionId)
+  }
 }
 
 function runtimeCacheKey(
@@ -145,6 +184,24 @@ export function registerChatRuntimeRoutes(
         }
         const writer = new SseResponseWriter(res, { maxPendingBytes: 65536 })
         const replayKey = runtimeCacheKey(runtimeId, conversationId)
+        const sessionId = getHeader(req.headers['x-yolo-web-session-id'])
+        let closed = false
+        let unsubscribe: (() => void) | null = null
+        let unregisterStream: (() => void) | null = null
+        const close = (code?: string) => {
+          if (closed) return
+          closed = true
+          if (code) {
+            writer.write(
+              `event: session_closed\ndata: ${JSON.stringify({ code })}\n\n`,
+            )
+          }
+          unsubscribe?.()
+          unsubscribe = null
+          unregisterStream?.()
+          unregisterStream = null
+          writer.close()
+        }
         const entry = replayByRuntime.get(replayKey) ?? {
           snapshot: runtime.getSnapshot(),
           events: [],
@@ -152,22 +209,28 @@ export function registerChatRuntimeRoutes(
         }
         replayByRuntime.set(replayKey, entry)
         const cursor = Number(queryValue(req, 'cursor') ?? 0)
+        unregisterStream = registerChatRuntimeStream(sessionId, close)
         // 断线续传：先重放缓冲内 cursor 之后的事件；有 gap 时客户端会调用 /snapshot 重建。
         for (const wire of entry.events) {
           if (wire.sequence > cursor) {
             writer.write(`data: ${JSON.stringify(wire)}\n\n`)
           }
         }
-        const unsubscribe = runtime.subscribe((event: ChatRuntimeEvent) => {
-          const wire = eventToWire(event)
-          recordEvent(replayKey, wire)
-          writer.write(`data: ${JSON.stringify(wire)}\n\n`)
-        })
+        const runtimeUnsubscribe = runtime.subscribe(
+          (event: ChatRuntimeEvent) => {
+            if (closed) return
+            const wire = eventToWire(event)
+            recordEvent(replayKey, wire)
+            writer.write(`data: ${JSON.stringify(wire)}\n\n`)
+          },
+        )
+        if (closed) {
+          runtimeUnsubscribe()
+        } else {
+          unsubscribe = runtimeUnsubscribe
+        }
         writer.write(': heartbeat\n\n')
-        req.on('close', () => {
-          unsubscribe()
-          writer.close()
-        })
+        req.on('close', () => close())
       } catch (error) {
         writeJson(
           res,
@@ -608,4 +671,9 @@ export function registerChatRuntimeRoutes(
   sessionCommand('/api/chat-runtime/:runtimeId/sessions/pin', (runtime, body) =>
     runtime.setSessionPinned(body.ref as ChatSessionRef, body.pinned === true),
   )
+}
+
+function getHeader(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) return value[0] ?? null
+  return typeof value === 'string' && value.length > 0 ? value : null
 }

@@ -30,11 +30,13 @@ import { resolveActiveAssistant } from '../../core/agent/workspaceAgentResolver'
 import type { ChatRuntime } from '../../core/chat-runtime/contract'
 import {
   type ChatRuntimeId,
+  type CliRuntimeAvailability,
   type CliRuntimeScope,
   type CliSessionRef,
   RUNTIME_CAPABILITIES,
   buildCliEnvironmentContext,
   createYoloChatRuntimeActions,
+  detectCliRuntimeAvailability,
   isCliRuntime,
   isCliRuntimeAvailable,
 } from '../../core/cli-runtime'
@@ -135,6 +137,21 @@ import { YoloChatSurface } from './YoloChatSurface'
 
 const EMPTY_SELECTED_SKILLS: NonNullable<ChatUserInputProps['selectedSkills']> =
   []
+
+type CliHistoryDiscoveryItem = {
+  ref: CliSessionRef
+  title: string
+  updatedAt: number
+  isPinned: boolean
+  pinnedAt?: number
+}
+
+const getCliSessionIdentity = (
+  ref: Pick<CliSessionRef, 'runtimeId' | 'nativeSessionId'>,
+): string => `${ref.runtimeId}:${ref.nativeSessionId}`
+
+const getNativeCliConversationId = (ref: CliSessionRef): string =>
+  `cli-native:${ref.runtimeId}:${encodeURIComponent(ref.nativeSessionId)}`
 
 function useLatestRef<T>(value: T) {
   const ref = useRef(value)
@@ -375,6 +392,21 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     generateConversationTitle,
     chatList,
   } = useChatHistory()
+  const deletedConversationIdsRef = useRef<Set<string>>(new Set())
+  const createOrTouchCliConversationWithDeletionGuard = useCallback(
+    async (
+      conversationId: string,
+      cliSession: Parameters<typeof createOrTouchCliConversation>[1],
+      overrides: Parameters<typeof createOrTouchCliConversation>[2],
+    ): Promise<void> => {
+      if (deletedConversationIdsRef.current.has(conversationId)) return
+      await createOrTouchCliConversation(conversationId, cliSession, overrides)
+      if (deletedConversationIdsRef.current.has(conversationId)) {
+        await deleteConversation(conversationId)
+      }
+    },
+    [createOrTouchCliConversation, deleteConversation],
+  )
   const chatManager = useChatManager()
   const seededRuntimeSnapshot = props.seededRuntimeSnapshot
   // Web 端懒解析注入的 CLI scope（远程组装）；桌面路径不传
@@ -396,6 +428,27 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
   }, [props.getCliRuntimeScope])
   const cliRuntimeScope = resolvedCliRuntimeScope ?? props.cliRuntimeScope
   const cliRuntimeAvailable = isCliRuntimeAvailable()
+  const [cliRuntimeAvailability, setCliRuntimeAvailability] =
+    useState<CliRuntimeAvailability>(() => ({
+      'claude-code': false,
+      codex: false,
+    }))
+  useEffect(() => {
+    if (!cliRuntimeAvailable || !cliRuntimeScope) {
+      setCliRuntimeAvailability({
+        'claude-code': false,
+        codex: false,
+      })
+      return
+    }
+    let cancelled = false
+    void detectCliRuntimeAvailability(app).then((availability) => {
+      if (!cancelled) setCliRuntimeAvailability(availability)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [app, cliRuntimeAvailable, cliRuntimeScope])
   const chatMountedRef = useRef(true)
   useEffect(() => {
     chatMountedRef.current = true
@@ -1045,7 +1098,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     updateSettings,
     cliRuntimeScope,
     getConversationById,
-    createOrTouchCliConversation,
+    createOrTouchCliConversation: createOrTouchCliConversationWithDeletionGuard,
     activeRuntimeId,
     initialActiveRuntimeId,
     initialCliModePreference,
@@ -1087,11 +1140,20 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     conversationWorkingDirectoryLocked:
       isLoadingConversation || isConversationFileScopeLocked(chatMessages),
     conversationWorkingDirectory: explicitConversationWorkingDirectory,
-    setConversationWorkingDirectory: (directory) =>
-      setConversationOverrides((current) => ({
-        ...(current ?? {}),
+    persistConversationWorkingDirectory: (directory) => {
+      const nextOverrides = {
+        ...(conversationOverridesRef.current.get(currentConversationId) ??
+          conversationOverrides ??
+          {}),
         workingDirectory: directory ?? null,
-      })),
+      }
+      setConversationOverrides(nextOverrides)
+      void createOrUpdateConversationImmediately(
+        currentConversationId,
+        chatMessages,
+        nextOverrides,
+      )
+    },
     selectedAssistantFilePolicy: selectedAssistant?.workspaceAccessPolicy,
   }
 
@@ -1123,11 +1185,14 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
               currentFile: activeFile,
               currentFileViewState: activeViewState,
             }),
-          createOrTouchCliConversation,
+          createOrTouchCliConversation:
+            createOrTouchCliConversationWithDeletionGuard,
           generateConversationTitle,
           syncCliConversationTitle,
           setCliConversationId,
           consumeAcceptedCliDraft,
+          isConversationDeleted: (conversationId) =>
+            deletedConversationIdsRef.current.has(conversationId),
           isMounted: () => chatMountedRef.current,
         }
       : null
@@ -1401,6 +1466,134 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     createFreshCliConversation,
   })
 
+  const [cliHistoryDiscovery, setCliHistoryDiscovery] = useState<
+    CliHistoryDiscoveryItem[]
+  >([])
+  const [dismissedNativeCliSessions, setDismissedNativeCliSessions] = useState<
+    Set<string>
+  >(new Set())
+
+  useEffect(() => {
+    if (!cliRuntimeScope || !cliRuntimeAvailable) {
+      setCliHistoryDiscovery([])
+      setDismissedNativeCliSessions(new Set())
+      return
+    }
+    let cancelled = false
+    void cliRuntimeScope.sessionService
+      .discoverSessions()
+      .then((result) => {
+        if (cancelled) return
+        setCliHistoryDiscovery(
+          result.sessions.map((session) => ({
+            ref: session.ref,
+            title: session.title,
+            updatedAt: session.updatedAt,
+            isPinned: session.isPinned,
+            ...(session.pinnedAt !== undefined
+              ? { pinnedAt: session.pinnedAt }
+              : {}),
+          })),
+        )
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        console.warn('[YOLO] Failed to discover native CLI sessions', error)
+        setCliHistoryDiscovery([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [cliRuntimeAvailable, cliRuntimeScope])
+
+  const nativeCliConversationIds = useMemo(() => {
+    const persisted = new Set(
+      chatList
+        .filter((conversation) => conversation.cliSession)
+        .map((conversation) => getCliSessionIdentity(conversation.cliSession!)),
+    )
+    const ids = new Set<string>()
+    for (const session of cliHistoryDiscovery) {
+      const identity = getCliSessionIdentity(session.ref)
+      if (persisted.has(identity) || dismissedNativeCliSessions.has(identity)) {
+        continue
+      }
+      ids.add(getNativeCliConversationId(session.ref))
+    }
+    return ids
+  }, [chatList, cliHistoryDiscovery, dismissedNativeCliSessions])
+
+  const historyChatList = useMemo(() => {
+    const persisted = new Set(
+      chatList
+        .filter((conversation) => conversation.cliSession)
+        .map((conversation) => getCliSessionIdentity(conversation.cliSession!)),
+    )
+    const discovered = cliHistoryDiscovery
+      .filter((session) => {
+        const identity = getCliSessionIdentity(session.ref)
+        return (
+          !persisted.has(identity) && !dismissedNativeCliSessions.has(identity)
+        )
+      })
+      .map((session) => ({
+        id: getNativeCliConversationId(session.ref),
+        title: session.title,
+        updatedAt: session.updatedAt,
+        schemaVersion: 1,
+        isPinned: session.isPinned,
+        ...(session.pinnedAt !== undefined
+          ? { pinnedAt: session.pinnedAt }
+          : {}),
+        cliSession: session.ref,
+      }))
+    return [...chatList, ...discovered]
+  }, [chatList, cliHistoryDiscovery, dismissedNativeCliSessions])
+
+  const ensureNativeCliConversation = useCallback(
+    async (conversationId: string, ref: CliSessionRef) => {
+      if (!cliRuntimeScope) {
+        throw new Error('CLI runtime is unavailable.')
+      }
+      const identity = getCliSessionIdentity(ref)
+      setDismissedNativeCliSessions((previous) => {
+        if (!previous.has(identity)) return previous
+        const next = new Set(previous)
+        next.delete(identity)
+        return next
+      })
+      await createOrTouchCliConversationWithDeletionGuard(
+        conversationId,
+        ref,
+        null,
+      )
+    },
+    [cliRuntimeScope, createOrTouchCliConversationWithDeletionGuard],
+  )
+
+  const openNativeCliSession = useCallback(
+    async (conversationId: string, ref: CliSessionRef) => {
+      await ensureNativeCliConversation(conversationId, ref)
+      await handleLoadConversation(conversationId)
+    },
+    [ensureNativeCliConversation, handleLoadConversation],
+  )
+
+  const dismissNativeCliSession = useCallback(
+    async (conversationId: string, ref: CliSessionRef) => {
+      setDismissedNativeCliSessions((previous) => {
+        const next = new Set(previous)
+        next.add(getCliSessionIdentity(ref))
+        return next
+      })
+      await cliRuntimeScope?.sessionService.removeOverlay(ref)
+      if (conversationId === activeHistoryConversationId) {
+        handleNewChat()
+      }
+    },
+    [activeHistoryConversationId, cliRuntimeScope, handleNewChat],
+  )
+
   const {
     handleRecoverPendingToolCall,
     handleUserMessageSubmit,
@@ -1458,40 +1651,46 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
   // 与 ChatRef.deleteCurrentConversation（当前会话，⋯ 窗格菜单走这条）共用。
   const deleteConversationWithCleanup = useCallback(
     async (conversationId: string) => {
-      const conversation = await getConversationById(conversationId)
-      await deleteConversation(conversationId)
-      // Per-conversation MCP tool allowances ("always allow in this chat")
-      // die with the conversation — a later conversationId reuse must not
-      // inherit the deleted chat's permission grants. removeAllowedTools is
-      // idempotent, so deleting twice or deleting an unknown id is safe.
-      void plugin
-        .getMcpManager()
-        .then((mcpManager) => mcpManager.removeAllowedTools(conversationId))
-        .catch((error: unknown) => {
-          console.error(
-            'Failed to revoke MCP tool allowances for deleted conversation',
-            error,
+      deletedConversationIdsRef.current.add(conversationId)
+      try {
+        const conversation = await getConversationById(conversationId)
+        await deleteConversation(conversationId)
+        // Per-conversation MCP tool allowances ("always allow in this chat")
+        // die with the conversation — a later conversationId reuse must not
+        // inherit the deleted chat's permission grants. removeAllowedTools is
+        // idempotent, so deleting twice or deleting an unknown id is safe.
+        void plugin
+          .getMcpManager()
+          .then((mcpManager) => mcpManager.removeAllowedTools(conversationId))
+          .catch((error: unknown) => {
+            console.error(
+              'Failed to revoke MCP tool allowances for deleted conversation',
+              error,
+            )
+          })
+        if (conversation?.cliSession && cliRuntimeScope) {
+          await cliRuntimeScope.sessionService.removeOverlay(
+            conversation.cliSession,
           )
-        })
-      if (conversation?.cliSession && cliRuntimeScope) {
-        await cliRuntimeScope.sessionService.removeOverlay(
-          conversation.cliSession,
+        }
+        if (conversationId !== activeHistoryConversationId) {
+          return
+        }
+        if (activeRuntimeId !== 'yolo') {
+          handleNewChat()
+          return
+        }
+        const nextConversation = chatList.find(
+          (chat) => chat.id !== conversationId,
         )
-      }
-      if (conversationId !== activeHistoryConversationId) {
-        return
-      }
-      if (activeRuntimeId !== 'yolo') {
-        handleNewChat()
-        return
-      }
-      const nextConversation = chatList.find(
-        (chat) => chat.id !== conversationId,
-      )
-      if (nextConversation) {
-        void handleLoadConversation(nextConversation.id)
-      } else {
-        handleNewChat()
+        if (nextConversation) {
+          void handleLoadConversation(nextConversation.id)
+        } else {
+          handleNewChat()
+        }
+      } catch (error) {
+        deletedConversationIdsRef.current.delete(conversationId)
+        throw error
       }
     },
     [
@@ -1733,6 +1932,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       handleRuntimeChange={handleRuntimeChange}
       cliRuntimeAvailable={cliRuntimeAvailable}
       cliRuntimeScope={cliRuntimeScope}
+      cliRuntimeAvailability={cliRuntimeAvailability}
       chatMode={chatMode}
       containerRef={containerRef}
       isWorkspaceWideHeader={isWorkspaceWideHeader}
@@ -1743,7 +1943,11 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       handleNewChat={handleNewChat}
       handleExportChatToVault={handleExportChatToVault}
       currentConversationId={currentConversationId}
-      chatList={chatList}
+      chatList={historyChatList}
+      nativeCliConversationIds={nativeCliConversationIds}
+      openNativeCliSession={openNativeCliSession}
+      ensureNativeCliSession={ensureNativeCliConversation}
+      dismissNativeCliSession={dismissNativeCliSession}
       activeHistoryConversationId={activeHistoryConversationId}
       runSummariesByConversationId={runSummariesByConversationId}
       handleLoadConversation={handleLoadConversation}

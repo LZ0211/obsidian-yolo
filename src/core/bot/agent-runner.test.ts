@@ -48,10 +48,7 @@ import type { AgentConversationState, AgentService } from '../agent/service'
 import type { ChatMessage } from '../../types/chat'
 import type { McpManager } from '../mcp/mcpManager'
 
-import {
-  BOT_TURN_TIMEOUT_REASON,
-  runBotAgentTurn,
-} from './agent-runner'
+import { BOT_TURN_TIMEOUT_REASON, runBotAgentTurn } from './agent-runner'
 import { BotSentMessageRegistry } from './bot-sent-registry'
 import { getProtectedVaultPathRules } from '../paths/protectedPaths'
 import type {
@@ -664,7 +661,14 @@ describe('runBotAgentTurn', () => {
     ])
     expect(finish).toHaveBeenCalledWith({ text: 'Hello world' })
     expect(adapter.sendMessage).not.toHaveBeenCalled()
-    expect(sentMessageRegistry.isSentByBot('p1')).toBe(true)
+    expect(
+      sentMessageRegistry.isSentByBot(
+        'p1',
+        Date.now(),
+        'telegram:private:u1',
+        'bot-1',
+      ),
+    ).toBe(true)
   })
 
   it('buffers text and sends once via sendMessage for a non-streaming adapter', async () => {
@@ -708,7 +712,48 @@ describe('runBotAgentTurn', () => {
     expect(adapter.sendMessage).toHaveBeenCalledWith('telegram:private:u1', {
       text: 'Hello world',
     })
-    expect(sentMessageRegistry.isSentByBot('p2')).toBe(true)
+    expect(
+      sentMessageRegistry.isSentByBot(
+        'p2',
+        Date.now(),
+        'telegram:private:u1',
+        'bot-1',
+      ),
+    ).toBe(true)
+  })
+
+  it('keeps the inbound message as the reply target for a completed turn', async () => {
+    const { agentService } = makeFakeAgentService(
+      (sourceUserMessageId, emit) => {
+        emit(buildCompletedState('conv-1', sourceUserMessageId, 'Hello world'))
+      },
+    )
+    const adapter = makeFakeAdapter()
+    adapter.sendMessage.mockResolvedValue([])
+
+    await runBotAgentTurn({
+      app,
+      settings: makeSettings(),
+      agentService,
+      mcpManager,
+      loadConversation: makeConversationLoader(null),
+      adapter,
+      sentMessageRegistry: new BotSentMessageRegistry(),
+      conversationId: 'conv-1',
+      sessionKey: 'telegram:private:u1',
+      chatType: 'private',
+      replyToMessageId: 'inbound-1',
+      platformConfig: { id: 'bot-1' } as unknown as Parameters<
+        typeof runBotAgentTurn
+      >[0]['platformConfig'],
+      promptContent: 'hello bot',
+      mentionables: [],
+    })
+
+    expect(adapter.sendMessage).toHaveBeenCalledWith('telegram:private:u1', {
+      text: 'Hello world',
+      replyToMessageId: 'inbound-1',
+    })
   })
 
   it('attaches a completed send_attachment tool call as a file on the outgoing reply', async () => {

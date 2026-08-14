@@ -81,4 +81,32 @@ describe('vectorNamespaceId', () => {
       'text-embedding-3-large-d1536',
     )
   })
+
+  it('isolates provider and endpoint identities', () => {
+    const openAi = vectorNamespaceId({
+      ...baseNamespace,
+      providerIdentity: 'provider-a',
+      endpointIdentity: 'https://api.example.com/v1/',
+    })
+    const otherProvider = vectorNamespaceId({
+      ...baseNamespace,
+      providerIdentity: 'provider-b',
+      endpointIdentity: 'https://api.example.com/v1/',
+    })
+    const otherEndpoint = vectorNamespaceId({
+      ...baseNamespace,
+      providerIdentity: 'provider-a',
+      endpointIdentity: 'https://proxy.example.com/v1',
+    })
+
+    expect(openAi).not.toBe(otherProvider)
+    expect(openAi).not.toBe(otherEndpoint)
+    expect(
+      vectorNamespaceId({
+        ...baseNamespace,
+        providerIdentity: 'provider-a',
+        endpointIdentity: 'https://api.example.com/v1',
+      }),
+    ).toBe(openAi)
+  })
 })

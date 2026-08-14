@@ -83,6 +83,7 @@ import {
   resolveChatListDeleteConfirmation,
   resolveChatListSearchKeyboardAction,
   splitTitleForMiddleTruncation,
+  tryBeginChatListAction,
 } from './ChatListDropdown'
 
 const chat = (
@@ -203,6 +204,17 @@ const createInteractionTree = (chatList: ChatConversationMetadata[]) => {
 describe('ChatListDropdown', () => {
   beforeEach(() => {
     mockSearchQuery = ''
+  })
+
+  it('rejects a second in-flight action for the same conversation', () => {
+    const inFlight = new Set<string>()
+
+    expect(tryBeginChatListAction(inFlight, 'conversation-1')).toBe(true)
+    expect(tryBeginChatListAction(inFlight, 'conversation-1')).toBe(false)
+
+    inFlight.delete('conversation-1')
+
+    expect(tryBeginChatListAction(inFlight, 'conversation-1')).toBe(true)
   })
 
   it('keeps title filtering and selection on the unified history list', async () => {

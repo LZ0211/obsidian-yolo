@@ -37,9 +37,18 @@ export class SessionMapper {
     this.saveSettings = deps.saveSettings
   }
 
-  getSessionByKey(sessionKey: string): SessionMapping | undefined {
+  getSessionByKey(
+    sessionKey: string,
+    platformInstanceId?: string,
+    allowLegacyInstance = false,
+  ): SessionMapping | undefined {
     return this.getSettings().sessionMappings.find(
-      (mapping) => mapping.sessionKey === sessionKey,
+      (mapping) =>
+        mapping.sessionKey === sessionKey &&
+        (platformInstanceId === undefined ||
+          mapping.platformInstanceId === platformInstanceId ||
+          (allowLegacyInstance === true &&
+            mapping.platformInstanceId === undefined)),
     )
   }
 
@@ -50,10 +59,16 @@ export class SessionMapper {
    * updates (e.g. per-message `lastActiveAt` bumps) should prefer
    * `touchActiveSession` instead.
    */
-  async upsertSession(mapping: SessionMapping): Promise<SessionMapping> {
+  async upsertSession(
+    mapping: SessionMapping,
+    allowLegacyInstance = false,
+  ): Promise<SessionMapping> {
     const settings = this.getSettings()
     const existingIndex = settings.sessionMappings.findIndex(
-      (existing) => existing.sessionKey === mapping.sessionKey,
+      (existing) =>
+        existing.sessionKey === mapping.sessionKey &&
+        (existing.platformInstanceId === mapping.platformInstanceId ||
+          (allowLegacyInstance && existing.platformInstanceId === undefined)),
     )
     const nextMappings = [...settings.sessionMappings]
     if (existingIndex === -1) {
@@ -74,23 +89,42 @@ export class SessionMapper {
    */
   async touchActiveSession(
     sessionKey: string,
+    platformInstanceIdOrNow?: string | number,
     now: number = Date.now(),
+    allowLegacyInstance = false,
   ): Promise<SessionMapping | undefined> {
+    const platformInstanceId =
+      typeof platformInstanceIdOrNow === 'string'
+        ? platformInstanceIdOrNow
+        : undefined
+    const timestamp =
+      typeof platformInstanceIdOrNow === 'number'
+        ? platformInstanceIdOrNow
+        : now
     const settings = this.getSettings()
     const existing = settings.sessionMappings.find(
-      (mapping) => mapping.sessionKey === sessionKey,
+      (mapping) =>
+        mapping.sessionKey === sessionKey &&
+        (platformInstanceId === undefined ||
+          mapping.platformInstanceId === platformInstanceId ||
+          (allowLegacyInstance && mapping.platformInstanceId === undefined)),
     )
     if (!existing || existing.disabled) return undefined
 
     const updated: SessionMapping = {
       ...existing,
-      lastActiveAt: now,
+      lastActiveAt: timestamp,
       // Auto-unarchive on any new activity (design doc: "收到新消息时若
       // archivedAt 已设置且 disabled !== true，自动清除 archivedAt 恢复活跃").
       archivedAt: undefined,
     }
     const nextMappings = settings.sessionMappings.map((mapping) =>
-      mapping.sessionKey === sessionKey ? updated : mapping,
+      mapping.sessionKey === sessionKey &&
+      (platformInstanceId === undefined ||
+        mapping.platformInstanceId === platformInstanceId ||
+        (allowLegacyInstance && mapping.platformInstanceId === undefined))
+        ? updated
+        : mapping,
     )
     await this.saveSettings({ ...settings, sessionMappings: nextMappings })
     return updated

@@ -131,6 +131,7 @@ export function registerMcpRoutes(
         ...parsed.value,
         workspaceAccessPolicy: workspaceAgentPolicyToRuntimeAccessPolicy(
           access.context.activeAgent.workspacePolicy,
+          context.getSettings(),
         ),
         allowedSkillPaths: await resolveAssistantSkillPaths({
           app: context.app,

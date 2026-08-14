@@ -1,3 +1,4 @@
+import * as JSZipModule from 'jszip'
 import {
   App,
   type DataAdapter,
@@ -15,7 +16,9 @@ import {
   type ReleaseFileName,
 } from './installationIntegrity'
 import {
+  type ReleaseAssetMeta,
   type ReleaseAssets,
+  buildReleaseAssets,
   compareVersions,
   normalizePluginVersion,
 } from './updateChecker'
@@ -24,6 +27,22 @@ const STAGING_ROOT = '.yolo-update-staging'
 const REPAIR_META_FILE = 'repair-meta.json'
 const UPDATE_SOURCE_TIMEOUT_MS = 30_000
 const UPDATE_MAIN_JS_SOURCE_TIMEOUT_MS = 90_000
+const WEB_UI_REQUIRED_FILES = [
+  'index.html',
+  'index.js',
+  'app.css',
+  'styles.css',
+] as const
+const WEB_UI_OPTIONAL_FILES = ['index.js.br', 'index.js.gz'] as const
+const WEB_UI_FILES = new Set<string>([
+  ...WEB_UI_REQUIRED_FILES,
+  ...WEB_UI_OPTIONAL_FILES,
+])
+
+type JSZipConstructor = typeof import('jszip')
+const JSZip =
+  (JSZipModule as unknown as { default?: JSZipConstructor }).default ??
+  JSZipModule
 
 const RELEASE_FILES = {
   mainJs: RELEASE_FILE_NAMES.mainJs,
@@ -277,7 +296,7 @@ export async function clearStagingRoot(
 }
 
 async function downloadAsset(
-  asset: ReleaseAssets[keyof ReleaseAssets],
+  asset: ReleaseAssetMeta,
   timeoutMs = UPDATE_SOURCE_TIMEOUT_MS,
 ): Promise<ArrayBuffer> {
   let lastError: unknown
@@ -334,12 +353,12 @@ function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
 
 async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest(
-      'SHA-256',
-      bytes.buffer.slice(
-        bytes.byteOffset,
-        bytes.byteOffset + bytes.byteLength,
-      ) as ArrayBuffer,
-    )
+    'SHA-256',
+    bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    ) as ArrayBuffer,
+  )
   return [...new Uint8Array(digest)]
     .map((value) => value.toString(16).padStart(2, '0'))
     .join('')
@@ -350,6 +369,47 @@ function decodeUtf8(bytes: ArrayBuffer): string {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
   } catch {
     throw new Error('Downloaded text is not valid UTF-8')
+  }
+}
+
+function normalizeWebUiArchiveEntry(entryName: string): string | null {
+  const normalized = entryName.replace(/\\/g, '/')
+  const parts = normalized.split('/').filter(Boolean)
+  if (parts.length !== 1) return null
+  const [fileName] = parts
+  return fileName && WEB_UI_FILES.has(fileName) ? fileName : null
+}
+
+async function extractWebUiArchive(
+  adapter: DataAdapter,
+  stagingDir: string,
+  bytes: ArrayBuffer,
+): Promise<void> {
+  let zip: InstanceType<JSZipConstructor>
+  try {
+    zip = await JSZip.loadAsync(bytes)
+  } catch {
+    throw new Error('Downloaded Web UI archive is invalid')
+  }
+
+  const webUiDir = normalizePath(`${stagingDir}/web-ui`)
+  await ensureDir(adapter, webUiDir)
+  const seen = new Set<string>()
+  for (const entry of Object.values(zip.files)) {
+    if (entry.dir) continue
+    const fileName = normalizeWebUiArchiveEntry(entry.name)
+    if (!fileName || seen.has(fileName)) {
+      throw new Error('Downloaded Web UI archive contains an invalid file')
+    }
+    seen.add(fileName)
+    await adapter.writeBinary(
+      normalizePath(`${webUiDir}/${fileName}`),
+      await entry.async('arraybuffer'),
+    )
+  }
+
+  if (WEB_UI_REQUIRED_FILES.some((fileName) => !seen.has(fileName))) {
+    throw new Error('Downloaded Web UI archive is incomplete')
   }
 }
 
@@ -378,6 +438,12 @@ export async function downloadReleaseToStaging(params: {
     )
     onProgress?.(60)
 
+    if (assets.webUiZip) {
+      const webUiArchive = await downloadAsset(assets.webUiZip)
+      await extractWebUiArchive(adapter, stagingDir, webUiArchive)
+      onProgress?.(75)
+    }
+
     const stylesText = decodeUtf8(await downloadAsset(assets.stylesCss))
     await adapter.write(
       normalizePath(`${stagingDir}/${RELEASE_FILES.stylesCss}`),
@@ -405,7 +471,7 @@ export async function downloadReleaseToStaging(params: {
 function assetForFile(
   assets: ReleaseAssets,
   fileName: ReleaseFileName,
-): ReleaseAssets[keyof ReleaseAssets] {
+): ReleaseAssetMeta {
   switch (fileName) {
     case RELEASE_FILE_NAMES.mainJs:
       return assets.mainJs
@@ -493,6 +559,80 @@ async function copyStagedFile(
   await adapter.write(target, content)
 }
 
+async function hasStagedWebUi(
+  adapter: DataAdapter,
+  stagingDir: string,
+): Promise<boolean> {
+  return hasWebUiFiles(adapter, normalizePath(`${stagingDir}/web-ui`))
+}
+
+async function hasWebUiFiles(
+  adapter: DataAdapter,
+  webUiDir: string,
+): Promise<boolean> {
+  return (
+    await Promise.all(
+      WEB_UI_REQUIRED_FILES.map((fileName) =>
+        adapter.exists(normalizePath(`${webUiDir}/${fileName}`)),
+      ),
+    )
+  ).every(Boolean)
+}
+
+async function copyStagedWebUi(
+  adapter: DataAdapter,
+  stagingDir: string,
+  pluginDir: string,
+): Promise<void> {
+  const sourceDir = normalizePath(`${stagingDir}/web-ui`)
+  const targetDir = normalizePath(`${pluginDir}/web-ui`)
+  if (await adapter.exists(targetDir)) {
+    await adapter.rmdir(targetDir, true)
+  }
+  await ensureDir(adapter, targetDir)
+  for (const fileName of [...WEB_UI_REQUIRED_FILES, ...WEB_UI_OPTIONAL_FILES]) {
+    const source = normalizePath(`${sourceDir}/${fileName}`)
+    if (!(await adapter.exists(source))) continue
+    await adapter.writeBinary(
+      normalizePath(`${targetDir}/${fileName}`),
+      await adapter.readBinary(source),
+    )
+  }
+}
+
+export async function ensureWebUiAssets(params: {
+  adapter: DataAdapter
+  pluginDir: string
+  version: string
+}): Promise<boolean> {
+  const { adapter, pluginDir, version } = params
+  const targetDir = normalizePath(`${pluginDir}/web-ui`)
+  if (await hasWebUiFiles(adapter, targetDir)) {
+    return true
+  }
+
+  const assets = buildReleaseAssets(version)
+  if (!assets?.webUiZip) {
+    return false
+  }
+
+  const bootstrapDir = normalizePath(`${pluginDir}/.yolo-web-ui-bootstrap`)
+  await removeStagingDir(adapter, bootstrapDir)
+  try {
+    await ensureDir(adapter, bootstrapDir)
+    const archive = await downloadAsset(assets.webUiZip)
+    await extractWebUiArchive(adapter, bootstrapDir, archive)
+    await copyStagedWebUi(adapter, bootstrapDir, pluginDir)
+    return hasWebUiFiles(adapter, targetDir)
+  } finally {
+    try {
+      await removeStagingDir(adapter, bootstrapDir)
+    } catch (error) {
+      console.warn('[YOLO] Web UI bootstrap cleanup failed:', error)
+    }
+  }
+}
+
 export async function applyStagedUpdate(
   app: App,
   plugin: YoloPlugin,
@@ -517,6 +657,8 @@ export async function applyStagedUpdate(
     return { ok: false, reason: 'min_app_version' }
   }
 
+  const webUiReady = await hasStagedWebUi(adapter, stagingDir)
+
   try {
     await copyStagedFile(
       adapter,
@@ -532,6 +674,9 @@ export async function applyStagedUpdate(
       RELEASE_FILES.stylesCss,
       false,
     )
+    if (webUiReady) {
+      await copyStagedWebUi(adapter, stagingDir, pluginDir)
+    }
     await copyStagedFile(
       adapter,
       stagingDir,

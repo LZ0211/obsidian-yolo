@@ -461,6 +461,38 @@ describe('DingTalkAdapter — reconnect backoff', () => {
     await jest.advanceTimersByTimeAsync(300_000)
     expect(MockWebSocket.instances).toHaveLength(1)
   })
+
+  it('does not let a stale start create a second connection after restart', async () => {
+    let releaseFirstHandshake!: () => void
+    const firstHandshake = new Promise<void>((resolve) => {
+      releaseFirstHandshake = resolve
+    })
+    let handshakeCount = 0
+    mockRoutes({
+      'gateway/connections/open': () => {
+        handshakeCount += 1
+        const response = {
+          json: { endpoint: DEFAULT_ENDPOINT, ticket: DEFAULT_TICKET },
+        }
+        return handshakeCount === 1
+          ? firstHandshake.then(() => response)
+          : response
+      },
+    })
+
+    const adapter = new DingTalkAdapter(makeApp())
+    liveAdapters.push(adapter)
+    const firstStart = adapter.start(makeConfig())
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(handshakeCount).toBe(1)
+
+    await adapter.stop()
+    const secondStart = adapter.start(makeConfig())
+    releaseFirstHandshake()
+    await Promise.all([firstStart, secondStart])
+
+    expect(MockWebSocket.instances).toHaveLength(1)
+  })
 })
 
 describe('DingTalkAdapter — sendMessage()', () => {
@@ -637,6 +669,35 @@ describe('DingTalkAdapter — sendMessage()', () => {
       msgKey: 'sampleImageMsg',
       msgParam: JSON.stringify({ photoURL: 'media-123' }),
     })
+  })
+
+  it('rejects an oversized base64 file before uploading it', async () => {
+    mockRoutes({
+      'oauth2/accessToken': () => ({
+        json: { accessToken: 'tok-1', expireIn: 7200 },
+      }),
+    })
+    const { adapter, ws } = await startAdapter()
+    const event = await receiveMessage(adapter, ws)
+
+    await expect(
+      adapter.sendMessage(event.sessionKey, {
+        files: [
+          {
+            source: 'base64',
+            dataBase64: Buffer.alloc(100 * 1024 * 1024 + 1).toString('base64'),
+            mimeType: 'application/pdf',
+            name: 'large.pdf',
+          },
+        ],
+      }),
+    ).rejects.toThrow(/exceeds.*file.*limit/i)
+
+    expect(
+      mockedRequestUrl.mock.calls.some((c) =>
+        asRequestUrlParam(c[0]).url.includes('media/upload'),
+      ),
+    ).toBe(false)
   })
 })
 

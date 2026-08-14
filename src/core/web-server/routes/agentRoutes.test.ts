@@ -372,6 +372,45 @@ describe('agentRoutes', () => {
     expect(res.writableEnded).toBe(true)
   })
 
+  it('does not lose an event published while replay is still loading', async () => {
+    const replay = deferred<never[]>()
+    const sseHub = new WebSseHub()
+    const getRunEvents = jest.fn().mockReturnValue(replay.promise)
+    const { router } = createHarness({
+      getRun: jest.fn().mockResolvedValue({
+        runId: 'run-1',
+        conversationId: 'conv-1',
+        status: 'running',
+      }),
+      getRunEvents,
+      sseHub,
+    })
+    const resolved = router.resolve('GET', '/api/agent/stream/run-1')
+    if (!resolved) throw new Error('missing stream route')
+    const req = createRequest({
+      method: 'GET',
+      url: '/api/agent/stream/run-1',
+      headers: { [WEB_SESSION_HEADER]: 'session-1' },
+    })
+    const res = createResponse()
+    const handler = resolved.handler(req as never, res as never, {
+      runId: 'run-1',
+    })
+
+    await waitFor(() => getRunEvents.mock.calls.length === 1)
+    sseHub.publish('run-1', {
+      sequence: 1,
+      eventType: 'text',
+      eventJson: { type: 'text', text: 'during-replay' },
+      createdAtMs: 1,
+    })
+    replay.resolve([])
+    await handler
+
+    expect(res.rawBody).toContain('during-replay')
+    req.emit('close')
+  })
+
   it('cleans up the replay heartbeat when loading replay events fails', async () => {
     jest.useFakeTimers()
     try {
@@ -925,4 +964,20 @@ function createResponse() {
     },
   })
   return response
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  throw new Error('condition not met')
 }

@@ -1,3 +1,4 @@
+import * as JSZipModule from 'jszip'
 import { type DataAdapter, Stat, requestUrl } from 'obsidian'
 
 import { RELEASE_FILE_NAMES } from './installationIntegrity'
@@ -7,6 +8,7 @@ import {
   clearStagingRoot,
   downloadReleaseToStaging,
   downloadRepairFilesToStaging,
+  ensureWebUiAssets,
   getRepairMetaPath,
   getRepairStagingStatus,
   getStagingDir,
@@ -14,6 +16,11 @@ import {
   getStagingStatus,
   meetsMinAppVersion,
 } from './pluginUpdater'
+
+type JSZipConstructor = typeof import('jszip')
+const JSZip =
+  (JSZipModule as unknown as { default?: JSZipConstructor }).default ??
+  JSZipModule
 
 const mockedRequestUrl = requestUrl as jest.MockedFunction<typeof requestUrl>
 
@@ -134,13 +141,17 @@ describe('signed update downloads', () => {
       stylesCss: new TextEncoder().encode('style'),
     }
     const digest = async (bytes: Uint8Array) =>
-      [...new Uint8Array(await crypto.subtle.digest(
-      'SHA-256',
-      bytes.buffer.slice(
-        bytes.byteOffset,
-        bytes.byteOffset + bytes.byteLength,
-      ) as ArrayBuffer,
-    ))]
+      [
+        ...new Uint8Array(
+          await crypto.subtle.digest(
+            'SHA-256',
+            bytes.buffer.slice(
+              bytes.byteOffset,
+              bytes.byteOffset + bytes.byteLength,
+            ) as ArrayBuffer,
+          ),
+        ),
+      ]
         .map((value) => value.toString(16).padStart(2, '0'))
         .join('')
     const asset = async (key: keyof typeof values, name: string) => ({
@@ -193,6 +204,63 @@ describe('signed update downloads', () => {
       ),
     ).resolves.toMatchObject({ ready: true, version: '1.7.0' })
     expect(mockedRequestUrl).toHaveBeenCalledTimes(6)
+  })
+
+  it('stages the optional Web UI archive under web-ui', async () => {
+    const adapter = new MockAdapter()
+    const archive = new JSZip()
+    archive.file('index.html', '<html></html>')
+    archive.file('index.js', 'console.log("web")')
+    archive.file('app.css', 'body {}')
+    archive.file('styles.css', 'body { color: red; }')
+    const archiveBytes = await archive.generateAsync({ type: 'arraybuffer' })
+    const plainBytes = {
+      'main.js': new TextEncoder().encode('main'),
+      'manifest.json': new TextEncoder().encode(
+        JSON.stringify({ version: '1.7.0', minAppVersion: '1.8.0' }),
+      ),
+      'styles.css': new TextEncoder().encode('style'),
+    }
+
+    mockedRequestUrl.mockImplementation((request) => {
+      const url = typeof request === 'string' ? request : request.url
+      const name = url.split('/').at(-1) ?? ''
+      const bytes =
+        name === 'web-ui.zip'
+          ? new Uint8Array(archiveBytes)
+          : (plainBytes[name as keyof typeof plainBytes] ??
+            plainBytes['styles.css'])
+      return Promise.resolve({
+        status: 200,
+        headers: {},
+        text: new TextDecoder().decode(bytes),
+        arrayBuffer: bytes.slice().buffer,
+        json: null,
+      }) as never
+    })
+
+    await downloadReleaseToStaging({
+      adapter: adapter as unknown as DataAdapter,
+      pluginDir: MOCK_PLUGIN_DIR,
+      version: '1.7.0',
+      assets: {
+        mainJs: { url: 'https://github.com/main.js', size: 0 },
+        manifestJson: {
+          url: 'https://github.com/manifest.json',
+          size: 0,
+        },
+        stylesCss: { url: 'https://github.com/styles.css', size: 0 },
+        webUiZip: { url: 'https://github.com/web-ui.zip', size: 0 },
+      },
+    })
+
+    const stagingDir = getStagingDir(MOCK_PLUGIN_DIR, '1.7.0')
+    await expect(
+      adapter.readBinary(`${stagingDir}/web-ui/index.html`),
+    ).resolves.toEqual(new TextEncoder().encode('<html></html>').buffer)
+    await expect(
+      adapter.readBinary(`${stagingDir}/web-ui/index.js`),
+    ).resolves.toEqual(new TextEncoder().encode('console.log("web")').buffer)
   })
 
   it('falls back to GitHub when the Pages request never settles', async () => {
@@ -287,6 +355,64 @@ describe('signed update downloads', () => {
     } finally {
       jest.useRealTimers()
     }
+  })
+})
+
+describe('ensureWebUiAssets', () => {
+  beforeEach(() => mockedRequestUrl.mockReset())
+
+  it('bootstraps a missing Web UI into the plugin directory', async () => {
+    const adapter = new MockAdapter()
+    const archive = new JSZip()
+    archive.file('index.html', '<html></html>')
+    archive.file('index.js', 'console.log("web")')
+    archive.file('app.css', 'body {}')
+    archive.file('styles.css', 'body {}')
+    const archiveBytes = new Uint8Array(
+      await archive.generateAsync({ type: 'arraybuffer' }),
+    )
+    mockedRequestUrl.mockResolvedValue({
+      status: 200,
+      headers: {},
+      text: '',
+      arrayBuffer: archiveBytes.buffer,
+      json: null,
+    } as never)
+
+    await expect(
+      ensureWebUiAssets({
+        adapter: adapter as unknown as DataAdapter,
+        pluginDir: MOCK_PLUGIN_DIR,
+        version: '1.7.0',
+      }),
+    ).resolves.toBe(true)
+    await expect(
+      adapter.readBinary(`${MOCK_PLUGIN_DIR}/web-ui/index.js`),
+    ).resolves.toEqual(new TextEncoder().encode('console.log("web")').buffer)
+    expect(
+      await adapter.exists(`${MOCK_PLUGIN_DIR}/.yolo-web-ui-bootstrap`),
+    ).toBe(false)
+  })
+
+  it('does not download when the Web UI is already complete', async () => {
+    const adapter = new MockAdapter()
+    for (const fileName of [
+      'index.html',
+      'index.js',
+      'app.css',
+      'styles.css',
+    ]) {
+      await adapter.write(`${MOCK_PLUGIN_DIR}/web-ui/${fileName}`, fileName)
+    }
+
+    await expect(
+      ensureWebUiAssets({
+        adapter: adapter as unknown as DataAdapter,
+        pluginDir: MOCK_PLUGIN_DIR,
+        version: '1.7.0',
+      }),
+    ).resolves.toBe(true)
+    expect(mockedRequestUrl).not.toHaveBeenCalled()
   })
 })
 

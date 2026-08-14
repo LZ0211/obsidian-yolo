@@ -10,6 +10,7 @@ import type {
 import { WebRouter } from '../WebRouter'
 
 import {
+  closeChatRuntimeSessionStreams,
   disposeChatRuntimeRouteCaches,
   registerChatRuntimeRoutes,
 } from './chatRuntimeRoutes'
@@ -18,10 +19,12 @@ function createRequest({
   method,
   url,
   body,
+  headers,
 }: {
   method: string
   url: string
   body?: unknown
+  headers?: Record<string, string>
 }) {
   const chunks =
     body === undefined ? [] : [Buffer.from(JSON.stringify(body), 'utf8')]
@@ -32,7 +35,7 @@ function createRequest({
   }
   stream.method = method
   stream.url = url
-  stream.headers = {}
+  stream.headers = headers ?? {}
   return stream
 }
 
@@ -44,6 +47,7 @@ function createResponse() {
     end: (chunk?: string) => void
     write: (chunk: string) => void
     jsonBody: unknown
+    rawBody: string
   }
   response.statusCode = 200
   response.setHeader = () => {}
@@ -58,6 +62,11 @@ function createResponse() {
       return rawBody ? (JSON.parse(rawBody) as unknown) : null
     },
   })
+  Object.defineProperty(response, 'rawBody', {
+    get() {
+      return rawBody
+    },
+  })
   return response
 }
 
@@ -66,10 +75,11 @@ async function dispatch(
   method: 'GET' | 'POST',
   url: string,
   body?: unknown,
+  headers?: Record<string, string>,
 ) {
   const resolved = router.resolve(method, url)
   if (!resolved) throw new Error(`missing route: ${method} ${url}`)
-  const req = createRequest({ method, url, body })
+  const req = createRequest({ method, url, body, headers })
   const res = createResponse()
   await resolved.handler(req as never, res as never, resolved.params)
   return res
@@ -140,6 +150,49 @@ function createRouter(runtime: ChatRuntime): WebRouter {
 }
 
 describe('chatRuntimeRoutes session endpoints', () => {
+  it('closes a runtime stream when its web session is revoked', async () => {
+    const unsubscribe = jest.fn()
+    const subscribe = jest.fn(() => unsubscribe)
+    const runtime = makeRuntime({
+      subscribe,
+      getSnapshot: () => ({
+        replayCursor: 0,
+        runId: 'run-1',
+        conversationId: 'conv-stream',
+        sessionRef: null,
+        messages: [],
+        runState: 'idle',
+        error: null,
+        compactionBoundaries: [],
+        configuration: null,
+        capabilities: {} as never,
+      }),
+    })
+    const router = createRouter(runtime)
+    const resolved = router.resolve(
+      'GET',
+      '/api/chat-runtime/codex/stream?conversationId=conv-stream',
+    )
+    if (!resolved) throw new Error('missing stream route')
+    const req = createRequest({
+      method: 'GET',
+      url: '/api/chat-runtime/codex/stream?conversationId=conv-stream',
+      headers: { 'x-yolo-web-session-id': 'session-1' },
+    })
+    const res = createResponse()
+
+    await resolved.handler(req as never, res as never, {
+      runtimeId: 'codex',
+    })
+    closeChatRuntimeSessionStreams('session-1', 'token_revoked')
+
+    expect(res.rawBody).toContain('event: session_closed')
+    expect(res.rawBody).toContain('token_revoked')
+    expect(subscribe).toHaveBeenCalled()
+    expect(unsubscribe).toHaveBeenCalled()
+    await disposeChatRuntimeRouteCaches()
+  })
+
   it('lists sessions', async () => {
     const runtime = makeRuntime()
     const res = await dispatch(

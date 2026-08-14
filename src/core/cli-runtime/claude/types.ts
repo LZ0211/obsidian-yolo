@@ -4,6 +4,7 @@ import type {
   PermissionMode,
   SDKControlInitializeResponse,
   SDKMessage,
+  SDKSessionInfo,
   SDKUserMessage,
   SessionMessage,
   SpawnOptions,
@@ -80,6 +81,7 @@ export type ClaudeSdkModule = {
     prompt: string | AsyncIterable<SDKUserMessage>
     options?: Options
   }): ClaudeSdkQuery
+  listSessions?(options?: { dir?: string }): Promise<SDKSessionInfo[]>
   getSessionMessages(
     sessionId: string,
     options?: { dir?: string },

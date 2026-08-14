@@ -43,6 +43,7 @@ export type DistributionCore = Readonly<{
     mainJs: DistributionAsset
     manifestJson: DistributionAsset
     stylesCss: DistributionAsset
+    webUiZip?: DistributionAsset
   }>
 }>
 
@@ -178,29 +179,43 @@ function parseCore(value: unknown): DistributionCore {
     throw new Error('Core distribution is invalid')
   }
   const assets = record(core.assets, 'Core assets')
-  exactKeys(assets, ['mainJs', 'manifestJson', 'stylesCss'])
+  const assetKeys = ['mainJs', 'manifestJson', 'stylesCss']
+  if (Object.prototype.hasOwnProperty.call(assets, 'webUiZip')) {
+    assetKeys.push('webUiZip')
+  }
+  exactKeys(assets, assetKeys)
+  const parsedAssets = {
+    mainJs: parseAsset(
+      assets.mainJs,
+      `core/${core.version}/main.js`,
+      core.version,
+    ),
+    manifestJson: parseAsset(
+      assets.manifestJson,
+      `core/${core.version}/manifest.json`,
+      core.version,
+    ),
+    stylesCss: parseAsset(
+      assets.stylesCss,
+      `core/${core.version}/styles.css`,
+      core.version,
+    ),
+    ...(assets.webUiZip
+      ? {
+          webUiZip: parseAsset(
+            assets.webUiZip,
+            `core/${core.version}/web-ui.zip`,
+            core.version,
+          ),
+        }
+      : {}),
+  }
   return Object.freeze({
     version: core.version,
     minAppVersion: core.minAppVersion,
     releaseUrl: core.releaseUrl,
     releaseNotes: parseNotes(core.releaseNotes),
-    assets: Object.freeze({
-      mainJs: parseAsset(
-        assets.mainJs,
-        `core/${core.version}/main.js`,
-        core.version,
-      ),
-      manifestJson: parseAsset(
-        assets.manifestJson,
-        `core/${core.version}/manifest.json`,
-        core.version,
-      ),
-      stylesCss: parseAsset(
-        assets.stylesCss,
-        `core/${core.version}/styles.css`,
-        core.version,
-      ),
-    }),
+    assets: Object.freeze(parsedAssets),
   })
 }
 

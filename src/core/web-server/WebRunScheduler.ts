@@ -24,6 +24,7 @@ export type WebRunSchedulerInput = {
 export type WebRunSchedulerOptions = {
   maxConcurrent: number
   now?: () => number
+  onTerminal?: (run: WebScheduledRun) => void
   /**
    * 终态条目保留时长（E4）。完成后条目仍在 entries 里供 run 状态轮询，
    * 超过 TTL 后在下次 getRun/enqueue 时惰性清理——避免永久驻留。
@@ -40,14 +41,17 @@ export class WebRunScheduler {
   private readonly queuedRunIds: string[] = []
   private readonly activeConversationIds = new Set<string>()
   private readonly finishedEntryTtlMs: number
+  private readonly onTerminal?: (run: WebScheduledRun) => void
   private maxConcurrent: number
   private activeCount = 0
+  private disposed = false
 
   constructor(private readonly options: WebRunSchedulerOptions) {
     this.assertMaxConcurrent(options.maxConcurrent)
     this.maxConcurrent = options.maxConcurrent
     this.finishedEntryTtlMs = options.finishedEntryTtlMs ?? 10 * 60 * 1000
     this.now = options.now ?? (() => Date.now())
+    this.onTerminal = options.onTerminal
   }
 
   setMaxConcurrent(maxConcurrent: number): void {
@@ -57,6 +61,9 @@ export class WebRunScheduler {
   }
 
   enqueue(input: WebRunSchedulerInput): WebScheduledRun {
+    if (this.disposed) {
+      throw new Error('web run scheduler is disposed')
+    }
     this.sweepExpired()
     if (this.entries.has(input.runId)) {
       throw new Error(`Run already exists: ${input.runId}`)
@@ -84,11 +91,14 @@ export class WebRunScheduler {
       entry.status = 'aborted'
       entry.finishedAtMs = this.now()
       this.removeQueuedRun(runId)
+      this.notifyTerminal(entry)
       return { found: true, status: 'aborted' }
     }
     if (entry.status === 'running') {
       entry.status = 'aborted'
       entry.abort?.()
+      entry.finishedAtMs = this.now()
+      this.notifyTerminal(entry)
       return { found: true, status: 'aborted' }
     }
     return { found: true, status: entry.status }
@@ -122,12 +132,27 @@ export class WebRunScheduler {
     return this.activeCount
   }
 
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+    for (const runId of [...this.queuedRunIds]) {
+      this.abort(runId)
+    }
+    for (const entry of this.entries.values()) {
+      if (entry.status === 'running') {
+        this.abort(entry.runId)
+      }
+    }
+    this.queuedRunIds.length = 0
+  }
+
   getQueuePosition(runId: string): number | null {
     const index = this.queuedRunIds.indexOf(runId)
     return index < 0 ? null : index + 1
   }
 
   private processQueue(): void {
+    if (this.disposed) return
     while (this.activeCount < this.maxConcurrent) {
       const next = this.dequeueNextRunnable()
       if (!next) return
@@ -169,8 +194,11 @@ export class WebRunScheduler {
   ): void {
     if (entry.status !== 'aborted') {
       entry.status = terminalStatus
+      entry.finishedAtMs = this.now()
+      this.notifyTerminal(entry)
+    } else if (entry.finishedAtMs == null) {
+      entry.finishedAtMs = this.now()
     }
-    entry.finishedAtMs = this.now()
     this.activeCount -= 1
     this.activeConversationIds.delete(entry.conversationId)
     this.processQueue()
@@ -190,6 +218,10 @@ export class WebRunScheduler {
       startedAtMs: entry.startedAtMs,
       finishedAtMs: entry.finishedAtMs,
     }
+  }
+
+  private notifyTerminal(entry: ScheduledEntry): void {
+    this.onTerminal?.(this.toRun(entry))
   }
 
   private assertMaxConcurrent(maxConcurrent: number): void {

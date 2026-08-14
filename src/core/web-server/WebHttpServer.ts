@@ -21,6 +21,7 @@ export type HeaderLikeRequest = {
 export class WebHttpServer {
   readonly router = new WebRouter()
   private readonly server: ReturnType<typeof import('node:http').createServer>
+  private readonly activeResponses = new Set<ServerResponse>()
 
   constructor(private readonly options: WebHttpServerOptions) {
     const { createServer } =
@@ -68,6 +69,14 @@ export class WebHttpServer {
   }
 
   async close(): Promise<void> {
+    for (const response of this.activeResponses) {
+      if (!response.writableEnded) response.end()
+    }
+    ;(
+      this.server as ReturnType<typeof import('node:http').createServer> & {
+        closeAllConnections?: () => void
+      }
+    ).closeAllConnections?.()
     await new Promise<void>((resolve, reject) => {
       this.server.close((error) => {
         if (error) reject(error)
@@ -80,6 +89,7 @@ export class WebHttpServer {
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
+    this.trackResponse(res)
     applyCompression(req, res)
     setCorsHeaders(res)
     if (req.method === 'OPTIONS') {
@@ -120,6 +130,17 @@ export class WebHttpServer {
         error: { code: 'internal_error', message },
       })
     }
+  }
+
+  private trackResponse(response: ServerResponse): void {
+    this.activeResponses.add(response)
+    const responseWithEvents = response as ServerResponse & {
+      once?: (event: 'close' | 'finish', listener: () => void) => unknown
+    }
+    if (typeof responseWithEvents.once !== 'function') return
+    const remove = () => this.activeResponses.delete(response)
+    responseWithEvents.once('close', remove)
+    responseWithEvents.once('finish', remove)
   }
 }
 

@@ -616,7 +616,8 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
   // click a button and trigger a lazy backend check. Only block actions when
   // the backend is known to be not-ready.
   const canRunIndexMaintenance =
-    ragBackendStatus === null || ragBackendStatus.readiness === 'ready'
+    Platform.isDesktop &&
+    (ragBackendStatus === null || ragBackendStatus.readiness === 'ready')
 
   const ensureBackendChecked = useCallback(async (): Promise<boolean> => {
     if (ragBackendStatus !== null) return ragBackendStatus.readiness === 'ready'

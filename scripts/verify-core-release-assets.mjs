@@ -20,6 +20,7 @@ const expectedNames = new Set([
   'manifest.json',
   'release-note.md',
   'styles.css',
+  'web-ui.zip',
 ])
 const localEntries = await readdir(args['asset-dir'], { withFileTypes: true })
 if (localEntries.some((entry) => !entry.isFile())) {

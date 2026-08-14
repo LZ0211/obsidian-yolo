@@ -391,7 +391,8 @@ export class RAGEngine {
     diagnostic: RetrievalTraceDiagnostic
   }> {
     const modelId = this.embeddingModel?.id ?? ''
-    const key = `${modelId}\u0000${query}`
+    const dimension = this.embeddingModel?.dimension ?? 0
+    const key = `${modelId}\u0000${dimension}\u0000${query}`
     const pending = this.pendingQueryEmbeddings.get(key)
     if (pending) return await this.awaitWithAbort(pending, signal)
     const request = this.getQueryEmbeddingUncached(query, signal).finally(
@@ -414,7 +415,7 @@ export class RAGEngine {
       throw new Error('Embedding model is not set')
     }
     const embeddingModel = this.embeddingModel
-    const cacheKey = `${embeddingModel.id}\u0000${query}`
+    const cacheKey = `${embeddingModel.id}\u0000${embeddingModel.dimension}\u0000${query}`
     const cachedEmbedding = this.queryEmbeddingCache.get(cacheKey)
     if (cachedEmbedding) {
       return {
@@ -434,7 +435,11 @@ export class RAGEngine {
     this.throwIfAborted(signal)
     const persistentEmbedding = await this.vectorManager?.getQueryEmbedding?.(
       this.getVectorNamespace(embeddingModel),
-      queryEmbeddingCacheKey(embeddingModel.id, query),
+      queryEmbeddingCacheKey(
+        embeddingModel.id,
+        query,
+        embeddingModel.dimension,
+      ),
     )
     this.throwIfAborted(signal)
     if (persistentEmbedding) {
@@ -486,7 +491,11 @@ export class RAGEngine {
       this.queryEmbeddingCache.set(cacheKey, embedding)
       await this.vectorManager?.putQueryEmbedding?.(
         this.getVectorNamespace(embeddingModel),
-        queryEmbeddingCacheKey(embeddingModel.id, query),
+        queryEmbeddingCacheKey(
+          embeddingModel.id,
+          query,
+          embeddingModel.dimension,
+        ),
         embedding,
       )
       return {
@@ -603,6 +612,10 @@ export class RAGEngine {
     return createEmbeddingVectorNamespace({
       model: configuredModel?.model ?? embeddingModel.id,
       dimension: embeddingModel.dimension,
+      providerId: configuredModel?.providerId,
+      endpoint: this.settings.providers?.find(
+        (provider) => provider.id === configuredModel?.providerId,
+      )?.baseUrl,
     })
   }
 

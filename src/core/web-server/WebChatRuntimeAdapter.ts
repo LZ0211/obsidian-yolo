@@ -52,6 +52,7 @@ import {
 import { McpManager } from '../mcp/mcpManager'
 import { getToolName } from '../mcp/tool-name-utils'
 import { getMemoryIndexRuntimeHandle } from '../memory/memoryIndexRuntime'
+import { augmentWorkspacePolicyWithProtectedPaths } from '../paths/protectedPaths'
 import { listLiteSkillEntries } from '../skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../skills/skillPolicy'
 import { resolveConversationFileScope } from '../workspace/conversationFileScope'
@@ -177,14 +178,18 @@ const enableAutoContextCompactionTool = (
 
 export function workspaceAgentPolicyToRuntimeAccessPolicy(
   policy: WorkspaceAgentPolicy,
+  settings?: YoloSettings,
 ): WorkspaceAccessPolicy {
-  return {
-    enabled: true,
-    workspaceRoot: policy.workspaceRoot,
-    readExtraIncludes: policy.readAllowlist,
-    readExcludes: policy.readDenylist,
-    writeExcludes: policy.writeDenylist,
-  }
+  return augmentWorkspacePolicyWithProtectedPaths(
+    {
+      enabled: true,
+      workspaceRoot: policy.workspaceRoot,
+      readExtraIncludes: policy.readAllowlist,
+      readExcludes: policy.readDenylist,
+      writeExcludes: policy.writeDenylist,
+    },
+    settings,
+  )!
 }
 
 // 本类不实现 Task 4 的 ChatRuntime 契约：它是 web 层的 run 提交服务（会话
@@ -568,6 +573,7 @@ export class WebChatRuntimeAdapter {
     const fileScope = resolveConversationFileScope(
       workspaceAgentPolicyToRuntimeAccessPolicy(
         input.activeAgent.workspacePolicy,
+        settings,
       ),
       input.workingDirectory,
     )
@@ -736,6 +742,12 @@ export class WebChatRuntimeAdapter {
       (input.chatMode as ChatMode | 'agent-full' | 'plan' | undefined) ?? 'ask'
     if (requestedMode === 'plan') {
       throw new Error('chat_mode_unsupported:plan')
+    }
+    if (
+      (requestedMode === 'agent' || requestedMode === 'agent-full') &&
+      selectedAssistant.agentModeAllowed === false
+    ) {
+      throw new Error('agent_mode_not_allowed')
     }
     const chatModeRuntime = resolveChatModeRuntime({
       mode: requestedMode === 'agent-full' ? 'agent' : requestedMode,

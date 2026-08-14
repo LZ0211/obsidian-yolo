@@ -45,6 +45,7 @@ import type {
   CliRuntimeMcpServerStatus,
   CliRuntimeReadyInput,
   CliRuntimeSkill,
+  CliSessionMetadata,
   CliSessionHydration,
   CliSessionRef,
   CliSlashCommand,
@@ -312,11 +313,41 @@ export class ClaudeCliRuntime implements CliRuntime {
     this.yoloEnabled = options.yoloEnabled ?? false
   }
 
+  async listSessions(): Promise<CliSessionMetadata[]> {
+    this.assertUsable()
+    const sdk = await this.getSdk()
+    if (!sdk.listSessions) {
+      throw new Error('Claude session discovery is unavailable.')
+    }
+    const sessions = await sdk.listSessions({ dir: this.vaultPath })
+    return sessions.map((session) => ({
+      ref: {
+        runtimeId: 'claude-code',
+        nativeSessionId: session.sessionId,
+      },
+      title:
+        session.customTitle ||
+        session.summary ||
+        session.firstPrompt ||
+        session.sessionId,
+      ...(session.firstPrompt && session.firstPrompt !== session.summary
+        ? { preview: session.firstPrompt }
+        : {}),
+      ...(session.createdAt !== undefined
+        ? { createdAt: session.createdAt }
+        : {}),
+      updatedAt: session.lastModified,
+      ...(session.cwd ? { cwd: session.cwd } : {}),
+    }))
+  }
+
   async openSession(ref: CliSessionRef): Promise<CliSessionHydration> {
     this.assertUsable()
     this.assertClaudeRef(ref)
     const sdk = await this.getSdk()
-    const messages = await sdk.getSessionMessages(ref.nativeSessionId)
+    const messages = await sdk.getSessionMessages(ref.nativeSessionId, {
+      dir: this.vaultPath,
+    })
     return { ref, ...hydrateClaudeSessionTranscript(messages) }
   }
 
@@ -430,9 +461,7 @@ export class ClaudeCliRuntime implements CliRuntime {
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
-            ...(assistantSystemPrompt
-              ? { append: assistantSystemPrompt }
-              : {}),
+            ...(assistantSystemPrompt ? { append: assistantSystemPrompt } : {}),
           },
           ...(resumeSessionId
             ? {

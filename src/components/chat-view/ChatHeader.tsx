@@ -1,5 +1,10 @@
 import { Download, History, Plus } from 'lucide-react'
-import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'react'
+import type {
+  Dispatch,
+  MutableRefObject,
+  RefObject,
+  SetStateAction,
+} from 'react'
 import { useEffect, useMemo, useRef } from 'react'
 
 import { useLanguage } from '../../contexts/language-context'
@@ -7,7 +12,9 @@ import type { AgentConversationRunSummary } from '../../core/agent/service'
 import {
   type ChatRuntimeId,
   type CliRuntimeScope,
+  type CliRuntimeAvailability,
   RUNTIME_CAPABILITIES,
+  resolveAvailableChatRuntimeIds,
 } from '../../core/cli-runtime'
 import type {
   ChatConversationCliSession,
@@ -36,6 +43,7 @@ export type ChatHeaderProps = {
   handleRuntimeChange: (runtimeId: ChatRuntimeId) => void
   cliRuntimeAvailable: boolean
   cliRuntimeScope: CliRuntimeScope | undefined
+  cliRuntimeAvailability: CliRuntimeAvailability
   /** Gates the assistant selector — hidden while a module chat mode is active. */
   chatMode: ChatMode
 
@@ -54,6 +62,19 @@ export type ChatHeaderProps = {
   handleExportChatToVault: (conversationId: string) => void
   currentConversationId: string
   chatList: ChatConversationMetadata[]
+  nativeCliConversationIds: ReadonlySet<string>
+  openNativeCliSession: (
+    conversationId: string,
+    ref: ChatConversationCliSession,
+  ) => Promise<void>
+  ensureNativeCliSession: (
+    conversationId: string,
+    ref: ChatConversationCliSession,
+  ) => Promise<void>
+  dismissNativeCliSession: (
+    conversationId: string,
+    ref: ChatConversationCliSession,
+  ) => Promise<void>
   activeHistoryConversationId: string
   runSummariesByConversationId: Map<string, AgentConversationRunSummary>
   handleLoadConversation: (conversationId: string) => Promise<void>
@@ -99,6 +120,7 @@ export function ChatHeader({
   handleRuntimeChange,
   cliRuntimeAvailable,
   cliRuntimeScope,
+  cliRuntimeAvailability,
   chatMode,
   containerRef,
   isWorkspaceWideHeader,
@@ -110,6 +132,10 @@ export function ChatHeader({
   handleExportChatToVault,
   currentConversationId,
   chatList,
+  nativeCliConversationIds,
+  openNativeCliSession,
+  ensureNativeCliSession,
+  dismissNativeCliSession,
   activeHistoryConversationId,
   runSummariesByConversationId,
   handleLoadConversation,
@@ -131,10 +157,12 @@ export function ChatHeader({
   // web lazy-resolve window equivalent to the old showCliMode behavior.
   const runtimeOptions = useMemo<readonly ChatRuntimeId[]>(
     () =>
-      cliRuntimeAvailable && cliRuntimeScope !== undefined
-        ? (['yolo', 'claude-code', 'codex'] as ChatRuntimeId[])
-        : (['yolo'] as ChatRuntimeId[]),
-    [cliRuntimeAvailable, cliRuntimeScope],
+      resolveAvailableChatRuntimeIds({
+        cliRuntimeAvailable,
+        hasCliRuntimeScope: cliRuntimeScope !== undefined,
+        runtimeAvailability: cliRuntimeAvailability,
+      }),
+    [cliRuntimeAvailable, cliRuntimeAvailability, cliRuntimeScope],
   )
 
   useEffect(() => {
@@ -276,17 +304,69 @@ export function ChatHeader({
               openHandleRef={historyOpenHandleRef}
               onSelect={(conversationId) => {
                 if (conversationId === activeHistoryConversationId) return
-                void handleLoadConversation(conversationId)
+                const selected = chatList.find(
+                  (conversation) => conversation.id === conversationId,
+                )
+                if (
+                  selected &&
+                  nativeCliConversationIds.has(conversationId) &&
+                  selected.cliSession
+                ) {
+                  return openNativeCliSession(
+                    conversationId,
+                    selected.cliSession,
+                  )
+                }
+                return handleLoadConversation(conversationId)
               }}
               onDelete={(conversationId) => {
-                void deleteConversationWithCleanup(conversationId)
+                const selected = chatList.find(
+                  (conversation) => conversation.id === conversationId,
+                )
+                if (
+                  selected &&
+                  nativeCliConversationIds.has(conversationId) &&
+                  selected.cliSession
+                ) {
+                  return dismissNativeCliSession(
+                    conversationId,
+                    selected.cliSession,
+                  )
+                }
+                return deleteConversationWithCleanup(conversationId)
               }}
               onUpdateTitle={async (conversationId, newTitle) => {
+                const selected = chatList.find(
+                  (conversation) => conversation.id === conversationId,
+                )
+                if (
+                  selected &&
+                  nativeCliConversationIds.has(conversationId) &&
+                  selected.cliSession
+                ) {
+                  await ensureNativeCliSession(
+                    conversationId,
+                    selected.cliSession,
+                  )
+                }
                 await updateConversationTitle(conversationId, newTitle)
                 syncCliConversationTitle(conversationId, newTitle)
               }}
               onTogglePinned={(conversationId) => {
-                void toggleConversationPinned(conversationId)
+                const selected = chatList.find(
+                  (conversation) => conversation.id === conversationId,
+                )
+                if (
+                  selected &&
+                  nativeCliConversationIds.has(conversationId) &&
+                  selected.cliSession
+                ) {
+                  return ensureNativeCliSession(
+                    conversationId,
+                    selected.cliSession,
+                  ).then(() => toggleConversationPinned(conversationId))
+                }
+                return toggleConversationPinned(conversationId)
               }}
               onRetryTitle={async (conversationId) => {
                 const conversation = await getConversationById(conversationId)

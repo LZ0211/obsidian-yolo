@@ -20,6 +20,7 @@ import type {
   ChatSessionControllerDeps,
 } from './ChatSessionController'
 import { ChatSessionController } from './ChatSessionController'
+import * as cliChatIntegration from './cliChatIntegration'
 import type { CliChatOperationCoordinator } from './cliChatIntegration'
 import { ConversationPreferencesController } from './ConversationPreferencesController'
 
@@ -77,6 +78,7 @@ function createCliContext(overrides: Partial<ChatSessionCliContext> = {}): {
     syncCliConversationTitle: jest.fn(),
     setCliConversationId: jest.fn(),
     consumeAcceptedCliDraft: jest.fn(),
+    isConversationDeleted: () => false,
     isMounted: () => true,
     ...overrides,
   }
@@ -810,6 +812,43 @@ describe('ChatSessionController — C2 submit/abortRun/compactContext/retry', ()
         message: 'environment build failed',
       })
       expect(coordinator.finishSubmission).toHaveBeenCalledWith(1)
+    })
+
+    it('does not recreate a deleted CLI history conversation after submission settles', async () => {
+      const { controller, getCliSubmitContext } = createController('c1', [])
+      const createOrTouchCliConversation = jest.fn(async () => undefined)
+      const { cliContext } = createCliContext({
+        cliConversationId: 'deleted-chat',
+        createOrTouchCliConversation,
+        isConversationDeleted: (conversationId) =>
+          conversationId === 'deleted-chat',
+      })
+      getCliSubmitContext.mockReturnValue(cliContext)
+      const submitSpy = jest
+        .spyOn(cliChatIntegration, 'submitCliComposerTurn')
+        .mockResolvedValue({
+          sessionRef: {
+            runtimeId: 'claude-code',
+            nativeSessionId: 'native-session',
+          },
+          userMessage: userMessage('draft-1'),
+          overlayError: null,
+        })
+
+      try {
+        const result = controller.submit({
+          runtimeId: 'claude-code',
+          message: userMessage('draft-1'),
+          assistantTimeContextEnabled: false,
+          currentConversationRunSummary: idleRunSummary,
+        })
+        expect(result.kind).toBe('cli_submitted')
+        if (result.kind !== 'cli_submitted') throw new Error('unreachable')
+        await expect(result.settled).resolves.toEqual({ kind: 'aborted' })
+        expect(createOrTouchCliConversation).not.toHaveBeenCalled()
+      } finally {
+        submitSpy.mockRestore()
+      }
     })
   })
 

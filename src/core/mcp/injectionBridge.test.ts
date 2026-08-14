@@ -83,6 +83,24 @@ describe('YOLO injection bridge', () => {
     uninstall()
   })
 
+  it('clears injected tools when the bridge is uninstalled', () => {
+    const uninstall = installYoloInjectionBridge()
+    const bridge = getInstalledInjectionBridge()
+    bridge?.registerTool(
+      {
+        name: 'test_unload',
+        description: 'Unload',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      async () => 'unload',
+      'test',
+    )
+
+    expect(isInjectedBridgeToolName('test_unload')).toBe(true)
+    uninstall()
+    expect(isInjectedBridgeToolName('test_unload')).toBe(false)
+  })
+
   it('supports batch registration and unregisterBySource', () => {
     const uninstall = installYoloInjectionBridge()
     const bridge = getInstalledInjectionBridge()

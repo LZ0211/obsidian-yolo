@@ -22,6 +22,11 @@ import {
   ToolCallResponseStatus,
 } from '../../types/tool-call.types'
 import {
+  CONSOLIDATED_TOOL_ACTIONS,
+  CONSOLIDATED_TOOLS,
+  resolveConsolidatedAction,
+} from '../agent/consolidated-tools'
+import {
   FILE_EDIT_GROUP_TOOL_NAME,
   WEB_OPS_GROUP_TOOL_NAME,
 } from '../agent/builtinToolUiMeta'
@@ -58,6 +63,7 @@ const LOCAL_FS_EDIT_TOOL_NAME_SET = new Set<string>(LOCAL_FS_EDIT_TOOL_NAMES)
 const LOCAL_MEMORY_SPLIT_TOOL_NAME_SET = new Set<string>(
   LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
 )
+const CONSOLIDATED_TOOL_NAME_SET = new Set<string>(CONSOLIDATED_TOOLS)
 import { McpOAuthController } from './mcpOAuthController'
 import type { McpOAuthClientProvider } from './mcpOAuthProvider'
 import type { McpRemoteTransportBackend } from './remoteTransport'
@@ -143,9 +149,20 @@ export class McpManager {
     try {
       const { serverName, toolName } = parseToolName(requestToolName)
       const action =
-        serverName === getLocalFileToolServerName()
-          ? parseLocalFsActionFromToolArgs({ toolName, args: requestArgs })
-          : null
+        serverName !== getLocalFileToolServerName()
+          ? null
+          : CONSOLIDATED_TOOL_NAME_SET.has(toolName)
+            ? (() => {
+                try {
+                  return resolveConsolidatedAction(toolName, requestArgs).action
+                } catch {
+                  return null
+                }
+              })()
+            : parseLocalFsActionFromToolArgs({
+                toolName,
+                args: requestArgs,
+              })
       if (serverName === getLocalFileToolServerName() && action) {
         return `${requestToolName}::${action}`
       }
@@ -155,7 +172,30 @@ export class McpManager {
     return requestToolName
   }
 
-  private isLocalToolEnabled(toolName: string): boolean {
+  private isLocalToolEnabled(
+    toolName: string,
+    args?: Record<string, unknown>,
+  ): boolean {
+    if (CONSOLIDATED_TOOL_NAME_SET.has(toolName)) {
+      const option = this.settings.mcp.builtinToolOptions[toolName]
+      if (option?.disabled) return false
+      if (args !== undefined) {
+        let action: string
+        try {
+          action = resolveConsolidatedAction(toolName, args).action
+        } catch {
+          return false
+        }
+        return !option?.actionOptions?.[action]?.disabled
+      }
+      const actions =
+        CONSOLIDATED_TOOL_ACTIONS[
+          toolName as keyof typeof CONSOLIDATED_TOOL_ACTIONS
+        ] ?? []
+      return actions.some(
+        (action) => !option?.actionOptions?.[action]?.disabled,
+      )
+    }
     // Web tools share a single `web_ops` group switch. `web_search` needs a
     // configured provider, while `web_scrape` can fall back to the generic
     // static-HTML scraper when no provider is configured.
@@ -1077,9 +1117,8 @@ export class McpManager {
       // Approve-once grants record ONLY the args-keyed allowance (never the
       // bare tool name) in a separate consumable map — see
       // `isToolExecutionAllowed` for the consume-on-match semantics.
-      let oneTimeTools = this.oneTimeAllowedToolsByConversation.get(
-        conversationId,
-      )
+      let oneTimeTools =
+        this.oneTimeAllowedToolsByConversation.get(conversationId)
       if (!oneTimeTools) {
         oneTimeTools = new Set<string>()
         this.oneTimeAllowedToolsByConversation.set(conversationId, oneTimeTools)
@@ -1093,7 +1132,11 @@ export class McpManager {
       this.allowedToolsByConversation.set(conversationId, allowedTools)
     }
     allowedTools.add(allowanceKey)
-    allowedTools.add(requestToolName)
+    if (
+      !CONSOLIDATED_TOOL_NAME_SET.has(parseToolName(requestToolName).toolName)
+    ) {
+      allowedTools.add(requestToolName)
+    }
   }
 
   /**
@@ -1132,7 +1175,7 @@ export class McpManager {
     try {
       const { serverName, toolName } = parseToolName(requestToolName)
       if (serverName === getLocalFileToolServerName()) {
-        if (!this.isLocalToolEnabled(toolName)) {
+        if (!this.isLocalToolEnabled(toolName, requestArgs)) {
           return false
         }
       } else if (this.inProcessServers.has(serverName)) {
@@ -1166,9 +1209,10 @@ export class McpManager {
         this.allowedToolsByConversation
           .get(conversationId)
           ?.has(allowanceKey) ||
-        this.allowedToolsByConversation
-          .get(conversationId)
-          ?.has(requestToolName)
+        (!CONSOLIDATED_TOOL_NAME_SET.has(toolName) &&
+          this.allowedToolsByConversation
+            .get(conversationId)
+            ?.has(requestToolName))
       ) {
         return true
       }
@@ -1176,9 +1220,8 @@ export class McpManager {
       // One-time (approve-once) allowance: consumed on first match so the
       // grant covers exactly one gated call. A later call of the same tool
       // finds no allowance and falls through to `requireAutoExecution` again.
-      const oneTimeTools = this.oneTimeAllowedToolsByConversation.get(
-        conversationId,
-      )
+      const oneTimeTools =
+        this.oneTimeAllowedToolsByConversation.get(conversationId)
       if (oneTimeTools?.has(allowanceKey)) {
         oneTimeTools.delete(allowanceKey)
         if (oneTimeTools.size === 0) {
@@ -1264,7 +1307,7 @@ export class McpManager {
       const parsedArgs: Record<string, unknown> | undefined = args
 
       if (serverName === getLocalFileToolServerName()) {
-        if (!this.isLocalToolEnabled(toolName)) {
+        if (!this.isLocalToolEnabled(toolName, parsedArgs)) {
           throw new Error(`Built-in tool ${toolName} is disabled`)
         }
         const localResult = await callLocalFileTool({
@@ -1557,11 +1600,7 @@ export class McpManager {
           settingsConfig.enabled === current.config.enabled &&
           settingsConfig.auth === current.config.auth &&
           isEqual(settingsConfig.parameters, current.config.parameters)
-        if (
-          !latest ||
-          !latest.config.enabled ||
-          !configStillCurrent
-        ) {
+        if (!latest || !latest.config.enabled || !configStillCurrent) {
           if (reconnected.status === McpServerStatus.Connected) {
             void this.closeClient(reconnected.client).catch(() => {
               /* best-effort teardown of orphan client */

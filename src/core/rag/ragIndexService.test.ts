@@ -467,13 +467,15 @@ describe('RagIndexService', () => {
         chunkifyFailedPaths: [],
       })
       const request = jest.fn(
-        (_name: string, _options: unknown, callback: () => Promise<unknown>) =>
-          callback(),
+        (
+          _name: string,
+          _options: unknown,
+          callback: (lock: Lock | null) => Promise<unknown>,
+        ) => callback({ name: _name } as Lock),
       )
       ;(globalThis as { navigator?: unknown }).navigator = {
         locks: {
           request,
-          query: jest.fn().mockResolvedValue({ held: [], pending: [] }),
         },
       }
       const service = makeService(updateVaultIndex)
@@ -483,7 +485,7 @@ describe('RagIndexService', () => {
 
       expect(request).toHaveBeenCalledWith(
         `yolo-rag-index:${vaultName}`,
-        { mode: 'exclusive' },
+        { mode: 'exclusive', ifAvailable: true },
         expect.any(Function),
       )
       expect(updateVaultIndex).toHaveBeenCalledTimes(1)
@@ -494,15 +496,17 @@ describe('RagIndexService', () => {
       expect(service.getSnapshot()).toMatchObject({ status: 'completed' })
     })
 
-    it('rejects with the busy error when another window holds the index lock', async () => {
-      const request = jest.fn()
+    it('rejects immediately when another window holds the index lock', async () => {
+      const request = jest.fn(
+        (
+          _name: string,
+          _options: unknown,
+          callback: (lock: Lock | null) => Promise<unknown>,
+        ) => callback(null),
+      )
       ;(globalThis as { navigator?: unknown }).navigator = {
         locks: {
           request,
-          query: jest.fn().mockResolvedValue({
-            held: [{ name: `yolo-rag-index:${vaultName}` }],
-            pending: [],
-          }),
         },
       }
       const updateVaultIndex = jest.fn().mockResolvedValue({
@@ -515,7 +519,7 @@ describe('RagIndexService', () => {
       await expect(service.runIndex(runOptions)).rejects.toBeInstanceOf(
         RagIndexBusyError,
       )
-      expect(request).not.toHaveBeenCalled()
+      expect(request).toHaveBeenCalledTimes(1)
       expect(updateVaultIndex).not.toHaveBeenCalled()
     })
 

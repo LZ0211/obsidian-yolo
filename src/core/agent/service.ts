@@ -1238,7 +1238,10 @@ export class AgentService {
     //   recovered: reset the per-conversation consecutive-timeout breaker so
     //   new delegation is allowed again. The synthetic timeout settlement is
     //   aborted, so it never counts as a success.
-    if (event.kind === 'subagent' && event.record.source.type === 'llm_tool_call') {
+    if (
+      event.kind === 'subagent' &&
+      event.record.source.type === 'llm_tool_call'
+    ) {
       const toolCallId = event.record.source.toolCallId
       clearParentSubagentDeadline(toolCallId)
       // Keep the approval-path teardown set bounded: the result landed, so no
@@ -1757,15 +1760,15 @@ export class AgentService {
     // `teardownApprovedSubagentDeadlines`). The completion path also removes
     // the id here (`handleBackgroundTaskCompleted`), keeping the set bounded
     // to live deadlines.
-    const registered = this.approvedSubagentDeadlineToolCallIds.get(
-      conversationId,
-    )
+    const registered =
+      this.approvedSubagentDeadlineToolCallIds.get(conversationId)
     if (registered) {
       registered.add(toolCallId)
     } else {
-      this.approvedSubagentDeadlineToolCallIds.set(conversationId, new Set([
-        toolCallId,
-      ]))
+      this.approvedSubagentDeadlineToolCallIds.set(
+        conversationId,
+        new Set([toolCallId]),
+      )
     }
     registerParentSubagentDeadline({
       toolCallId,
@@ -1820,9 +1823,8 @@ export class AgentService {
    * aborted too, so no live deadline is being discarded.
    */
   private teardownApprovedSubagentDeadlines(conversationId: string): void {
-    const toolCallIds = this.approvedSubagentDeadlineToolCallIds.get(
-      conversationId,
-    )
+    const toolCallIds =
+      this.approvedSubagentDeadlineToolCallIds.get(conversationId)
     if (!toolCallIds) return
     for (const toolCallId of toolCallIds) {
       clearParentSubagentDeadline(toolCallId)
@@ -2233,6 +2235,10 @@ export class AgentService {
           conversationId: entry.parentConversationId,
           conversationMessages: entry.runtime.getMessages(),
           roundId: located.toolMessage.id,
+          signal: entry.abortSignal,
+          workspaceAccessPolicy:
+            request.metadata?.workspaceAccessPolicy ??
+            entry.workspaceAccessPolicy,
           // This call bypasses `AgentToolGateway` (approval already
           // happened), so it can't read the gateway's live `bashReadOnly`
           // option — read the persisted snapshot instead. See
@@ -2856,7 +2862,9 @@ export class AgentService {
     // Stop the conversation's running child subagents as well — without this,
     // children whose parent tool call already settled keep running to
     // completion after the parent session is stopped/aborted.
-    for (const task of subagentTaskRegistry.listByConversation(conversationId)) {
+    for (const task of subagentTaskRegistry.listByConversation(
+      conversationId,
+    )) {
       subagentTaskRegistry.abort(task.taskId)
     }
     return didAbort

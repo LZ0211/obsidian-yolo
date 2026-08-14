@@ -216,7 +216,10 @@ describe('memory index runtime adapter', () => {
       advancedMemoryIndexEnabled: true,
     }))
     const privateRuntime = runtime as unknown as {
-      queue: { enqueueMaintenance: jest.Mock; shutdown: () => Promise<boolean> } | null
+      queue: {
+        enqueueMaintenance: jest.Mock
+        shutdown: () => Promise<boolean>
+      } | null
       knownPartitions: Map<string, MemoryPartition>
     }
     privateRuntime.knownPartitions.set(
@@ -473,6 +476,29 @@ describe('memory index runtime adapter', () => {
       })
 
       expect(rows.map(({ id }) => id)).toEqual(['Memory_related'])
+
+      const orderedRows = await store.query({
+        partition,
+        sourceFileFingerprint: 'file-v1',
+        target: {
+          query: 'unrelated',
+          keywords: ['unrelated'],
+          entities: [],
+          categories: ['other'],
+          scopes: ['global'],
+          sector: null,
+          confidence: 1,
+          isReferential: false,
+          source: 'lexical',
+        },
+        memoryKeys: ['global::Memory_unrelated', 'global::Memory_related'],
+        maxEntries: 2,
+        maxChars: 3000,
+      })
+      expect(orderedRows.map(({ id }) => id)).toEqual([
+        'Memory_unrelated',
+        'Memory_related',
+      ])
     } finally {
       if ('close' in store && typeof store.close === 'function')
         await store.close()
@@ -965,8 +991,9 @@ describe('vector recall path write-through', () => {
       makeEntry('Memory_minimal', '用户偏好极简风格的设计', partition),
       makeEntry('Memory_unrelated', '一段与查询无关的记忆', partition),
     ]
-    const embedContent = jest.fn(async (content: string): Promise<number[]> =>
-      content.includes('极简') ? [1, 0, 0, 0] : [0, 1, 0, 0],
+    const embedContent = jest.fn(
+      async (content: string): Promise<number[]> =>
+        content.includes('极简') ? [1, 0, 0, 0] : [0, 1, 0, 0],
     )
     const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
     const store = await openMemoryIndexStore({
@@ -1048,16 +1075,16 @@ describe('vector recall path write-through', () => {
       embedContent,
     })
     const memoryKeys = (): Promise<string[]> =>
-      store
-        .getRuntime()
-        .then((runtime) =>
-          runtime
-            .query<{ memory_key: string }>(
-              'select memory_key from memory_embeddings where partition_key = ? order by memory_key',
-              [partition.partitionKey],
-            )
-            .map(({ memory_key }) => memory_key),
-        )
+      store.getRuntime().then((runtime) =>
+        runtime
+          .query<{
+            memory_key: string
+          }>(
+            'select memory_key from memory_embeddings where partition_key = ? order by memory_key',
+            [partition.partitionKey],
+          )
+          .map(({ memory_key }) => memory_key),
+      )
     try {
       await store.reconcilePartition({
         partition,
@@ -1164,16 +1191,19 @@ describe('recall reinforce wiring', () => {
       )
 
       const row = (localId: string) =>
-        store
-          .getRuntime()
-          .then((runtime) =>
-            runtime.queryOne<{ salience: number; last_recalled_at: number | null }>(
-              'select salience, last_recalled_at from memory_index where partition_key = ? and local_id = ?',
-              [partition.partitionKey, localId],
-            ),
-          )
+        store.getRuntime().then((runtime) =>
+          runtime.queryOne<{
+            salience: number
+            last_recalled_at: number | null
+          }>(
+            'select salience, last_recalled_at from memory_index where partition_key = ? and local_id = ?',
+            [partition.partitionKey, localId],
+          ),
+        )
 
-      await waitFor(async () => ((await row('Memory_minimal'))?.salience ?? 0) > 0.5)
+      await waitFor(
+        async () => ((await row('Memory_minimal'))?.salience ?? 0) > 0.5,
+      )
       expect((await row('Memory_minimal'))?.last_recalled_at).not.toBeNull()
       expect((await row('Memory_noise'))?.salience).toBe(0.5)
       expect((await row('Memory_noise'))?.last_recalled_at).toBeNull()
@@ -1223,17 +1253,15 @@ describe('memory salience decay', () => {
         parserVersion: 'p',
         entries: [entry],
       })
-      const before = await store
-        .getRuntime()
-        .then((runtime) =>
-          runtime.queryOne<{
-            salience: number
-            updated_at: number
-          }>(
-            'select salience, updated_at from memory_index where partition_key = ? and local_id = ?',
-            [partition.partitionKey, 'Memory_stale'],
-          ),
-        )
+      const before = await store.getRuntime().then((runtime) =>
+        runtime.queryOne<{
+          salience: number
+          updated_at: number
+        }>(
+          'select salience, updated_at from memory_index where partition_key = ? and local_id = ?',
+          [partition.partitionKey, 'Memory_stale'],
+        ),
+      )
       expect(before?.salience).toBe(0.5)
 
       await (
@@ -1245,17 +1273,15 @@ describe('memory salience decay', () => {
         }
       ).applyDecay({ partition, nowMs: t0 + 30 * 86_400_000 })
 
-      const after = await store
-        .getRuntime()
-        .then((runtime) =>
-          runtime.queryOne<{
-            salience: number
-            updated_at: number
-          }>(
-            'select salience, updated_at from memory_index where partition_key = ? and local_id = ?',
-            [partition.partitionKey, 'Memory_stale'],
-          ),
-        )
+      const after = await store.getRuntime().then((runtime) =>
+        runtime.queryOne<{
+          salience: number
+          updated_at: number
+        }>(
+          'select salience, updated_at from memory_index where partition_key = ? and local_id = ?',
+          [partition.partitionKey, 'Memory_stale'],
+        ),
+      )
       expect(after?.salience).toBeLessThan(0.5)
       expect(after?.salience).toBeGreaterThan(0)
       expect(after?.updated_at).toBe(before?.updated_at)
@@ -1291,7 +1317,13 @@ describe('cold memory archive', () => {
     const entries = [
       makeEntry('Memory_cold', '很久没用的记忆', ['cold'], 'other', partition),
       makeEntry('Memory_fresh', '新的记忆', ['fresh'], 'other', partition),
-      makeEntry('Memory_hot', '经常命中的记忆', ['hot'], 'preferences', partition),
+      makeEntry(
+        'Memory_hot',
+        '经常命中的记忆',
+        ['hot'],
+        'preferences',
+        partition,
+      ),
     ]
     const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
     const store = await openMemoryIndexStore({
@@ -1327,11 +1359,19 @@ describe('cold memory archive', () => {
 
       const embeddings = new MemoryEmbeddingStore(runtime)
       embeddings.upsert(
-        { partitionKey: partition.partitionKey, memoryKey: 'global::Memory_cold', localId: 1 },
+        {
+          partitionKey: partition.partitionKey,
+          memoryKey: 'global::Memory_cold',
+          localId: 1,
+        },
         Array(4).fill(0.1),
       )
       embeddings.upsert(
-        { partitionKey: partition.partitionKey, memoryKey: 'global::Memory_fresh', localId: 2 },
+        {
+          partitionKey: partition.partitionKey,
+          memoryKey: 'global::Memory_fresh',
+          localId: 2,
+        },
         Array(4).fill(0.2),
       )
 
@@ -1354,11 +1394,15 @@ describe('cold memory archive', () => {
       })
       const keys = results.map((entry) => entry.memoryKey)
       expect(keys).not.toContain('global::Memory_cold')
-      expect(keys).toEqual(expect.arrayContaining(['global::Memory_fresh', 'global::Memory_hot']))
+      expect(keys).toEqual(
+        expect.arrayContaining(['global::Memory_fresh', 'global::Memory_hot']),
+      )
 
       await (
         store as MemoryIndexMaintenanceStore & {
-          archiveColdEntries(input: { partition: MemoryPartition }): Promise<void>
+          archiveColdEntries(input: {
+            partition: MemoryPartition
+          }): Promise<void>
         }
       ).archiveColdEntries({ partition })
 

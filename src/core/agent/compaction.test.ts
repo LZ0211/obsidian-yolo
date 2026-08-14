@@ -95,6 +95,41 @@ describe('createConversationCompactionSummary', () => {
     )
   })
 
+  it('forwards the abort signal to the summary request', async () => {
+    mockedExecuteSingleTurn.mockResolvedValueOnce(
+      stubSingleTurnResult('<summary>S</summary>'),
+    )
+    const controller = new AbortController()
+
+    await createConversationCompactionSummary({
+      providerClient: fakeProviderClient,
+      model: fakeModel,
+      requestMessages: prefix,
+      signal: controller.signal,
+    })
+
+    expect(mockedExecuteSingleTurn.mock.calls[0][0].signal).toBe(
+      controller.signal,
+    )
+  })
+
+  it('does not retry an aborted summary request', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const error = new DOMException('aborted', 'AbortError')
+    mockedExecuteSingleTurn.mockRejectedValueOnce(error)
+
+    await expect(
+      createConversationCompactionSummary({
+        providerClient: fakeProviderClient,
+        model: fakeModel,
+        requestMessages: prefix,
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(error)
+    expect(mockedExecuteSingleTurn).toHaveBeenCalledTimes(1)
+  })
+
   it('appends turn messages between the prefix and the instruction', async () => {
     mockedExecuteSingleTurn.mockResolvedValueOnce(
       stubSingleTurnResult('<summary>S</summary>'),
@@ -352,7 +387,9 @@ describe('buildCompactionInstructionMessage selective retention rules', () => {
   })
 
   it('states the space-constrained priority order', () => {
-    expect(text).toContain('用户约束 > 决策与理由 > 错误与失败 > 路径与实体 > 过程细节')
+    expect(text).toContain(
+      '用户约束 > 决策与理由 > 错误与失败 > 路径与实体 > 过程细节',
+    )
   })
 })
 
@@ -752,6 +789,51 @@ describe('resolveAutoContextCompactionNoticeTier', () => {
       }),
     ).toBeNull()
   })
+
+  it('does not prompt when the compaction anchor is the following tool message', () => {
+    const emptyArgs = createCompleteToolCallArguments({ value: {} })
+    expect(
+      getAutoContextCompactionPromptTrigger({
+        messages: [
+          userMsg('u1'),
+          assistantMsg('a1', { prompt_tokens: 120 }),
+          {
+            role: 'tool',
+            id: 'tool-compact',
+            toolCalls: [
+              {
+                request: {
+                  id: 'compact-1',
+                  name: 'context_compact',
+                  arguments: emptyArgs,
+                },
+                response: {
+                  status: ToolCallResponseStatus.Success,
+                  data: {
+                    type: 'text',
+                    text: JSON.stringify({
+                      tool: 'context_compact',
+                      operation: 'compact_restart',
+                    }),
+                  },
+                },
+              },
+            ],
+          },
+        ],
+        chatOptions: baseAutoOptions,
+        maxContextTokens: 1000,
+        compactionState: [
+          {
+            anchorMessageId: 'tool-compact',
+            triggerToolCallId: 'compact-1',
+            summary: 's',
+            compactedAt: 1,
+          },
+        ],
+      }),
+    ).toBeNull()
+  })
 })
 
 describe('shouldPromptAutoContextCompactionTier per-run dedup', () => {
@@ -847,7 +929,7 @@ describe('auto context compaction notice tiers', () => {
   it('must tier keeps the threshold-reached wording', () => {
     const content = noticeFor(120)
     expect(content).toContain(
-      'has reached the user\'s automatic context compaction threshold',
+      "has reached the user's automatic context compaction threshold",
     )
   })
 })

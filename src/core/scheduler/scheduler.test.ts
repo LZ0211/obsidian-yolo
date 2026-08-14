@@ -611,7 +611,11 @@ describe('ScheduledTaskScheduler', () => {
       // path must observe the CANCELLED row and stay silent (no completion
       // event, no success Notice) — RED on the old behavior: task_completed
       // was emitted and the success Notice shown.
-      resolveRun({ conversationId: 'conv-1', text: 'done', status: 'completed' })
+      resolveRun({
+        conversationId: 'conv-1',
+        text: 'done',
+        status: 'completed',
+      })
       await flushPromises()
       expect(events.map((e) => e.type)).not.toContain('task_completed')
       expect(Notice).not.toHaveBeenCalledWith(
@@ -625,7 +629,7 @@ describe('ScheduledTaskScheduler', () => {
     }
   })
 
-  it('T1 fix-round-1: deleteTask also cancels and keeps ANOTHER window\'s in-flight run', async () => {
+  it("T1 fix-round-1: deleteTask also cancels and keeps ANOTHER window's in-flight run", async () => {
     const dir = makeTempDir()
     try {
       const store = createScheduledTasksStore(dir)
@@ -668,7 +672,11 @@ describe('ScheduledTaskScheduler', () => {
 
       // Both runs "settle" afterwards; the CANCELLED rows keep the success
       // paths silent.
-      resolveRun({ conversationId: 'conv-1', text: 'done', status: 'completed' })
+      resolveRun({
+        conversationId: 'conv-1',
+        text: 'done',
+        status: 'completed',
+      })
       await flushPromises()
       expect(store.getRun(result.runId)?.status).toBe(TaskRunStatus.CANCELLED)
       expect(store.getRun('run-remote')?.status).toBe(TaskRunStatus.CANCELLED)
@@ -800,7 +808,9 @@ describe('ScheduledTaskScheduler', () => {
       const after = store.getTask(created.id)?.nextRunTime
       expect(after).not.toBeNull()
       expect(after).not.toBe(before)
-      expect(after).toBe(parseCronNextTime('0 9 * * *', fixedNow, 'Asia/Shanghai'))
+      expect(after).toBe(
+        parseCronNextTime('0 9 * * *', fixedNow, 'Asia/Shanghai'),
+      )
 
       store.close()
     } finally {
@@ -1243,7 +1253,7 @@ describe('ScheduledTaskScheduler', () => {
       // child has dependencies, so neither qualifies for isolated deferral.
       scheduler.start()
       await flushPromises()
-      scheduler.stop()
+      scheduler.pauseQueue()
 
       expect(scheduler.getExecutingTasks().map((run) => run.taskId)).toEqual([
         'parent-agent',
@@ -1253,6 +1263,7 @@ describe('ScheduledTaskScheduler', () => {
       ])
 
       // Completing the parent unblocks the child within the same batch.
+      scheduler.resumeQueue()
       resolvers[0]?.({
         conversationId: 'conv-1',
         text: 'done',
@@ -1271,6 +1282,7 @@ describe('ScheduledTaskScheduler', () => {
       await flushPromises()
       await flushPromises()
 
+      scheduler.stop()
       store.close()
     } finally {
       cleanup(dir)

@@ -335,6 +335,34 @@ describe('ScheduledTasksService', () => {
     }
   })
 
+  it('shutdown disposes the event bus after stopping the scheduler', () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      const eventBus = new TaskEventBus()
+      const service = new ScheduledTasksService({
+        store,
+        eventBus,
+        executor: new TaskExecutor({
+          getAgentApi: () =>
+            makeAgentApi(async () => ({
+              conversationId: 'conv-1',
+              text: 'done',
+              status: 'completed',
+            })),
+        }),
+      })
+      const dispose = jest.spyOn(eventBus, 'dispose')
+
+      service.shutdown()
+
+      expect(dispose).toHaveBeenCalledTimes(1)
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
   it('subscribeToAllTaskEvents/subscribeToTask/subscribeToTaskRun route events from the shared event bus', async () => {
     const dir = makeTempDir()
     try {

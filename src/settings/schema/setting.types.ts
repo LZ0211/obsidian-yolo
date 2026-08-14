@@ -531,6 +531,7 @@ export type BotPlatformConfig = z.infer<typeof botPlatformConfigSchema>
 
 export const sessionMappingSchema = z.object({
   sessionKey: z.string(),
+  platformInstanceId: z.string().optional(),
   platformName: z.string(),
   chatType: z.enum(['private', 'group']),
   platformChatId: z.string(),

@@ -92,6 +92,12 @@ class InjectedToolRegistry {
     return removedAny
   }
 
+  clear(): void {
+    if (this.tools.size === 0) return
+    this.tools.clear()
+    this.notify()
+  }
+
   getTools(): McpTool[] {
     return Array.from(this.tools.values()).map((entry) => entry.tool)
   }
@@ -174,7 +180,12 @@ class YoloInjectionBridgeImpl implements YoloInjectionBridge {
   ): void {
     const source = normalizeSource(sourceId)
     for (const tool of tools) {
-      this.registry.set(toMcpTool(tool.descriptor), tool.handler, source, groupName)
+      this.registry.set(
+        toMcpTool(tool.descriptor),
+        tool.handler,
+        source,
+        groupName,
+      )
     }
   }
 
@@ -282,6 +293,7 @@ export function uninstallYoloInjectionBridge(): void {
       delete win.__mcpBridge__
     }
   }
+  injectedToolRegistry.clear()
   installedBridge = null
   legacyAliasInstalled = false
 }
@@ -296,9 +308,7 @@ export function isInjectedBridgeToolName(toolName: string): boolean {
 }
 
 /** 注入工具的自定义插件能力分组名（未提供时回退到"外部能力"分组）。 */
-export function getInjectedToolGroupName(
-  toolName: string,
-): string | undefined {
+export function getInjectedToolGroupName(toolName: string): string | undefined {
   return injectedToolRegistry.getGroupName(toolName)
 }
 

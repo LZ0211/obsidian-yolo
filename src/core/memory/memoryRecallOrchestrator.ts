@@ -25,7 +25,10 @@ export type MemoryRecallContext = {
   paths: readonly ('lexical' | 'vector' | 'graph')[]
 }
 
-export type MemoryAgentEntryLike = { memoryKey: string } & Record<string, unknown>
+export type MemoryAgentEntryLike = { memoryKey: string } & Record<
+  string,
+  unknown
+>
 
 export const MAX_RECALL_ENTRIES = 8
 export const MAX_RECALL_CHARS = 3000
@@ -62,11 +65,14 @@ export class MemoryRecallOrchestrator {
       embedQuery: this.embedQuery,
     })
 
-    // Resolve fused memory keys back to full entries via the lexical query.
+    // Resolve fused memory keys back to full entries in the fused order. A
+    // lexical re-query would only return its own top rows and could discard
+    // vector/graph-only hits before the fused result is rendered.
     const allEntries = await this.store.query({
       partition,
       sourceFileFingerprint,
       target,
+      memoryKeys: result.memoryKeys,
       maxEntries: MAX_RECALL_ENTRIES,
       maxChars: MAX_RECALL_CHARS,
     })
@@ -102,7 +108,9 @@ export class MemoryRecallOrchestrator {
     queryKeywords: readonly string[],
   ): boolean {
     const entryKeywords = Array.isArray(entry.keywords)
-      ? entry.keywords.filter((keyword): keyword is string => typeof keyword === 'string')
+      ? entry.keywords.filter(
+          (keyword): keyword is string => typeof keyword === 'string',
+        )
       : []
     if (
       entryKeywords.some((keyword) =>
@@ -140,7 +148,9 @@ export class MemoryRecallOrchestrator {
       if (chars > budget) break
       budget -= chars
       const content =
-        typeof entry.content === 'string' ? entry.content : String(entry.content ?? '')
+        typeof entry.content === 'string'
+          ? entry.content
+          : String(entry.content ?? '')
       const category =
         typeof entry.category === 'string' ? entry.category : 'other'
       parts.push(`[${category}] ${content}`)

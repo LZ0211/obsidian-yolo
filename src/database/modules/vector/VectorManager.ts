@@ -130,6 +130,7 @@ export type VectorSimilarityTrace = {
  */
 type VectorManagerSettings = YoloSettingsLike & {
   embeddingModels?: EmbeddingModel[]
+  providers?: Array<{ id: string; baseUrl?: string }>
   ragBackendSettings?: {
     rebuildRequired?: boolean
   }
@@ -236,10 +237,7 @@ export class VectorManager {
         continue
       }
       await this.vectorStore.dropNamespace?.(
-        createEmbeddingVectorNamespace({
-          model: model.model,
-          dimension: model.dimension,
-        }),
+        this.getVectorNamespace({ id: model.id, dimension: model.dimension }),
       )
     }
   }
@@ -1156,6 +1154,10 @@ export class VectorManager {
     return createEmbeddingVectorNamespace({
       model: configuredModel?.model ?? embeddingModel.id,
       dimension: embeddingModel.dimension,
+      providerId: configuredModel?.providerId,
+      endpoint: this.settings?.providers?.find(
+        (provider) => provider.id === configuredModel?.providerId,
+      )?.baseUrl,
     })
   }
 

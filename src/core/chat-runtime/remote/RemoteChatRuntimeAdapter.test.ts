@@ -37,6 +37,26 @@ const noopTransport = {
 }
 
 describe('RemoteChatRuntimeAdapter', () => {
+  it('rejects a turn when the remote endpoint returns a non-2xx response', async () => {
+    const adapter = new RemoteChatRuntimeAdapter(
+      'codex',
+      {
+        ...noopTransport,
+        post: async () => ({
+          ok: false,
+          json: async () => ({
+            error: { code: 'session_expired', message: 'session expired' },
+          }),
+        }),
+      },
+      'conv-1',
+    )
+
+    await expect(
+      adapter.sendTurn({ content: 'hello', messageId: 'msg-1' }),
+    ).rejects.toThrow('session expired')
+  })
+
   it('emits a snapshot as the first event after connect', () => {
     const { transport, calls } = createFakeTransport()
     const adapter = new RemoteChatRuntimeAdapter(
@@ -293,4 +313,149 @@ describe('RemoteChatRuntimeAdapter', () => {
       error: { kind: 'rejected', reason: 'not found', retryable: false },
     })
   })
+
+  it('publishes a recovered snapshot and updates the local snapshot cursor', async () => {
+    const { transport } = createFakeTransport()
+    const recovered = {
+      replayCursor: 3,
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      sessionRef: null,
+      messages: [{ id: 'a1', role: 'assistant', content: 'recovered' }],
+      runState: 'completed',
+      error: null,
+      compactionBoundaries: [],
+      configuration: null,
+      capabilities: {} as never,
+    }
+    const get = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ snapshot: recovered, cursor: 3 }),
+    }))
+    const adapter = new RemoteChatRuntimeAdapter(
+      'codex',
+      {
+        open: () => transport,
+        post: noopTransport.post,
+        get,
+      },
+      'conv-1',
+    )
+    const eventTypes: string[] = []
+    adapter.subscribe((event) => eventTypes.push(event.type))
+
+    transport.emit({
+      protocolVersion: 1,
+      eventId: 'e1',
+      sequence: 1,
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      sessionRef: null,
+      timestamp: 1,
+      type: 'run.state',
+      payload: { state: 'running' },
+    })
+    transport.emit({
+      protocolVersion: 1,
+      eventId: 'e3',
+      sequence: 3,
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      sessionRef: null,
+      timestamp: 3,
+      type: 'run.state',
+      payload: { state: 'completed' },
+    })
+    await waitFor(() => adapter.getSnapshot().replayCursor === 3)
+
+    expect(get).toHaveBeenCalledTimes(1)
+    expect(adapter.getSnapshot().messages).toEqual(recovered.messages)
+    expect(adapter.getSnapshot().runState).toBe('completed')
+    expect(eventTypes).toContain('snapshot')
+    adapter.dispose()
+  })
+
+  it('coalesces concurrent gap recovery and retries when a newer gap arrives', async () => {
+    const { transport } = createFakeTransport()
+    const first = deferred<{ snapshot: unknown; cursor: number }>()
+    const second = deferred<{ snapshot: unknown; cursor: number }>()
+    const get = jest
+      .fn()
+      .mockImplementationOnce(async () => ({
+        ok: true,
+        json: async () => first.promise,
+      }))
+      .mockImplementationOnce(async () => ({
+        ok: true,
+        json: async () => second.promise,
+      }))
+    const snapshot = (cursor: number) => ({
+      replayCursor: cursor,
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      sessionRef: null,
+      messages: [],
+      runState: 'running',
+      error: null,
+      compactionBoundaries: [],
+      configuration: null,
+      capabilities: {} as never,
+    })
+    const adapter = new RemoteChatRuntimeAdapter(
+      'codex',
+      {
+        open: () => transport,
+        post: noopTransport.post,
+        get,
+      },
+      'conv-1',
+    )
+    adapter.subscribe(() => undefined)
+
+    transport.emit({
+      protocolVersion: 1,
+      eventId: 'e3',
+      sequence: 3,
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      sessionRef: null,
+      timestamp: 3,
+      type: 'run.state',
+      payload: { state: 'running' },
+    })
+    transport.emit({
+      protocolVersion: 1,
+      eventId: 'e5',
+      sequence: 5,
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      sessionRef: null,
+      timestamp: 5,
+      type: 'run.state',
+      payload: { state: 'completed' },
+    })
+
+    expect(get).toHaveBeenCalledTimes(1)
+    first.resolve({ snapshot: snapshot(3), cursor: 3 })
+    await waitFor(() => get.mock.calls.length === 2)
+    second.resolve({ snapshot: snapshot(5), cursor: 5 })
+    await waitFor(() => adapter.getSnapshot().replayCursor === 5)
+    adapter.dispose()
+  })
 })
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  throw new Error('condition not met')
+}

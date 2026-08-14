@@ -99,7 +99,9 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempts = 0
   private lastSequence = 0
+  private highestSequenceSeen = 0
   private disposed = false
+  private recoveryInFlight: Promise<void> | null = null
   private readonly submissionTrackers = new Map<string, ChatSubmissionTracker>()
   /** 客户端侧事件聚合快照：SSE 事件流驱动，与其他 adapter 语义一致。 */
   private currentSnapshot: ChatRuntimeSnapshot
@@ -154,16 +156,29 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
     const tracker = new ChatSubmissionTracker(requestId, messageId)
     // 绑定 submission 事件：accepted -> durably_accepted；rejected -> rejected。
     this.bindSubmissionTracking(requestId, messageId, tracker)
-    await this.transport.post(CHAT_RUNTIME_ENDPOINTS.turn(this.runtimeId), {
-      requestId,
-      messageId,
-      baseRevision: input.baseRevision,
-      messageGeneration: input.messageGeneration,
-      conversationId: input.conversationId ?? this.conversationId,
-      sessionRef: input.sessionRef,
-      content: input.content,
-      selectedSkills: input.selectedSkills,
-    })
+    try {
+      const response = await this.transport.post(
+        CHAT_RUNTIME_ENDPOINTS.turn(this.runtimeId),
+        {
+          requestId,
+          messageId,
+          baseRevision: input.baseRevision,
+          messageGeneration: input.messageGeneration,
+          conversationId: input.conversationId ?? this.conversationId,
+          sessionRef: input.sessionRef,
+          content: input.content,
+          selectedSkills: input.selectedSkills,
+        },
+      )
+      if (!response.ok) {
+        throw new Error(await getRemoteResponseError(response))
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      tracker.markRejected(reason, false)
+      this.submissionTrackers.delete(requestId)
+      throw error
+    }
     return {
       requestId,
       messageId,
@@ -375,9 +390,13 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
 
   private handleWireEvent(wire: WireEventEnvelope): void {
     const decoded = decodeChatRuntimeEvent(wire)
+    this.highestSequenceSeen = Math.max(
+      this.highestSequenceSeen,
+      decoded.sequence,
+    )
     if (decoded.sequence <= this.lastSequence) return
     if (decoded.sequence > this.lastSequence + 1) {
-      void this.reconnectFromSnapshot()
+      this.startSnapshotRecovery()
       return
     }
     this.lastSequence = decoded.sequence
@@ -472,6 +491,22 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
     this.submissionTrackers.set(requestId, tracker)
   }
 
+  private startSnapshotRecovery(): void {
+    if (this.recoveryInFlight != null || this.disposed) return
+
+    const recovery = this.reconnectFromSnapshot()
+    this.recoveryInFlight = recovery
+    void recovery
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.recoveryInFlight !== recovery) return
+        this.recoveryInFlight = null
+        if (this.highestSequenceSeen > this.lastSequence) {
+          this.startSnapshotRecovery()
+        }
+      })
+  }
+
   private async reconnectFromSnapshot(): Promise<void> {
     const response = await this.transport.get(
       `${CHAT_RUNTIME_ENDPOINTS.snapshot(
@@ -483,8 +518,32 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
       snapshot: ChatRuntimeSnapshot
       cursor: number
     }
+    if (body.cursor < this.lastSequence) return
     this.lastSequence = body.cursor
-    const event = this.sequencer.next('snapshot', body.snapshot)
+    const snapshot = {
+      ...body.snapshot,
+      replayCursor: body.cursor,
+      capabilities: this.capabilities,
+    }
+    this.currentSnapshot = snapshot
+    const event = {
+      ...this.sequencer.next('snapshot', snapshot),
+      sequence: body.cursor,
+    }
     this.listeners.forEach((listener) => listener(event))
   }
+}
+
+async function getRemoteResponseError(response: {
+  json: () => Promise<unknown>
+}): Promise<string> {
+  const body = await response.json().catch(() => null)
+  if (body && typeof body === 'object') {
+    const error = (body as { error?: unknown }).error
+    if (error && typeof error === 'object') {
+      const message = (error as { message?: unknown }).message
+      if (typeof message === 'string' && message.length > 0) return message
+    }
+  }
+  return 'remote request failed'
 }
