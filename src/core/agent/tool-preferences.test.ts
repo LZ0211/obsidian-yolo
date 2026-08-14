@@ -1,8 +1,10 @@
 import {
   buildServerToolTokenBudgets,
   getAssistantToolApprovalMode,
+  getAssistantToolCapabilityApprovalMode,
   getAssistantToolDisclosureMode,
   getDefaultEnabledForTool,
+  getDefaultApprovalModeForCapability,
   getEnabledAssistantToolNames,
   getExplicitlyEnabledAssistantToolNames,
   isAssistantToolEnabled,
@@ -296,6 +298,112 @@ describe('tool-preferences defaults', () => {
             enabledToolNames: [],
           },
           'server__tool_a',
+        ),
+      ).toBe('require_approval')
+    })
+  })
+
+  describe('getAssistantToolCapabilityApprovalMode (79→80 action-level approvals)', () => {
+    const SCHEDULED_TASK_OPS_FQN = 'yolo_local__scheduled_task_ops'
+
+    it('reads the migrated actions[action].approvalMode child (M1 regression: actions had no reader)', () => {
+      // RED before M1: the 79→80 migration writes the legacy split-tool
+      // approval into `toolPreferences[toolName].actions[action]`, but the
+      // runtime only read the tool-level `approvalMode` — the child silently
+      // fell back to the full_access tool default.
+      expect(
+        getAssistantToolCapabilityApprovalMode(
+          {
+            toolPreferences: {
+              [SCHEDULED_TASK_OPS_FQN]: {
+                enabled: true,
+                approvalMode: 'full_access',
+                actions: {
+                  create: { enabled: true, approvalMode: 'require_approval' },
+                },
+              },
+            },
+            enabledToolNames: [],
+          },
+          SCHEDULED_TASK_OPS_FQN,
+          'create',
+        ),
+      ).toBe('require_approval')
+    })
+
+    it.each([
+      ['scheduled_task_ops', 'create'],
+      ['scheduled_task_ops', 'update'],
+      ['scheduled_task_ops', 'delete'],
+      ['scheduled_task_ops', 'run_now'],
+      ['project_ops', 'update'],
+      ['project_ops', 'review'],
+    ] as const)(
+      'defaults the mutating action %s:%s to require_approval when no explicit mode exists',
+      (toolName, action) => {
+        // RED before M1: `getDefaultApprovalModeForTool` is not
+        // action-aware, so every consolidated action inherited the tool-level
+        // full_access default and the mutation ran without approval.
+        expect(
+          getAssistantToolCapabilityApprovalMode(
+            {
+              toolPreferences: {
+                [`yolo_local__${toolName}`]: { enabled: true },
+              },
+              enabledToolNames: [],
+            },
+            `yolo_local__${toolName}`,
+            action,
+          ),
+        ).toBe('require_approval')
+        expect(
+          getDefaultApprovalModeForCapability(
+            `yolo_local__${toolName}`,
+            action,
+          ),
+        ).toBe('require_approval')
+      },
+    )
+
+    it('keeps read-only consolidated actions on the tool-level full_access default', () => {
+      expect(
+        getAssistantToolCapabilityApprovalMode(
+          {
+            toolPreferences: {
+              [SCHEDULED_TASK_OPS_FQN]: { enabled: true },
+            },
+            enabledToolNames: [],
+          },
+          SCHEDULED_TASK_OPS_FQN,
+          'list',
+        ),
+      ).toBe('full_access')
+    })
+
+    it('lets an explicit tool-level mode override the capability default', () => {
+      expect(
+        getAssistantToolCapabilityApprovalMode(
+          {
+            toolPreferences: {
+              [SCHEDULED_TASK_OPS_FQN]: {
+                enabled: true,
+                approvalMode: 'full_access',
+              },
+            },
+            enabledToolNames: [],
+          },
+          SCHEDULED_TASK_OPS_FQN,
+          'create',
+        ),
+      ).toBe('full_access')
+    })
+
+    it('accepts bare consolidated short names', () => {
+      expect(
+        getAssistantToolCapabilityApprovalMode(
+          null,
+          'scheduled_task_ops',
+          'create',
         ),
       ).toBe('require_approval')
     })

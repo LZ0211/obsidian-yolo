@@ -48,6 +48,103 @@ describe('AgentToolGateway', () => {
     })
   })
 
+  it('gates consolidated mutating actions by the action-level approval default (M1 regression: full_access)', () => {
+    const mcpManager = {
+      isToolExecutionAllowed: jest.fn().mockReturnValue(false),
+      getJsSandboxSettings: jest.fn().mockReturnValue({}),
+    } as unknown as McpManager
+
+    // Tool-level default for `scheduled_task_ops` is full_access; the
+    // `create` action must still resolve through the capability default to
+    // require_approval (RED before M1: requireAutoExecution was true and the
+    // call auto-ran).
+    const gateway = new AgentToolGateway(mcpManager, {
+      allowedToolNames: ['yolo_local__scheduled_task_ops'],
+      toolPreferences: {
+        yolo_local__scheduled_task_ops: { enabled: true },
+      },
+    })
+
+    const message = gateway.createToolMessage({
+      toolCallRequests: [
+        {
+          id: 'tool-1',
+          name: 'yolo_local__scheduled_task_ops',
+          arguments: createCompleteToolCallArguments({
+            value: {
+              action: 'create',
+              name: 't',
+              scheduleType: 'interval',
+              intervalSeconds: 60,
+              agentPrompt: 'p',
+            },
+          }),
+        },
+      ],
+      conversationId: 'conv-1',
+    })
+
+    expect(message.toolCalls[0]?.response.status).toBe(
+      ToolCallResponseStatus.PendingApproval,
+    )
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Jest mock function accessed for assertion
+    const isToolExecutionAllowedMock = mcpManager.isToolExecutionAllowed
+    expect(isToolExecutionAllowedMock).toHaveBeenCalledWith({
+      requestToolName: 'yolo_local__scheduled_task_ops',
+      conversationId: 'conv-1',
+      requestArgs: expect.objectContaining({ action: 'create' }),
+      requireAutoExecution: false,
+    })
+  })
+
+  it('honors a migrated actions[action].approvalMode child over the tool-level mode', () => {
+    const mcpManager = {
+      isToolExecutionAllowed: jest.fn().mockReturnValue(false),
+      getJsSandboxSettings: jest.fn().mockReturnValue({}),
+    } as unknown as McpManager
+
+    // The 79→80 migration writes the legacy `scheduled_task_create` approval
+    // into `actions.create`; the gateway must read it (RED before M1: only
+    // the tool-level mode was consulted).
+    const gateway = new AgentToolGateway(mcpManager, {
+      allowedToolNames: ['yolo_local__scheduled_task_ops'],
+      toolPreferences: {
+        yolo_local__scheduled_task_ops: {
+          enabled: true,
+          approvalMode: 'full_access',
+          actions: {
+            create: { enabled: true, approvalMode: 'require_approval' },
+          },
+        },
+      },
+    })
+
+    const message = gateway.createToolMessage({
+      toolCallRequests: [
+        {
+          id: 'tool-1',
+          name: 'yolo_local__scheduled_task_ops',
+          arguments: createCompleteToolCallArguments({
+            value: { action: 'create' },
+          }),
+        },
+      ],
+      conversationId: 'conv-1',
+    })
+
+    expect(message.toolCalls[0]?.response.status).toBe(
+      ToolCallResponseStatus.PendingApproval,
+    )
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Jest mock function accessed for assertion
+    const isToolExecutionAllowedMock = mcpManager.isToolExecutionAllowed
+    expect(isToolExecutionAllowedMock).toHaveBeenCalledWith({
+      requestToolName: 'yolo_local__scheduled_task_ops',
+      conversationId: 'conv-1',
+      requestArgs: expect.objectContaining({ action: 'create' }),
+      requireAutoExecution: false,
+    })
+  })
+
   it('ignores per-tool full access for third-party MCP tools without server approval', () => {
     const mcpManager = {
       isToolExecutionAllowed: jest.fn().mockReturnValue(false),
