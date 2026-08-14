@@ -15,7 +15,6 @@ export type TaskDependencyPolicy = {
 
 export type TaskQueueItem = {
   taskId: string
-  executionClaimId?: string
   /**
    * The batch this enqueue belongs to. Dependency readiness (completed/failed) is looked up
    * strictly within the same batchId — not a taskId-lifetime-spanning global Set — so each
