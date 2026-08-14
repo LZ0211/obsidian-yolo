@@ -375,12 +375,10 @@ export class FeishuAdapter implements PlatformAdapter {
   private service = 0
   private accessToken: { token: string; expiresAt: number } | null = null
   /**
-   * The bot's own identity (open_id + display name) resolved from
-   * `/open-apis/bot/v3/info` at connect time — group `@`-mentions in
-   * `im.message.receive_v1` are attributed to this bot by matching this
-   * identity. `null` until resolved (or when the lookup failed).
+   * The bot's own open_id resolved from `/open-apis/bot/v3/info` at connect
+   * time. `null` until resolved (or when the lookup failed).
    */
-  private botIdentity: { openId: string; name: string } | null = null
+  private botIdentity: { openId: string } | null = null
   private readonly pendingFrames = new Map<string, PendingDataFrame>()
   private readonly sessionBindings = new BoundedTtlMap<string, SessionBinding>({
     capacity: SESSION_BINDING_CAPACITY,
@@ -660,8 +658,8 @@ export class FeishuAdapter implements PlatformAdapter {
   }
 
   /**
-   * Resolves the bot's own open_id/display name from `/open-apis/bot/v3/info`
-   * (once, then cached). A failed lookup only disables group @-mention wake
+   * Resolves the bot's own open_id from `/open-apis/bot/v3/info` (once, then
+   * cached). A failed lookup only disables group @-mention wake
    * detection — private chats and outgoing replies are unaffected — so the
    * failure is surfaced via onError and the connection proceeds.
    */
@@ -679,15 +677,12 @@ export class FeishuAdapter implements PlatformAdapter {
       const json = response.json as {
         code: number
         msg: string
-        data?: { open_id?: string; app_name?: string }
+        data?: { open_id?: string }
       }
       if (json.code !== 0 || !json.data?.open_id) {
         throw new Error(`Feishu bot info request failed: ${json.msg}`)
       }
-      this.botIdentity = {
-        openId: json.data.open_id,
-        name: json.data.app_name ?? '',
-      }
+      this.botIdentity = { openId: json.data.open_id }
     } catch (error) {
       this.emitError(toError(error), {
         operation: 'start',
@@ -701,9 +696,9 @@ export class FeishuAdapter implements PlatformAdapter {
    * Group wake signal: `im.message.receive_v1` can deliver messages in a chat
    * the bot is in that never @'d it, so a group message only wakes the bot
    * when a mention names the bot itself. The bot's mention is identified by
-   * matching the mention's open_id (or display name, as a fallback) against
-   * the identity resolved from `/open-apis/bot/v3/info`; without that
-   * identity no group message can be attributed, and the signal stays off.
+   * matching the mention's open_id against the identity resolved from
+   * `/open-apis/bot/v3/info`; without that identity no group message can be
+   * attributed, and the signal stays off.
    */
   private resolveMentionedBotId(
     raw: FeishuMessageReceiveEvent,
@@ -713,9 +708,6 @@ export class FeishuAdapter implements PlatformAdapter {
     if (!identity) return undefined
     for (const mention of raw.message.mentions ?? []) {
       if (mention.id?.open_id === identity.openId) return identity.openId
-      if (identity.name !== '' && mention.name === identity.name) {
-        return identity.name
-      }
     }
     return undefined
   }

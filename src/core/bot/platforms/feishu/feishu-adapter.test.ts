@@ -468,7 +468,7 @@ describe('FeishuAdapter — WS frame handling', () => {
     expect(event.mentionedBotId).toBe('ou_bot_1')
   })
 
-  it('falls back to matching the bot by mention name when the open_id differs', async () => {
+  it('does not match a same-name mention with a different open_id', async () => {
     const { adapter, ws } = await startAdapter()
     const messagePromise = waitForNextMessage(adapter)
 
@@ -483,7 +483,7 @@ describe('FeishuAdapter — WS frame handling', () => {
     )
 
     const event = await messagePromise
-    expect(event.mentionedBotId).toBe('Yolo Bot')
+    expect(event.mentionedBotId).toBeUndefined()
   })
 
   it('leaves mentionedBotId unset for a group message that @s someone else', async () => {
