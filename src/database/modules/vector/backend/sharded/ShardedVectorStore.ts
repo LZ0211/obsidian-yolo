@@ -1,5 +1,8 @@
 import type { SqliteNativeRuntimeFacade } from '../../../../sqlite/sqliteNativeRuntime'
-import { vectorNamespaceId } from '../../../rag/namespaceId'
+import {
+  legacyVectorNamespaceId,
+  vectorNamespaceId,
+} from '../../../rag/namespaceId'
 import {
   type StoredVectorFile,
   type VectorBackendStats,
@@ -523,6 +526,9 @@ export class ShardedVectorStore implements VectorStore {
   async getStatus(namespace?: VectorNamespace): Promise<VectorBackendStatus> {
     this.assertOpen()
     this.assertNotClosing()
+    if (namespace != null) {
+      await this.migrateShardedLegacyNamespace(namespace)
+    }
     const storagePath =
       namespace == null
         ? getShardedIndexRoot(this.baseDir)
@@ -565,6 +571,7 @@ export class ShardedVectorStore implements VectorStore {
   ): Promise<void> {
     this.assertOpen()
     this.assertNotClosing()
+    await this.migrateShardedLegacyNamespace(namespace)
     const namespaceId = validateShardedNamespaceId(vectorNamespaceId(namespace))
     // Validate every chunk's embedding dimension before any mutation. A
     // mismatched embedding would otherwise poison the namespace mid-write:
@@ -598,6 +605,7 @@ export class ShardedVectorStore implements VectorStore {
   ): Promise<void> {
     this.assertOpen()
     this.assertNotClosing()
+    await this.migrateShardedLegacyNamespace(namespace)
     const namespaceId = validateShardedNamespaceId(vectorNamespaceId(namespace))
     // Exclusive lease: a search concurrent with the per-shard tombstone
     // UPDATEs must never observe a file half-tombstoned (rows in one shard
@@ -1075,6 +1083,7 @@ export class ShardedVectorStore implements VectorStore {
     this.assertOpen()
     this.assertNotClosing()
     throwIfVectorSearchAborted(options.signal)
+    await this.migrateShardedLegacyNamespace(namespace)
     const namespaceId = validateShardedNamespaceId(vectorNamespaceId(namespace))
     const release = await this.acquireNamespaceReadLease(namespaceId)
     try {
@@ -2113,6 +2122,41 @@ export class ShardedVectorStore implements VectorStore {
     return parseShardedManifest(
       JSON.parse(await this.adapter.read(manifestPath)),
     )
+  }
+
+  /**
+   * 一次性迁移（audit 653c8e86d 引入 provider/endpoint identity）：manifest
+   * 还指向旧算法 namespace id 且旧模型目录存在时，把目录改名并重写 manifest。
+   * 幂等：canonical 目录已存在或 manifest 不匹配时直接返回。
+   */
+  private async migrateShardedLegacyNamespace(
+    namespace: VectorNamespace,
+  ): Promise<void> {
+    const canonicalId = validateShardedNamespaceId(vectorNamespaceId(namespace))
+    const legacyId = validateShardedNamespaceId(
+      legacyVectorNamespaceId(namespace),
+    )
+    if (legacyId === canonicalId) return
+    const manifest = await this.readManifest()
+    if (manifest == null || manifest.activeModel !== legacyId) return
+    const canonicalRoot = getShardedModelRoot(this.baseDir, canonicalId)
+    const legacyRoot = getShardedModelRoot(this.baseDir, legacyId)
+    if (await this.adapter.exists(canonicalRoot)) return
+    if (!(await this.adapter.exists(legacyRoot))) return
+    await this.adapter.rename(legacyRoot, canonicalRoot)
+    await this.publishManifest({
+      ...manifest,
+      activeModel: canonicalId,
+      // shard.relativePath 内嵌了 namespace id（models/<id>/shards/<id>），
+      // 目录改名后必须同步重写，否则打开 shard 时仍走旧路径。
+      shards: manifest.shards.map((shard) => ({
+        ...shard,
+        relativePath: shard.relativePath.replace(
+          `models/${legacyId}/`,
+          `models/${canonicalId}/`,
+        ),
+      })),
+    })
   }
 
   /** Atomic publish: write `manifest.next.json`, then rename over `manifest.json`. */

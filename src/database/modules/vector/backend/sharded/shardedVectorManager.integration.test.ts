@@ -28,11 +28,19 @@ jest.mock('../../../../../utils/pdf/extractPdfText', () => ({
   extractPdfText: jest.fn(),
 }))
 
-import { VectorManager } from '../../VectorManager'
 import { createEmbeddingVectorNamespace } from '../../../rag/embeddingNamespace'
-import { vectorNamespaceId } from '../../../rag/namespaceId'
+import {
+  legacyVectorNamespaceId,
+  vectorNamespaceId,
+} from '../../../rag/namespaceId'
+import type { VectorFileWrite } from '../../../rag/VectorStore'
+import { VectorManager } from '../../VectorManager'
 
-import { getShardedManifestPath, getShardedShardRoot } from './shardedPaths'
+import {
+  getShardedManifestPath,
+  getShardedModelRoot,
+  getShardedShardRoot,
+} from './shardedPaths'
 import { openShardSqliteNode } from './shardedSqlite'
 import { ShardedVectorStore } from './ShardedVectorStore'
 import type { ShardedVaultAdapter } from './ShardedVectorStore'
@@ -471,5 +479,67 @@ describe('VectorManager.reconcile over the sharded backend (端到端全链路)'
     await reconcileAll()
     expect(replacedPaths()).toEqual([])
     expect(deletedPaths()).toEqual([])
+  })
+
+  it('migrates the legacy (pre-identity) manifest + model dir when the namespace gains an identity', async () => {
+    // 升级前状态：索引按无 identity 的旧算法 id 落盘。
+    const legacyNamespace = createEmbeddingVectorNamespace({
+      model: 'text-embedding-3-large',
+      dimension: EMBEDDING_DIMENSION,
+    })
+    const legacyNamespaceId = legacyVectorNamespaceId(legacyNamespace)
+    const file: VectorFileWrite = {
+      path: 'notes/a.md',
+      mtime: 100,
+      contentHash: 'hash-a',
+      chunks: [
+        {
+          chunkId: 'c1',
+          path: 'notes/a.md',
+          text: 'alpha beta gamma',
+          contentHash: 'hash-c1',
+          embedding: embedContent('alpha beta gamma'),
+          location: { lineStart: 0, lineEnd: 1, headingPath: [] },
+          metadataJson: {},
+        },
+      ],
+    }
+    await store.replaceFile(legacyNamespace, file)
+
+    const legacyManifest = JSON.parse(
+      await vault.adapter.read(getShardedManifestPath(BASE_DIR)),
+    ) as { activeModel: string }
+    expect(legacyManifest.activeModel).toBe(legacyNamespaceId)
+
+    // 升级后：带 provider identity 的 namespace 打开即迁移 manifest + 目录。
+    const identityNamespace = createEmbeddingVectorNamespace({
+      model: 'text-embedding-3-large',
+      dimension: EMBEDDING_DIMENSION,
+      providerId: 'openai',
+    })
+    const identityNamespaceId = vectorNamespaceId(identityNamespace)
+    expect(identityNamespaceId).not.toBe(legacyNamespaceId)
+
+    const status = await store.getStatus(identityNamespace)
+    expect(status.rebuildRequired).toBe(false)
+    expect(
+      await vault.adapter.exists(getShardedModelRoot(BASE_DIR, identityNamespaceId)),
+    ).toBe(true)
+    expect(
+      await vault.adapter.exists(getShardedModelRoot(BASE_DIR, legacyNamespaceId)),
+    ).toBe(false)
+
+    const migratedManifest = JSON.parse(
+      await vault.adapter.read(getShardedManifestPath(BASE_DIR)),
+    ) as { activeModel: string }
+    expect(migratedManifest.activeModel).toBe(identityNamespaceId)
+
+    // 迁移后旧内容可检索。
+    const searchResult = await store.searchDetailed(
+      identityNamespace,
+      embedContent('alpha beta gamma'),
+      { minSimilarity: 0.5, topK: 5 },
+    )
+    expect(searchResult.hits.map((row) => row.path)).toEqual(['notes/a.md'])
   })
 })

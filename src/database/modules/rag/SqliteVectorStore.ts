@@ -8,7 +8,7 @@ import {
 } from '../../sqlite/sqliteNativeRuntime'
 
 import { getSqliteDbPath, getSqliteNamespaceDir } from './backendPaths'
-import { vectorNamespaceId } from './namespaceId'
+import { legacyVectorNamespaceId, vectorNamespaceId } from './namespaceId'
 import {
   QUERY_EMBEDDING_CACHE_MAX_ENTRIES,
   decodeQueryEmbedding,
@@ -672,6 +672,9 @@ export class SqliteVectorStore
       }
     }
 
+    // getStatus 在打开前执行，必须先迁移再判断存在性，否则状态检查会先报
+    // rebuildRequired 而后台打开才迁移，UI 与查询看到的就绪状态不一致。
+    this.migrateLegacyNamespaceStorage(namespace)
     const storagePath = getSqliteDbPath(this.baseDir, vectorNamespaceId(namespace))
     if (!fs.existsSync(storagePath)) {
       return {
@@ -1072,6 +1075,30 @@ export class SqliteVectorStore
     }
   }
 
+  /**
+   * 一次性迁移（audit 653c8e86d 引入 provider/endpoint identity）：新 id 的
+   * 存储目录不存在而旧算法目录存在时，把旧目录改名到新位置。仅当目录里确实
+   * 有 rag.sqlite 才迁移，避免把无关目录搬走。
+   */
+  private migrateLegacyNamespaceStorage(namespace: VectorNamespace): void {
+    const canonicalId = vectorNamespaceId(namespace)
+    const legacyId = legacyVectorNamespaceId(namespace)
+    if (legacyId === canonicalId) return
+    const canonicalDir = getSqliteNamespaceDir(this.baseDir, canonicalId)
+    const legacyDir = getSqliteNamespaceDir(this.baseDir, legacyId)
+    if (fs.existsSync(canonicalDir)) return
+    if (!fs.existsSync(legacyDir)) return
+    if (!fs.existsSync(getSqliteDbPath(this.baseDir, legacyId))) return
+    try {
+      fs.renameSync(legacyDir, canonicalDir)
+    } catch (error) {
+      console.warn(
+        `[YOLO] Failed to migrate legacy RAG namespace ${legacyId} → ${canonicalId}`,
+        error instanceof Error ? error.message : error,
+      )
+    }
+  }
+
   private getNamespaceState(namespace: VectorNamespace): NamespaceRuntimeState {
     this.assertOpen()
     this.assertNotClosing()
@@ -1080,6 +1107,7 @@ export class SqliteVectorStore
     const existing = this.namespaceStates.get(namespaceKey)
     if (existing != null) return existing
 
+    this.migrateLegacyNamespaceStorage(validatedNamespace)
     const dbPath = getSqliteDbPath(this.baseDir, namespaceKey)
     const state: NamespaceRuntimeState = {
       runtime: openSqliteRuntime({ dbPath }),

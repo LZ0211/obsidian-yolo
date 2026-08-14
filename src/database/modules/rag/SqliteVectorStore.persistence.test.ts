@@ -3,8 +3,8 @@ import { createRequire } from 'node:module'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { getSqliteDbPath } from './backendPaths'
-import { vectorNamespaceId } from './namespaceId'
+import { getSqliteDbPath, getSqliteNamespaceDir } from './backendPaths'
+import { legacyVectorNamespaceId, vectorNamespaceId } from './namespaceId'
 import { SQLITE_COARSE_DIMENSION } from './SqliteSchema'
 import { SqliteVectorStore } from './SqliteVectorStore'
 import {
@@ -182,6 +182,90 @@ describe('SqliteVectorStore persistence', () => {
       checkDb.close()
     }
 
+    fs.rmSync(rootDir, { recursive: true, force: true })
+  })
+
+  test('migrates the legacy (pre-identity) namespace directory on open', async () => {
+    const { rootDir, baseDir } = createTempStoreRoot()
+
+    // 模拟升级前状态：索引数据在旧算法 id 的目录下（无 provider identity）。
+    const legacyNamespace: VectorNamespace = {
+      ...namespace,
+      providerIdentity: 'openai',
+      endpointIdentity: 'https://api.openai.com/v1',
+    }
+    const legacyId = legacyVectorNamespaceId(legacyNamespace)
+    const legacyDir = getSqliteNamespaceDir(baseDir, legacyId)
+    fs.mkdirSync(legacyDir, { recursive: true })
+    const legacyDb = openRawDb(getSqliteDbPath(baseDir, legacyId))
+    legacyDb.exec('create table legacy_marker (id text)')
+    legacyDb.close()
+
+    const store = createStore(baseDir)
+    await store.open()
+
+    // getStatus 触发迁移：旧目录被改名到新 id 目录，数据不再丢失。
+    const status = await store.getStatus(legacyNamespace)
+    expect(status.rebuildRequired).toBe(false)
+    const canonicalId = vectorNamespaceId(legacyNamespace)
+    expect(fs.existsSync(getSqliteNamespaceDir(baseDir, canonicalId))).toBe(true)
+    expect(fs.existsSync(legacyDir)).toBe(false)
+
+    const migratedDb = openRawDb(getSqliteDbPath(baseDir, canonicalId))
+    try {
+      const marker = migratedDb
+        .prepare("select name from sqlite_master where type = 'table' and name = 'legacy_marker'")
+        .get()
+      expect(marker).toBeDefined()
+    } finally {
+      migratedDb.close()
+    }
+
+    await store.close()
+    fs.rmSync(rootDir, { recursive: true, force: true })
+  })
+
+  test('does not migrate when the canonical namespace directory already exists', async () => {
+    const { rootDir, baseDir } = createTempStoreRoot()
+    const legacyNamespace: VectorNamespace = {
+      ...namespace,
+      providerIdentity: 'openai',
+      endpointIdentity: 'https://api.openai.com/v1',
+    }
+    const canonicalDir = getSqliteNamespaceDir(
+      baseDir,
+      vectorNamespaceId(legacyNamespace),
+    )
+    fs.mkdirSync(canonicalDir, { recursive: true })
+    const canonicalDb = openRawDb(path.join(canonicalDir, 'rag.sqlite'))
+    canonicalDb.exec('create table canonical_marker (id text)')
+    canonicalDb.close()
+
+    const store = createStore(baseDir)
+    await store.open()
+    await store.getStatus(legacyNamespace)
+
+    expect(
+      fs.existsSync(
+        getSqliteNamespaceDir(
+          baseDir,
+          legacyVectorNamespaceId(legacyNamespace),
+        ),
+      ),
+    ).toBe(false)
+    const checkDb = openRawDb(path.join(canonicalDir, 'rag.sqlite'))
+    try {
+      const marker = checkDb
+        .prepare(
+          "select name from sqlite_master where type = 'table' and name = 'canonical_marker'",
+        )
+        .get()
+      expect(marker).toBeDefined()
+    } finally {
+      checkDb.close()
+    }
+
+    await store.close()
     fs.rmSync(rootDir, { recursive: true, force: true })
   })
 
