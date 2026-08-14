@@ -14,6 +14,7 @@ import { type App, type RequestUrlParam, requestUrl } from 'obsidian'
 import type { BotPlatformWeixinConfig } from '../../../../settings/schema/setting.types'
 import { loadDesktopNodeModule } from '../../../../utils/platform/desktopNodeModule'
 import { BoundedTtlMap } from '../../bounded-ttl-map'
+import { splitTextAtBoundaries } from '../../text-chunking'
 import {
   type DownloadedFile,
   type ErrorHandler,
@@ -369,19 +370,6 @@ export type QRPollResult = {
   botId?: string
 }
 
-/**
- * Credentials handed back to the adapter once the Settings UI has persisted
- * them to the platform's settings entry. The adapter is a pure protocol
- * client — it never reads/writes global settings itself (mirrors
- * `SessionMapper`'s injected getter/setter DI style); the caller owns the
- * "QR confirmed -> save to config -> tell the adapter" sequencing.
- */
-export type WeixinCredentials = {
-  botToken: string
-  baseUrl?: string
-  botId?: string
-}
-
 export class WeixinOCAdapter implements PlatformAdapter {
   readonly meta: PlatformMetadata = {
     name: 'weixin_oc',
@@ -468,21 +456,6 @@ export class WeixinOCAdapter implements PlatformAdapter {
     return this.status
   }
 
-  /**
-   * Applies freshly-confirmed QR-login credentials to a running instance and
-   * (re)starts the long-poll loop. The Settings UI calls this immediately
-   * after persisting the confirmed credentials into settings — see the
-   * module doc comment for why the adapter never touches settings directly.
-   */
-  async applyCredentials(credentials: WeixinCredentials): Promise<void> {
-    this.stopPolling()
-    this.token = credentials.botToken
-    if (credentials.baseUrl) this.baseUrl = credentials.baseUrl
-    if (credentials.botId) this.botId = credentials.botId
-    await this.notifyStart()
-    this.beginPolling()
-  }
-
   // ─────────────────────────── QR login ───────────────────────────
 
   async requestQRCode(): Promise<QRCodeRequestResult> {
@@ -566,45 +539,59 @@ export class WeixinOCAdapter implements PlatformAdapter {
 
     let responseBody: SendMessageResponseBody | undefined
     try {
-      const items = await this.buildOutgoingItems(chatId, content)
-      if (items.length === 0) {
-        throw new Error('sendMessage called with no text/images/files content.')
-      }
-
-      const body = JSON.stringify({
-        msg: {
-          from_user_id: '',
-          to_user_id: chatId,
-          client_id: `yolo-${crypto.randomUUID()}`,
-          message_type: 2, // BOT
-          message_state: 2, // FINISH
-          context_token: contextToken,
-          item_list: items,
-        },
-        base_info: this.baseInfo(), // top level, not nested in msg
-      })
-
-      const response = await requestUrl({
-        url: `${this.baseUrl}/ilink/bot/sendmessage`,
-        method: 'POST',
-        headers: this.authHeaders(),
-        body,
-        throw: false,
-      })
-      responseBody = response.json as SendMessageResponseBody
-      if (this.isProtocolError(responseBody)) {
-        throw new Error(
-          `WeChat sendmessage failed: ret=${responseBody.ret ?? 0} errcode=${responseBody.errcode ?? 0} ${responseBody.errmsg ?? ''}`.trim(),
+      // B4: the iLink sendmessage API silently truncates oversized text
+      // payloads (the old `.slice(0, maxMessageLength)` in buildOutgoingItems
+      // cut the reply tail off without any error). Send one message per chunk
+      // at the platform cap (2048) instead; media-only sends keep their
+      // single request.
+      const perSendTexts = content.text
+        ? splitTextAtBoundaries(content.text, this.capabilities.maxMessageLength)
+        : [null]
+      const refs: SentMessageRef[] = []
+      for (const text of perSendTexts) {
+        const items = await this.buildOutgoingItems(
+          chatId,
+          text === null ? content : { ...content, text },
         )
-      }
+        if (items.length === 0) {
+          throw new Error(
+            'sendMessage called with no text/images/files content.',
+          )
+        }
 
-      return [
-        {
+        const body = JSON.stringify({
+          msg: {
+            from_user_id: '',
+            to_user_id: chatId,
+            client_id: `yolo-${crypto.randomUUID()}`,
+            message_type: 2, // BOT
+            message_state: 2, // FINISH
+            context_token: contextToken,
+            item_list: items,
+          },
+          base_info: this.baseInfo(), // top level, not nested in msg
+        })
+
+        const response = await requestUrl({
+          url: `${this.baseUrl}/ilink/bot/sendmessage`,
+          method: 'POST',
+          headers: this.authHeaders(),
+          body,
+          throw: false,
+        })
+        responseBody = response.json as SendMessageResponseBody
+        if (this.isProtocolError(responseBody)) {
+          throw new Error(
+            `WeChat sendmessage failed: ret=${responseBody.ret ?? 0} errcode=${responseBody.errcode ?? 0} ${responseBody.errmsg ?? ''}`.trim(),
+          )
+        }
+        refs.push({
           platformMessageId: String(responseBody.msg_id ?? ''),
           sessionKey,
           timestamp: Date.now(),
-        },
-      ]
+        })
+      }
+      return refs
     } catch (error) {
       const err = toError(error)
       // Credential failures (no token / session-expired protocol error) are

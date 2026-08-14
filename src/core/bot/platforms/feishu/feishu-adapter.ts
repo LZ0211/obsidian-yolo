@@ -58,6 +58,7 @@ import { App, FileSystemAdapter, Platform, requestUrl } from 'obsidian'
 
 import type { BotPlatformFeishuConfig } from '../../../../settings/schema/setting.types'
 import { BoundedTtlMap } from '../../bounded-ttl-map'
+import { splitTextAtBoundaries } from '../../text-chunking'
 import {
   type DownloadedFile,
   type ErrorHandler,
@@ -482,17 +483,24 @@ export class FeishuAdapter implements PlatformAdapter {
       }
 
       if (content.text) {
-        const messageId = await this.replyMessage(
-          token,
-          binding.lastMessageId,
-          'text',
-          { text: content.text },
-        )
-        refs.push({
-          platformMessageId: messageId,
-          sessionKey,
-          timestamp: Date.now(),
-        })
+        // B4: chunk long replies to the platform cap (10000) — the reply
+        // API errors on oversized text payloads.
+        for (const chunk of splitTextAtBoundaries(
+          content.text,
+          this.capabilities.maxMessageLength,
+        )) {
+          const messageId = await this.replyMessage(
+            token,
+            binding.lastMessageId,
+            'text',
+            { text: chunk },
+          )
+          refs.push({
+            platformMessageId: messageId,
+            sessionKey,
+            timestamp: Date.now(),
+          })
+        }
         reportProgress()
       }
 

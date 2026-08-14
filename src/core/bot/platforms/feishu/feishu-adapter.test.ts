@@ -695,6 +695,44 @@ describe('FeishuAdapter — sendMessage()', () => {
     expect(refs[0].sessionKey).toBe(event.sessionKey)
   })
 
+  it('B4: splits a long text reply at the 10000 cap', async () => {
+    mockRoutes({
+      tenant_access_token: () => ({
+        json: {
+          code: 0,
+          msg: 'ok',
+          tenant_access_token: 'tok-1',
+          expire: 7200,
+        },
+      }),
+      reply: () => ({
+        json: { code: 0, msg: 'ok', data: { message_id: 'om_reply_chunk' } },
+      }),
+    })
+    const { adapter, ws } = await startAdapter()
+    const event = await receiveMessage(adapter, ws)
+
+    const longText = 'y'.repeat(25_000)
+    const refs = await adapter.sendMessage(event.sessionKey, { text: longText })
+
+    const replyCalls = mockedRequestUrl.mock.calls.filter((c) =>
+      asRequestUrlParam(c[0]).url.includes('/messages/om_msg_1/reply'),
+    )
+    // RED on the old behavior: one oversized call instead of three chunks.
+    expect(replyCalls).toHaveLength(3)
+    const chunks = replyCalls.map((c) => {
+      const body = JSON.parse(bodyAsString(asRequestUrlParam(c[0]))) as {
+        content: string
+      }
+      return (JSON.parse(body.content) as { text: string }).text
+    })
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(10_000)
+    }
+    expect(chunks.join('')).toBe(longText)
+    expect(refs).toHaveLength(3)
+  })
+
   it('uploads and replies with an image', async () => {
     mockRoutes({
       tenant_access_token: () => ({

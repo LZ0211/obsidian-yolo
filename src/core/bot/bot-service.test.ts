@@ -274,6 +274,37 @@ describe('BotService lifecycle', () => {
     expect(h.createAdapter).not.toHaveBeenCalled()
   })
 
+  it('B2: stops the platform when the global switch is flipped during the start handshake', async () => {
+    const h = makeHarness()
+    let releaseStart!: () => void
+    const startBlocked = new Promise<void>((resolve) => {
+      releaseStart = resolve
+    })
+    // Hold the adapter's start() open so the settings change lands while the
+    // (network-bound) handshake is still in flight.
+    const originalCreateAdapter = h.createAdapter
+    h.createAdapter.mockImplementationOnce((config: BotPlatformConfig) => {
+      const adapter = originalCreateAdapter(config)
+      adapter.start.mockReturnValueOnce(startBlocked)
+      return adapter
+    })
+
+    const initialized = h.service.initialize()
+    await Promise.resolve() // let the initial start enter the blocked handshake
+    // Flipping bots.enabled off mid-handshake must be consumed and stop the
+    // platform — RED on the old behavior: the settings listener was only
+    // registered after initialize() resolved, so this change was dropped and
+    // the platform kept running.
+    h.triggerSettingsChange({
+      ...h.getCurrentSettings(),
+      bots: { ...h.getCurrentSettings().bots, enabled: false },
+    })
+    releaseStart()
+    await initialized
+
+    expect(h.adaptersByPlatformId.get('bot-1')!.stop).toHaveBeenCalledTimes(1)
+  })
+
   it('cleanup() stops every running adapter and unsubscribes from settings', async () => {
     const h = makeHarness()
     await h.service.initialize()

@@ -103,6 +103,7 @@ import { FileSystemAdapter } from 'obsidian'
 import type { App } from 'obsidian'
 
 import type { BotPlatformTelegramConfig } from '../../../../settings/schema/setting.types'
+import { encodeSessionKey } from '../../types'
 import type { MessageComponent } from '../../types'
 
 import { TelegramAdapter } from './telegram-adapter'
@@ -382,6 +383,36 @@ describe('TelegramAdapter — sendMessage', () => {
       string,
     ]
     expect(secondCallText.length).toBeLessThanOrEqual(4096)
+  })
+
+  it('B3: carries message_thread_id on replies to forum-topic sessions', async () => {
+    const { adapter, bot } = await startAdapter()
+    const sessionKey = encodeSessionKey('telegram', 'group', '555', '42')
+
+    await adapter.sendMessage(sessionKey, { text: 'topic reply' })
+
+    expect(bot.sendMessageMock).toHaveBeenCalledTimes(1)
+    const [, , options] = bot.sendMessageMock.mock.calls[0] as [
+      unknown,
+      string,
+      Record<string, unknown>,
+    ]
+    // RED on the old behavior: the options object had no message_thread_id,
+    // so the reply landed in the channel's general thread instead of the topic.
+    expect(options).toMatchObject({ message_thread_id: 42 })
+  })
+
+  it('omits message_thread_id for non-topic sessions', async () => {
+    const { adapter, bot } = await startAdapter()
+
+    await adapter.sendMessage('telegram:private:555', { text: 'plain' })
+
+    const [, , options] = bot.sendMessageMock.mock.calls[0] as [
+      unknown,
+      string,
+      Record<string, unknown>,
+    ]
+    expect(options.message_thread_id).toBeUndefined()
   })
 
   it('sends an image via a url source', async () => {

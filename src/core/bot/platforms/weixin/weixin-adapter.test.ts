@@ -302,19 +302,6 @@ describe('WeixinOCAdapter — QR login', () => {
     const result = await adapter.pollQRStatus('key-abc')
     expect(result.status).toBe('pending')
   })
-
-  it('applyCredentials() starts polling with the confirmed token', async () => {
-    mockStartWithHangingPoll()
-    const adapter = new WeixinOCAdapter()
-
-    await adapter.applyCredentials({
-      botToken: 'confirmed-token',
-      botId: 'bot-42',
-    })
-    expect(adapter.health()).toBe('running')
-
-    await adapter.stop()
-  })
 })
 
 describe('WeixinOCAdapter — session expiry (errcode -14)', () => {
@@ -867,6 +854,66 @@ describe('WeixinOCAdapter — sendMessage', () => {
     expect(asRequestUrlParam(sendCall![0]).headers).not.toHaveProperty(
       'Content-Length',
     )
+  })
+
+  it('B4: splits a long text reply into chunked sends at the 2048 cap instead of silently truncating', async () => {
+    let pollCount = 0
+    mockedRequestUrl.mockImplementation((async (request) => {
+      const param = asRequestUrlParam(request)
+      if (param.url.includes('/ilink/bot/msg/notifystart')) {
+        return { json: { ret: 0 } } as never
+      }
+      if (param.url.includes('/ilink/bot/sendmessage')) {
+        return { json: { ret: 0, msg_id: 'sent-chunk' } } as never
+      }
+      if (pollCount === 0) {
+        pollCount += 1
+        return {
+          json: {
+            ret: 0,
+            msgs: [
+              {
+                message_id: 'm1',
+                from_user_id: 'alice',
+                context_token: 'ctx-alice',
+                message_type: 1,
+                item_list: [{ type: 1, text_item: { text: 'hi bot' } }],
+              },
+            ],
+          },
+        } as never
+      }
+      return hangForever()
+    }) as typeof requestUrl)
+
+    const adapter = new WeixinOCAdapter()
+    const messagePromise = waitForNextMessage(adapter)
+    await adapter.start(makeConfig({ botToken: 'tok' }))
+    await messagePromise
+
+    const longText = 'w'.repeat(4500)
+    const refs = await adapter.sendMessage('weixin_oc:private:alice', {
+      text: longText,
+    })
+
+    const sendCalls = mockedRequestUrl.mock.calls.filter(([params]) =>
+      String(asRequestUrlParam(params).url).includes('sendmessage'),
+    )
+    // RED on the old behavior: one call whose text was truncated to 2048.
+    expect(sendCalls).toHaveLength(3)
+    const chunks = sendCalls.map(([params]) => {
+      const body = JSON.parse(bodyAsString(asRequestUrlParam(params))) as {
+        msg: { item_list: Array<{ type: number; text_item: { text: string } }> }
+      }
+      return body.msg.item_list[0].text_item.text
+    })
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(2048)
+    }
+    expect(chunks.join('')).toBe(longText)
+    expect(refs).toHaveLength(3)
+
+    await adapter.stop()
   })
 
   it('uploads an image and sends its encrypted image item with the reply text', async () => {

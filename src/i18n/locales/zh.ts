@@ -315,6 +315,8 @@ export const zh: TranslationKeys = {
         dingtalkDesc: '企业机器人 · 流式模式',
         feishuLabel: '飞书',
         feishuDesc: '飞书开放平台 · 长连接模式',
+        qqOfficialLabel: 'QQ 机器人',
+        qqOfficialDesc: '官方 API · Gateway',
       },
       platformName: {
         telegram: 'Telegram',

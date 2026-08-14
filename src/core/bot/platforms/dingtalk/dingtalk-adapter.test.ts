@@ -270,6 +270,30 @@ describe('DingTalkAdapter — start()', () => {
     await expect(errorPromise).resolves.toThrow(/network down/)
     expect(MockWebSocket.instances).toHaveLength(0)
   })
+
+  it('B2: does not open a socket when stop() lands during the connection-open handshake', async () => {
+    let releaseHandshake!: (value: unknown) => void
+    const handshake = new Promise((resolve) => {
+      releaseHandshake = resolve
+    })
+    mockedRequestUrl.mockImplementation(
+      (() => handshake) as unknown as typeof requestUrl,
+    )
+
+    const adapter = new DingTalkAdapter(makeApp())
+    liveAdapters.push(adapter)
+    const starting = adapter.start(makeConfig())
+    await Promise.resolve() // let the handshake await begin
+    await adapter.stop()
+    releaseHandshake({
+      json: { endpoint: DEFAULT_ENDPOINT, ticket: DEFAULT_TICKET },
+    })
+    await starting
+
+    // RED on the old behavior: connect() created the socket anyway.
+    expect(MockWebSocket.instances).toHaveLength(0)
+    expect(adapter.health()).toBe('stopped')
+  })
 })
 
 describe('DingTalkAdapter — WS frame handling', () => {
@@ -483,6 +507,31 @@ describe('DingTalkAdapter — sendMessage()', () => {
     })
     expect(refs).toHaveLength(1)
     expect(refs[0].sessionKey).toBe(event.sessionKey)
+  })
+
+  it('B4: splits a long text reply at the 20000 cap when sending via webhook', async () => {
+    const { adapter, ws } = await startAdapter()
+    const event = await receiveMessage(adapter, ws)
+
+    const longText = 'z'.repeat(45_000)
+    const refs = await adapter.sendMessage(event.sessionKey, { text: longText })
+
+    const webhookCalls = mockedRequestUrl.mock.calls.filter((c) =>
+      asRequestUrlParam(c[0]).url.includes('webhook.dingtalk.com'),
+    )
+    // RED on the old behavior: one oversized call instead of three chunks.
+    expect(webhookCalls).toHaveLength(3)
+    const chunks = webhookCalls.map((c) => {
+      const body = JSON.parse(bodyAsString(asRequestUrlParam(c[0]))) as {
+        text: { content: string }
+      }
+      return body.text.content
+    })
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(20_000)
+    }
+    expect(chunks.join('')).toBe(longText)
+    expect(refs).toHaveLength(3)
   })
 
   it('falls back to the REST private-send API once the sessionWebhook has expired', async () => {

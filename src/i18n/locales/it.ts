@@ -359,6 +359,8 @@ export const it: DeepPartial<TranslationKeys> = {
         dingtalkDesc: 'Robot aziendale · modalità stream',
         feishuLabel: 'Feishu',
         feishuDesc: 'Lark Open Platform · modalità socket',
+        qqOfficialLabel: 'Bot QQ',
+        qqOfficialDesc: 'API ufficiale · Gateway',
       },
       platformName: {
         telegram: 'Telegram',

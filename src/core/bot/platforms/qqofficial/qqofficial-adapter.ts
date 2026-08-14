@@ -1,6 +1,7 @@
 import { Platform, requestUrl } from 'obsidian'
 
 import type { BotPlatformQqOfficialConfig } from '../../../../settings/schema/setting.types'
+import { splitTextAtBoundaries } from '../../text-chunking'
 import {
   type DownloadedFile,
   type ErrorHandler,
@@ -72,6 +73,12 @@ export class QQOfficialAdapter implements PlatformAdapter {
   private reconnectAttempt = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private stableTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * Monotonically increasing message sequence (B5): QQ uses msg_seq for
+   * message dedup, so a random value can collide and silently drop a reply.
+   * Per-adapter-instance counter, incremented on every sent message.
+   */
+  private msgSeq = 0
 
   async start(config: BotPlatformQqOfficialConfig): Promise<void> {
     if (Platform.isMobile)
@@ -85,6 +92,10 @@ export class QQOfficialAdapter implements PlatformAdapter {
       url: `${API}/gateway/bot`,
       headers: this.headers(),
     })
+    // B2: a stop() that landed while the gateway fetch was in flight must not
+    // open a socket that resurrects the adapter (same guard as Feishu's
+    // handshake path).
+    if (this.stopping) return
     const url = gateway.json?.url
     if (typeof url !== 'string')
       throw new Error('QQ Gateway URL is unavailable.')
@@ -120,20 +131,35 @@ export class QQOfficialAdapter implements PlatformAdapter {
       chatType === 'private'
         ? `/v2/users/${encodeURIComponent(chatId)}/messages`
         : `/v2/groups/${encodeURIComponent(chatId)}/messages`
-    const body: Record<string, unknown> = {
-      content: text,
-      msg_type: 0,
-      msg_seq: Math.floor(Math.random() * 10_000) + 1,
+    const refs: SentMessageRef[] = []
+    // B4: chunk long replies to the platform cap (2000) — the QQ API rejects
+    // oversized message bodies instead of truncating.
+    for (const chunk of splitTextAtBoundaries(
+      text,
+      this.capabilities.maxMessageLength,
+    )) {
+      // B5: msg_seq is monotonic per adapter instance (message dedup on the
+      // QQ side) — random values could collide and drop a reply.
+      this.msgSeq += 1
+      const body: Record<string, unknown> = {
+        content: chunk,
+        msg_type: 0,
+        msg_seq: this.msgSeq,
+      }
+      if (content.replyToMessageId) body.msg_id = content.replyToMessageId
+      const response = await requestUrl({
+        url: `${API}${endpoint}`,
+        method: 'POST',
+        headers: { ...this.headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      refs.push({
+        platformMessageId: String(response.json?.id ?? Date.now()),
+        sessionKey,
+        timestamp: Date.now(),
+      })
     }
-    if (content.replyToMessageId) body.msg_id = content.replyToMessageId
-    const response = await requestUrl({
-      url: `${API}${endpoint}`,
-      method: 'POST',
-      headers: { ...this.headers(), 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    const id = String(response.json?.id ?? Date.now())
-    return [{ platformMessageId: id, sessionKey, timestamp: Date.now() }]
+    return refs
   }
 
   sendStreamingMessage(_sessionKey: string): StreamReplyHandle {
@@ -253,12 +279,23 @@ export class QQOfficialAdapter implements PlatformAdapter {
       this.stableTimer = null
     }
   }
+  /**
+   * QQ Gateway intent bits (B1). The previous mapping was wrong on two
+   * counts: enableGuild used 1<<9 (GUILDS), but guild channel @-messages
+   * (`AT_MESSAGE_CREATE`) are delivered under GUILD_MESSAGES (1<<12) and
+   * guild private messages (`DIRECT_MESSAGE_CREATE`) under DIRECT_MESSAGE
+   * (1<<13); and enableC2c/enableGroup both used 1<<25, which is a SINGLE
+   * intent (GROUP_AND_C2C_EVENT) covering both C2C and group@ traffic — so
+   * the two switches could never be set independently at the intent level.
+   * The per-channel enable switches therefore also gate dispatch handling
+   * (see handleDispatch), since subscribing to only one half of 1<<25 is
+   * impossible.
+   */
   private intents(): number {
     const c = this.config
     return (
-      (c?.enableGuild ? 1 << 9 : 0) |
-      (c?.enableC2c ? 1 << 25 : 0) |
-      (c?.enableGroup ? 1 << 25 : 0)
+      (c?.enableGuild ? (1 << 12) | (1 << 13) : 0) | // GUILD_MESSAGES | DIRECT_MESSAGE
+      (c?.enableC2c || c?.enableGroup ? 1 << 25 : 0) // GROUP_AND_C2C_EVENT
     )
   }
   private sendGateway(payload: GatewayPayload): void {
@@ -271,6 +308,13 @@ export class QQOfficialAdapter implements PlatformAdapter {
     const guildAt = type === 'AT_MESSAGE_CREATE'
     const guildDm = type === 'DIRECT_MESSAGE_CREATE'
     if (!c2c && !groupAt && !guildAt && !guildDm) return
+    // B1: per-channel enable gates. GROUP_AND_C2C_EVENT (1<<25) is one intent
+    // bit covering both C2C and group@ traffic, so a subscription cannot
+    // select one without the other — the individual switches are enforced
+    // here at dispatch time instead.
+    if (c2c && !this.config?.enableC2c) return
+    if (groupAt && !this.config?.enableGroup) return
+    if ((guildAt || guildDm) && !this.config?.enableGuild) return
     const chatId = stringValue(
       c2c
         ? data.author?.['user_openid' as never]

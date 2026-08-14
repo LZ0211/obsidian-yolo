@@ -360,6 +360,8 @@ export const en: TranslationKeys = {
         dingtalkDesc: 'Enterprise robot · stream mode',
         feishuLabel: 'Feishu',
         feishuDesc: 'Lark Open Platform · socket mode',
+        qqOfficialLabel: 'QQ Bot',
+        qqOfficialDesc: 'Official API · Gateway',
       },
       platformName: {
         telegram: 'Telegram',

@@ -231,20 +231,51 @@ export class BotService {
     if (!this.acceptingEvents) return
     const settings = this.getBotsSettings()
     this.lastBotsSettings = settings
+    // B2: the settings listener is registered BEFORE the initial platform
+    // start, and the initial sync runs through the same serialized
+    // settingsChangeQueue as every later change. Previously the listener was
+    // only registered after the (network-bound) start handshake completed, so
+    // a settings flip during startup (e.g. disabling the whole bot switch)
+    // was consumed by nobody — the platform stayed running and the
+    // lastBotsSettings snapshot drifted from the applied state.
     if (settings.enabled) {
-      await this.onSettingsChanged(this.emptyBotsSettings(), settings)
+      const initialSync = this.enqueueSettingsChange(
+        this.emptyBotsSettings(),
+        settings,
+      )
+      this.unsubscribeFromSettings = this.deps.registerSettingsListener(
+        (newSettings) => this.handleSettingsChange(newSettings),
+      )
+      await initialSync
+    } else {
+      this.unsubscribeFromSettings = this.deps.registerSettingsListener(
+        (newSettings) => this.handleSettingsChange(newSettings),
+      )
     }
-    this.unsubscribeFromSettings = this.deps.registerSettingsListener(
-      (newSettings) => {
-        const previous = this.lastBotsSettings ?? this.emptyBotsSettings()
-        this.lastBotsSettings = newSettings.bots
-        this.settingsChangeQueue = this.settingsChangeQueue
-          .then(() => this.onSettingsChanged(previous, newSettings.bots))
-          .catch((error) => {
-            console.error('[YOLO Bot] Failed to handle settings update:', error)
-          })
-      },
-    )
+  }
+
+  private handleSettingsChange(newSettings: YoloSettings): void {
+    const previous = this.lastBotsSettings ?? this.emptyBotsSettings()
+    this.lastBotsSettings = newSettings.bots
+    this.enqueueSettingsChange(previous, newSettings.bots)
+  }
+
+  /**
+   * Serializes a settings diff onto the settingsChangeQueue (one at a time,
+   * in arrival order) and returns the queued promise so callers can await
+   * the applied state.
+   */
+  private enqueueSettingsChange(
+    previous: BotsSettings,
+    next: BotsSettings,
+  ): Promise<void> {
+    const queued = this.settingsChangeQueue
+      .then(() => this.onSettingsChanged(previous, next))
+      .catch((error) => {
+        console.error('[YOLO Bot] Failed to handle settings update:', error)
+      })
+    this.settingsChangeQueue = queued
+    return queued
   }
 
   async cleanup(): Promise<void> {
@@ -896,11 +927,12 @@ export class BotService {
   }
 
   /**
-   * Whitelist check. Only `telegram`/`weixin_oc` configs currently carry
-   * `whitelistEnabled`/`allowedUsers`/`allowedGroups` (the DingTalk MVP stub
-   * schema doesn't yet — see `botPlatformDingtalkSchema`); platforms without
-   * those fields conservatively deny everyone except global admins until
-   * their own auth fields are added in a later phase.
+   * Whitelist check. Every platform config schema extends
+   * `botPlatformBaseSchema`, which carries `whitelistEnabled`/`allowedUsers`/
+   * `allowedGroups` for all platform types, so the per-platform `in`-guards
+   * and the conservative deny branch are gone — a global whitelist toggle
+   * gates every platform, and each platform config can opt out of the list
+   * via its own `whitelistEnabled`.
    */
   private isAuthorized(
     event: PlatformMessageEvent,
@@ -909,19 +941,11 @@ export class BotService {
     if (this.isAdmin(event)) return true
     const botsSettings = this.getBotsSettings()
     if (!botsSettings.whitelistEnabled) return true
-    if (
-      'whitelistEnabled' in platformConfig &&
-      !platformConfig.whitelistEnabled
-    ) {
-      return true
-    }
-    if (!('whitelistEnabled' in platformConfig)) return false
+    if (!platformConfig.whitelistEnabled) return true
 
-    const allowedUsers: readonly string[] =
-      'allowedUsers' in platformConfig ? platformConfig.allowedUsers : []
-    if (allowedUsers.includes(event.senderId)) return true
+    if (platformConfig.allowedUsers.includes(event.senderId)) return true
 
-    if (event.chatType === 'group' && 'allowedGroups' in platformConfig) {
+    if (event.chatType === 'group') {
       const decoded = decodeSessionKey(event.sessionKey)
       return platformConfig.allowedGroups.includes(decoded.chatId)
     }

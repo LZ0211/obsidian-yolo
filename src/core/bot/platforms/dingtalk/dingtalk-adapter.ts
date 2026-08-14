@@ -40,6 +40,7 @@ import { App, FileSystemAdapter, Platform, requestUrl } from 'obsidian'
 
 import type { BotPlatformDingtalkConfig } from '../../../../settings/schema/setting.types'
 import { BoundedTtlMap } from '../../bounded-ttl-map'
+import { splitTextAtBoundaries } from '../../text-chunking'
 import {
   type DownloadedFile,
   type ErrorHandler,
@@ -273,15 +274,22 @@ export class DingTalkAdapter implements PlatformAdapter {
 
     try {
       if (!hasMedia && webhookValid && content.text) {
-        await this.sendViaWebhook(binding.sessionWebhook, content.text)
-        options?.progress?.(100)
-        return [
-          {
+        // B4: chunk long replies to the platform cap (20000) — the webhook
+        // API errors on oversized text payloads.
+        const refs: SentMessageRef[] = []
+        for (const chunk of splitTextAtBoundaries(
+          content.text,
+          this.capabilities.maxMessageLength,
+        )) {
+          await this.sendViaWebhook(binding.sessionWebhook, chunk)
+          refs.push({
             platformMessageId: `${sessionKey}-${Date.now()}`,
             sessionKey,
             timestamp: Date.now(),
-          },
-        ]
+          })
+        }
+        options?.progress?.(100)
+        return refs
       }
       return await this.sendViaRest(
         config,
@@ -405,6 +413,12 @@ export class DingTalkAdapter implements PlatformAdapter {
       this.scheduleReconnect()
       return
     }
+
+    // B2: a stop() that landed while the connection-open handshake was in
+    // flight must not create a socket that resurrects the adapter — stop()
+    // already cleared the timers and nulled `ws` (same guard as Feishu's
+    // handshake path).
+    if (this.stopping) return
 
     const endpointUrl = new URL(endpoint)
     const wsUrl = new URL(
@@ -699,10 +713,17 @@ export class DingTalkAdapter implements PlatformAdapter {
       })
 
     if (content.text) {
-      await this.dispatchRobotMessage(config, binding, token, 'sampleText', {
-        content: content.text,
-      })
-      pushRef()
+      // B4: chunk long replies to the platform cap (20000) — the REST send
+      // API errors on oversized text payloads.
+      for (const chunk of splitTextAtBoundaries(
+        content.text,
+        this.capabilities.maxMessageLength,
+      )) {
+        await this.dispatchRobotMessage(config, binding, token, 'sampleText', {
+          content: chunk,
+        })
+        pushRef()
+      }
       reportProgress()
     }
 
