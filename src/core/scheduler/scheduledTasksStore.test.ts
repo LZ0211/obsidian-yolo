@@ -205,7 +205,7 @@ describe('ScheduledTasksStore', () => {
     }
   })
 
-  it('deletes a task and its run rows explicitly (no FK cascade)', () => {
+  it('deletes a task and its run history', () => {
     const dir = makeTempDir()
     try {
       const store = createScheduledTasksStore(dir)
@@ -224,46 +224,10 @@ describe('ScheduledTasksStore', () => {
     }
   })
 
-  it('T1: keeps the cancelled in-flight run rows when deleting a task', () => {
+  it('migrates nullable task runs back to a required cascading task relation', () => {
     const dir = makeTempDir()
     try {
-      const store = createScheduledTasksStore(dir)
-      store.createTask('task-1', makeTaskConfig(), 1000)
-      store.insertRun(
-        makeRunInsert({
-          id: 'run-keep',
-          taskId: 'task-1',
-          status: TaskRunStatus.CANCELLED,
-        }),
-      )
-      store.insertRun(
-        makeRunInsert({
-          id: 'run-old',
-          taskId: 'task-1',
-          status: TaskRunStatus.COMPLETED,
-        }),
-      )
-
-      store.deleteTask('task-1', { keepRunIds: ['run-keep'] })
-
-      // The cancelled in-flight run survives for audit (its task_id is nulled
-      // by the FK's on delete set null); other runs are removed exactly like
-      // the old cascade behavior.
-      expect(store.getRun('run-keep')?.status).toBe(TaskRunStatus.CANCELLED)
-      expect(store.getRun('run-keep')?.taskId).toBeNull()
-      expect(store.getRun('run-old')).toBeNull()
-      expect(store.getTask('task-1')).toBeNull()
-      store.close()
-    } finally {
-      cleanup(dir)
-    }
-  })
-
-  it('T1: migrates legacy task_runs tables from on delete cascade to restrict (dropping always-null columns)', () => {
-    const dir = makeTempDir()
-    try {
-      // Hand-build a database with the pre-fix shape: `on delete cascade` FK
-      // plus the never-written parent_run_id / messages_count columns.
+      // Hand-build the temporary nullable shape used by the T1 fix batch.
       const dbPath = path.join(dir, 'scheduled-tasks.sqlite')
       const legacy = openSqliteRuntime({ dbPath })
       legacy.exec('pragma foreign_keys = on;')
@@ -300,7 +264,7 @@ describe('ScheduledTasksStore', () => {
       legacy.exec(`
         create table task_runs (
           id text primary key,
-          task_id text not null references scheduled_tasks(id) on delete cascade,
+          task_id text references scheduled_tasks(id) on delete set null,
           status text not null,
           result text,
           error text,
@@ -310,10 +274,8 @@ describe('ScheduledTasksStore', () => {
           completed_at integer,
           duration_ms integer,
           attempt integer not null default 1,
-          parent_run_id text,
           batch_id text not null,
           conversation_id text,
-          messages_count integer,
           output text,
           exit_code integer,
           catch_up_run_at integer,
@@ -327,48 +289,60 @@ describe('ScheduledTasksStore', () => {
         insert into task_runs (
           id, task_id, status, result, error,
           scheduled_for, triggered_by, started_at, completed_at, duration_ms,
-          attempt, parent_run_id, batch_id,
-          conversation_id, messages_count,
+          attempt, batch_id,
+          conversation_id,
           output, exit_code, catch_up_run_at, logs
         ) values (
           'run-1', 'task-1', 'completed', 'ok', null,
           1000, 'schedule', 1000, 1100, 100,
-          1, null, 'batch-1',
-          null, null,
+          1, 'batch-1',
+          null,
           null, 0, null, null
+        )
+      `)
+      legacy.exec(`
+        insert into task_runs (
+          id, task_id, status, result, error,
+          scheduled_for, triggered_by, started_at, completed_at, duration_ms,
+          attempt, batch_id, conversation_id,
+          output, exit_code, catch_up_run_at, logs
+        ) values (
+          'run-orphan', null, 'cancelled', null, null,
+          1000, 'manual', 1000, 1001, 1,
+          1, 'batch-orphan', null,
+          null, null, null, null
         )
       `)
       legacy.close()
 
       const store = createScheduledTasksStore(dir)
+      const migratedRun = store.getRun('run-1')
+      const orphanedRun = store.getRun('run-orphan')
+      store.close()
 
       // Data survived the rebuild.
-      expect(store.getRun('run-1')).toMatchObject({
+      expect(migratedRun).toMatchObject({
         id: 'run-1',
         taskId: 'task-1',
         status: TaskRunStatus.COMPLETED,
         result: 'ok',
       })
-      store.close()
+      expect(orphanedRun).toBeNull()
 
-      // The table was rebuilt: no cascade FK, no dropped columns, and the
-      // new FK is on delete set null — deleting the task keeps the run row
-      // (task_id nulled) instead of silently destroying it.
+      // The table is back to the domain model: every run belongs to a task,
+      // and deleting that task deletes its history.
       const raw = openSqliteRuntime({ dbPath })
       const tableSql =
         raw.queryOne<{ sql: string | null }>(
           "select sql from sqlite_master where type = 'table' and name = 'task_runs'",
         )?.sql ?? ''
-      expect(tableSql).not.toContain('on delete cascade')
-      expect(tableSql).toContain('on delete set null')
-      expect(tableSql).not.toContain('parent_run_id')
-      expect(tableSql).not.toContain('messages_count')
+      expect(tableSql).toContain('task_id text not null')
+      expect(tableSql).toContain('on delete cascade')
+      expect(tableSql).not.toContain('on delete set null')
       raw.exec('delete from scheduled_tasks where id = ?', ['task-1'])
-      const orphaned = raw.queryOne<{ task_id: string | null }>(
-        'select task_id from task_runs where id = ?',
-        ['run-1'],
-      )
-      expect(orphaned?.task_id).toBeNull()
+      expect(
+        raw.queryOne('select id from task_runs where id = ?', ['run-1']),
+      ).toBeUndefined()
       raw.close()
     } finally {
       cleanup(dir)

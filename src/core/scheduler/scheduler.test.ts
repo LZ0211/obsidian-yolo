@@ -570,7 +570,7 @@ describe('ScheduledTaskScheduler', () => {
     }
   })
 
-  it('T1: deleting an executing task cancels its run, keeps the record as CANCELLED, and never emits a completion', async () => {
+  it('deleting an executing task cancels it, removes its history, and never emits completion', async () => {
     const dir = makeTempDir()
     try {
       const store = createScheduledTasksStore(dir)
@@ -599,18 +599,12 @@ describe('ScheduledTaskScheduler', () => {
 
       scheduler.deleteTask('task-1')
 
-      // The task is gone, but the in-flight run record survives as CANCELLED
-      // (no cascade loss) — RED on the old behavior: getRun returned null.
       expect(store.getTask('task-1')).toBeNull()
-      const cancelled = store.getRun(result.runId)
-      expect(cancelled).not.toBeNull()
-      expect(cancelled?.status).toBe(TaskRunStatus.CANCELLED)
+      expect(store.getRun(result.runId)).toBeNull()
       expect(events.map((e) => e.type)).toContain('task_cancelled')
 
-      // Let the aborted execution settle as if it had completed — the success
-      // path must observe the CANCELLED row and stay silent (no completion
-      // event, no success Notice) — RED on the old behavior: task_completed
-      // was emitted and the success Notice shown.
+      // Let an executor that ignores abort settle. Deletion still suppresses
+      // completion events and notices.
       resolveRun({
         conversationId: 'conv-1',
         text: 'done',

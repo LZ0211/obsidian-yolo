@@ -74,12 +74,10 @@ export function ScheduledTaskCard({
   }
 
   const handleDelete = () => {
-    // T1: warn when the task is executing — the run is cancelled (its record
-    // is kept as CANCELLED), not allowed to run to completion after deletion.
     const runningWarning = isExecuting
       ? t(
           'settings.scheduledTasks.deleteTaskRunningWarning',
-          'This task is currently executing — its run will be cancelled and kept as cancelled in the run history.',
+          'This task is currently executing. Deleting it will cancel the current run.',
         )
       : ''
     new ConfirmModal(app, {

@@ -293,16 +293,9 @@ const CREATE_SCHEMA_SQL = `
     last_error text
   );
 
-  -- on delete set null (NOT cascade): deleting a task must not silently
-  -- destroy its RUNNING run row while the run is still executing — the run
-  -- would keep running, write to a deleted row (0-row updates) and emit a
-  -- false-success notice. The scheduler cancels in-flight runs first; the
-  -- store deletes the remaining run rows explicitly (see deleteTask), and
-  -- the cancelled in-flight rows the scheduler asks to keep survive the task
-  -- deletion with task_id nulled by the FK.
   create table if not exists task_runs (
     id text primary key,
-    task_id text references scheduled_tasks(id) on delete set null,
+    task_id text not null references scheduled_tasks(id) on delete cascade,
 
     status text not null check (
       status in ('pending', 'running', 'completed', 'failed', 'cancelled', 'timed_out')
@@ -486,40 +479,20 @@ export class ScheduledTasksStore {
     }
   }
 
-  /**
-   * Rebuilds the `task_runs` table for databases created before the T1
-   * fix-batch: (1) the FK was `on delete cascade`, which silently destroyed a
-   * RUNNING run row when its task was deleted — the run kept executing and
-   * emitted a false-success notice; it must be `on delete set null` so the
-   * scheduler can cancel in-flight runs and their records survive the task
-   * deletion. (2) the `parent_run_id` / `messages_count` columns were never
-   * written by any code path and are dropped in the same rebuild.
-   *
-   * Same FK-safe rebuild pattern as migrateTaskTypeConstraint: FK enforcement
-   * is suspended around the rebuild (it cannot be toggled inside a
-   * transaction), a new table is created under a distinct name, data is
-   * copied, the OLD table is dropped, and only then is the new one renamed
-   * into place — renaming the old table out of the way first would make
-   * SQLite rewrite its FK references and leave dangling constraints. Indexes
-   * are dropped with the old table and re-created explicitly on the new one.
-   *
-   * Runs only when the existing table SQL still carries the old
-   * `on delete cascade` FK; databases created from CREATE_SCHEMA_SQL are
-   * skipped. The rebuild is transactional.
-   */
+  /** Restores the required task relation after the temporary nullable schema. */
   private migrateTaskRunsTable(): void {
     const row = this.db.queryOne<{ sql: string | null }>(
       "select sql from sqlite_master where type = 'table' and name = 'task_runs'",
     )
     const tableSql = row?.sql ?? ''
-    if (!tableSql.includes('on delete cascade')) return
+    if (!tableSql.includes('on delete set null')) return
     this.db.exec('pragma foreign_keys = off;')
     try {
       this.db.transaction(() => {
         this.db.exec(`
           create table task_runs_new (
             id text primary key,
-            task_id text references scheduled_tasks(id) on delete set null,
+            task_id text not null references scheduled_tasks(id) on delete cascade,
 
             status text not null check (
               status in ('pending', 'running', 'completed', 'failed', 'cancelled', 'timed_out')
@@ -562,6 +535,7 @@ export class ScheduledTasksStore {
             conversation_id,
             output, exit_code, catch_up_run_at, logs
           from task_runs
+          where task_id in (select id from scheduled_tasks)
         `)
         this.db.exec('drop table task_runs')
         this.db.exec('alter table task_runs_new rename to task_runs')
@@ -745,26 +719,7 @@ export class ScheduledTasksStore {
     return rows.map(fromTaskDbRow)
   }
 
-  /**
-   * Deletes a task. The FK is `on delete set null` (not cascade), so run rows
-   * are deleted here explicitly rather than by cascade — except
-   * `keepRunIds`, which the scheduler passes for in-flight runs it has
-   * already cancelled: those terminal CANCELLED records survive the task
-   * deletion for audit (their task_id is nulled by the FK), so deleting an
-   * executing task cannot lose the run record or let the run complete with a
-   * false-success notice.
-   */
-  deleteTask(id: string, options: { keepRunIds?: string[] } = {}): void {
-    const keepRunIds = options.keepRunIds ?? []
-    if (keepRunIds.length > 0) {
-      const placeholders = keepRunIds.map(() => '?').join(', ')
-      this.db.exec(
-        `delete from task_runs where task_id = ? and id not in (${placeholders})`,
-        [id, ...keepRunIds],
-      )
-    } else {
-      this.db.exec('delete from task_runs where task_id = ?', [id])
-    }
+  deleteTask(id: string): void {
     this.db.exec('delete from scheduled_tasks where id = ?', [id])
   }
 

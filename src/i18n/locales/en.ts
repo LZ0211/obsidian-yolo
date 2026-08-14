@@ -2398,7 +2398,7 @@ export const en: TranslationKeys = {
       deleteTaskTitle: 'Delete scheduled task',
       deleteTaskMessage: 'Remove "{name}"? This cannot be undone.',
       deleteTaskRunningWarning:
-        'This task is currently executing — its run will be cancelled and kept as cancelled in the run history.',
+        'This task is currently executing. Deleting it will cancel the current run.',
       runNowTaskNotFound: 'Task not found',
       runNowTaskDisabled: 'Task is disabled',
       runNowAlreadyQueued: 'Already queued or running',

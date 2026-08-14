@@ -2526,7 +2526,7 @@ export const it: DeepPartial<TranslationKeys> = {
       deleteTaskMessage:
         'Rimuovere "{name}"? Questa azione non può essere annullata.',
       deleteTaskRunningWarning:
-        'Questa attività è in esecuzione: la sua esecuzione verrà annullata e conservata come annullata nella cronologia.',
+        'Questa attività è in esecuzione. L’eliminazione annullerà l’esecuzione corrente.',
       runNowTaskNotFound: 'Attività non trovata',
       runNowTaskDisabled: 'Attività disattivata',
       runNowAlreadyQueued: 'Già in coda o in esecuzione',

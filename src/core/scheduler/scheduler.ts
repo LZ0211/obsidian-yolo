@@ -365,14 +365,7 @@ export class ScheduledTaskScheduler {
     this.deps.store.updateTask(id, { ...patch, nextRunTime }, Date.now())
   }
 
-  /**
-   * T1: deleting an executing task must not lose its run record or let the
-   * run complete afterwards with a false-success notice. In-flight runs are
-   * cancelled first (reusing the cancel path: abort + terminal CANCELLED row
-   * + task_cancelled event), and the store keeps those run rows when it
-   * removes the task — the FK is `on delete set null` (not cascade), so the
-   * CANCELLED record survives for audit instead of being cascade-deleted.
-   */
+  /** Cancels local work before deleting the task and its run history. */
   deleteTask(id: string): void {
     this.queue.removePendingTask(id)
     const inFlightRunIds = this.queue
@@ -382,7 +375,7 @@ export class ScheduledTaskScheduler {
     for (const runId of inFlightRunIds) {
       this.cancelTaskRun(runId)
     }
-    this.deps.store.deleteTask(id, { keepRunIds: inFlightRunIds })
+    this.deps.store.deleteTask(id)
   }
 
   toggleTask(id: string, enabled: boolean): void {
@@ -844,10 +837,10 @@ export class ScheduledTaskScheduler {
         this.queue.markFailed(item.taskId, item.batchId, false)
         return
       }
-      if (this.deps.store.getRun(runId)?.status === TaskRunStatus.CANCELLED) {
-        // The user cancelled while this run was racing to completion; the
-        // cancel already wrote the terminal state — do not overwrite it with
-        // COMPLETED, just advance the queue without emitting success.
+      const persistedRun = this.deps.store.getRun(runId)
+      if (!persistedRun || persistedRun.status === TaskRunStatus.CANCELLED) {
+        // Cancellation or task deletion won the race. Advance the queue
+        // without recreating the run or emitting success.
         this.queue.markCompleted(item.taskId, item.batchId)
         return
       }
@@ -877,9 +870,10 @@ export class ScheduledTaskScheduler {
         this.queue.markFailed(item.taskId, item.batchId, false)
         return
       }
-      if (this.deps.store.getRun(runId)?.status === TaskRunStatus.CANCELLED) {
-        // A user-initiated cancel already wrote the terminal state; just
-        // advance the queue without emitting a failure event or retrying.
+      const persistedRun = this.deps.store.getRun(runId)
+      if (!persistedRun || persistedRun.status === TaskRunStatus.CANCELLED) {
+        // Cancellation or task deletion won the race. Advance the queue
+        // without recreating the run, emitting failure, or retrying.
         this.queue.markCompleted(item.taskId, item.batchId)
         return
       }
