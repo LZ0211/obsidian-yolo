@@ -22,6 +22,9 @@ export const it: DeepPartial<TranslationKeys> = {
     triggerTabCompletion: 'Attiva completamento tab',
     acceptInlineSuggestion: 'Accetta completamento',
     capturePdfRegion: 'Cattura regione PDF nella chat',
+
+    exportSettings: 'Export plugin settings',
+    importSettings: 'Import plugin settings',
   },
 
   // Italian does not yet translate the full config-transfer surface. Keep
@@ -31,16 +34,114 @@ export const it: DeepPartial<TranslationKeys> = {
     export: {
       moduleConfigsUnredactedOnly:
         'La configurazione dei moduli può contenere credenziali private del modulo ed è esclusa dalle esportazioni oscurate.',
+
+      title: 'Export settings',
+      description:
+        'Select the settings to export. The file will be saved to {path}',
+      selectAll: 'Select all',
+      selectNone: 'Select none',
+      sensitive: 'Contains credentials',
+      redactedOption:
+        'Redact credentials (replace API keys / passwords / headers / env vars with random strings)',
+      confirmUnredactedTitle: 'Confirm export',
+      confirmUnredacted:
+        'This unredacted export will save API keys / passwords / headers / env vars and other sensitive data to a file in the current vault. Continue?',
+      submit: 'Export',
+      cancel: 'Cancel',
+      noticeAtLeastOne: 'Please select at least one item',
+      noticeReadFailed: 'Failed to read current settings',
+      noticeSuccess: 'Settings exported to {path}',
+      noticeFailed: 'Failed to export settings — check console for details',
     },
     import: {
       noticePartialModuleConfig:
         'Le impostazioni Host sono state importate, ma la configurazione dei moduli non è riuscita. Alcune impostazioni dei moduli potrebbero essere state scritte e non sono state annullate.',
+
+      title: 'Import settings',
+      sourceFile: 'Import from file',
+      sourceFileDesc: 'Choose a previously exported .json file',
+      sourceVault: 'Import from another vault',
+      sourceVaultDesc: 'Choose a vault directory with YOLO installed',
+      description: 'Select the settings to import',
+      selectAll: 'Select all',
+      selectNone: 'Select none',
+      sensitive: 'Contains credentials',
+      strategyOverwriteTitle: 'Overwrite',
+      strategyOverwriteDesc: 'Replace selected settings with the imported ones',
+      strategyMergeTitle: 'JSON merge',
+      strategyMergeDesc:
+        'Deep merge, keep existing values for fields not present in the import',
+      submit: 'Import',
+      back: 'Back',
+      cancel: 'Cancel',
+      noticeInvalidJson:
+        'File is not valid JSON. Please pick the correct settings file.',
+      noticeFileReadFailed: 'Failed to read the file. Please try again.',
+      noticeRedactedHint:
+        'Note: this export was redacted. All API keys / passwords / headers / env vars have been cleared and must be re-entered after import.',
+      noticeRedactedReminder:
+        'Note: this export was redacted. All API keys / passwords / headers / env vars have been cleared — please re-enter them in settings.',
+      noticePluginNotFound:
+        'No YOLO plugin settings found in the selected directory.',
+      noticeAtLeastOne: 'Please select at least one item',
+      noticeSuccess: 'Settings imported successfully',
+      noticeFailed: 'Failed to import settings',
     },
     keyLabels: {
       jsSandbox: 'Autorizzazioni sandbox JS',
       pluginUpdateAutoDownloadEnabled:
         'Scarica automaticamente gli aggiornamenti del plugin',
       moduleConfigs: 'Configurazione moduli',
+
+      providers: 'AI providers',
+      chatModels: 'Chat models',
+      embeddingModels: 'Embedding models',
+      chatModelId: 'Default chat model',
+      chatTitleModelId: 'Title-generation model',
+      embeddingModelId: 'Default embedding model',
+      systemPrompt: 'System prompt',
+      ragOptions: 'Knowledge base settings',
+      mcp: 'MCP tools',
+      webSearch: 'Web search',
+      skills: 'Skills',
+      yolo: 'Base settings',
+      debug: 'Debug settings',
+      chatOptions: 'Chat preferences',
+      notificationOptions: 'Notifications',
+      continuationOptions: 'Continuation & completion',
+      assistants: 'Agents',
+      currentAssistantId: 'Current agent',
+      quickAskAssistantId: 'Quick Ask agent',
+    },
+
+    errors: {
+      errorNotJson: 'File content is not a valid JSON object.',
+      errorNotExportFile:
+        'This file is not a YOLO plugin export file. Please pick a .json produced by the "Export settings" feature.',
+      errorInvalidFormatVersion:
+        'Invalid export format version — the file may be corrupted.',
+      errorInvalidSettingsVersion:
+        'Invalid settings version in the export file — it may be corrupted.',
+      errorFileFromNewerVersion:
+        'This file was exported by a newer plugin version ({fileVersion}); current plugin schema is {currentVersion}. Please upgrade this plugin before importing.',
+      errorEmptyKeys: 'The export file contains no settings to import.',
+      errorMissingData:
+        'The data field is missing or invalid in the export file.',
+      errorTampered:
+        'Export file is inconsistent: data contains fields not declared in keys ({fields}). The file may have been tampered with.',
+      errorChecksumMismatch:
+        'Export file integrity check failed — the content may have been modified.',
+      errorVaultParseFailed:
+        'Could not parse the settings data from the target vault.',
+      errorVaultMissingVersion:
+        'Target vault settings are missing the version field — cannot check compatibility.',
+      errorVaultFromNewerVersion:
+        'Target vault uses a newer plugin version ({vaultVersion}); current is {currentVersion}. Please upgrade this plugin before importing.',
+      errorVaultEmpty: 'Target vault contains no exportable settings.',
+      errorApplyVersionMismatch:
+        'Import data version ({importVersion}) is newer than the current plugin schema ({currentVersion}).',
+      errorApplySchema:
+        'The imported settings failed validation — fields may be missing or malformed.',
     },
   },
 
@@ -75,6 +176,17 @@ export const it: DeepPartial<TranslationKeys> = {
     off: 'Disattivo',
     noResults: 'Nessuna corrispondenza trovata',
     search: 'Cerca...',
+
+    switchSuggestion: '↑↓ Switch suggestion',
+    configure: 'Configure',
+    create: 'Create',
+    submitting: 'Submitting...',
+    previous: 'Previous',
+    next: 'Next',
+    none: 'None',
+    select: 'Select',
+    refresh: 'Refresh',
+    agentStatusWaitingApproval: 'Pending approval',
   },
 
   sidebar: {
@@ -97,6 +209,8 @@ export const it: DeepPartial<TranslationKeys> = {
       codexDescription: 'Codex su questo dispositivo',
       chatLabel: 'Agent',
       exitCli: 'Esci da CLI',
+
+      claudeCodeShortLabel: 'CC',
     },
     cliSessions: {
       sectionLabel: 'Sessioni CLI',
@@ -161,6 +275,8 @@ export const it: DeepPartial<TranslationKeys> = {
         pin: 'Fissa',
         rename: 'Rinomina',
       },
+
+      confirmDelete: 'Click again to delete',
     },
     composer: {
       title: 'Sparkle',
@@ -201,6 +317,11 @@ export const it: DeepPartial<TranslationKeys> = {
         'Seleziona cartelle o file usati come ambito di recupero (lascia vuoto per tutti).',
       knowledgeBaseHint:
         "Abilita la ricerca embeddings per limitare l'ambito di recupero.",
+    },
+
+    chat: {
+      exportSuccess: 'Exported chat to {path}',
+      exportError: 'Could not export conversation',
     },
   },
 
@@ -430,6 +551,8 @@ export const it: DeepPartial<TranslationKeys> = {
       tabCompletionSystemPrompt: 'Prompt di sistema completamento tab',
       tabCompletionSystemPromptDesc:
         'Messaggio di sistema applicato quando si generano suggerimenti di completamento tab; lascia vuoto per usare quello predefinito incorporato.',
+
+      recommendedBadge: '(Recommended)',
     },
     modules: {
       title: 'Moduli',
@@ -663,6 +786,11 @@ export const it: DeepPartial<TranslationKeys> = {
       fixedActionHint: 'Azione predefinita',
       hideFixedAction: 'Nascondi in Cursor Chat',
       showFixedAction: 'Mostra in Cursor Chat',
+
+      actionAssistantFollowCurrent: 'Follow current selection',
+      actionAssistant: 'Use assistant',
+      actionAssistantDesc:
+        'Assistant used when running this action; leave empty to follow the current selection.',
     },
     chatPreferences: {
       title: 'Preferenze chat',
@@ -713,6 +841,10 @@ export const it: DeepPartial<TranslationKeys> = {
       duplicate: 'Duplica',
       copySuffix: '(copia)',
       manageAll: 'Gestisci tutti…',
+
+      icon: 'Icon',
+      iconDesc: 'Choose an assistant icon',
+      chooseIcon: 'Choose icon',
     },
     agent: {
       title: 'Agent',
@@ -968,6 +1100,29 @@ export const it: DeepPartial<TranslationKeys> = {
         excludeDesc: "Escluso dall'intervallo consentito (priorità maggiore)",
         excludeBadge: 'EXCLUDE',
         excludeEmpty: 'Nessuna esclusione.',
+
+        rootTitle: 'Working directory',
+        rootDesc:
+          'Relative reads and all writes are resolved under this directory.',
+        rootBadge: 'ROOT',
+        rootEmpty: 'Vault root is used when no working directory is set.',
+        pick: 'Pick',
+        readExtraTitle: 'Extra readable paths',
+        readExtraDesc:
+          'Additional vault paths outside the working directory that this agent may read.',
+        readExtraBadge: 'READ',
+        readExtraEmpty: 'No extra readable paths.',
+        readExcludeTitle: 'Read deny list',
+        readExcludeDesc:
+          'Subpaths hidden from reads, mentions, search, metadata, and tool results.',
+        readExcludeBadge: 'DENY READ',
+        readExcludeEmpty: 'No read exclusions.',
+        writeExcludeTitle: 'Write deny list',
+        writeExcludeDesc:
+          'Subpaths under the working directory where writes, deletes, moves, and edits are blocked.',
+        writeExcludeBadge: 'DENY WRITE',
+        writeExcludeEmpty: 'No write exclusions.',
+        denyDisabledHint: 'Set a workspace root first to configure deny lists.',
       },
       editorTabModel: 'Modello',
       editorName: 'Nome',
@@ -1177,6 +1332,92 @@ export const it: DeepPartial<TranslationKeys> = {
         'Cerca e ispeziona i file del vault, più operazioni su percorsi mkdir/mv/rm',
       toolApprovalDangerousOnly: 'Approva solo operazioni pericolose',
       editorModelDesc: 'Seleziona il modello usato da questo agent',
+
+      importSkillFromUrlPlaceholder: 'Paste a GitHub URL (repo / blob / tree)',
+      importSkillFromUrlFetch: 'Fetch',
+      importSkillFromUrlFetching: 'Fetching...',
+      importSkillImporting: 'Importing...',
+      importSkillFromUrlInvalid:
+        'Please enter a valid GitHub URL (repo / blob / tree).',
+      importSkillFromUrlNotFound:
+        'Resource not found on GitHub. Check the URL and that the repository / file exists and is public.',
+      importSkillFromUrlRateLimit:
+        'GitHub API rate limit exceeded. Please try again later.',
+      importSkillFromUrlTooLarge: 'Skill package exceeds size limit: {error}',
+      importSkillFromUrlFetchError: 'Failed to fetch from GitHub: {error}',
+      noTools: 'No tools available',
+      toolsActive: 'active',
+      expandDescription: 'Expand',
+      collapseDescription: 'Collapse',
+      viewAllTools: 'View all tools',
+      viewAllSkills: 'View all skills',
+      enableAllTools: 'Enable all',
+      disableAllTools: 'Disable all',
+      editorModelSampling: 'Sampling parameters',
+      editorModelResetDefaults: 'Restore defaults',
+      modelPresetFocused: 'Focused',
+      modelPresetBalanced: 'Balanced',
+      modelPresetCreative: 'Creative',
+      editorMaxContextMessages: 'Max context messages',
+      editorCustomParameters: 'Custom parameters',
+      editorCustomParametersDesc:
+        'Additional request fields for this agent. Same keys override model-level parameters',
+      editorCustomParametersAdd: 'Add parameter',
+      editorCustomParametersKeyPlaceholder: 'Key',
+      editorCustomParametersValuePlaceholder: 'Value',
+      editorEstimatedContextTokens: '~{count} tokens',
+      jsSandboxExtTitle: 'Extension capabilities',
+      jsSandboxAllowFetch: 'Allow Network Fetch',
+      jsSandboxAllowFetchDesc:
+        'Allow browser network requests, plus a separate $fetch helper for requests that need YOLO to bypass cross-origin limits. Also enabled automatically when external scripts are enabled.',
+      jsSandboxAllowFetchRisk:
+        'Risk: scripts can reach any URL the browser can — public APIs, your local network, internal services, and the LLM provider itself. Data in the script (including vault contents you pass in) can be exfiltrated. Only enable for agents you fully trust.',
+      jsSandboxAllowFetchConfirm:
+        'Enabling network requests lets scripts contact browser-accessible addresses and use a separate YOLO host request helper when browser cross-origin limits block a response. Only enable this for an agent you trust. Continue?',
+      jsSandboxAllowVaultRead: 'Allow Vault Read',
+      jsSandboxAllowVaultReadDesc:
+        'Let scripts list vault paths and read any vault file by path. This capability is not constrained by the agent directory scope. Risk: scripts could pass note contents to external services.',
+      jsSandboxAllowVaultReadConfirm:
+        "Enabling vault read lets AI-generated scripts list vault paths and read any file in the vault by path. This data passes through the LLM context. Only enable if you trust this agent's scripts. Continue?",
+      jsSandboxAllowBrowserRead: 'Allow Open Web Page Read',
+      jsSandboxAllowBrowserReadDesc:
+        'Let scripts read the full HTML of web pages already open in Obsidian by page ID. This can include logged-in or private page content.',
+      jsSandboxAllowBrowserReadRisk:
+        'Risk: scripts can read the full page DOM from pages you have opened in Obsidian, including hidden fields, embedded state, and private or logged-in content. Only enable for agents you fully trust.',
+      jsSandboxAllowBrowserReadConfirm:
+        'Enabling open web page read lets AI-generated scripts read full HTML from web pages already open in Obsidian by page ID. This content passes through the LLM context. Continue?',
+      jsSandboxBrowserReadMaxKb: 'Max page HTML size (KB)',
+      jsSandboxBrowserReadMaxKbDesc:
+        'Per-call full HTML limit. Larger pages are refused instead of shortened. Range 1–1048576 KB. Leave blank to use the default.',
+      jsSandboxAllowDbQuery: 'Allow Knowledge Base Query',
+      jsSandboxAllowDbQueryDesc:
+        'Let scripts query indexed vault content with semantic search and read Markdown/text content by known path. This capability is not constrained by the agent directory scope.',
+      jsSandboxAllowDbQueryConfirm:
+        'Enabling knowledge base query lets AI-generated scripts search indexed content and read Markdown/text content by known path. Continue?',
+      jsSandboxAllowExternalScripts: 'Allow External Scripts',
+      jsSandboxAllowExternalScriptsDesc:
+        'Allow scripts to load and run remote JavaScript, and open the broader browser capabilities needed by those scripts.',
+      jsSandboxAllowExternalScriptsRisk:
+        'EXTREME RISK: the agent can pull in and execute arbitrary remote JavaScript with the same privileges as your browser tab. This is functionally equivalent to running untrusted code from the internet. Anything in the vault that you pass into a script can be exfiltrated. Only enable for agents and code sources you fully trust.',
+      jsSandboxAllowExternalScriptsConfirm:
+        'Enabling external scripts lets the agent load and run remote JavaScript inside Obsidian. This is powerful and risky: only continue if you fully trust this agent and the code source.',
+      jsSandboxConfirmEnableTitle: 'Enable extension capability',
+      jsSandboxTimeoutMs: 'Execution timeout (ms)',
+      jsSandboxTimeoutMsDesc:
+        'Maximum runtime for a single script call. Range {min}–{max}.',
+      jsSandboxOutputMaxKb: 'Max tool result size (KB)',
+      jsSandboxOutputMaxKbDesc:
+        'Upper bound on the JSON result returned to the model. Larger output is truncated to a prefix. Oversized responses consume model context tokens and can exceed the context window, driving up cost. Range {min}–{max} KB.',
+      jsSandboxVaultReadMaxKb: 'Max read size (KB)',
+      jsSandboxVaultReadMaxKbDesc:
+        'Per-call read limit. Larger text is shortened with a notice; larger binary files are refused. Range {min}–{max} KB.',
+      jsSandboxDbMaxLimit: 'Max semantic rows',
+      jsSandboxDbMaxLimitDesc:
+        'Upper bound on semantic search results. Path reads are not affected. Range 1–100.',
+      editorTokenDeleteTitle: 'Delete share token',
+      editorDelegatable: 'Allow subagent delegation',
+      editorDelegatableDesc:
+        'Allow another Agent to select this template as a specialist child role.',
     },
     workspaceAgents: {
       sectionTitle: 'Agent dello spazio di lavoro',
@@ -1252,6 +1493,8 @@ export const it: DeepPartial<TranslationKeys> = {
         grok: 'Grok',
         zhipu: 'Zhipu Web Search',
         exa: 'Exa',
+
+        anysearch: 'AnySearch',
       },
       fieldName: 'Nome visualizzato',
       fieldApiKey: 'API key',
@@ -1275,6 +1518,10 @@ export const it: DeepPartial<TranslationKeys> = {
       fieldZhipuDomainFilter: 'Filtro dominio (opzionale)',
       bingNote:
         'Bing non richiede API key. Il provider effettua scraping della pagina pubblica dei risultati; l’affidabilità dipende dalle misure anti-bot di Bing.',
+
+      fieldApiKeyOptional: 'API key (optional)',
+      anysearchApiKeyDesc:
+        'Leave empty for anonymous access (rate-limited per IP with a daily free quota). Add a key for higher limits.',
     },
     providers: {
       title: 'Provider',
@@ -1393,6 +1640,26 @@ export const it: DeepPartial<TranslationKeys> = {
       geminiOAuthDisconnectedHelp:
         'Non connesso. Connettiti per usare la quota Gemini del tuo account Google.',
       geminiOAuthProject: 'progetto',
+
+      dragHandle: 'Drag to reorder',
+      kind: {
+        openai: 'Reasoning · Multimodal',
+        chatgptOAuth: 'ChatGPT Plus / Pro',
+        anthropic: 'Chat · Reasoning',
+        gemini: 'Multimodal',
+        geminiOAuth: 'Google account',
+        mistral: 'Chat · Embedding',
+        perplexity: 'Search-augmented chat',
+        groq: 'Fast inference',
+        morph: 'Edit model',
+        deepseek: 'Chat · Reasoning',
+        moonshot: 'Long context',
+        openrouter: 'Router',
+        azure: 'Enterprise cloud',
+        bedrock: 'Enterprise cloud',
+        ollama: 'Local',
+        lmStudio: 'Local',
+      },
     },
     models: {
       title: 'Modelli',
@@ -1540,6 +1807,32 @@ export const it: DeepPartial<TranslationKeys> = {
       noRerankProvider:
         'Nessun provider supporta il rerank. Configura prima un provider compatibile OpenAI (es. SiliconFlow, OpenRouter).',
       invalidModelData: 'Dati del modello non validi',
+
+      addMode: 'Add mode',
+      rerankModelsFirst: 'Rerank models are listed first',
+      rerankModelIdDesc:
+        'Model name for rerank API calls, e.g. BAAI/bge-reranker-v2-m3',
+      rerankMaxDocuments: 'Maximum documents',
+      rerankMaxDocumentsDesc: 'Leave blank when unknown',
+      rerankMaxInputChars: 'Maximum input characters',
+      rerankMaxInputCharsDesc: 'Leave blank when unknown',
+      dragHandle: 'Drag to reorder',
+      builtinToolProviderDeepSeek: 'DeepSeek',
+      builtinToolsDeepSeek: 'DeepSeek built-in tools',
+      builtinToolDeepSeekWebSearchDesc:
+        'Web search runs on DeepSeek servers — no separate search provider needed. Once enabled, YOLO’s own web search is no longer offered to this model, so it stops trying both; web scraping stays available.',
+      builtinToolDeepSeekWebSearchUnavailable:
+        'This provider’s current API type does not support the official web search. Switch its API type to Anthropic or OpenAI Responses first.',
+      requestParameters: 'Request parameters',
+      requestParametersDesc:
+        'Usually no adjustment is needed. Fields left disabled use the provider defaults.',
+      requestParametersEnabledCount: '{count} request parameters enabled',
+      clearRequestParameterOverrides: 'Clear overrides',
+      additionalParameters: 'Other parameters',
+      customParameterTypeText: 'Text',
+      customParameterTypeNumber: 'Number',
+      customParameterTypeBoolean: 'Boolean',
+      customParameterTypeJson: 'JSON',
     },
     rag: {
       title: 'RAG (Retrieval Augmented Generation)',
@@ -1670,6 +1963,104 @@ export const it: DeepPartial<TranslationKeys> = {
         'Porta usata dal web runtime. Intervallo valido: da 1 a 65535.',
       webRuntimeNetworkWarning:
         'Il server è accessibile dalla rete. Assicurati che il bearer token sia impostato e che il firewall consenta connessioni in ingresso sulla porta {{port}}.',
+
+      updateIndex: 'Update index',
+      vacuumIndex: 'Vacuum index',
+      vacuumComplete: 'Index vacuum complete.',
+      vacuumFailed: 'Index vacuum failed.',
+      rerankEnabled: 'Enable reranking',
+      rerankEnabledDesc:
+        'When disabled, vector search results are used directly without reranking.',
+      previousRunInterrupted: 'The previous index run did not finish normally.',
+      indexPaused: 'Paused',
+      chunkOverlap: 'Chunk overlap',
+      chunkOverlapDesc:
+        'Number of overlapping characters between adjacent chunks. Default 50. Rebuilding the index is recommended after changing it.',
+      queryEmbeddingConfigError:
+        'Embedding provider is not configured. Check the embedding model API key or base URL settings.',
+      queryEmbeddingRateLimitError:
+        'Embedding provider is rate limited. Please retry in a moment.',
+      filesProgress: 'files',
+      chunksProgress: 'chunks',
+      inspectCardTitle: 'Retrieval inspect',
+      inspectCardDesc:
+        'Review the current retrieval runtime, index summary, and latest query trace.',
+      inspectExecutionMode: 'Execution mode',
+      inspectPersistenceMode: 'Persistence mode',
+      inspectStoragePath: 'Storage path',
+      inspectCounts: 'Indexed files / chunks',
+      inspectNamespaceModel: 'Namespace / model / dim',
+      inspectLatestIndex: 'Latest index',
+      inspectLatestQuery: 'Latest query',
+      inspectWarning: 'Warning',
+      inspectError: 'Error',
+      inspectDiagnostic: 'Diagnostic',
+      inspectFailedFiles: 'Failed files',
+      log: {
+        title: 'RAG log',
+        subtitle:
+          'Review the latest 50 retrieval traces. The summary row shows current inspect state, not the historical state of each trace.',
+        openTitle: 'RAG log',
+        openDesc:
+          'Open the recent retrieval trace log and inspect detailed diagnostics.',
+        openButton: 'Open',
+        showRibbonIcon: 'Show RAG log ribbon icon',
+        showRibbonIconDesc:
+          'Show a shortcut for the RAG log in the left ribbon.',
+        refresh: 'Refresh',
+        clearLogs: 'Clear logs',
+        clearConfirmTitle: 'Clear all RAG logs?',
+        clearConfirmMessage:
+          'This cannot be undone. Only the local RAG retrieval logs will be removed; indexes, chunks, embeddings, and settings stay intact.',
+        clearConfirmButton: 'Clear logs',
+        deleteTrace: 'Delete trace',
+        deleteConfirmTitle: 'Delete this RAG log?',
+        deleteConfirmMessage:
+          'This cannot be undone. Only this local RAG retrieval log will be removed; indexes, chunks, embeddings, and settings stay intact.',
+        deleteConfirmButton: 'Delete log',
+        empty: 'No RAG logs yet',
+        loading: 'Loading',
+        queryText: 'Retrieval query',
+        evidence: 'Evidence',
+        timingBreakdown: 'Timing breakdown',
+        timingTotal: 'Total time',
+        timingEmbedding: 'Embedding',
+        timingRetrieval: 'Retrieval',
+        timingCoarse: 'Coarse search',
+        timingFullVec: 'Load full vectors',
+        timingSimilarityRerank: 'Similarity rerank',
+        timingAssemble: 'Assemble evidence',
+        diagnostic: 'Diagnostic',
+        recoveryAction: 'Recovery action',
+        loadFailure: 'Failed to load retrieval inspect',
+        clearFailure: 'Failed to clear logs',
+        deleteFailure: 'Failed to delete log',
+        retry: 'Retry',
+        close: 'Close',
+        cancel: 'Cancel',
+        unknown: 'Unknown',
+        notAvailable: 'N/A',
+        statusSuccess: 'Success',
+        statusWarning: 'Warning',
+        statusError: 'Error',
+        statusEmpty: 'Empty',
+        statusAborted: 'Aborted',
+        diagnosticsDisabledNote:
+          'Diagnostics are disabled. Enable retrieval diagnostics to collect new RAG logs.',
+        ragUnconfiguredNote:
+          'RAG is not configured yet. Configure the knowledge base before relying on retrieval logs.',
+        noActiveIndexNote:
+          'No active index is available yet. Build the knowledge base index to populate retrieval logs.',
+        traceListTitle: 'Trace list',
+        traceDetailTitle: 'Trace detail',
+        evidenceCount: 'evidence',
+        indexedFiles: 'Indexed files',
+        chunks: 'Chunks',
+        model: 'Model',
+        dimension: 'Dimension',
+        warning: 'Warning',
+        error: 'Error',
+      },
     },
     mcp: {
       title: 'Strumenti personalizzati (MCP)',
@@ -1727,6 +2118,55 @@ export const it: DeepPartial<TranslationKeys> = {
       validParameters: 'Parametri validi',
       failedToAddServer: 'Impossibile aggiungere il server',
       failedToDeleteServer: 'Impossibile eliminare il server',
+
+      modeForm: 'Form',
+      modeJson: 'JSON',
+      editorMode: 'Configuration editor',
+      transportField: 'Connection type',
+      transportFieldDesc: 'Choose how YOLO connects to this server.',
+      remoteTransports: 'Remote',
+      localTransports: 'Local',
+      transportHttp: 'Streamable HTTP',
+      transportSse: 'SSE',
+      transportWs: 'WebSocket',
+      transportStdio: 'stdio',
+      urlField: 'Server URL',
+      urlFieldDesc: 'The URL provided by the MCP server.',
+      authenticationField: 'Authentication',
+      authenticationFieldDesc: 'Choose how this server verifies your identity.',
+      authenticationOAuth: 'OAuth',
+      authenticationNone: 'No authentication',
+      authenticationHeaders: 'Custom headers',
+      oauthTitle: 'Connect with OAuth',
+      oauthDesc:
+        'YOLO will open your browser so you can authorize this MCP server securely.',
+      oauthNotConnected: 'Not connected',
+      oauthConnect: 'Connect',
+      oauthCancelConnection: 'Stop connecting',
+      oauthReconnect: 'Reconnect',
+      oauthChecking: 'Checking...',
+      oauthConnecting: 'Connecting...',
+      oauthConnected: 'Connected',
+      oauthConnectionFailed: 'Connection failed',
+      oauthConnectBeforeSave: 'Connect with OAuth before saving this server.',
+      oauthHttpRequired: 'OAuth requires an HTTP or HTTPS server URL.',
+      commandField: 'Command',
+      commandFieldDesc: 'The executable used to start the MCP server.',
+      argumentsField: 'Arguments',
+      argumentsFieldDesc: 'Enter one command argument per line.',
+      cwdField: 'Working directory',
+      cwdFieldDesc: 'Optional directory in which to start the command.',
+      headersField: 'Headers',
+      headersFieldDesc:
+        'Optional headers for servers that use manual authentication.',
+      addHeader: 'Add header',
+      headerKeyPlaceholder: 'Header name',
+      headerValuePlaceholder: 'Header value',
+      environmentField: 'Environment variables',
+      environmentFieldDesc: 'Values passed to the local server process.',
+      addEnvironmentVariable: 'Add variable',
+      environmentKeyPlaceholder: 'Variable name',
+      environmentValuePlaceholder: 'Value',
     },
     templates: {
       title: 'Template',
@@ -2029,6 +2469,20 @@ export const it: DeepPartial<TranslationKeys> = {
       webRuntimeConcurrency: 'Numero massimo di agenti simultanei',
       webRuntimeConcurrencyDesc:
         'Limite massimo di agenti Web eseguiti in parallelo, intervallo da 1 a 20; le sessioni della stessa conversazione vengono sempre eseguite in serie.',
+
+      exportConfig: 'Export settings',
+      exportConfigDesc:
+        'Export current plugin settings to a JSON file for use in other vaults.',
+      export: 'Export',
+      importConfig: 'Import settings',
+      importConfigDesc:
+        'Import plugin settings from an export file or another vault.',
+      import: 'Import',
+      chatApplyMode: 'Chat apply behavior',
+      chatApplyModeDesc:
+        'Only affects Apply in the sidebar Chat. Choose whether edits open inline review first or write directly to the file. Turning review off skips the second confirmation step.',
+      chatApplyModeReviewRequired: 'Review before apply',
+      chatApplyModeDirectApply: 'Write directly to file',
     },
     scheduledTasks: {
       title: 'Attività pianificate',
@@ -2226,6 +2680,45 @@ export const it: DeepPartial<TranslationKeys> = {
       editFieldErrorHint: 'Correggi i campi evidenziati, poi salva di nuovo.',
       moreActions: 'Altre azioni',
     },
+
+    jsSandbox: {
+      openSettings: 'Configure analysis sandbox',
+    },
+    subagent: {
+      openSettings: 'Configure subagent models',
+      modelPool: 'Subagent model pool',
+      modelPoolDesc:
+        'The parent agent can dispatch subagents only with models in this pool.',
+      preferredModelRule:
+        'If the parent agent does not pass modelId explicitly, the preferred model is used.',
+      addModelsTitle: 'Add subagent models',
+      addModelsDesc:
+        'Select registered chat models to add to the subagent model pool.',
+      addModelPlaceholder: 'Select a model',
+      addModel: 'Add model',
+      addSelectedModels: 'Add selected models',
+      searchModels: 'Search models...',
+      setPreferredModel: 'Set as preferred model',
+      defaultModel: 'Default',
+      setDefaultModel: 'Set default',
+      emptyModelPool: 'No subagent models selected.',
+      poolCount: '{count} models',
+    },
+    databaseExplorer: {
+      pageCurrent: 'Page {{current}}',
+      pageIndicator: 'Page {{current}} / {{total}}',
+      tables: 'Tables',
+      selectTable: 'Select a table',
+      countingRows: 'Counting rows...',
+      countRows: 'Count rows',
+      rows: 'rows',
+      loading: 'Loading...',
+      noRows: 'No rows',
+      sqlLabel: 'Read-only SQL',
+      runningQuery: 'Running...',
+      runQuery: 'Run query',
+      queryTruncated: 'Only the first 500 rows are shown.',
+    },
   },
 
   chat: {
@@ -2257,6 +2750,10 @@ export const it: DeepPartial<TranslationKeys> = {
         conversation: 'Conversazione',
         reasoning: 'Ragionamento',
       },
+
+      cacheHitLabel: 'Previous turn cache hit {{percent}}',
+      breakdownBarAriaLabel: 'Context breakdown',
+      usageBarAriaLabel: 'Context usage',
     },
     inlineInfo: {
       callsTitle: '{{count}} chiamate in questo turno',
@@ -2318,6 +2815,11 @@ export const it: DeepPartial<TranslationKeys> = {
         'Messaggio in coda ripristinato nella casella di input',
       abortedRestoredMany:
         "Ripristinato l'ultimo messaggio in coda nella casella di input ({{count}} scartati)",
+
+      blockedActiveTool:
+        'Wait for the current tool call to finish before sending a new message.',
+      blockedActiveTooltip:
+        'You can send again after the current tool call finishes',
     },
     askUserQuestion: {
       title: "L'agente ti pone delle domande",
@@ -2345,6 +2847,8 @@ export const it: DeepPartial<TranslationKeys> = {
       select: 'Seleziona directory di lavoro',
       clear: 'Cancella directory di lavoro',
       locked: 'La directory di lavoro è bloccata',
+
+      unavailable: 'This folder is not available to the selected Agent.',
     },
     dropFilesHint: 'Rilascia per aggiungere alla conversazione',
     imageUnsupportedByModel:
@@ -2434,6 +2938,9 @@ export const it: DeepPartial<TranslationKeys> = {
       openError: 'Impossibile aprire la sessione CLI: {message}',
       transitionError:
         'Impossibile lasciare la sessione CLI corrente: {message}',
+
+      unboundMessageError:
+        'The CLI session has not been created yet; this provider message cannot be displayed.',
     },
     cliControls: {
       defaultModel: 'Modello predefinito di {provider}',
@@ -2825,6 +3332,15 @@ export const it: DeepPartial<TranslationKeys> = {
       completedErrorBody:
         "L'esecuzione corrente di Agent è terminata. Torna alla finestra per controllare il risultato.",
     },
+
+    scrollToBottom: 'Back to bottom',
+    scrollToBottomWhileStreaming: 'Back to bottom and keep following',
+    createBranchFromHere: 'Create branch from here',
+    branchCreated: 'Branch created',
+    branchCreateFailed: 'Failed to create branch',
+    regenerateFailed: 'Failed to regenerate this reply',
+    fileChanges: 'Workspace changes ({count})',
+    fileChangeBinary: 'Binary',
   },
 
   notices: {
@@ -2849,6 +3365,23 @@ export const it: DeepPartial<TranslationKeys> = {
     capturePdfNoLeaf: 'Nessun file PDF aperto al momento.',
     capturePdfFailed: 'Impossibile catturare la regione selezionata.',
     capturePdfInjectFailed: 'Impossibile aggiungere lo screenshot alla chat.',
+
+    indexCancelled: 'Index cancelled',
+    indexCancelling: 'Cancelling index...',
+    scheduledTaskSucceeded: 'Scheduled task succeeded: {name}',
+    scheduledTaskFailed: 'Scheduled task failed: {name}',
+  },
+
+  scheduler: {
+    orphanRunCancelled:
+      'The task was still running when the plugin restarted; its status has been reset to cancelled (possibly due to a crash or force quit)',
+    errors: {
+      taskNotFound: 'Task not found: {id}',
+      runNotFound: 'Run record not found: {runId}',
+      dependencyFailed: 'Dependent task {id} failed, cannot schedule',
+      dependencyMissing:
+        'Dependent task {id} does not exist in this batch (it may be disabled or deleted), cannot schedule',
+    },
   },
 
   pdf: {
@@ -2957,6 +3490,9 @@ export const it: DeepPartial<TranslationKeys> = {
     statusRequesting: 'Richiesta in corso...',
     statusThinking: 'Sto pensando...',
     statusGenerating: 'Sto generando...',
+
+    noModelConfigured:
+      'No chat model configured. Please add a model in settings.',
   },
 
   chatMode: {
@@ -2990,6 +3526,9 @@ export const it: DeepPartial<TranslationKeys> = {
       cancel: 'Annulla',
       confirm: 'Continua con Modalità YOLO',
     },
+
+    plan: 'Plan',
+    planDesc: 'Explore and design before editing',
   },
 
   reasoning: {

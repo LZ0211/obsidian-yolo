@@ -1,5 +1,6 @@
 import { createTranslationFunction, loadLocale } from './index'
 import { en } from './locales/en'
+import { it as itLocale } from './locales/it'
 import { zh } from './locales/zh'
 
 describe('chat working directory i18n', () => {
@@ -45,6 +46,16 @@ describe('i18n key-set consistency', () => {
       collectKeys(en).filter((key) => !isOpenRecordKey(key)),
     )
     const missing = collectKeys(zh).filter(
+      (key) => !isOpenRecordKey(key) && !enKeys.has(key),
+    )
+    expect(missing).toEqual([])
+  })
+
+  it('every it key exists in en (no silent English fallback for it users)', () => {
+    const enKeys = new Set(
+      collectKeys(en).filter((key) => !isOpenRecordKey(key)),
+    )
+    const missing = collectKeys(itLocale).filter(
       (key) => !isOpenRecordKey(key) && !enKeys.has(key),
     )
     expect(missing).toEqual([])
