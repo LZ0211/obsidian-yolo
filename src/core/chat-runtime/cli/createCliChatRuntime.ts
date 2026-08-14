@@ -156,21 +156,45 @@ function findReconciledUserMessage(
 function createBackendFromScope(
   scope: CliRuntimeScope,
   runtimeId: 'claude-code' | 'codex',
-  context?: { app?: App; settings?: YoloSettings },
+  context?: {
+    app?: App
+    settings?: YoloSettings
+    workingDirectory?: string
+  },
 ): CliBackend {
-  const controller = scope.selectConversationRuntime(runtimeId)
-  const runtime: CliRuntime = scope.resolveRuntime(runtimeId)
+  const controllerOptions = context?.workingDirectory
+    ? { workingDirectory: context.workingDirectory }
+    : undefined
+  let controller = scope.selectConversationRuntime(runtimeId, controllerOptions)
 
   // 只消费 controller 的稳定快照：乐观消息、provider ID 对账、stale submission
   // 保护都在 controller 内完成，禁止旁路订阅 raw CliRuntime 事件。
   let lastSnapshot = controller.getSnapshot()
+  const listeners = new Set<(event: CliBackendEvent) => void>()
+  const publishControllerSnapshot = (): void => {
+    const snapshot = controller.getSnapshot()
+    for (const listener of listeners) {
+      emitSnapshotDiff(lastSnapshot, snapshot, toBackendRef, listener)
+    }
+    lastSnapshot = snapshot
+  }
+  let unsubscribeController = controller.subscribe(publishControllerSnapshot)
+  const selectController = (next: CliConversationController): void => {
+    if (next === controller) return
+    const previous = lastSnapshot
+    unsubscribeController()
+    controller = next
+    lastSnapshot = controller.getSnapshot()
+    unsubscribeController = controller.subscribe(publishControllerSnapshot)
+    for (const listener of listeners) {
+      emitSnapshotDiff(previous, lastSnapshot, toBackendRef, listener)
+    }
+  }
   return {
-    subscribe: (listener) =>
-      controller.subscribe(() => {
-        const snapshot = controller.getSnapshot()
-        emitSnapshotDiff(lastSnapshot, snapshot, toBackendRef, listener)
-        lastSnapshot = snapshot
-      }),
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
     getSnapshot: (): CliBackendSnapshot => {
       const snapshot = controller.getSnapshot()
       return {
@@ -270,23 +294,22 @@ function createBackendFromScope(
     // controller 已包装 cancel（含 staged turn 与并发守卫），必须走 controller，
     // 不能旁路 raw runtime。
     cancel: () => controller.cancel(),
-    // approval/question 是 provider 面向命令，controller 未包装，保持 runtime。
     respondApproval: async (response) => {
-      await runtime.respondApproval(response)
+      await controller.respondApproval(response)
     },
     respondQuestion: async (response) => {
-      await runtime.respondQuestion(response)
+      await controller.respondQuestion(response)
     },
     updateConfiguration: async (update) => {
-      await runtime.updateConfiguration(update)
+      await controller.updateConfiguration(update)
     },
     updatePermissionProfile: async (update) => {
       // CliChatMode 只有 agent/plan；契约允许的 'ask' 是 native 专属模式，
       // CLI 侧映射到 agent（UI 对 CLI 不会下发 ask）。
-      await (runtime.updatePermissionProfile?.({
+      await controller.updatePermissionProfile({
         mode: update.mode === 'ask' ? 'agent' : update.mode,
         yoloEnabled: update.yoloEnabled,
-      }) ?? Promise.resolve())
+      })
     },
     listSessions: async () =>
       scope.sessionService.discoverSessions().then((discovery) =>
@@ -299,7 +322,11 @@ function createBackendFromScope(
         })),
       ),
     openSession: async (ref) => {
-      const controller = scope.selectConversationSession(ref)
+      const selectedController = scope.selectConversationSession(
+        ref,
+        controllerOptions,
+      )
+      selectController(selectedController)
       const hydration = await controller.hydrateSession(ref)
       if (hydration === null) {
         throw new Error('CLI session hydration was superseded.')
@@ -312,14 +339,16 @@ function createBackendFromScope(
     deleteSession: async (ref) => {
       await scope.sessionService.removeOverlay(ref)
     },
-    setSessionTitle: (ref, title) =>
-      runtime.setSessionTitle?.(ref, title) ?? Promise.resolve(),
+    setSessionTitle: (ref, title) => controller.setSessionTitle(ref, title),
     setSessionPinned: (ref, pinned) =>
       scope.sessionService.setPinned(ref, pinned),
-    compact: () => runtime.compact?.() ?? Promise.resolve(),
-    readSubagent: async (ref) => (await runtime.readSubagent?.(ref)) ?? [],
-    // scope 生命周期由插件/协调器管理，backend dispose 只做占位。
-    dispose: async () => undefined,
+    compact: () => controller.compact(),
+    readSubagent: (ref) => controller.readSubagent(ref),
+    // scope 生命周期由插件/协调器管理；backend 只释放自己的 controller 订阅。
+    dispose: async () => {
+      unsubscribeController()
+      listeners.clear()
+    },
   }
 }
 
@@ -330,6 +359,7 @@ export async function createCliChatRuntime(
     app?: App
     settings?: YoloSettings
     getMcpManager?: () => Promise<McpManager>
+    workingDirectory?: string
   },
 ): Promise<ChatRuntime> {
   const backend = createBackendFromScope(scope, runtimeId, context)

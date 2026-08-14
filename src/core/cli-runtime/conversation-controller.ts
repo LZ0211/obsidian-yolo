@@ -7,9 +7,11 @@ import type { ToolEditSummary } from '../../types/tool-call.types'
 import { attachCliTurnEditSummary } from './turn-edit-summary'
 import type {
   CliAssistantBinding,
+  CliApprovalResponse,
   CliCompactionBoundary,
   CliContextUsage,
   CliPermissionProfileUpdate,
+  CliQuestionResponse,
   CliRewriteTurnInput,
   CliRuntime,
   CliRuntimeConfiguration,
@@ -598,6 +600,36 @@ export class CliConversationController {
       )
     }
     await operation.runtime.reconnectMcpServer(name)
+  }
+
+  async respondApproval(response: CliApprovalResponse): Promise<boolean> {
+    this.assertActive()
+    const operation = this.captureOperation()
+    const accepted = await operation.runtime.respondApproval(response)
+    return this.isCurrent(operation) && accepted
+  }
+
+  async respondQuestion(response: CliQuestionResponse): Promise<boolean> {
+    this.assertActive()
+    const operation = this.captureOperation()
+    const accepted = await operation.runtime.respondQuestion(response)
+    return this.isCurrent(operation) && accepted
+  }
+
+  async setSessionTitle(ref: CliSessionRef, title: string): Promise<void> {
+    this.assertActive()
+    const operation = this.captureOperation()
+    await operation.runtime.setSessionTitle?.(ref, title)
+  }
+
+  async readSubagent(
+    ref: Parameters<NonNullable<CliRuntime['readSubagent']>>[0],
+  ): Promise<readonly ChatMessage[]> {
+    this.assertActive()
+    const operation = this.captureOperation()
+    if (!operation.runtime.readSubagent) return []
+    const messages = await operation.runtime.readSubagent(ref)
+    return this.isCurrent(operation) ? messages : []
   }
 
   async compact(): Promise<void> {

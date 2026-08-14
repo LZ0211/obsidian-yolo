@@ -331,7 +331,7 @@ export class CliChatRuntimeAdapter implements ChatRuntime {
   async dispose(): Promise<void> {
     this.unsubscribeBackend()
     this.listeners.clear()
-    // 不调用 backend 的 scope.dispose：CliRuntimeScope 生命周期由插件/协调器管理。
+    await this.backend.dispose()
   }
 
   private buildSnapshot(): ChatRuntimeSnapshot {

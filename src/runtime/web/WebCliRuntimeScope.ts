@@ -307,25 +307,27 @@ class WebCliConversationController extends CliConversationController {
   async respondApproval(response: {
     requestId: string
     decision: 'approve_once' | 'approve_for_session' | 'reject'
-  }): Promise<void> {
+  }): Promise<boolean> {
     const result = await this.adapter.respondApproval(response)
     if (!result.ok) {
       throw new Error(
         `failed to respond to approval request ${response.requestId}`,
       )
     }
+    return true
   }
 
   async respondQuestion(response: {
     requestId: string
     answer: unknown
-  }): Promise<void> {
+  }): Promise<boolean> {
     const result = await this.adapter.respondQuestion(response)
     if (!result.ok) {
       throw new Error(
         `failed to respond to question request ${response.requestId}`,
       )
     }
+    return true
   }
 
   override async updatePermissionProfile(
