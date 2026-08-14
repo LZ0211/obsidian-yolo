@@ -694,7 +694,9 @@ describe('VectorManager.reconcile', () => {
     ragStore.getFileReadiness.mockResolvedValue(
       new Map([['notes/a.md', { path: 'notes/a.md', vectorReady: false }]]),
     )
-    const embedSpy = embeddingModel.getEmbedding as jest.Mock
+    const embedSpy = (
+      embeddingModel as unknown as { getEmbedding: jest.Mock }
+    ).getEmbedding
     embedSpy.mockClear()
     await manager.reconcile(embeddingModel, baseConfig, {
       scope: { kind: 'all' },

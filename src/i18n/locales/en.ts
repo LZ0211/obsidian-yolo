@@ -58,6 +58,14 @@ export const en: TranslationKeys = {
     noResults: 'No matches found',
     search: 'Search...',
     configure: 'Configure',
+    create: 'Create',
+    submitting: 'Submitting...',
+    previous: 'Previous',
+    next: 'Next',
+    none: 'None',
+    select: 'Select',
+    refresh: 'Refresh',
+    agentStatusWaitingApproval: 'Pending approval',
   },
 
   sidebar: {
@@ -75,6 +83,7 @@ export const en: TranslationKeys = {
       accessibleLabel: 'CLI provider: {runtime}',
       menuLabel: 'CLI provider',
       claudeCodeLabel: 'Claude Code',
+      claudeCodeShortLabel: 'CC',
       claudeCodeDescription: 'Claude Code on this device',
       codexLabel: 'Codex',
       codexDescription: 'Codex on this device',
@@ -137,6 +146,7 @@ export const en: TranslationKeys = {
       exportShort: 'Export',
       moreActions: 'More actions',
       openHistory: 'Chat history',
+      confirmDelete: 'Click again to delete',
       legend: {
         navigate: 'Navigate',
         open: 'Open',
@@ -144,6 +154,10 @@ export const en: TranslationKeys = {
         pin: 'Pin',
         rename: 'Rename',
       },
+    },
+    chat: {
+      exportSuccess: 'Exported chat to {path}',
+      exportError: 'Could not export conversation',
     },
     composer: {
       title: 'Sparkle',
@@ -396,6 +410,7 @@ export const en: TranslationKeys = {
     },
     defaults: {
       title: 'Default model policies & prompts',
+      recommendedBadge: '(Recommended)',
       defaultChatModel: 'Default chat model',
       defaultChatModelDesc:
         'Choose the model you want to use for sidebar chat.',
@@ -657,12 +672,28 @@ export const en: TranslationKeys = {
       fixedActionHint: 'Built-in action',
       hideFixedAction: 'Hide from Cursor Chat',
       showFixedAction: 'Show in Cursor Chat',
+      actionAssistantFollowCurrent: 'Follow current selection',
+      actionAssistant: 'Use assistant',
+      actionAssistantDesc:
+        'Assistant used when running this action; leave empty to follow the current selection.',
     },
     chatPreferences: {
       title: 'Chat preferences',
       chatFontScale: 'Chat UI scale',
       chatFontScaleDesc:
         'Adjust the overall scale of the chat interface (default 100%).',
+    },
+    conversationSettings: {
+      openAria: 'Conversation settings',
+      chatMemory: 'Chat memory',
+      maxContext: 'Maximum context',
+      sampling: 'Sampling parameters',
+      temperature: 'Temperature',
+      topP: 'Top p',
+      streaming: 'Streaming',
+      geminiTools: 'Gemini tools',
+      webSearch: 'Web search',
+      urlContext: 'URL context',
     },
     assistants: {
       title: 'Assistants',
@@ -673,7 +704,15 @@ export const en: TranslationKeys = {
       editAssistant: 'Edit assistant',
       deleteAssistant: 'Delete assistant',
       name: 'Name',
+      nameDesc: 'Assistant name',
       description: 'Description',
+      descriptionDesc: 'Brief description of what this assistant does',
+      descriptionPlaceholder: 'Enter description',
+      icon: 'Icon',
+      iconDesc: 'Choose an assistant icon',
+      chooseIcon: 'Choose icon',
+      copySuffix: ' (copy)',
+      dragHandleAria: 'Drag to reorder',
       systemPrompt: 'System prompt',
       systemPromptDesc:
         'This prompt will be added to the beginning of every chat.',
@@ -811,6 +850,8 @@ export const en: TranslationKeys = {
       agentsDesc: 'Click Configure to edit each agent profile and prompt.',
       configureAgents: 'Configure',
       noAgents: 'No agents configured yet',
+      noTools: 'No tools available',
+      toolsActive: 'active',
       newAgent: 'New agent',
       current: 'Current',
       duplicate: 'Duplicate',
@@ -1351,6 +1392,7 @@ export const en: TranslationKeys = {
       desc: 'Enter your API keys for the providers you want to use',
       howToGetApiKeys: 'How to obtain API keys',
       addProvider: 'Add provider',
+      dragHandle: 'Drag to reorder',
       pickerTitle: 'Add provider',
       pickerSearchPlaceholder: 'Search providers · press Enter',
       pickerCustomLabel: 'Custom provider',
@@ -1492,6 +1534,15 @@ export const en: TranslationKeys = {
       addRerankModel: 'Add rerank model',
       editRerankModel: 'Edit rerank model',
       noRerankModels: 'No rerank models configured',
+      addMode: 'Add mode',
+      rerankModelsFirst: 'Rerank models are listed first',
+      rerankModelIdDesc:
+        'Model name for rerank API calls, e.g. BAAI/bge-reranker-v2-m3',
+      rerankMaxDocuments: 'Maximum documents',
+      rerankMaxDocumentsDesc: 'Leave blank when unknown',
+      rerankMaxInputChars: 'Maximum input characters',
+      rerankMaxInputCharsDesc: 'Leave blank when unknown',
+      dragHandle: 'Drag to reorder',
       addCustomChatModel: 'Add custom chat model',
       addCustomEmbeddingModel: 'Add custom embedding model',
       editChatModel: 'Edit chat model',
@@ -1711,6 +1762,14 @@ export const en: TranslationKeys = {
       manualUpdateNow: 'Update now',
       manualUpdateNowDesc:
         'Run an incremental update immediately and record the last updated time.',
+      updateIndex: 'Update index',
+      vacuumIndex: 'Vacuum index',
+      vacuumComplete: 'Index vacuum complete.',
+      vacuumFailed: 'Index vacuum failed.',
+      rerankEnabled: 'Enable reranking',
+      rerankEnabledDesc:
+        'When disabled, vector search results are used directly without reranking.',
+      previousRunInterrupted: 'The previous index run did not finish normally.',
       advanced: 'Advanced settings',
       basicCardTitle: 'Knowledge base',
       basicCardDesc:
@@ -1831,6 +1890,13 @@ export const en: TranslationKeys = {
         queryText: 'Retrieval query',
         evidence: 'Evidence',
         timingBreakdown: 'Timing breakdown',
+        timingTotal: 'Total time',
+        timingEmbedding: 'Embedding',
+        timingRetrieval: 'Retrieval',
+        timingCoarse: 'Coarse search',
+        timingFullVec: 'Load full vectors',
+        timingSimilarityRerank: 'Similarity rerank',
+        timingAssemble: 'Assemble evidence',
         diagnostic: 'Diagnostic',
         recoveryAction: 'Recovery action',
         loadFailure: 'Failed to load retrieval inspect',
@@ -1862,6 +1928,21 @@ export const en: TranslationKeys = {
         warning: 'Warning',
         error: 'Error',
       },
+    },
+    databaseExplorer: {
+      pageCurrent: 'Page {{current}}',
+      pageIndicator: 'Page {{current}} / {{total}}',
+      tables: 'Tables',
+      selectTable: 'Select a table',
+      countingRows: 'Counting rows...',
+      countRows: 'Count rows',
+      rows: 'rows',
+      loading: 'Loading...',
+      noRows: 'No rows',
+      sqlLabel: 'Read-only SQL',
+      runningQuery: 'Running...',
+      runQuery: 'Run query',
+      queryTruncated: 'Only the first 500 rows are shown.',
     },
     mcp: {
       title: 'Custom tools (MCP)',
@@ -2552,6 +2633,8 @@ export const en: TranslationKeys = {
       controlsLabel: 'Diagram controls',
     },
     stopGeneration: 'Stop generation',
+    scrollToBottom: 'Back to bottom',
+    scrollToBottomWhileStreaming: 'Back to bottom and keep following',
     queueMessage: {
       tooltip: 'Queue this message — it will be sent after the current step',
       hint: 'Waiting for the agent to finish the current step...',
@@ -2559,6 +2642,10 @@ export const en: TranslationKeys = {
         'Approve or reject the pending tool call before sending a new message.',
       blockedAwaitingInput:
         "Answer the agent's question in the chat before sending a new message.",
+      blockedActiveTool:
+        'Wait for the current tool call to finish before sending a new message.',
+      blockedActiveTooltip:
+        'You can send again after the current tool call finishes',
       abortedRestoredOne: 'Queued message restored to the input box',
       abortedRestoredMany:
         'Restored the latest queued message to the input box ({{count}} dropped)',
@@ -2588,6 +2675,8 @@ export const en: TranslationKeys = {
       select: 'Select working directory',
       clear: 'Clear working directory',
       locked: 'Working directory is locked',
+      unavailable:
+        'This folder is not available to the selected Agent.',
     },
     dropFilesHint: 'Drop to add to the conversation',
     imageUnsupportedByModel:
@@ -2608,6 +2697,7 @@ export const en: TranslationKeys = {
     insertUnavailable: 'No active markdown editor found',
     noAssistantContent: 'No assistant content to insert',
     regenerate: 'Regenerate',
+    regenerateFailed: 'Failed to regenerate this reply',
     reasoning: 'Reasoning',
     reasonedFor: 'Thought for {{seconds}}s',
     annotations: 'Annotations',
@@ -2671,6 +2761,8 @@ export const en: TranslationKeys = {
       emptyTitle: 'Use CLI Agent',
       emptyDescription:
         'Connect Claude Code or Codex to run complex tasks on this device.',
+      unboundMessageError:
+        'The CLI session has not been created yet; this provider message cannot be displayed.',
       emptyUserMessage: 'Empty message',
       error: 'CLI session error: {message}',
       runtimeError: 'Could not start the CLI runtime: {message}',
@@ -2862,6 +2954,8 @@ export const en: TranslationKeys = {
       fileDeleted: 'This file was deleted. Use undo to restore it.',
       fileMissing: 'The file no longer exists or has been moved.',
     },
+    fileChanges: 'Workspace changes ({count})',
+    fileChangeBinary: 'Binary',
     errorCard: {
       title: 'This response failed to generate',
       connectionInterruptedContinuable:
@@ -2915,6 +3009,8 @@ export const en: TranslationKeys = {
         responsePreview: 'Response preview: {{preview}}',
       },
     },
+    showMore: 'Show more',
+    showLess: 'Show less',
     customRewritePromptPlaceholder:
       'Describe how to rewrite the selected text, for example: "make it concise and active voice; keep markdown structure"; press Shift+Enter to confirm, Enter for a new line, and Escape to close.',
     toolCall: {
@@ -3052,18 +3148,6 @@ export const en: TranslationKeys = {
       },
       statusAwaitingApproval: 'Awaiting approval',
     },
-    conversationSettings: {
-      openAria: 'Conversation settings',
-      chatMemory: 'Chat memory',
-      maxContext: 'Maximum context',
-      sampling: 'Sampling parameters',
-      temperature: 'Temperature',
-      topP: 'Top p',
-      streaming: 'Streaming',
-      geminiTools: 'Gemini tools',
-      webSearch: 'Web search',
-      urlContext: 'URL context',
-    },
     notification: {
       approvalTitle: 'YOLO needs your confirmation',
       approvalBody:
@@ -3080,6 +3164,10 @@ export const en: TranslationKeys = {
     rebuildingIndex: 'Rebuilding vault index…',
     rebuildComplete: 'Rebuilding vault index complete.',
     rebuildFailed: 'Rebuilding vault index failed.',
+    indexCancelled: 'Index cancelled',
+    indexCancelling: 'Cancelling index...',
+    scheduledTaskSucceeded: 'Scheduled task succeeded: {name}',
+    scheduledTaskFailed: 'Scheduled task failed: {name}',
     indexedWithSkipped:
       'Index complete · {{count}} file(s) could not be indexed.',
     continueComplete: 'Resumed index completed.',
@@ -3099,6 +3187,18 @@ export const en: TranslationKeys = {
     capturePdfNoLeaf: 'No PDF file is currently open.',
     capturePdfFailed: 'Failed to capture the selected region.',
     capturePdfInjectFailed: 'Failed to add the screenshot to chat.',
+  },
+
+  scheduler: {
+    orphanRunCancelled:
+      'The task was still running when the plugin restarted; its status has been reset to cancelled (possibly due to a crash or force quit)',
+    errors: {
+      taskNotFound: 'Task not found: {id}',
+      runNotFound: 'Run record not found: {runId}',
+      dependencyFailed: 'Dependent task {id} failed, cannot schedule',
+      dependencyMissing:
+        'Dependent task {id} does not exist in this batch (it may be disabled or deleted), cannot schedule',
+    },
   },
 
   pdf: {

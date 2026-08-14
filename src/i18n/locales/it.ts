@@ -670,6 +670,18 @@ export const it: DeepPartial<TranslationKeys> = {
       chatFontScaleDesc:
         "Regola la scala complessiva dell'interfaccia chat (predefinito 100%).",
     },
+    conversationSettings: {
+      openAria: 'Impostazioni conversazione',
+      chatMemory: 'Memoria chat',
+      maxContext: 'Contesto massimo',
+      sampling: 'Parametri di campionamento',
+      temperature: 'Temperatura',
+      topP: 'Top p',
+      streaming: 'Streaming',
+      geminiTools: 'Strumenti Gemini',
+      webSearch: 'Ricerca web',
+      urlContext: 'Contesto URL',
+    },
     assistants: {
       title: 'Assistenti',
       desc: 'Gestisci gli assistenti AI personalizzati con istruzioni e comportamenti specifici.',
@@ -700,7 +712,6 @@ export const it: DeepPartial<TranslationKeys> = {
       dragHandleAria: 'Trascina per riordinare',
       duplicate: 'Duplica',
       copySuffix: '(copia)',
-      currentBadge: 'Corrente',
       manageAll: 'Gestisci tutti…',
     },
     agent: {
@@ -2803,18 +2814,6 @@ export const it: DeepPartial<TranslationKeys> = {
           'Questo rifiuta tutte le chiamate in attesa in una volta sola e non può essere annullato.',
       },
       statusAwaitingApproval: 'In attesa di approvazione',
-    },
-    conversationSettings: {
-      openAria: 'Impostazioni conversazione',
-      chatMemory: 'Memoria chat',
-      maxContext: 'Contesto massimo',
-      sampling: 'Parametri di campionamento',
-      temperature: 'Temperatura',
-      topP: 'Top p',
-      streaming: 'Streaming',
-      geminiTools: 'Strumenti Gemini',
-      webSearch: 'Ricerca web',
-      urlContext: 'Contesto URL',
     },
     notification: {
       approvalTitle: 'YOLO richiede la tua conferma',

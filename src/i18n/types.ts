@@ -67,6 +67,14 @@ export type TranslationKeys = {
     noResults?: string
     search?: string
     configure?: string
+    create?: string
+    submitting?: string
+    previous?: string
+    next?: string
+    none?: string
+    select?: string
+    refresh?: string
+    agentStatusWaitingApproval?: string
   }
 
   sidebar?: {
@@ -89,6 +97,7 @@ export type TranslationKeys = {
       codexDescription: string
       chatLabel?: string
       exitCli?: string
+      claudeCodeShortLabel?: string
     }
     cliSessions: {
       sectionLabel: string
@@ -142,6 +151,7 @@ export type TranslationKeys = {
       exportShort?: string
       moreActions?: string
       openHistory?: string
+      confirmDelete?: string
       legend?: {
         navigate?: string
         open?: string
@@ -226,8 +236,6 @@ export type TranslationKeys = {
       scheduledTasks?: string
     }
     bots?: {
-      header?: string
-      desc?: string
       globalTitle?: string
       enable?: string
       enableDesc?: string
@@ -359,6 +367,7 @@ export type TranslationKeys = {
     }
     defaults: {
       title: string
+      recommendedBadge?: string
       defaultChatModel: string
       defaultChatModelDesc: string
       chatTitleModel: string
@@ -491,6 +500,18 @@ export type TranslationKeys = {
       chatFontScale?: string
       chatFontScaleDesc?: string
     }
+    conversationSettings?: {
+      openAria?: string
+      chatMemory?: string
+      maxContext?: string
+      sampling?: string
+      temperature?: string
+      topP?: string
+      streaming?: string
+      geminiTools?: string
+      webSearch?: string
+      urlContext?: string
+    }
     assistants: {
       title: string
       desc: string
@@ -508,6 +529,9 @@ export type TranslationKeys = {
       description?: string
       descriptionDesc?: string
       descriptionPlaceholder?: string
+      icon?: string
+      iconDesc?: string
+      chooseIcon?: string
       systemPrompt?: string
       actions?: string
       // new optional helpers
@@ -524,7 +548,6 @@ export type TranslationKeys = {
       dragHandleAria?: string
       duplicate?: string
       copySuffix?: string
-      currentBadge?: string
       manageAll?: string
     }
     agent?: {
@@ -619,6 +642,8 @@ export type TranslationKeys = {
       agentsDesc?: string
       configureAgents?: string
       noAgents?: string
+      noTools?: string
+      toolsActive?: string
       newAgent?: string
       current?: string
       duplicate?: string
@@ -857,12 +882,6 @@ export type TranslationKeys = {
       jsSandboxAllowFetchDesc?: string
       jsSandboxAllowFetchRisk?: string
       jsSandboxAllowFetchConfirm?: string
-      jsSandboxFetchMode?: string
-      jsSandboxFetchModeDesc?: string
-      jsSandboxFetchModeBlacklist?: string
-      jsSandboxFetchModeWhitelist?: string
-      jsSandboxFetchDomains?: string
-      jsSandboxFetchDomainsDesc?: string
       jsSandboxAllowVaultRead?: string
       jsSandboxAllowVaultReadDesc?: string
       jsSandboxAllowVaultReadConfirm?: string
@@ -884,10 +903,6 @@ export type TranslationKeys = {
       jsSandboxTimeoutMsDesc?: string
       jsSandboxOutputMaxKb?: string
       jsSandboxOutputMaxKbDesc?: string
-      jsSandboxFetchMaxConcurrent?: string
-      jsSandboxFetchMaxConcurrentDesc?: string
-      jsSandboxFetchMaxResponseKb?: string
-      jsSandboxFetchMaxResponseKbDesc?: string
       jsSandboxVaultReadMaxKb?: string
       jsSandboxVaultReadMaxKbDesc?: string
       jsSandboxDbMaxLimit?: string
@@ -1073,6 +1088,7 @@ export type TranslationKeys = {
       desc: string
       howToGetApiKeys: string
       addProvider: string
+      dragHandle?: string
       pickerTitle?: string
       pickerSearchPlaceholder?: string
       pickerCustomLabel?: string
@@ -1177,6 +1193,14 @@ export type TranslationKeys = {
       addChatModel: string
       addEmbeddingModel: string
       addRerankModel?: string
+      addMode?: string
+      rerankModelsFirst?: string
+      rerankModelIdDesc?: string
+      rerankMaxDocuments?: string
+      rerankMaxDocumentsDesc?: string
+      rerankMaxInputChars?: string
+      rerankMaxInputCharsDesc?: string
+      dragHandle?: string
       addCustomChatModel: string
       addCustomEmbeddingModel: string
       editChatModel: string
@@ -1361,6 +1385,13 @@ export type TranslationKeys = {
       autoUpdateIntervalDesc?: string
       manualUpdateNow?: string
       manualUpdateNowDesc?: string
+      updateIndex?: string
+      vacuumIndex?: string
+      vacuumComplete?: string
+      vacuumFailed?: string
+      rerankEnabled?: string
+      rerankEnabledDesc?: string
+      previousRunInterrupted?: string
       advanced?: string
       basicCardTitle?: string
       basicCardDesc?: string
@@ -1457,6 +1488,13 @@ export type TranslationKeys = {
         queryText?: string
         evidence?: string
         timingBreakdown?: string
+        timingTotal?: string
+        timingEmbedding?: string
+        timingRetrieval?: string
+        timingCoarse?: string
+        timingFullVec?: string
+        timingSimilarityRerank?: string
+        timingAssemble?: string
         diagnostic?: string
         recoveryAction?: string
         loadFailure?: string
@@ -1485,6 +1523,21 @@ export type TranslationKeys = {
         warning?: string
         error?: string
       }
+    }
+    databaseExplorer?: {
+      pageCurrent?: string
+      pageIndicator?: string
+      tables?: string
+      selectTable?: string
+      countingRows?: string
+      countRows?: string
+      rows?: string
+      loading?: string
+      noRows?: string
+      sqlLabel?: string
+      runningQuery?: string
+      runQuery?: string
+      queryTruncated?: string
     }
     mcp: {
       title: string
@@ -2066,6 +2119,9 @@ export type TranslationKeys = {
       actionInstruction: string
       actionInstructionDesc: string
       actionInstructionPlaceholder: string
+      actionAssistantFollowCurrent?: string
+      actionAssistant?: string
+      actionAssistantDesc?: string
       actionInstructionRewriteDesc: string
       actionInstructionRewritePlaceholder: string
       duplicate: string
@@ -2182,11 +2238,15 @@ export type TranslationKeys = {
       controlsLabel?: string
     }
     stopGeneration?: string
+    scrollToBottom?: string
+    scrollToBottomWhileStreaming?: string
     queueMessage?: {
       tooltip?: string
       hint?: string
       blockedApproval?: string
       blockedAwaitingInput?: string
+      blockedActiveTool?: string
+      blockedActiveTooltip?: string
       abortedRestoredOne?: string
       abortedRestoredMany?: string
     }
@@ -2215,6 +2275,7 @@ export type TranslationKeys = {
       select?: string
       clear?: string
       locked?: string
+      unavailable?: string
     }
     imageUnsupportedByModel?: string
     unsupportedFileType?: string
@@ -2233,6 +2294,7 @@ export type TranslationKeys = {
     insertUnavailable?: string
     noAssistantContent?: string
     regenerate: string
+    regenerateFailed?: string
     reasoning: string
     reasonedFor?: string
     annotations: string
@@ -2295,6 +2357,7 @@ export type TranslationKeys = {
       cancelError?: string
       openError?: string
       transitionError?: string
+      unboundMessageError?: string
     }
     cliControls?: {
       defaultModel?: string
@@ -2430,6 +2493,8 @@ export type TranslationKeys = {
       fileDeleted?: string
       fileMissing?: string
     }
+    fileChanges?: string
+    fileChangeBinary?: string
     errorCard?: {
       title?: string
       connectionInterruptedContinuable?: string
@@ -2610,19 +2675,6 @@ export type TranslationKeys = {
       /** 卡片状态区"等待审批"标签（A3 最小实现）。 */
       statusAwaitingApproval?: string
     }
-    // conversation settings popover
-    conversationSettings?: {
-      openAria?: string
-      chatMemory?: string
-      maxContext?: string
-      sampling?: string
-      temperature?: string
-      topP?: string
-      streaming?: string
-      geminiTools?: string
-      webSearch?: string
-      urlContext?: string
-    }
     notification?: {
       approvalTitle?: string
       approvalBody?: string
@@ -2637,6 +2689,10 @@ export type TranslationKeys = {
     rebuildingIndex: string
     rebuildComplete: string
     rebuildFailed: string
+    indexCancelled?: string
+    indexCancelling?: string
+    scheduledTaskSucceeded?: string
+    scheduledTaskFailed?: string
     /** Manual index finished but some files could not be indexed. {{count}} interpolated client-side. */
     indexedWithSkipped?: string
     continueComplete?: string
@@ -2653,6 +2709,16 @@ export type TranslationKeys = {
     capturePdfNoLeaf?: string
     capturePdfFailed?: string
     capturePdfInjectFailed?: string
+  }
+
+  scheduler?: {
+    orphanRunCancelled?: string
+    errors?: {
+      taskNotFound?: string
+      runNotFound?: string
+      dependencyFailed?: string
+      dependencyMissing?: string
+    }
   }
 
   pdf?: {
