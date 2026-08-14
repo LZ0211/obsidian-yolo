@@ -2095,6 +2095,19 @@ export const zh: TranslationKeys = {
       yoloProjectsDirDesc:
         '存放项目与任务文件的库内相对目录，独立于 YOLO 根目录（例如：Projects）。项目文件由 project 工具管理，并自动从 RAG 索引与 Agent 的 fs 工具中排除。',
       yoloProjectsDirPlaceholder: 'Projects',
+      mineruEnabled: 'MinerU PDF 转换',
+      mineruEnabledDesc:
+        '开启后 PDF 先经 MinerU 转为 Markdown 与图片再进入处理链（fs_read/RAG 索引/附件）。接口不可用时自动回退原流程。',
+      mineruBaseUrl: 'MinerU 接口地址',
+      mineruBaseUrlDesc: 'Gradio 服务地址，例如 http://localhost:7860',
+      mineruApiKey: '鉴权头',
+      mineruApiKeyDesc:
+        '完整 Authorization 头值，如 Bearer xxx 或 Basic xxx；留空表示无鉴权。',
+      mineruTest: '连通性测试',
+      mineruTestDesc: '验证接口是否可用（请求 /gradio_api/info）。',
+      mineruTestButton: '测试连接',
+      mineruTestOk: '连接成功',
+      mineruTestFail: '连接失败',
       yoloBaseDirHiddenPath:
         'YOLO 根目录不能使用隐藏文件夹。请移除文件夹名称开头的“.”，例如将 .yolo 改为 yolo。',
       yoloBaseDirInvalidPath:

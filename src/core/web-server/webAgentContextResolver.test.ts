@@ -140,6 +140,11 @@ const makeSettings = (overrides: Partial<YoloSettings> = {}): YoloSettings => {
     debug: {
       captureRawRequestDebug: false,
     },
+    mineru: {
+      enabled: false,
+      baseUrl: '',
+      apiKey: '',
+    },
     chatOptions: {
       includeCurrentFileContent: true,
       moa: { enabled: true, timeoutMs: 45_000, maxOutputTokens: 2_048 },

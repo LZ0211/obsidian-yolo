@@ -2382,6 +2382,20 @@ export const it: DeepPartial<TranslationKeys> = {
       yoloProjectsDirDesc:
         "Cartella vault-relative per file di progetto e attività, indipendente dalla cartella base YOLO (es. Projects). I file di progetto sono gestiti dal tool project ed esclusi dall'indicizzazione RAG e dagli strumenti fs dell'agente.",
       yoloProjectsDirPlaceholder: 'Projects',
+      mineruEnabled: 'MinerU PDF conversion',
+      mineruEnabledDesc:
+        'When enabled, PDFs are first converted to Markdown and images by MinerU before entering the processing pipeline (fs_read / RAG indexing / attachments). Falls back to the original flow when the service is unavailable.',
+      mineruBaseUrl: 'MinerU service URL',
+      mineruBaseUrlDesc: 'Gradio service address, e.g. http://localhost:7860',
+      mineruApiKey: 'Authorization header',
+      mineruApiKeyDesc:
+        'Full Authorization header value, e.g. Bearer xxx or Basic xxx; leave empty for no auth.',
+      mineruTest: 'Connection test',
+      mineruTestDesc:
+        'Checks whether the service is reachable (requests /gradio_api/info).',
+      mineruTestButton: 'Test connection',
+      mineruTestOk: 'Connected successfully',
+      mineruTestFail: 'Connection failed',
       yoloBaseDirHiddenPath:
         'La cartella base YOLO non può usare cartelle nascoste. Rimuovi il punto iniziale dal nome, ad esempio cambia .yolo in yolo.',
       yoloBaseDirInvalidPath:

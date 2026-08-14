@@ -1804,6 +1804,17 @@ export type TranslationKeys = {
       yoloProjectsDir?: string
       yoloProjectsDirDesc?: string
       yoloProjectsDirPlaceholder?: string
+      mineruEnabled?: string
+      mineruEnabledDesc?: string
+      mineruBaseUrl?: string
+      mineruBaseUrlDesc?: string
+      mineruApiKey?: string
+      mineruApiKeyDesc?: string
+      mineruTest?: string
+      mineruTestDesc?: string
+      mineruTestButton?: string
+      mineruTestOk?: string
+      mineruTestFail?: string
       yoloBaseDirHiddenPath?: string
       yoloBaseDirInvalidPath?: string
       yoloBaseDirMigrated?: string

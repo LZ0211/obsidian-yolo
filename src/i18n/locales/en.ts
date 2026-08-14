@@ -2266,6 +2266,20 @@ export const en: TranslationKeys = {
       yoloProjectsDirDesc:
         'Vault-relative folder for project and task files, independent of the YOLO root (e.g. Projects). Project files are managed by the project tool and excluded from RAG indexing and agent fs tools.',
       yoloProjectsDirPlaceholder: 'Projects',
+      mineruEnabled: 'MinerU PDF conversion',
+      mineruEnabledDesc:
+        'When enabled, PDFs are first converted to Markdown and images by MinerU before entering the processing pipeline (fs_read / RAG indexing / attachments). Falls back to the original flow when the service is unavailable.',
+      mineruBaseUrl: 'MinerU service URL',
+      mineruBaseUrlDesc: 'Gradio service address, e.g. http://localhost:7860',
+      mineruApiKey: 'Authorization header',
+      mineruApiKeyDesc:
+        'Full Authorization header value, e.g. Bearer xxx or Basic xxx; leave empty for no auth.',
+      mineruTest: 'Connection test',
+      mineruTestDesc:
+        'Checks whether the service is reachable (requests /gradio_api/info).',
+      mineruTestButton: 'Test connection',
+      mineruTestOk: 'Connected successfully',
+      mineruTestFail: 'Connection failed',
       yoloBaseDirHiddenPath:
         'YOLO root cannot use hidden folders. Remove the dot at the beginning of the folder name, for example change .yolo to yolo.',
       yoloBaseDirInvalidPath:
@@ -2678,8 +2692,7 @@ export const en: TranslationKeys = {
       select: 'Select working directory',
       clear: 'Clear working directory',
       locked: 'Working directory is locked',
-      unavailable:
-        'This folder is not available to the selected Agent.',
+      unavailable: 'This folder is not available to the selected Agent.',
     },
     dropFilesHint: 'Drop to add to the conversation',
     imageUnsupportedByModel:

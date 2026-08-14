@@ -25,6 +25,10 @@ import { CHAT_DIR } from '../../../database/json/constants'
 import YoloPlugin from '../../../main'
 import { yoloSettingsSchema } from '../../../settings/schema/setting.types'
 import {
+  type MinerUOptions,
+  probeMinerU,
+} from '../../../utils/pdf/mineruClient'
+import {
   folderPathsToIncludePatterns,
   includePatternsToFolderPaths,
 } from '../../../utils/rag-utils'
@@ -157,7 +161,6 @@ export function EtcSection({ app, plugin, className }: EtcSectionProps) {
   const normalizedYoloBaseDirInput = normalizeYoloBaseDirInput(yoloBaseDirInput)
   const projectsDir = getYoloProjectsDir(settings)
   const [projectsDirInput, setProjectsDirInput] = useState(projectsDir)
-  const normalizedProjectsDirInput = normalizeProjectsDirInput(projectsDirInput)
   const yoloBaseDirError = hasHiddenYoloBaseDirSegment(yoloBaseDirInput)
     ? t(
         'settings.etc.yoloBaseDirHiddenPath',
@@ -265,6 +268,33 @@ export function EtcSection({ app, plugin, className }: EtcSectionProps) {
       .finally(() => {
         setProjectsDirInput(getYoloProjectsDir(plugin.settings))
       })
+  }
+
+  const mineruBaseUrl = settings.mineru?.baseUrl ?? ''
+  const [mineruBaseUrlInput, setMineruBaseUrlInput] = useState(mineruBaseUrl)
+  const [mineruProbeState, setMineruProbeState] = useState<
+    'idle' | 'checking' | 'ok' | 'fail'
+  >('idle')
+
+  useEffect(() => {
+    setMineruBaseUrlInput(settings.mineru?.baseUrl ?? '')
+  }, [settings.mineru?.baseUrl])
+
+  const updateMineru = (patch: Partial<MinerUOptions>) => {
+    void (async () => {
+      try {
+        await setSettings({
+          ...settings,
+          mineru: {
+            ...(settings.mineru ?? { enabled: false, baseUrl: '', apiKey: '' }),
+            ...patch,
+          },
+        })
+      } catch (error: unknown) {
+        console.error('Failed to update MinerU setting', error)
+        new Notice(t('common.error', 'Something went wrong.'))
+      }
+    })()
   }
 
   const isDebugLogsExcludedFromKnowledgeBase = (): boolean => {
@@ -623,9 +653,89 @@ export function EtcSection({ app, plugin, className }: EtcSectionProps) {
             >
               <ObsidianTextInput
                 value={projectsDirInput}
-                placeholder={t('settings.etc.yoloProjectsDirPlaceholder', 'Projects')}
+                placeholder={t(
+                  'settings.etc.yoloProjectsDirPlaceholder',
+                  'Projects',
+                )}
                 onChange={setProjectsDirInput}
                 onBlur={handleProjectsDirBlur}
+              />
+            </ObsidianSetting>
+          </div>
+
+          <div className="yolo-settings-field">
+            <ObsidianSetting
+              name={t('settings.etc.mineruEnabled', 'MinerU PDF 转换')}
+              desc={t(
+                'settings.etc.mineruEnabledDesc',
+                '开启后 PDF 先经 MinerU 转为 Markdown 与图片再进入处理链（fs_read/RAG 索引/附件）。接口不可用时自动回退原流程。',
+              )}
+              className="yolo-settings-card"
+            >
+              <ObsidianToggle
+                value={settings.mineru?.enabled ?? false}
+                onChange={(value) => updateMineru({ enabled: value })}
+              />
+            </ObsidianSetting>
+            <ObsidianSetting
+              name={t('settings.etc.mineruBaseUrl', 'MinerU 接口地址')}
+              desc={t(
+                'settings.etc.mineruBaseUrlDesc',
+                'Gradio 服务地址，例如 http://localhost:7860',
+              )}
+              className="yolo-settings-card"
+            >
+              <ObsidianTextInput
+                value={mineruBaseUrlInput}
+                placeholder="http://localhost:7860"
+                onChange={setMineruBaseUrlInput}
+                onBlur={(v) => updateMineru({ baseUrl: v.trim() })}
+              />
+            </ObsidianSetting>
+            <ObsidianSetting
+              name={t('settings.etc.mineruApiKey', '鉴权头')}
+              desc={t(
+                'settings.etc.mineruApiKeyDesc',
+                '完整 Authorization 头值，如 Bearer xxx 或 Basic xxx；留空表示无鉴权。',
+              )}
+              className="yolo-settings-card"
+            >
+              <ObsidianTextInput
+                value={settings.mineru?.apiKey ?? ''}
+                placeholder="Bearer xxx"
+                onChange={(v) => updateMineru({ apiKey: v })}
+              />
+            </ObsidianSetting>
+            <ObsidianSetting
+              name={t('settings.etc.mineruTest', '连通性测试')}
+              desc={t(
+                'settings.etc.mineruTestDesc',
+                '验证接口是否可用（请求 /gradio_api/info）。',
+              )}
+              className="yolo-settings-card"
+            >
+              <ObsidianButton
+                text={
+                  mineruProbeState === 'checking'
+                    ? t('common.loading', '检查中…')
+                    : t('settings.etc.mineruTestButton', '测试连接')
+                }
+                onClick={() => {
+                  setMineruProbeState('checking')
+                  void probeMinerU(
+                    settings.mineru?.baseUrl ?? '',
+                    settings.mineru?.apiKey ?? '',
+                  )
+                    .then((ok) => {
+                      setMineruProbeState(ok ? 'ok' : 'fail')
+                      new Notice(
+                        ok
+                          ? t('settings.etc.mineruTestOk', '连接成功')
+                          : t('settings.etc.mineruTestFail', '连接失败'),
+                      )
+                    })
+                    .catch(() => setMineruProbeState('fail'))
+                }}
               />
             </ObsidianSetting>
           </div>

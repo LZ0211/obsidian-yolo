@@ -771,6 +771,15 @@ export const yoloSettingsSchema = z.object({
       captureRawRequestDebug: false,
     }),
 
+  // MinerU PDF 转换服务：开关打开且接口可用时，PDF 先转 markdown + 图片再进入处理链。
+  mineru: z
+    .object({
+      enabled: z.boolean().catch(false),
+      baseUrl: z.string().catch(''),
+      apiKey: z.string().catch(''),
+    })
+    .catch({ enabled: false, baseUrl: '', apiKey: '' }),
+
   // Media models (TTS/STT/image)
   ttsModels: resilientArraySchema(ttsModelSchema),
   sttModels: resilientArraySchema(sttModelSchema),

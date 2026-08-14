@@ -64,6 +64,6 @@ describe('migrateFrom81To82', () => {
     )
     expect(step?.toVersion).toBe(82)
     expect(step?.migrate).toBe(migrateFrom81To82)
-    expect(SETTINGS_SCHEMA_VERSION).toBe(84)
+    expect(SETTINGS_SCHEMA_VERSION).toBe(85)
   })
 })
