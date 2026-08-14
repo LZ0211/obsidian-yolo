@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -63,6 +63,10 @@ type NamespaceGateWaiter = {
   resolve: () => void
   reject: (error: unknown) => void
 }
+
+type NamespaceStorageInspection =
+  | { valid: false }
+  | { valid: true; fileCount: number }
 
 type PreparedStatement = ReturnType<SqliteNativeRuntimeFacade['prepare']>
 
@@ -507,7 +511,8 @@ export class SqliteVectorStore
     const release = await this.acquireNamespaceReadLease(state)
     try {
       const rows = state.runtime.query<IndexedFileRow>(
-        'select path, mtime, content_hash, updated_at from rag_files order by path',
+        'select path, mtime, content_hash, updated_at from rag_files where namespace_id = ? order by path',
+        [state.namespaceId],
       )
       return new Map(
         rows.map((row) => [
@@ -674,8 +679,29 @@ export class SqliteVectorStore
 
     // getStatus 在打开前执行，必须先迁移再判断存在性，否则状态检查会先报
     // rebuildRequired 而后台打开才迁移，UI 与查询看到的就绪状态不一致。
-    this.migrateLegacyNamespaceStorage(namespace)
-    const storagePath = getSqliteDbPath(this.baseDir, vectorNamespaceId(namespace))
+    const storagePath = getSqliteDbPath(
+      this.baseDir,
+      vectorNamespaceId(namespace),
+    )
+    try {
+      this.prepareLegacyNamespaceStorage(namespace)
+    } catch (error) {
+      if (
+        error instanceof VectorStoreError &&
+        error.code === 'rebuild_required'
+      ) {
+        return {
+          backend: 'sqlite',
+          readiness: 'ready',
+          rebuildRequired: true,
+          storagePath,
+          executionMode: 'plugin-host',
+          persistenceMode: 'native-sqlite-file',
+          recoveryAction: 'rebuild_index',
+        }
+      }
+      throw error
+    }
     if (!fs.existsSync(storagePath)) {
       return {
         backend: 'sqlite',
@@ -806,9 +832,9 @@ export class SqliteVectorStore
     this.assertOpen()
     this.assertNotClosing()
     throwIfVectorSearchAborted(options.signal)
-    const namespaceKey = vectorNamespaceId(
-      validateNamespaceForSqlite(namespace),
-    )
+    const validatedNamespace = validateNamespaceForSqlite(namespace)
+    const namespaceKey = vectorNamespaceId(validatedNamespace)
+    this.prepareLegacyNamespaceStorage(validatedNamespace)
     const dbPath = getSqliteDbPath(this.baseDir, namespaceKey)
     if (!fs.existsSync(dbPath)) {
       throw new VectorStoreError(
@@ -1086,16 +1112,171 @@ export class SqliteVectorStore
     if (legacyId === canonicalId) return
     const canonicalDir = getSqliteNamespaceDir(this.baseDir, canonicalId)
     const legacyDir = getSqliteNamespaceDir(this.baseDir, legacyId)
-    if (fs.existsSync(canonicalDir)) return
     if (!fs.existsSync(legacyDir)) return
     if (!fs.existsSync(getSqliteDbPath(this.baseDir, legacyId))) return
+    const recoveryDir = path.join(this.baseDir, 'rag-recovery')
+    if (fs.existsSync(canonicalDir)) {
+      const canonical = this.inspectNamespaceStorage(canonicalId)
+      const legacy = this.inspectNamespaceStorage(legacyId)
+      if (!legacy.valid || legacy.fileCount === 0) return
+      if (canonical.valid && canonical.fileCount > 0) {
+        throw new VectorStoreError(
+          'rebuild_required',
+          'sqlite',
+          'rebuild_index',
+          `Both canonical and legacy RAG namespaces contain data (${canonicalId}, ${legacyId})`,
+        )
+      }
+      fs.mkdirSync(recoveryDir, { recursive: true })
+      this.archiveNamespaceStorage(canonicalDir, recoveryDir, canonicalId)
+    }
     try {
       fs.renameSync(legacyDir, canonicalDir)
     } catch (error) {
-      console.warn(
-        `[YOLO] Failed to migrate legacy RAG namespace ${legacyId} → ${canonicalId}`,
-        error instanceof Error ? error.message : error,
+      const temporaryDir = path.join(
+        recoveryDir,
+        `${path.basename(canonicalDir)}.migrating-${randomUUID()}`,
       )
+      try {
+        // Windows may briefly retain the closed SQLite handle and reject a
+        // directory rename. Publish a complete copy atomically so a failed
+        // copy can never make a partial canonical directory look valid.
+        fs.mkdirSync(recoveryDir, { recursive: true })
+        fs.cpSync(legacyDir, temporaryDir, {
+          recursive: true,
+          force: false,
+          errorOnExist: true,
+        })
+        fs.renameSync(temporaryDir, canonicalDir)
+        try {
+          fs.rmSync(legacyDir, { recursive: true, force: true })
+        } catch (cleanupError) {
+          // The canonical copy is already published. Archive the old directory
+          // so a later startup cannot mistake the two locations for a conflict.
+          this.archiveNamespaceStorage(legacyDir, recoveryDir, legacyId)
+          if (cleanupError instanceof Error) {
+            console.warn(
+              `[YOLO] Legacy RAG namespace cleanup required recovery archive ${legacyId}`,
+              cleanupError.message,
+            )
+          }
+        }
+      } catch (copyError) {
+        try {
+          fs.rmSync(temporaryDir, { recursive: true, force: true })
+        } catch (cleanupError) {
+          console.warn(
+            `[YOLO] Failed to clean partial RAG namespace migration ${canonicalId}`,
+            cleanupError instanceof Error ? cleanupError.message : cleanupError,
+          )
+        }
+        console.warn(
+          `[YOLO] Failed to migrate legacy RAG namespace ${legacyId} → ${canonicalId}`,
+          copyError instanceof Error ? copyError.message : copyError,
+          error instanceof Error ? error.message : error,
+        )
+        throw copyError
+      }
+    }
+  }
+
+  private archiveNamespaceStorage(
+    sourceDir: string,
+    recoveryDir: string,
+    namespaceId: string,
+  ): void {
+    const archivedDir = path.join(
+      recoveryDir,
+      `${path.basename(sourceDir)}.superseded-${randomUUID()}`,
+    )
+    try {
+      fs.renameSync(sourceDir, archivedDir)
+      return
+    } catch (renameError) {
+      const temporaryDir = path.join(
+        recoveryDir,
+        `${path.basename(sourceDir)}.recovering-${randomUUID()}`,
+      )
+      try {
+        fs.cpSync(sourceDir, temporaryDir, {
+          recursive: true,
+          force: false,
+          errorOnExist: true,
+        })
+        fs.renameSync(temporaryDir, archivedDir)
+        fs.rmSync(sourceDir, { recursive: true, force: true })
+      } catch (copyError) {
+        try {
+          fs.rmSync(temporaryDir, { recursive: true, force: true })
+        } catch (cleanupError) {
+          console.warn(
+            `[YOLO] Failed to clean partial RAG recovery archive ${namespaceId}`,
+            cleanupError instanceof Error ? cleanupError.message : cleanupError,
+          )
+        }
+        throw copyError instanceof Error ? copyError : renameError
+      }
+    }
+  }
+
+  private prepareLegacyNamespaceStorage(namespace: VectorNamespace): void {
+    const canonicalId = vectorNamespaceId(namespace)
+    const legacyId = legacyVectorNamespaceId(namespace)
+    if (legacyId === canonicalId) return
+    if (!fs.existsSync(getSqliteDbPath(this.baseDir, legacyId))) return
+
+    for (const namespaceId of [canonicalId, legacyId]) {
+      const state = this.namespaceStates.get(namespaceId)
+      if (state == null) continue
+      if (
+        state.activeReaders > 0 ||
+        state.writerActive ||
+        state.pendingWriters > 0
+      ) {
+        throw new VectorStoreError(
+          'operation_in_progress',
+          'sqlite',
+          'rebuild_index',
+          `Cannot migrate RAG namespace ${legacyId} while it is in use`,
+        )
+      }
+      this.clearScheduledCoarseCachePrewarm(state)
+      state.runtime.close()
+      this.namespaceStates.delete(namespaceId)
+    }
+
+    this.migrateLegacyNamespaceStorage(namespace)
+  }
+
+  private inspectNamespaceStorage(
+    namespaceId: string,
+  ): NamespaceStorageInspection {
+    const dbPath = getSqliteDbPath(this.baseDir, namespaceId)
+    if (!fs.existsSync(dbPath)) return { valid: false }
+    let runtime: SqliteNativeRuntimeFacade | undefined
+    try {
+      runtime = openSqliteRuntime({ dbPath })
+      const requiredTables = new Set([
+        'rag_namespaces',
+        'rag_files',
+        'rag_chunks',
+        'rag_embeddings',
+        'rag_coarse_embeddings',
+      ])
+      for (const row of runtime.query<{ name: string }>(
+        `select name from sqlite_master where type = 'table'`,
+      )) {
+        requiredTables.delete(row.name)
+      }
+      if (requiredTables.size > 0) return { valid: false }
+      const count = runtime.queryOne<{ count: number }>(
+        'select count(*) as count from rag_files',
+      )
+      return { valid: true, fileCount: count?.count ?? 0 }
+    } catch {
+      return { valid: false }
+    } finally {
+      runtime?.close()
     }
   }
 
@@ -1104,10 +1285,9 @@ export class SqliteVectorStore
     this.assertNotClosing()
     const validatedNamespace = validateNamespaceForSqlite(namespace)
     const namespaceKey = vectorNamespaceId(validatedNamespace)
+    this.prepareLegacyNamespaceStorage(validatedNamespace)
     const existing = this.namespaceStates.get(namespaceKey)
     if (existing != null) return existing
-
-    this.migrateLegacyNamespaceStorage(validatedNamespace)
     const dbPath = getSqliteDbPath(this.baseDir, namespaceKey)
     const state: NamespaceRuntimeState = {
       runtime: openSqliteRuntime({ dbPath }),
@@ -1122,12 +1302,68 @@ export class SqliteVectorStore
     }
     try {
       this.ensureSchema(state, validatedNamespace)
+      this.migrateLegacyNamespaceRows(state, validatedNamespace)
     } catch (error) {
       state.runtime.close()
       throw error
     }
     this.namespaceStates.set(namespaceKey, state)
     return state
+  }
+
+  private migrateLegacyNamespaceRows(
+    state: NamespaceRuntimeState,
+    namespace: VectorNamespace,
+  ): void {
+    const legacyId = legacyVectorNamespaceId(namespace)
+    if (legacyId === state.namespaceId) return
+    state.runtime.transaction((runtime) => {
+      const legacyFiles = runtime.query<{
+        id: string
+        path: string
+        mtime: number
+        content_hash: string | null
+        created_at: number
+        updated_at: number
+      }>(
+        `select id, path, mtime, content_hash, created_at, updated_at
+         from rag_files where namespace_id = ?`,
+        [legacyId],
+      )
+      for (const file of legacyFiles) {
+        const canonicalFileId = fileIdFor(state.namespaceId, file.path)
+        runtime.exec(
+          `insert into rag_files(
+             id, namespace_id, path, mtime, content_hash, created_at, updated_at
+           ) values (?, ?, ?, ?, ?, ?, ?)
+           on conflict(id) do update set
+             namespace_id = excluded.namespace_id,
+             path = excluded.path,
+             mtime = excluded.mtime,
+             content_hash = excluded.content_hash,
+             updated_at = excluded.updated_at`,
+          [
+            canonicalFileId,
+            state.namespaceId,
+            file.path,
+            file.mtime,
+            file.content_hash,
+            file.created_at,
+            file.updated_at,
+          ],
+        )
+        runtime.exec('update rag_chunks set file_id = ? where file_id = ?', [
+          canonicalFileId,
+          file.id,
+        ])
+        runtime.exec(
+          'update rag_coarse_embeddings set file_id = ? where file_id = ?',
+          [canonicalFileId, file.id],
+        )
+        runtime.exec('delete from rag_files where id = ?', [file.id])
+      }
+      runtime.exec('delete from rag_namespaces where id = ?', [legacyId])
+    })
   }
 
   private getExistingNamespaceState(

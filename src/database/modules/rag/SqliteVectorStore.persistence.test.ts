@@ -143,9 +143,7 @@ describe('SqliteVectorStore persistence', () => {
     expect(status.storagePath).toBe('')
     expect(status.readiness).toBe('ready')
     expect(status.rebuildRequired).toBe(false)
-    expect(
-      fs.existsSync(path.join(baseDir, 'rag', '<namespace>')),
-    ).toBe(false)
+    expect(fs.existsSync(path.join(baseDir, 'rag', '<namespace>'))).toBe(false)
 
     await store.close()
     fs.rmSync(rootDir, { recursive: true, force: true })
@@ -208,13 +206,17 @@ describe('SqliteVectorStore persistence', () => {
     const status = await store.getStatus(legacyNamespace)
     expect(status.rebuildRequired).toBe(false)
     const canonicalId = vectorNamespaceId(legacyNamespace)
-    expect(fs.existsSync(getSqliteNamespaceDir(baseDir, canonicalId))).toBe(true)
+    expect(fs.existsSync(getSqliteNamespaceDir(baseDir, canonicalId))).toBe(
+      true,
+    )
     expect(fs.existsSync(legacyDir)).toBe(false)
 
     const migratedDb = openRawDb(getSqliteDbPath(baseDir, canonicalId))
     try {
       const marker = migratedDb
-        .prepare("select name from sqlite_master where type = 'table' and name = 'legacy_marker'")
+        .prepare(
+          "select name from sqlite_master where type = 'table' and name = 'legacy_marker'",
+        )
         .get()
       expect(marker).toBeDefined()
     } finally {
@@ -223,6 +225,568 @@ describe('SqliteVectorStore persistence', () => {
 
     await store.close()
     fs.rmSync(rootDir, { recursive: true, force: true })
+  })
+
+  test('cleans up legacy storage after fallback copy migration is published', async () => {
+    const { rootDir, baseDir } = createTempStoreRoot()
+    const upgradedNamespace: VectorNamespace = {
+      ...namespace,
+      providerIdentity: 'openai',
+      endpointIdentity: 'https://api.openai.com/v1',
+    }
+    const legacyId = legacyVectorNamespaceId(upgradedNamespace)
+    const canonicalId = vectorNamespaceId(upgradedNamespace)
+    const legacyDir = getSqliteNamespaceDir(baseDir, legacyId)
+    const canonicalDir = getSqliteNamespaceDir(baseDir, canonicalId)
+
+    const legacyStore = createStore(baseDir)
+    await legacyStore.open()
+    await legacyStore.replaceFile(
+      namespace,
+      fileWrite([chunk('legacy-chunk', 'legacy vector text', [1, 0, 0, 0], 1)]),
+    )
+    await legacyStore.close()
+
+    const originalRenameSync = fs.renameSync
+    const originalCpSync = fs.cpSync
+    let fallbackCopyPublished = false
+    const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation(((
+      oldPath: fs.PathLike,
+      newPath: fs.PathLike,
+    ) => {
+      if (oldPath === legacyDir && newPath === canonicalDir) {
+        const error = new Error('busy') as NodeJS.ErrnoException
+        error.code = 'EPERM'
+        throw error
+      }
+      originalRenameSync(oldPath, newPath)
+    }) as typeof fs.renameSync)
+    const copySpy = jest.spyOn(fs, 'cpSync').mockImplementation(((
+      source,
+      destination,
+      options,
+    ) => {
+      if (
+        source === legacyDir &&
+        String(destination).includes(`${path.sep}rag-recovery${path.sep}`) &&
+        String(destination).includes('.migrating-')
+      ) {
+        fallbackCopyPublished = true
+      }
+      originalCpSync(source, destination, options)
+    }) as typeof fs.cpSync)
+
+    const store = createStore(baseDir)
+    await store.open()
+    try {
+      await expect(store.getStatus(upgradedNamespace)).resolves.toMatchObject({
+        rebuildRequired: false,
+      })
+      expect(fallbackCopyPublished).toBe(true)
+      expect(await store.listNamespaces()).toEqual([canonicalId])
+      await expect(store.getStatus(upgradedNamespace)).resolves.toMatchObject({
+        rebuildRequired: false,
+      })
+      expect(fs.existsSync(legacyDir)).toBe(false)
+    } finally {
+      renameSpy.mockRestore()
+      copySpy.mockRestore()
+      await store.close()
+      fs.rmSync(rootDir, { recursive: true, force: true })
+    }
+  })
+
+  test('uses a copy fallback when an empty canonical recovery rename is unavailable', async () => {
+    const { rootDir, baseDir } = createTempStoreRoot()
+    const upgradedNamespace: VectorNamespace = {
+      ...namespace,
+      providerIdentity: 'openai',
+      endpointIdentity: 'https://api.openai.com/v1',
+    }
+    const canonicalId = vectorNamespaceId(upgradedNamespace)
+    const canonicalDir = getSqliteNamespaceDir(baseDir, canonicalId)
+    const recoveryDir = path.join(baseDir, 'rag-recovery')
+
+    const emptyCanonicalStore = createStore(baseDir)
+    await emptyCanonicalStore.open()
+    await emptyCanonicalStore.getIndexedFiles(upgradedNamespace)
+    await emptyCanonicalStore.close()
+
+    const legacyStore = createStore(baseDir)
+    await legacyStore.open()
+    await legacyStore.replaceFile(
+      namespace,
+      fileWrite([chunk('legacy-chunk', 'legacy vector text', [1, 0, 0, 0], 1)]),
+    )
+    await legacyStore.close()
+
+    const originalRenameSync = fs.renameSync
+    const originalCpSync = fs.cpSync
+    const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation(((
+      oldPath: fs.PathLike,
+      newPath: fs.PathLike,
+    ) => {
+      if (
+        oldPath === canonicalDir &&
+        String(newPath).includes(`${path.sep}rag-recovery${path.sep}`) &&
+        String(newPath).includes('.superseded-')
+      ) {
+        const error = new Error('recovery rename busy') as NodeJS.ErrnoException
+        error.code = 'EPERM'
+        throw error
+      }
+      originalRenameSync(oldPath, newPath)
+    }) as typeof fs.renameSync)
+    const copySpy = jest.spyOn(fs, 'cpSync')
+
+    const store = createStore(baseDir)
+    await store.open()
+    try {
+      await expect(store.getStatus(upgradedNamespace)).resolves.toMatchObject({
+        rebuildRequired: false,
+      })
+      expect(await store.listNamespaces()).toEqual([canonicalId])
+      expect(
+        fs
+          .readdirSync(recoveryDir)
+          .some((entry) => entry.startsWith(`${canonicalId}.superseded-`)),
+      ).toBe(true)
+    } finally {
+      renameSpy.mockRestore()
+      copySpy.mockRestore()
+      await store.close()
+      fs.rmSync(rootDir, { recursive: true, force: true })
+    }
+  })
+
+  test('archives legacy storage when cleanup fails after fallback publication', async () => {
+    const { rootDir, baseDir } = createTempStoreRoot()
+    const upgradedNamespace: VectorNamespace = {
+      ...namespace,
+      providerIdentity: 'openai',
+      endpointIdentity: 'https://api.openai.com/v1',
+    }
+    const legacyId = legacyVectorNamespaceId(upgradedNamespace)
+    const canonicalId = vectorNamespaceId(upgradedNamespace)
+    const legacyDir = getSqliteNamespaceDir(baseDir, legacyId)
+    const canonicalDir = getSqliteNamespaceDir(baseDir, canonicalId)
+    const recoveryDir = path.join(baseDir, 'rag-recovery')
+
+    const legacyStore = createStore(baseDir)
+    await legacyStore.open()
+    await legacyStore.replaceFile(
+      namespace,
+      fileWrite([chunk('legacy-chunk', 'legacy vector text', [1, 0, 0, 0], 1)]),
+    )
+    await legacyStore.close()
+
+    const originalRenameSync = fs.renameSync
+    const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation(((
+      oldPath: fs.PathLike,
+      newPath: fs.PathLike,
+    ) => {
+      if (oldPath === legacyDir && newPath === canonicalDir) {
+        throw new Error('legacy rename busy')
+      }
+      originalRenameSync(oldPath, newPath)
+    }) as typeof fs.renameSync)
+    const originalRmSync = fs.rmSync
+    const rmSpy = jest.spyOn(fs, 'rmSync').mockImplementation(((
+      target,
+      options,
+    ) => {
+      if (target === legacyDir) throw new Error('legacy cleanup busy')
+      originalRmSync(target, options)
+    }) as typeof fs.rmSync)
+
+    const store = createStore(baseDir)
+    await store.open()
+    try {
+      await expect(store.getStatus(upgradedNamespace)).resolves.toMatchObject({
+        rebuildRequired: false,
+      })
+      expect(fs.existsSync(canonicalDir)).toBe(true)
+      expect(fs.existsSync(legacyDir)).toBe(false)
+      expect(await store.listNamespaces()).toEqual([canonicalId])
+      expect(
+        fs
+          .readdirSync(recoveryDir)
+          .some((entry) => entry.startsWith(`${legacyId}.superseded-`)),
+      ).toBe(true)
+    } finally {
+      renameSpy.mockRestore()
+      rmSpy.mockRestore()
+      await store.close()
+      fs.rmSync(rootDir, { recursive: true, force: true })
+    }
+  })
+
+  test('removes a partial canonical directory when legacy namespace copy fails', async () => {
+    const { rootDir, baseDir } = createTempStoreRoot()
+    const upgradedNamespace: VectorNamespace = {
+      ...namespace,
+      providerIdentity: 'openai',
+      endpointIdentity: 'https://api.openai.com/v1',
+    }
+    const legacyId = legacyVectorNamespaceId(upgradedNamespace)
+    const canonicalId = vectorNamespaceId(upgradedNamespace)
+    const legacyDir = getSqliteNamespaceDir(baseDir, legacyId)
+    const canonicalDir = getSqliteNamespaceDir(baseDir, canonicalId)
+    fs.mkdirSync(legacyDir, { recursive: true })
+    const legacyDb = openRawDb(getSqliteDbPath(baseDir, legacyId))
+    legacyDb.exec('create table legacy_marker (id text)')
+    legacyDb.close()
+
+    const renameSync = fs.renameSync
+    const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation(((
+      oldPath: fs.PathLike,
+      newPath: fs.PathLike,
+    ) => {
+      if (oldPath === legacyDir && newPath === canonicalDir) {
+        const error = new Error('busy') as NodeJS.ErrnoException
+        error.code = 'EPERM'
+        throw error
+      }
+      renameSync(oldPath, newPath)
+    }) as typeof fs.renameSync)
+    const copySync = fs.cpSync
+    const originalCpSync = copySync
+    const copySpy = jest.spyOn(fs, 'cpSync').mockImplementation(((
+      source,
+      destination,
+      options,
+    ) => {
+      if (
+        source === legacyDir &&
+        String(destination).includes(`${path.sep}rag-recovery${path.sep}`) &&
+        String(destination).includes('.migrating-')
+      ) {
+        const destinationPath = String(destination)
+        fs.mkdirSync(destinationPath, { recursive: true })
+        fs.writeFileSync(path.join(destinationPath, 'partial-copy'), 'partial')
+        throw new Error('copy failed')
+      }
+      copySync(source, destination, options)
+    }) as typeof fs.cpSync)
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const store = createStore(baseDir)
+    await store.open()
+    try {
+      await expect(store.getStatus(upgradedNamespace)).rejects.toThrow(
+        'copy failed',
+      )
+      expect(fs.existsSync(canonicalDir)).toBe(false)
+      expect(
+        fs
+          .readdirSync(path.join(baseDir, 'rag-recovery'))
+          .some((entry) =>
+            entry.startsWith(`${path.basename(canonicalDir)}.migrating-`),
+          ),
+      ).toBe(false)
+      expect(fs.existsSync(legacyDir)).toBe(true)
+    } finally {
+      renameSpy.mockRestore()
+      copySpy.mockRestore()
+      warnSpy.mockRestore()
+      await store.close()
+      fs.rmSync(rootDir, { recursive: true, force: true })
+    }
+  })
+
+  test('never exposes a partial canonical directory when failed-copy cleanup also fails', async () => {
+    const { rootDir, baseDir } = createTempStoreRoot()
+    const upgradedNamespace: VectorNamespace = {
+      ...namespace,
+      providerIdentity: 'openai',
+      endpointIdentity: 'https://api.openai.com/v1',
+    }
+    const legacyId = legacyVectorNamespaceId(upgradedNamespace)
+    const canonicalId = vectorNamespaceId(upgradedNamespace)
+    const legacyDir = getSqliteNamespaceDir(baseDir, legacyId)
+    const canonicalDir = getSqliteNamespaceDir(baseDir, canonicalId)
+
+    const legacyStore = createStore(baseDir)
+    await legacyStore.open()
+    await legacyStore.replaceFile(
+      namespace,
+      fileWrite([chunk('legacy-chunk', 'legacy vector text', [1, 0, 0, 0], 1)]),
+    )
+    await legacyStore.close()
+
+    const renameSync = fs.renameSync
+    const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation(((
+      oldPath: fs.PathLike,
+      newPath: fs.PathLike,
+    ) => {
+      if (oldPath === legacyDir && newPath === canonicalDir) {
+        throw new Error('busy')
+      }
+      renameSync(oldPath, newPath)
+    }) as typeof fs.renameSync)
+    const copySync = fs.cpSync
+    const originalCpSync = copySync
+    const copySpy = jest.spyOn(fs, 'cpSync').mockImplementation(((
+      source,
+      destination,
+      options,
+    ) => {
+      if (
+        source === legacyDir &&
+        (String(destination).startsWith(`${canonicalDir}.migrating-`) ||
+          String(destination).includes(`${path.sep}rag-recovery${path.sep}`))
+      ) {
+        originalCpSync(source, destination, options)
+        throw new Error('copy failed')
+      }
+      copySync(source, destination, options)
+    }) as typeof fs.cpSync)
+    const rmSync = fs.rmSync
+    const rmSpy = jest.spyOn(fs, 'rmSync').mockImplementation(((
+      target,
+      options,
+    ) => {
+      if (String(target).includes('.migrating-')) {
+        throw new Error('cleanup failed')
+      }
+      rmSync(target, options)
+    }) as typeof fs.rmSync)
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const store = createStore(baseDir)
+    await store.open()
+    try {
+      await expect(store.getStatus(upgradedNamespace)).rejects.toThrow(
+        'copy failed',
+      )
+      expect(fs.existsSync(canonicalDir)).toBe(false)
+      expect(fs.existsSync(legacyDir)).toBe(true)
+
+      const temporaryEntry = fs
+        .readdirSync(path.join(baseDir, 'rag-recovery'))
+        .find((entry) => entry.startsWith(`${canonicalId}.migrating-`))
+      expect(temporaryEntry).toBeDefined()
+      expect(await store.listNamespaces()).not.toContain(temporaryEntry)
+
+      await store.close()
+      const reopened = createStore(baseDir)
+      await reopened.open()
+      try {
+        const namespaceStates = (
+          reopened as unknown as {
+            namespaceStates: Map<string, unknown>
+          }
+        ).namespaceStates
+        expect(namespaceStates.has(temporaryEntry as string)).toBe(false)
+      } finally {
+        await reopened.close()
+      }
+    } finally {
+      renameSpy.mockRestore()
+      copySpy.mockRestore()
+      rmSpy.mockRestore()
+      warnSpy.mockRestore()
+      await store.close()
+      fs.rmSync(rootDir, { recursive: true, force: true })
+    }
+  })
+
+  test('migrates legacy namespace rows and keeps indexed vectors queryable', async () => {
+    const { rootDir, baseDir } = createTempStoreRoot()
+    const upgradedNamespace: VectorNamespace = {
+      ...namespace,
+      providerIdentity: 'openai',
+      endpointIdentity: 'https://api.openai.com/v1',
+    }
+    const legacyStore = createStore(baseDir)
+    await legacyStore.open()
+    await legacyStore.replaceFile(
+      namespace,
+      fileWrite([chunk('legacy-chunk', 'legacy vector text', [1, 0, 0, 0], 1)]),
+    )
+    await legacyStore.close()
+
+    const upgradedStore = createStore(baseDir)
+    await upgradedStore.open()
+    expect(await upgradedStore.getIndexedFiles(upgradedNamespace)).toEqual(
+      new Map([
+        [
+          'notes/a.md',
+          expect.objectContaining({ mtime: 123, contentHash: 'file-hash' }),
+        ],
+      ]),
+    )
+    await expect(
+      upgradedStore.search(upgradedNamespace, [1, 0, 0, 0], { topK: 1 }),
+    ).resolves.toMatchObject({
+      hits: [expect.objectContaining({ chunkId: 'legacy-chunk' })],
+    })
+
+    const migratedDb = openRawDb(
+      getSqliteDbPath(baseDir, vectorNamespaceId(upgradedNamespace)),
+    )
+    try {
+      const legacyId = legacyVectorNamespaceId(upgradedNamespace)
+      expect(
+        migratedDb
+          .prepare('select id from rag_namespaces where id = ?')
+          .get(legacyId),
+      ).toBeUndefined()
+      expect(
+        migratedDb
+          .prepare('select namespace_id from rag_files where namespace_id = ?')
+          .get(vectorNamespaceId(upgradedNamespace)),
+      ).toBeDefined()
+    } finally {
+      migratedDb.close()
+    }
+
+    await upgradedStore.close()
+    fs.rmSync(rootDir, { recursive: true, force: true })
+  })
+
+  test('search migrates a legacy-only namespace before checking the canonical database', async () => {
+    const { rootDir, baseDir } = createTempStoreRoot()
+    const upgradedNamespace: VectorNamespace = {
+      ...namespace,
+      providerIdentity: 'openai',
+      endpointIdentity: 'https://api.openai.com/v1',
+    }
+
+    const legacyStore = createStore(baseDir)
+    await legacyStore.open()
+    await legacyStore.replaceFile(
+      namespace,
+      fileWrite([chunk('legacy-chunk', 'legacy vector text', [1, 0, 0, 0], 1)]),
+    )
+    await legacyStore.close()
+
+    const store = createStore(baseDir)
+    await store.open()
+    try {
+      await expect(
+        store.search(upgradedNamespace, [1, 0, 0, 0], { topK: 1 }),
+      ).resolves.toMatchObject({
+        hits: [expect.objectContaining({ chunkId: 'legacy-chunk' })],
+      })
+    } finally {
+      await store.close()
+      fs.rmSync(rootDir, { recursive: true, force: true })
+    }
+  })
+
+  test('recovers a populated legacy database when an empty canonical database already exists', async () => {
+    const { rootDir, baseDir } = createTempStoreRoot()
+    const upgradedNamespace: VectorNamespace = {
+      ...namespace,
+      providerIdentity: 'openai',
+      endpointIdentity: 'https://api.openai.com/v1',
+    }
+    const canonicalId = vectorNamespaceId(upgradedNamespace)
+
+    const emptyCanonicalStore = createStore(baseDir)
+    await emptyCanonicalStore.open()
+    expect(
+      await emptyCanonicalStore.getIndexedFiles(upgradedNamespace),
+    ).toEqual(new Map())
+    await emptyCanonicalStore.close()
+
+    const populatedLegacyStore = createStore(baseDir)
+    await populatedLegacyStore.open()
+    await populatedLegacyStore.replaceFile(
+      namespace,
+      fileWrite([chunk('legacy-chunk', 'legacy vector text', [1, 0, 0, 0], 1)]),
+    )
+    await populatedLegacyStore.close()
+
+    const recoveredStore = createStore(baseDir)
+    await recoveredStore.open()
+    try {
+      const indexedFiles =
+        await recoveredStore.getIndexedFiles(upgradedNamespace)
+      expect(indexedFiles).toEqual(
+        new Map([
+          [
+            'notes/a.md',
+            expect.objectContaining({ mtime: 123, contentHash: 'file-hash' }),
+          ],
+        ]),
+      )
+      await expect(
+        recoveredStore.search(upgradedNamespace, [1, 0, 0, 0], { topK: 1 }),
+      ).resolves.toMatchObject({
+        hits: [expect.objectContaining({ chunkId: 'legacy-chunk' })],
+      })
+      expect(await recoveredStore.listNamespaces()).toEqual([canonicalId])
+      expect(
+        fs
+          .readdirSync(path.join(baseDir, 'rag'), { withFileTypes: true })
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => entry.name),
+      ).toEqual([canonicalId])
+      expect(
+        fs
+          .readdirSync(path.join(baseDir, 'rag-recovery'), {
+            withFileTypes: true,
+          })
+          .some(
+            (entry) =>
+              entry.isDirectory() &&
+              entry.name.startsWith(`${canonicalId}.superseded-`),
+          ),
+      ).toBe(true)
+    } finally {
+      await recoveredStore.close()
+      fs.rmSync(rootDir, { recursive: true, force: true })
+    }
+  })
+
+  test('reports rebuild required without overwriting when canonical and legacy databases both contain data', async () => {
+    const { rootDir, baseDir } = createTempStoreRoot()
+    const upgradedNamespace: VectorNamespace = {
+      ...namespace,
+      providerIdentity: 'openai',
+      endpointIdentity: 'https://api.openai.com/v1',
+    }
+    const canonicalId = vectorNamespaceId(upgradedNamespace)
+    const legacyId = legacyVectorNamespaceId(upgradedNamespace)
+
+    const canonicalStore = createStore(baseDir)
+    await canonicalStore.open()
+    await canonicalStore.replaceFile(
+      upgradedNamespace,
+      fileWrite([chunk('canonical-chunk', 'canonical text', [0, 1, 0, 0], 1)]),
+    )
+    await canonicalStore.close()
+
+    const legacyStore = createStore(baseDir)
+    await legacyStore.open()
+    await legacyStore.replaceFile(
+      namespace,
+      fileWrite([chunk('legacy-chunk', 'legacy text', [1, 0, 0, 0], 1)]),
+    )
+    await legacyStore.close()
+
+    const conflictedStore = createStore(baseDir)
+    await conflictedStore.open()
+    try {
+      await expect(
+        conflictedStore.getStatus(upgradedNamespace),
+      ).resolves.toMatchObject({
+        rebuildRequired: true,
+        recoveryAction: 'rebuild_index',
+      })
+      await expect(
+        conflictedStore.search(upgradedNamespace, [1, 0, 0, 0], { topK: 1 }),
+      ).rejects.toMatchObject({ code: 'rebuild_required' })
+      expect(fs.existsSync(getSqliteNamespaceDir(baseDir, canonicalId))).toBe(
+        true,
+      )
+      expect(fs.existsSync(getSqliteNamespaceDir(baseDir, legacyId))).toBe(true)
+    } finally {
+      await conflictedStore.close()
+      fs.rmSync(rootDir, { recursive: true, force: true })
+    }
   })
 
   test('does not migrate when the canonical namespace directory already exists', async () => {
