@@ -102,6 +102,7 @@ import { convertPdfViaMinerU } from '../pdf/mineruCacheStore'
 import {
   isMinerUEnabled,
   markMinerUFailure,
+  markMinerUSuccess,
   resolveMinerUImageRefs,
 } from '../pdf/mineruClient'
 import { prefixTimeContext } from '../prompt/timeContext'
@@ -2680,6 +2681,7 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
           options: this.settings.mineru,
           settings: this.settings,
         })
+        markMinerUSuccess(this.settings.mineru.baseUrl)
         const { refs, markdown } = resolveMinerUImageRefs(
           mineruResult.markdown,
           mineruResult.images,
@@ -2706,7 +2708,7 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
         }
         return markdown
       } catch (mineruErr) {
-        markMinerUFailure()
+        markMinerUFailure(this.settings.mineru.baseUrl)
         console.warn(
           '[YOLO] MinerU conversion failed for mentioned PDF, falling back to text extraction',
           mineruErr,

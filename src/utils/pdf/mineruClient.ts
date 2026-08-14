@@ -482,48 +482,55 @@ type MinerUSettingsLike = {
   }
 }
 
-// Session-level circuit breaker shared by the three-way integration (fs_read /
-// RAG indexing / attachment context). A single conversion failure is transient
-// (server restart, timeout); three consecutive failures mark MinerU unavailable
-// for a cooldown window so slow paths fall back to the legacy PDF pipeline
-// without burning a network round-trip per call. After the cooldown the breaker
-// auto-resets and the next call re-probes — the server may have recovered.
-let consecutiveFailures = 0
-let sessionUnavailable = false
-let brokenAt = 0
+// Session-level circuit breakers shared by the three-way integration (fs_read /
+// RAG indexing / attachment context), isolated per normalized endpoint.
+type MinerUBreakerState = { consecutiveFailures: number; brokenAt: number }
+const mineruBreakerStates = new Map<string, MinerUBreakerState>()
 const MINERU_CONSECUTIVE_FAILURE_THRESHOLD = 3
 /** 熔断后自动恢复的冷却窗口：服务端恢复后无需重启插件即可重新使用。 */
 export const MINERU_BREAKER_COOLDOWN_MS = 5 * 60 * 1000
+
+const normalizeMinerUEndpoint = (baseUrl: string | null | undefined): string =>
+  (baseUrl ?? '').trim().replace(/\/+$/, '')
 
 /** MinerU availability gate: switch on + baseUrl configured + not circuit-broken. */
 export function isMinerUEnabled(
   settings: MinerUSettingsLike | null | undefined,
 ): boolean {
-  if (sessionUnavailable) {
-    if (Date.now() - brokenAt < MINERU_BREAKER_COOLDOWN_MS) return false
-    // 冷却结束：恢复计数，下一个调用重新探测。
-    consecutiveFailures = 0
-    sessionUnavailable = false
-    brokenAt = 0
-  }
   const mineru = settings?.mineru
-  return Boolean(mineru?.enabled && (mineru.baseUrl ?? '').trim().length > 0)
+  const endpoint = normalizeMinerUEndpoint(mineru?.baseUrl)
+  if (!mineru?.enabled || !endpoint) return false
+
+  const state = mineruBreakerStates.get(endpoint)
+  if (!state?.brokenAt) return true
+  if (Date.now() - state.brokenAt < MINERU_BREAKER_COOLDOWN_MS) return false
+  mineruBreakerStates.delete(endpoint)
+  return true
 }
 
 /** Counts one conversion failure; the third consecutive one breaks the session. */
-export function markMinerUFailure(): void {
-  consecutiveFailures += 1
-  if (consecutiveFailures >= MINERU_CONSECUTIVE_FAILURE_THRESHOLD) {
-    sessionUnavailable = true
-    brokenAt = Date.now()
-  }
+export function markMinerUFailure(baseUrl: string): void {
+  const endpoint = normalizeMinerUEndpoint(baseUrl)
+  if (!endpoint) return
+  const current = mineruBreakerStates.get(endpoint)
+  const consecutiveFailures = (current?.consecutiveFailures ?? 0) + 1
+  mineruBreakerStates.set(endpoint, {
+    consecutiveFailures,
+    brokenAt:
+      consecutiveFailures >= MINERU_CONSECUTIVE_FAILURE_THRESHOLD
+        ? Date.now()
+        : 0,
+  })
+}
+
+/** A successful conversion clears prior failures for the same endpoint. */
+export function markMinerUSuccess(baseUrl: string): void {
+  mineruBreakerStates.delete(normalizeMinerUEndpoint(baseUrl))
 }
 
 /** Clears the failure counter and the session break (call at session start). */
 export function resetMinerUSessionState(): void {
-  consecutiveFailures = 0
-  sessionUnavailable = false
-  brokenAt = 0
+  mineruBreakerStates.clear()
 }
 
 const MARKDOWN_IMAGE_REF_RE = /!\[([^\]]*)\]\(([^)]+)\)/g

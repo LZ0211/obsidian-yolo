@@ -64,6 +64,7 @@ import {
   convertPdfToMarkdown,
   isMinerUEnabled,
   markMinerUFailure,
+  markMinerUSuccess,
   resolveMinerUImageRefs,
   toArrayBuffer,
 } from '../../utils/pdf/mineruClient'
@@ -2651,6 +2652,7 @@ async function readPdfViaMinerU({
       settings,
       signal,
     })
+    markMinerUSuccess(settings.mineru.baseUrl)
     const { refs, markdown } = resolveMinerUImageRefs(
       mineruResult.markdown,
       mineruResult.images,
@@ -2664,7 +2666,7 @@ async function readPdfViaMinerU({
     if (mineruErr instanceof DOMException && mineruErr.name === 'AbortError') {
       throw mineruErr
     }
-    markMinerUFailure()
+    markMinerUFailure(settings.mineru.baseUrl)
     console.warn(
       '[YOLO] MinerU conversion failed, falling back to default PDF handling',
       mineruErr,
@@ -4174,12 +4176,13 @@ export async function callLocalFileTool({
             apiKey: settings.mineru.apiKey,
             signal,
           })
+          markMinerUSuccess(settings.mineru.baseUrl)
         } catch (error) {
           // Abort 语义与 fs_read MinerU 分支一致：透传不计数（请求已被取消）。
           if (error instanceof DOMException && error.name === 'AbortError') {
             throw error
           }
-          markMinerUFailure()
+          markMinerUFailure(settings.mineru.baseUrl)
           throw error
         }
         if (signal?.aborted) {

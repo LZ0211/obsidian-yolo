@@ -15,6 +15,7 @@ import {
   convertPdfToMarkdown,
   isMinerUEnabled,
   markMinerUFailure,
+  markMinerUSuccess,
   probeMinerU,
   resetMinerUSessionState,
   resolveMinerUImageRefs,
@@ -527,17 +528,29 @@ describe('MinerU session circuit breaker', () => {
     resetMinerUSessionState()
   })
 
-  it('breaks after three consecutive failures and recovers after the cooldown window', () => {
+  it('tracks consecutive failures per endpoint and recovers after success or cooldown', () => {
     jest.useFakeTimers()
     try {
       resetMinerUSessionState()
-      markMinerUFailure()
-      markMinerUFailure()
+      markMinerUFailure(BASE_URL)
+      markMinerUFailure(BASE_URL)
       expect(isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }))
         .toBe(true)
-      markMinerUFailure()
+
+      markMinerUSuccess(BASE_URL)
+      markMinerUFailure(BASE_URL)
+      markMinerUFailure(BASE_URL)
+      expect(isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }))
+        .toBe(true)
+
+      markMinerUFailure(BASE_URL)
       expect(isMinerUEnabled({ mineru: { enabled: true, baseUrl: BASE_URL } }))
         .toBe(false)
+      expect(
+        isMinerUEnabled({
+          mineru: { enabled: true, baseUrl: 'http://mineru-other.test' },
+        }),
+      ).toBe(true)
 
       // 冷却窗口未过：仍然熔断。
       jest.advanceTimersByTime(MINERU_BREAKER_COOLDOWN_MS - 1000)

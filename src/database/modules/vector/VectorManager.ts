@@ -30,6 +30,7 @@ import { convertPdfViaMinerU } from '../../../utils/pdf/mineruCacheStore'
 import {
   isMinerUEnabled,
   markMinerUFailure,
+  markMinerUSuccess,
 } from '../../../utils/pdf/mineruClient'
 import { createEmbeddingVectorNamespace } from '../rag/embeddingNamespace'
 import {
@@ -460,6 +461,7 @@ export class VectorManager {
           settings: this.settings,
           signal,
         })
+        markMinerUSuccess(this.settings.mineru.baseUrl ?? '')
         // md 文本作为嵌入源（图片不进索引）；onPdfTextExtracted 报 md 源。
         return this.chunkifyMarkdownSource(
           mineruResult.markdown,
@@ -476,7 +478,7 @@ export class VectorManager {
         ) {
           throw mineruErr
         }
-        markMinerUFailure()
+        markMinerUFailure(this.settings.mineru.baseUrl ?? '')
         console.warn(
           '[YOLO] MinerU conversion failed for indexing, falling back to text extraction',
           mineruErr,
