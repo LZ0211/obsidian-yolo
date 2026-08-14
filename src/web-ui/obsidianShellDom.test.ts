@@ -442,17 +442,61 @@ function dispatchTouch(
 }
 
 describe('Platform.isMobile body class', () => {
-  it('writes body.is-mobile when Platform.isMobile is true', () => {
-    Platform.isMobile = true
-    document.body.classList.toggle('is-mobile', Platform.isMobile)
-    expect(document.body.classList.contains('is-mobile')).toBe(true)
+  it('applies body.is-mobile for a narrow viewport even when Platform.isMobile is false', () => {
+    // 390px 视口（手机宽或窄窗）必须切换到移动抽屉布局：桌面固定侧栏会把
+    // 主聊天挤成残废且没有任何可发现的恢复入口。
+    Object.defineProperty(window, 'innerWidth', {
+      value: 390,
+      configurable: true,
+    })
     Platform.isMobile = false
-    document.body.classList.remove('is-mobile')
+    const root = document.createElement('div')
+    document.body.append(root)
+    const shell = createObsidianWebShell(root)
+    expect(document.body.classList.contains('is-mobile')).toBe(true)
+    // 测试环境的 matchMedia mock 恒判定 tablet（600x600+），此处断言移动
+    // 布局已启用即可；phone/tablet 细分由媒体查询决定。
+    expect(
+      document.body.classList.contains('is-phone') ||
+        document.body.classList.contains('is-tablet'),
+    ).toBe(true)
+    shell.destroy()
+    root.remove()
+    Object.defineProperty(window, 'innerWidth', {
+      value: 1024,
+      configurable: true,
+    })
+    document.body.classList.remove('is-mobile', 'is-phone', 'is-tablet')
   })
 
-  it('removes body.is-mobile when Platform.isMobile is false', () => {
+  it('keeps the desktop layout for a wide viewport without a mobile UA', () => {
+    Object.defineProperty(window, 'innerWidth', {
+      value: 1440,
+      configurable: true,
+    })
     Platform.isMobile = false
-    document.body.classList.toggle('is-mobile', Platform.isMobile)
+    const root = document.createElement('div')
+    document.body.append(root)
+    const shell = createObsidianWebShell(root)
     expect(document.body.classList.contains('is-mobile')).toBe(false)
+    shell.destroy()
+    root.remove()
+  })
+
+  it('labels the desktop sidebar toggle for discoverability', () => {
+    Object.defineProperty(window, 'innerWidth', {
+      value: 1440,
+      configurable: true,
+    })
+    Platform.isMobile = false
+    const root = document.createElement('div')
+    document.body.append(root)
+    createObsidianWebShell(root)
+    const toggles = root.querySelectorAll<HTMLElement>('.sidebar-toggle-button')
+    expect(toggles.length).toBeGreaterThan(0)
+    for (const toggle of toggles) {
+      expect(toggle.getAttribute('aria-label')).toBe('Toggle sidebar')
+    }
+    root.remove()
   })
 })

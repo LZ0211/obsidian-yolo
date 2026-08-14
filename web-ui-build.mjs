@@ -168,10 +168,43 @@ if (prod) {
   console.log('[web-ui] Done → web-ui')
 } else {
   await fs.promises.mkdir(webUiDir, { recursive: true })
-  await fs.promises.copyFile(
-    'src/web-ui/index.html',
-    path.join(webUiDir, 'index.html'),
+  const copyIndexHtml = async () => {
+    await fs.promises.copyFile(
+      'src/web-ui/index.html',
+      path.join(webUiDir, 'index.html'),
+    )
+    console.log('[web-ui] Copied src/web-ui/index.html → web-ui/index.html')
+  }
+  await copyIndexHtml()
+  // esbuild 的 watch 只观察 JS 依赖图，src/web-ui/index.html 不在图内——
+  // 单独用 fs.watch 监听，修改后重新复制（防抖合并批量事件）。
+  let htmlCopyTimer = null
+  const htmlWatcher = fs.watch('src/web-ui/index.html', () => {
+    if (htmlCopyTimer !== null) return
+    htmlCopyTimer = setTimeout(() => {
+      htmlCopyTimer = null
+      void copyIndexHtml().catch((error) => {
+        console.error('[web-ui] Failed to copy index.html', error)
+      })
+    }, 100)
+  })
+  const stopHtmlWatcher = () => {
+    if (htmlCopyTimer !== null) {
+      clearTimeout(htmlCopyTimer)
+      htmlCopyTimer = null
+    }
+    htmlWatcher.close()
+  }
+  process.once('SIGINT', () => {
+    stopHtmlWatcher()
+    process.exit(0)
+  })
+  process.once('SIGTERM', () => {
+    stopHtmlWatcher()
+    process.exit(0)
+  })
+  console.log(
+    '[web-ui] Watching src/web-ui/index.tsx (esbuild) and src/web-ui/index.html (fs.watch) for changes...',
   )
-  console.log('[web-ui] Watching src/web-ui/index.tsx for changes...')
   await ctx.watch()
 }

@@ -186,7 +186,10 @@ function installObsidianBodyLikeApp(): BodyLifecycle {
     '(min-width: 600px) and (min-height: 600px)',
   )
   const updateMobileClasses = () => {
-    const isMobile = Platform.isMobile
+    // 窄视口（手机宽、或桌面浏览器缩得很窄/嵌在面板里）也启用移动抽屉布局：
+    // 桌面布局的固定侧栏（280~320px）+ ribbon（44px）在 480px 以下会把主
+    // 聊天挤成残废，且没有任何可见入口可以恢复（侧栏 toggle 无 label）。
+    const isMobile = Platform.isMobile || window.innerWidth <= 480
     bodyEl.toggleClass('is-mobile', isMobile)
     const isTablet = isMobile && mediaQuery.matches
     const isPhone = isMobile && !isTablet
@@ -1200,7 +1203,9 @@ function createDesktopSidebarToggleLikeObsidian(
   side: 'left' | 'right',
 ): HTMLElement {
   const toggleEl = createDiv(parent, `sidebar-toggle-button mod-${side}`)
-  toggleEl.setAttr('aria-label', '')
+  // 空 aria-label 让屏幕阅读器无标签、且（web shell 内）无任何可发现入口；
+  // 桌面侧栏在窄视口被挤压时只能靠这个按钮恢复布局。
+  toggleEl.setAttr('aria-label', 'Toggle sidebar')
   toggleEl.setAttr('data-tooltip-position', side === 'left' ? 'right' : 'left')
   const clickableIconEl = createDiv(toggleEl, 'clickable-icon')
   appendSidebarToggleIcon(clickableIconEl, side)
