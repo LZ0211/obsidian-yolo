@@ -10,7 +10,6 @@ import { arrayBufferToBase64 } from '../base64'
 
 import {
   MINERU_BREAKER_COOLDOWN_MS,
-  MINERU_EVENT_POLL_TIMEOUT_MS,
   convertPdfToMarkdown,
   isMinerUEnabled,
   markMinerUFailure,
@@ -31,6 +30,7 @@ const mockedRequestUrl = requestUrl as jest.MockedFunction<typeof requestUrl>
 
 const BASE_URL = 'http://mineru.test'
 const API_KEY = 'Bearer xxx'
+const FORMER_REQUEST_TIMEOUT_MS = 120_000
 const PDF_BYTES = new TextEncoder().encode(
   '%PDF-1.4\n% mock pdf for mineru\n%%EOF',
 )
@@ -314,18 +314,19 @@ describe('convertPdfToMarkdown', () => {
     sseDeferred.resolve?.(responseWithText(''))
   })
 
-  it('throws when the event stream does not complete within the poll timeout', async () => {
+  it('allows the event stream to outlast the former request timeout', async () => {
     jest.useFakeTimers()
     try {
+      let resolveEvent: ((response: RequestUrlResponse) => void) | undefined
       mockedRequestUrl
         .mockResolvedValueOnce(
           responseWithText(JSON.stringify({ event_id: 'evt-6' })),
         )
         .mockImplementationOnce(
           () =>
-            new Promise<RequestUrlResponse>(
-              () => {},
-            ) as unknown as RequestUrlResponsePromise,
+            new Promise<RequestUrlResponse>((resolve) => {
+              resolveEvent = resolve
+            }) as unknown as RequestUrlResponsePromise,
         )
 
       const promise = convertPdfToMarkdown({
@@ -334,18 +335,27 @@ describe('convertPdfToMarkdown', () => {
         baseUrl: BASE_URL,
         apiKey: API_KEY,
       })
-      // Attach the rejection handler before advancing timers so the timeout
-      // rejection is not flagged as unhandled mid-tick.
-      const assertion = expect(promise).rejects.toThrow(/timed out/i)
+      const assertion = expect(promise).resolves.toMatchObject({
+        markdown: MARKDOWN,
+      })
 
-      await jest.advanceTimersByTimeAsync(MINERU_EVENT_POLL_TIMEOUT_MS + 1000)
+      await jest.advanceTimersByTimeAsync(FORMER_REQUEST_TIMEOUT_MS + 1000)
+      resolveEvent?.(
+        responseWithText(
+          `data: ${JSON.stringify({
+            type: 'complete',
+            output: { data: [MARKDOWN] },
+          })}`,
+        ),
+      )
+      jest.useRealTimers()
       await assertion
     } finally {
       jest.useRealTimers()
     }
   })
 
-  it('allows a FileData download to outlast the event poll timeout', async () => {
+  it('allows a FileData download to outlast the former request timeout', async () => {
     const zipBuffer = await buildZip({ 'result.md': MARKDOWN })
     jest.useFakeTimers()
     try {
@@ -383,7 +393,7 @@ describe('convertPdfToMarkdown', () => {
       })
 
       await jest.advanceTimersByTimeAsync(
-        MINERU_EVENT_POLL_TIMEOUT_MS + 1000,
+        FORMER_REQUEST_TIMEOUT_MS + 1000,
       )
       resolveDownload?.(responseWithArrayBuffer(zipBuffer))
       jest.useRealTimers()
@@ -499,18 +509,26 @@ describe('resolveMinerUImageRefs', () => {
   })
 })
 
-describe('convertPdfToMarkdown job start timeout', () => {
-  it('times out a hung job-start POST (no infinite pending)', async () => {
+describe('convertPdfToMarkdown job start', () => {
+  it('allows a slow job-start POST to outlast the former request timeout', async () => {
     jest.useFakeTimers()
     try {
-      // POST 永久 pending：此前只有 SSE GET 有超时，挂起的 POST 会让调用
-      // 方永久卡住。
-      mockedRequestUrl.mockImplementationOnce(
-        () =>
-          new Promise<RequestUrlResponse>(
-            () => {},
-          ) as unknown as RequestUrlResponsePromise,
-      )
+      let resolveStart: ((response: RequestUrlResponse) => void) | undefined
+      mockedRequestUrl
+        .mockImplementationOnce(
+          () =>
+            new Promise<RequestUrlResponse>((resolve) => {
+              resolveStart = resolve
+            }) as unknown as RequestUrlResponsePromise,
+        )
+        .mockResolvedValueOnce(
+          responseWithText(
+            `data: ${JSON.stringify({
+              type: 'complete',
+              output: { data: [MARKDOWN] },
+            })}`,
+          ),
+        )
 
       const promise = convertPdfToMarkdown({
         pdfBytes: PDF_BYTES.buffer,
@@ -518,9 +536,13 @@ describe('convertPdfToMarkdown job start timeout', () => {
         baseUrl: BASE_URL,
         apiKey: API_KEY,
       })
-      const assertion = expect(promise).rejects.toThrow(/timed out/i)
+      const assertion = expect(promise).resolves.toMatchObject({
+        markdown: MARKDOWN,
+      })
 
-      await jest.advanceTimersByTimeAsync(MINERU_EVENT_POLL_TIMEOUT_MS + 1000)
+      await jest.advanceTimersByTimeAsync(FORMER_REQUEST_TIMEOUT_MS + 1000)
+      resolveStart?.(responseWithText(JSON.stringify({ event_id: 'evt-slow' })))
+      jest.useRealTimers()
       await assertion
     } finally {
       jest.useRealTimers()

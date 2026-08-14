@@ -33,9 +33,6 @@ export type MinerURawConversionResult = {
   images: MinerURawImage[]
 }
 
-/** Poll timeout for the gradio SSE event stream (single `requestUrl` call). */
-export const MINERU_EVENT_POLL_TIMEOUT_MS = 120_000
-
 export const MINERU_API_NAME = '/convert_to_markdown_stream'
 
 /**
@@ -130,20 +127,6 @@ const withAbort = <T>(
         reject(error instanceof Error ? error : new Error(String(error)))
       },
     )
-  })
-}
-
-const withTimeout = <T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  message: string,
-): Promise<T> => {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), timeoutMs)
-  })
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer)
   })
 }
 
@@ -366,22 +349,16 @@ async function runMinerUConversion(input: {
   )
 
   // ① POST the PDF: { event_id }
-  // POST 同样必须带超时：服务器假死/不响应时不能无限挂起（此前只有 SSE GET
-  // 有超时，挂起的 POST 会让调用方永久 pending）。
-  const startResponse = await withTimeout(
-    withAbort(
-      requestUrl({
-        url: `${normalizedBaseUrl}/gradio_api/call/${MINERU_API_NAME.replace(/^\//, '')}`,
-        method: 'POST',
-        contentType: `multipart/form-data; boundary=${boundary}`,
-        headers: { Accept: 'application/json', ...authHeaders(apiKey) },
-        body: toArrayBuffer(multipart),
-        throw: true,
-      }),
-      signal,
-    ),
-    MINERU_EVENT_POLL_TIMEOUT_MS,
-    `MinerU job start timed out after ${MINERU_EVENT_POLL_TIMEOUT_MS / 1000}s`,
+  const startResponse = await withAbort(
+    requestUrl({
+      url: `${normalizedBaseUrl}/gradio_api/call/${MINERU_API_NAME.replace(/^\//, '')}`,
+      method: 'POST',
+      contentType: `multipart/form-data; boundary=${boundary}`,
+      headers: { Accept: 'application/json', ...authHeaders(apiKey) },
+      body: toArrayBuffer(multipart),
+      throw: true,
+    }),
+    signal,
   )
   throwIfAborted(signal)
 
@@ -398,18 +375,14 @@ async function runMinerUConversion(input: {
   }
 
   // ② Poll the SSE event stream until complete/error (single long-running GET).
-  const eventResponse = await withTimeout(
-    withAbort(
-      requestUrl({
-        url: `${normalizedBaseUrl}/gradio_api/call/${eventId}`,
-        method: 'GET',
-        headers: { Accept: 'text/event-stream', ...authHeaders(apiKey) },
-        throw: true,
-      }),
-      signal,
-    ),
-    MINERU_EVENT_POLL_TIMEOUT_MS,
-    `MinerU conversion timed out after ${MINERU_EVENT_POLL_TIMEOUT_MS / 1000}s`,
+  const eventResponse = await withAbort(
+    requestUrl({
+      url: `${normalizedBaseUrl}/gradio_api/call/${eventId}`,
+      method: 'GET',
+      headers: { Accept: 'text/event-stream', ...authHeaders(apiKey) },
+      throw: true,
+    }),
+    signal,
   )
   throwIfAborted(signal)
 
