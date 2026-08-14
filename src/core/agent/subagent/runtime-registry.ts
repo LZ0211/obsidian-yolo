@@ -1,5 +1,4 @@
 import type { McpManager } from '../../mcp/mcpManager'
-import type { WorkspaceAccessPolicy } from '../../../types/assistant.types'
 import type { NativeAgentRuntime } from '../native-runtime'
 
 /**
@@ -27,9 +26,8 @@ export type SubagentRuntimeEntry = {
    * The McpManager the subagent runs against (forwarded from the parent
    * context). The service uses this for `callTool` / `allowToolForConversation`
    * during approval handling.
-   */
+  */
   mcpManager: McpManager
-  workspaceAccessPolicy?: WorkspaceAccessPolicy
   abortSignal?: AbortSignal
   /** Parent conversation id — used as the approval scope for `mcpManager`. */
   parentConversationId: string

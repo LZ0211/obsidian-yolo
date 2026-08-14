@@ -2240,9 +2240,7 @@ export class AgentService {
           conversationMessages: entry.runtime.getMessages(),
           roundId: located.toolMessage.id,
           signal: entry.abortSignal,
-          workspaceAccessPolicy:
-            request.metadata?.workspaceAccessPolicy ??
-            entry.workspaceAccessPolicy,
+          workspaceAccessPolicy: request.metadata?.workspaceAccessPolicy,
           // This call bypasses `AgentToolGateway` (approval already
           // happened), so it can't read the gateway's live options — read
           // the persisted snapshot instead. See

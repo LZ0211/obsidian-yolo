@@ -2893,7 +2893,6 @@ describe('AgentService subagent approval routing', () => {
     }
     const { toolCallId, mcpManager } = registerEntry({
       requestMetadata: { workspaceAccessPolicy },
-      workspaceAccessPolicy,
       abortSignal: abortController.signal,
     })
     const service = new AgentService()
@@ -2908,6 +2907,27 @@ describe('AgentService subagent approval routing', () => {
         workspaceAccessPolicy,
         signal: abortController.signal,
       }),
+    )
+  })
+
+  it('does not fall back to a mutable registry workspace policy', async () => {
+    const workspaceAccessPolicy: WorkspaceAccessPolicy = {
+      enabled: true,
+      workspaceRoot: 'Stale',
+      readExtraIncludes: [],
+      readExcludes: [],
+      writeExcludes: [],
+    }
+    const { toolCallId, mcpManager } = registerEntry({ workspaceAccessPolicy })
+    const service = new AgentService()
+
+    await service.approveToolCall({
+      conversationId: 'irrelevant-parent-conv',
+      toolCallId,
+    })
+
+    expect(mcpManager.callTool).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceAccessPolicy: undefined }),
     )
   })
 
