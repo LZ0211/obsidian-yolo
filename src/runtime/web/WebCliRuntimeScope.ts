@@ -334,7 +334,7 @@ class WebCliConversationController extends CliConversationController {
   }
 
   override async listSkills(): Promise<readonly CliRuntimeSkill[]> {
-    throw new Error('listSkills is unsupported on the web CLI runtime')
+    return []
   }
 
   override stageTurn(userMessage: ChatUserMessage): CliStagedConversationTurn {

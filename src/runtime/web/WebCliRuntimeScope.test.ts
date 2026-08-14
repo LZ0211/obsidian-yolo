@@ -372,11 +372,12 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
       ]),
     )
 
-    // 无远端端点支撑的命令显式抛错，不再静默 no-op。
+    // Mutating commands without a remote endpoint fail explicitly. Optional
+    // discovery returns an empty result so automatic loading stays quiet.
     await expect(controller.rewriteTurn()).rejects.toThrow(/unsupported/)
     await expect(controller.rollbackToTurn()).rejects.toThrow(/unsupported/)
     await expect(controller.compact()).rejects.toThrow(/unsupported/)
-    await expect(controller.listSkills()).rejects.toThrow(/unsupported/)
+    await expect(controller.listSkills()).resolves.toEqual([])
   })
 
   it('uses default no-op semantics for unavailable MCP status and reload operations', async () => {
