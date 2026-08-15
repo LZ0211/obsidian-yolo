@@ -148,15 +148,25 @@ import {
   MAX_BATCH_READ_FILES,
   MAX_READ_MAX_LINES,
   OFFICE_READ_MAX_BYTES,
-  buildFsReadModalitySchema,
   getFsReadOperation,
+  buildFsReadModalitySchema,
   getOfficeDocumentKindFromExtension,
   isBrowserReadPath,
   normalizeFsReadPath,
   parseBrowserReadPageId,
   sliceLinesForFsReadOperation,
 } from '../tools/fs_read/schema-helpers'
+import {
+  LOAD_TOOL_SCHEMAS_TOOL_NAME as LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME,
+  getLoadToolSchemasTool,
+} from '../tools/internal/load_tool_schemas/definition'
 import { invokeMemoryTool } from '../tools/memory-tool-support'
+import {
+  type BuiltinToolName,
+  assertNoDuplicates,
+  getToolDefinition,
+  listBuiltinTools,
+} from '../tools/registry'
 import { enforceBuiltinToolSecurityBoundary } from '../tools/security-boundary'
 import {
   MAX_FILE_SIZE_BYTES,
@@ -172,6 +182,7 @@ import {
 import type {
   LocalToolCallResult,
   LocalToolCallResultMetadata,
+  ToolCatalogContext,
 } from '../tools/types'
 import {
   WEB_SCRAPE_TOOL_NAME,
@@ -195,7 +206,6 @@ import {
   ASK_USER_QUESTION_TOOL_NAME,
   BASH_TOOL_NAME,
   JS_SANDBOX_TOOL_NAME,
-  LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME,
   LOCAL_FILE_TOOL_SERVER,
   LOCAL_FILE_TOOL_SHORT_NAMES,
   LOCAL_FS_SPLIT_ACTION_TOOL_NAMES,
@@ -262,33 +272,60 @@ const LOCAL_FS_WRITE_TOOL_NAMES = new Set<string>([
 ])
 
 /**
- * Standalone tool definition for `load_tool_schemas`. Used by the runtime to
- * inject the loader on demand (when `enableToolDisclosure=true` AND the
- * filtered tool set contains any `on_demand` tool). Not surfaced through
- * `getLocalFileTools()` to keep it out of the user-facing tool list.
+ * Re-exported for external callers (`core/agent/tool-selection.ts`,
+ * `core/agent/tool-preferences.ts`, `core/agent/tool-gateway.ts`) — the
+ * implementation moved to `core/tools/internal/load_tool_schemas/definition.ts`
+ * (D6b: it is a protocol-internal tool, not a `CAPABILITIES` member, so it
+ * lives in `internal/` rather than getting a `defineTool` entry — see that
+ * module's own doc comment). This is a plain re-export, not a registry
+ * lookup (master.md §3.5: compat exports may only forward a per-tool
+ * module's own constant, never round-trip through the registry).
  */
-export function getLoadToolSchemasTool(): McpTool {
-  return {
-    name: LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME,
-    description:
-      'Load full schemas for all on-demand tools belonging to the given MCP servers, making them callable in the next turn. Pass MCP server names (the prefix before "__" in any stub tool name) — batch multiple servers when needed.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        servers: {
-          type: 'array',
-          items: { type: 'string' },
-          minItems: 1,
-          description:
-            'MCP server names whose on-demand tools should be loaded (e.g. "context7", "deepwiki").',
-        },
-      },
-      required: ['servers'],
-    },
-  }
+export { LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME, getLoadToolSchemasTool }
+/**
+ * Model-facing catalog order, preserved verbatim from the pre-D6b literal
+ * array this function used to return directly (phase2-migration.md D6b —
+ * "顺序与内容逐条不变": the model's tool list must not silently reorder).
+ * Every registered `BuiltinToolName` must appear here exactly once; the
+ * module-load assertions below turn "forgot to add the new tool here" into
+ * an immediate throw instead of a silently incomplete catalog.
+ */
+const LOCAL_FILE_TOOL_CATALOG_ORDER: readonly BuiltinToolName[] = [
+  'context_prune_tool_results',
+  'context_compact',
+  'fs_read',
+  'fs_edit',
+  'fs_write',
+  BASH_TOOL_NAME,
+  'memory_add',
+  'memory_update',
+  'memory_delete',
+  WEB_SEARCH_TOOL_NAME,
+  WEB_SCRAPE_TOOL_NAME,
+  JS_SANDBOX_TOOL_NAME,
+  TERMINAL_COMMAND_TOOL_NAME,
+  'delegate_subagent',
+  'ask_user_question',
+  'todo_write',
+]
+
+assertNoDuplicates(
+  LOCAL_FILE_TOOL_CATALOG_ORDER,
+  'local file tool catalog order entry',
+)
+if (
+  LOCAL_FILE_TOOL_CATALOG_ORDER.length !== listBuiltinTools().length ||
+  listBuiltinTools().some(
+    (tool) =>
+      !(LOCAL_FILE_TOOL_CATALOG_ORDER as readonly string[]).includes(tool.name),
+  )
+) {
+  throw new Error(
+    'getLocalFileTools() catalog order is out of sync with the built-in tool registry (core/tools/registry.ts) — add the missing tool name to LOCAL_FILE_TOOL_CATALOG_ORDER.',
+  )
 }
 
-export function getLocalFileTools(options?: {
+function getLegacyLocalFileTools(options?: {
   vaultBasePath?: string
   chatModelModalities?: ChatModelModality[]
 }): McpTool[] {
@@ -929,6 +966,55 @@ export function getLocalFileTools(options?: {
     },
     ...getInjectedBridgeTools(),
   ]
+}
+
+export function getLocalFileTools(options?: {
+  vaultBasePath?: string
+  chatModelModalities?: ChatModelModality[]
+}): McpTool[] {
+  const catalogCtx: ToolCatalogContext = {
+    vaultBasePath: options?.vaultBasePath,
+    chatModelModalities: options?.chatModelModalities,
+  }
+  const builtinTools = LOCAL_FILE_TOOL_CATALOG_ORDER.filter((name) => {
+    // `bash`'s catalog-inclusion is gated by the `bash-engine` runtime
+    // component being enabled — the one tool whose presence here was ever
+    // conditional (see the pre-D6b literal array this replaced). That
+    // judgment now lives on the tool's own `isAvailable`
+    // (`core/tools/bash/definition.ts`) rather than a raw
+    // `isRuntimeComponentEnabled` call inline here, but this loop still has
+    // to consult it explicitly per-tool rather than applying `isAvailable`
+    // uniformly to every entry: `ToolCatalogContext` carries no `settings`
+    // snapshot, so a uniform pass would silently drop `web_search` (whose
+    // `isAvailable` needs `settings`) from every catalog built here —
+    // including the settings-page call sites (`AgentSection.tsx`,
+    // `AgentToolsModal.tsx`, `agentToolPersistence.ts`) that need the full,
+    // unfiltered list to render toggles regardless of runtime readiness
+    // (master.md decision 18). `web_search` / `terminal_command` /
+    // `js_eval` stay unconditionally listed here, exactly as before;
+    // environment-availability filtering for *them* happens downstream, in
+    // `McpManager.isLocalToolEnabled` (`core/mcp/mcpManager.ts`), which
+    // already calls every registered tool's `isAvailable` generically once
+    // real `settings` are available.
+    if (name !== BASH_TOOL_NAME) return true
+    const definition = getToolDefinition(name)
+    return definition?.isAvailable ? definition.isAvailable({}) : true
+  }).map((name) => {
+    const definition = getToolDefinition(name)
+    if (!definition) {
+      throw new Error(`Unknown built-in tool "${name}" in catalog order`)
+    }
+    return { name, ...definition.getMcpTool(catalogCtx) }
+  })
+  const builtinToolNames = new Set<string>(
+    builtinTools.map((tool) => tool.name),
+  )
+  const localExtensions = getLegacyLocalFileTools(options).filter(
+    (tool) =>
+      !builtinToolNames.has(tool.name) &&
+      tool.name !== LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME,
+  )
+  return [...builtinTools, ...localExtensions]
 }
 
 const getOptionalBooleanArg = (
