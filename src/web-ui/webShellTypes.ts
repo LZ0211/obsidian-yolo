@@ -27,9 +27,6 @@ export type ShellClient = {
     token: string,
   ) => Promise<{ session: { agentId: string }; allowedAgents: AllowedAgent[] }>
   logout: () => Promise<void>
-  switchAgent: (
-    agentId: string,
-  ) => Promise<{ session: { agentId: string }; allowedAgents: AllowedAgent[] }>
   listVaultFolder: WebApiClient['listVaultFolder']
   listVaultIndex: WebApiClient['listVaultIndex']
   searchVault: WebApiClient['searchVault']

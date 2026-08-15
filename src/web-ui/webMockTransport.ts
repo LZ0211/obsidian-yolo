@@ -430,13 +430,6 @@ export function createMockTransport(options?: {
     async logout() {
       authenticated = false
     },
-    async switchAgent(agentId: string) {
-      activeAgentId = agentId
-      return {
-        session: { agentId: activeAgentId },
-        allowedAgents: MOCK_ALLOWED_AGENTS,
-      }
-    },
     async listVaultFolder(path: string) {
       const normalized = path === '/' ? '' : path
       // Mirror Obsidian's `adapter.list` semantics: a listing returns all

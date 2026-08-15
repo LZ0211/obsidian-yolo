@@ -47,10 +47,7 @@ export type ObsidianWebShell = {
   centerTabsContainerEl: HTMLElement
   centerNewTabButtonEl: HTMLElement
   centerTabListButtonEl: HTMLElement
-  centerTopBarActionsEl: HTMLElement
   centerTopBarTitleEl: HTMLElement
-  /** @deprecated Temporary compatibility field. Remove in Task 7 after agent controls migrate. */
-  centerViewActionsEl: HTMLElement
   setLeftVisible: (visible: boolean) => void
   setRightVisible: (visible: boolean) => void
   /** Non-null only when Platform.isMobile — hosts file tree / preview /
@@ -1397,8 +1394,8 @@ export function createObsidianWebShell(
   const rightRibbon = createWorkspaceRibbonLikeObsidian(workspaceEl, 'right')
   rightRibbon.ribbonEl.addClass('is-hidden')
 
-  // Visible center topbar anchors live inside the (always-visible) center tab
-  // header container so agent controls have a stable, on-screen mount point
+  // Visible center topbar anchor lives inside the (always-visible) center tab
+  // header container so the agent title has a stable, on-screen mount point
   // even though the center view-header itself is hidden (yolo-chat hideHeader).
   const centerTopBarMetaEl = createDiv(
     rootSplit.tabHeaderContainerEl,
@@ -1407,10 +1404,6 @@ export function createObsidianWebShell(
   const centerTopBarTitleEl = createDiv(
     centerTopBarMetaEl,
     'yolo-web-center-topbar-title',
-  )
-  const centerTopBarActionsEl = createDiv(
-    centerTopBarMetaEl,
-    'yolo-web-center-topbar-actions',
   )
 
   const leftRibbonFilesButton = createRibbonActionButtonLikeObsidian(
@@ -1687,12 +1680,7 @@ export function createObsidianWebShell(
     centerTabsContainerEl: rootSplit.tabsContainerEl,
     centerNewTabButtonEl: rootSplit.newTabButtonEl,
     centerTabListButtonEl: rootSplit.tabListButtonEl,
-    centerTopBarActionsEl,
     centerTopBarTitleEl,
-    // Deprecated alias kept for Tasks 3-7 caller compatibility. Points at the
-    // visible center topbar actions (inside .workspace-tab-header-container)
-    // rather than the hidden center view-header actions. Remove in Task 7.
-    centerViewActionsEl: centerTopBarActionsEl,
     setLeftVisible,
     setRightVisible,
     mobileDrawer,

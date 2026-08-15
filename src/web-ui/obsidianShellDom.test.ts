@@ -2,7 +2,6 @@
  * @jest-environment jsdom
  */
 /* eslint-disable @microsoft/sdl/no-inner-html -- 测试 DOM fixture 直接赋值 innerHTML 是 jest+jsdom 标准做法 */
-/* eslint-disable @typescript-eslint/no-deprecated -- 断言 centerViewActionsEl 兼容字段（Task 7 迁移前该字段就是被测对象） */
 import { Platform } from '../runtime/web/obsidianCompat'
 
 import { createObsidianWebShell } from './obsidianShellDom'
@@ -154,28 +153,6 @@ describe('createObsidianWebShell', () => {
     }
   })
 
-  it('keeps center view actions attached to a visible tab header anchor', () => {
-    const root = document.createElement('div')
-    document.body.append(root)
-
-    const shell = createObsidianWebShell(root)
-
-    expect(shell.centerViewActionsEl.isConnected).toBe(true)
-    const visibleViewHeader =
-      shell.centerViewActionsEl.closest<HTMLElement>('.view-header')
-    expect({
-      attachedToTabHeader:
-        shell.centerViewActionsEl.closest('.workspace-tab-header-container') !=
-        null,
-      hiddenInViewHeader: visibleViewHeader?.style.display === 'none',
-    }).toEqual({
-      attachedToTabHeader: true,
-      hiddenInViewHeader: false,
-    })
-
-    shell.destroy()
-  })
-
   it('removes shell-owned body classes and css variables on destroy', () => {
     const root = document.createElement('div')
     document.body.append(root)
@@ -220,7 +197,7 @@ describe('createObsidianWebShell', () => {
     })
 
     expect(shell.centerTabsContainerEl.isConnected).toBe(true)
-    expect(shell.centerTopBarActionsEl.isConnected).toBe(true)
+    expect(shell.centerTopBarTitleEl.isConnected).toBe(true)
 
     managerB.destroy()
     shell.destroy()

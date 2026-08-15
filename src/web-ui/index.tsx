@@ -16,7 +16,6 @@ import { renderLightweightModalView } from './webAuthModal'
 import { createChatTabManager } from './webChatTabs'
 import { renderHistoryPane } from './webHistoryPane'
 import { createMockTransport } from './webMockTransport'
-import { createWebAgentSelector } from './webAgentSelector'
 import type {
   HistoryClient,
   LeftPaneMode,
@@ -82,7 +81,7 @@ function buildHistoryClient(runtime: YoloRuntime): HistoryClient {
 //
 // Rebuilt across agent switch:
 // - tabManager (and the runtime-backed chat React trees it owns)
-// - center topbar controls (session label, agent select, logout button)
+// - center topbar title
 // - nothing else unless a shell-owned invariant actually changed
 type ReadyController = {
   shell: ObsidianWebShell
@@ -129,7 +128,6 @@ function App(): void {
   const rootEl = document.getElementById('app-root')!
   let currentShellDisposer: (() => void) | null = null
   let currentReadyController: ReadyController | null = null
-  let agentSwitchRequestId = 0
   rootEl.empty()
 
   const searchParams = new URLSearchParams(window.location.search)
@@ -664,7 +662,6 @@ function App(): void {
 
     function renderCenterTopBar(next: ReadyShellState): void {
       shell.centerTopBarTitleEl.empty()
-      shell.centerTopBarActionsEl.empty()
 
       const activeAgent = next.allowedAgents.find(
         (agent) => agent.id === next.agentId,
@@ -673,22 +670,6 @@ function App(): void {
       title.className = 'yolo-web-center-topbar-title-text'
       title.textContent = activeAgent?.name ?? next.agentId
       shell.centerTopBarTitleEl.append(title)
-
-      const selector = createWebAgentSelector({
-        agents: next.allowedAgents,
-        activeAgentId: next.agentId,
-        onChange: async (agentId, changedSelector) => {
-          changedSelector.disabled = true
-          try {
-            await handleSwitchAgent(agentId, changedSelector)
-          } finally {
-            if (changedSelector.isConnected) {
-              changedSelector.disabled = false
-            }
-          }
-        },
-      })
-      shell.centerTopBarActionsEl.append(selector)
     }
 
     function renderLeftRibbonLogout(): void {
@@ -808,51 +789,6 @@ function App(): void {
 
     renderLeftPane()
     shell.setRightVisible(false)
-  }
-
-  async function handleSwitchAgent(
-    agentId: string,
-    selectEl: HTMLSelectElement,
-  ): Promise<void> {
-    if (!agentId) return
-    const readyState = state as ReadyShellState
-    if (agentId === readyState.agentId) return
-
-    const requestId = ++agentSwitchRequestId
-    const previousAgentId = readyState.agentId
-    try {
-      const auth = await readyState.client.switchAgent(agentId)
-      if (requestId !== agentSwitchRequestId) return
-      const bootstrap = await readyState.client.getBootstrap()
-      if (requestId !== agentSwitchRequestId) return
-      const mockShell = readyState.mock || isMockBootstrap(bootstrap)
-      const runtime = await createRuntime(
-        readyState.client as WebApiClient,
-        bootstrap,
-      )
-      if (requestId !== agentSwitchRequestId) return
-
-      setState({
-        status: 'ready',
-        client: readyState.client,
-        historyClient: buildHistoryClient(runtime),
-        runtime,
-        allowedAgents: auth.allowedAgents ?? readyState.allowedAgents,
-        agentId: auth.session.agentId,
-        mock: mockShell,
-        workspaceRoot: resolveWorkspaceRoot(bootstrap, mockShell),
-      })
-    } catch (err) {
-      // A newer switch request superseded this one: do not touch the select
-      // (the newer request owns the current UI state) and do not surface a
-      // stale error.
-      if (requestId !== agentSwitchRequestId) return
-      selectEl.value = previousAgentId
-      const msg = err instanceof Error ? err.message : '切换智能体失败'
-      window.dispatchEvent(
-        new CustomEvent('yolo:web-show-error', { detail: { message: msg } }),
-      )
-    }
   }
 
   async function handleLogout(): Promise<void> {

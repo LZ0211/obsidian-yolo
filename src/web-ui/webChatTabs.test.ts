@@ -334,7 +334,7 @@ describe('createChatTabManager', () => {
     await new Promise((r) => setTimeout(r, 0))
 
     expect(shell.centerTabsContainerEl.isConnected).toBe(true)
-    expect(shell.centerTopBarActionsEl.isConnected).toBe(true)
+    expect(shell.centerTopBarTitleEl.isConnected).toBe(true)
 
     managerB.destroy()
     shell.destroy()
@@ -366,16 +366,18 @@ describe('createChatTabManager', () => {
     // destroy 的关闭语义 = abort 在飞的流 fetch。
     const streamAbortSignals: AbortSignal[] = []
     const originalFetch = globalThis.fetch
-    globalThis.fetch = jest.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-      if (String(url).includes('/stream')) {
-        if (init?.signal) streamAbortSignals.push(init.signal)
-        const body = new ReadableStream<Uint8Array>({
-          start() {},
-        })
-        return { ok: true, body } as unknown as Response
-      }
-      return { ok: true, json: async () => ({}) } as unknown as Response
-    }) as unknown as typeof fetch
+    globalThis.fetch = jest.fn(
+      async (url: RequestInfo | URL, init?: RequestInit) => {
+        if (String(url).includes('/stream')) {
+          if (init?.signal) streamAbortSignals.push(init.signal)
+          const body = new ReadableStream<Uint8Array>({
+            start() {},
+          })
+          return { ok: true, body } as unknown as Response
+        }
+        return { ok: true, json: async () => ({}) } as unknown as Response
+      },
+    ) as unknown as typeof fetch
 
     scope?.selectConversationRuntime('codex')
     await new Promise((r) => setTimeout(r, 0))
