@@ -153,4 +153,31 @@ describe('ensureDefaultAssistantInSettings', () => {
     const fixedResult = ensureDefaultAssistantInSettings(fixedSettings)
     expect(fixedResult.assistants[0]?.modelId).toBe('model-a')
   })
+
+  it('preserves a runnable workspace agent as the current assistant', () => {
+    const settings = {
+      ...createBaseSettings(),
+      assistants: [],
+      workspaceAgents: [
+        {
+          id: 'workspace-1',
+          name: 'Workspace 1',
+          templateId: DEFAULT_ASSISTANT_ID,
+          workspacePolicy: {
+            workspaceRoot: 'Projects/One',
+            readAllowlist: [],
+            readDenylist: [],
+            writeDenylist: [],
+          },
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      currentAssistantId: 'workspace-1',
+    }
+
+    const result = ensureDefaultAssistantInSettings(settings)
+
+    expect(result.currentAssistantId).toBe('workspace-1')
+  })
 })

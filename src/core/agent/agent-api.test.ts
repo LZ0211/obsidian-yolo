@@ -403,6 +403,75 @@ describe('agent api helpers', () => {
     )
   })
 
+  it('resolves workspace agents for API runs', async () => {
+    const result = await resolveAgentApiRunInput({
+      request: {
+        prompt: 'Use the workspace agent',
+        assistantId: 'workspace-1',
+      },
+      conversationId: 'conversation-workspace-agent',
+      abortSignal: new AbortController().signal,
+      app: {
+        vault: {
+          getFileByPath: jest.fn(() => null),
+          getFolderByPath: jest.fn(() => null),
+        },
+      } as unknown as import('obsidian').App,
+      settings: {
+        currentAssistantId: 'assistant-1',
+        chatModelId: 'mock-model',
+        assistants: [
+          {
+            id: 'assistant-1',
+            modelId: 'mock-model',
+            systemPrompt: 'template prompt',
+            enabledToolNames: [],
+          },
+        ],
+        workspaceAgents: [
+          {
+            id: 'workspace-1',
+            name: 'Workspace 1',
+            templateId: 'assistant-1',
+            workspacePolicy: {
+              workspaceRoot: 'Projects/One',
+              readAllowlist: [],
+              readDenylist: [],
+              writeDenylist: [],
+            },
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        providers: [{ id: 'mock-provider', apiType: 'openai' }],
+        mcp: { enableToolDisclosure: false },
+        continuationOptions: {
+          primaryRequestTimeoutMs: 30000,
+          streamFallbackRecoveryEnabled: true,
+        },
+        skills: {},
+      } as any,
+      agentService: {
+        getSystemPromptSnapshotStore: jest.fn(() => null),
+        getPromptSourceWatcher: jest.fn(() => ({
+          getRevision: jest.fn(() => 1),
+          setWatchedPaths: jest.fn(),
+        })),
+      } as any,
+      mcpManager: {} as any,
+    })
+
+    expect(result.input.assistantId).toBe('workspace-1')
+    expect(resolveChatModeRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        assistant: expect.objectContaining({
+          id: 'workspace-1',
+          systemPrompt: 'template prompt',
+        }),
+      }),
+    )
+  })
+
   it('converts state snapshots into text deltas and completion events', () => {
     const previous = {
       assistantTextById: new Map<string, string>(),

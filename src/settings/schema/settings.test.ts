@@ -7,7 +7,7 @@ import {
   DEFAULT_TAB_COMPLETION_SYSTEM_PROMPT,
   DEFAULT_TAB_COMPLETION_TRIGGERS,
 } from './setting.types'
-import { parseYoloSettings } from './settings'
+import { normalizeYoloSettingsReferences, parseYoloSettings } from './settings'
 
 describe('parseYoloSettings', () => {
   it('should return default values for empty input', () => {
@@ -533,6 +533,83 @@ describe('parseYoloSettings', () => {
     ])
     expect(result.currentAssistantId).toBeUndefined()
     expect(result.quickAskAssistantId).toBeUndefined()
+  })
+
+  it('preserves runnable workspace agent references during normalization', () => {
+    const result = parseYoloSettings({
+      version: SETTINGS_SCHEMA_VERSION,
+      assistants: [{ id: 'assistant-1', name: 'Assistant 1' }],
+      workspaceAgents: [
+        {
+          id: 'workspace-1',
+          name: 'Workspace 1',
+          templateId: 'assistant-1',
+          workspacePolicy: {
+            workspaceRoot: 'Projects/One',
+            readAllowlist: [],
+            readDenylist: [],
+            writeDenylist: [],
+          },
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        {
+          id: 'orphaned',
+          name: 'Orphaned',
+          templateId: 'missing-template',
+          workspacePolicy: {
+            workspaceRoot: 'Projects/Orphaned',
+            readAllowlist: [],
+            readDenylist: [],
+            writeDenylist: [],
+          },
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      currentAssistantId: 'workspace-1',
+      quickAskAssistantId: 'workspace-1',
+      currentWorkspaceAgentId: 'workspace-1',
+    })
+
+    expect(result.workspaceAgents.map((agent) => agent.id)).toEqual([
+      'workspace-1',
+    ])
+    expect(result.currentAssistantId).toBe('workspace-1')
+    expect(result.quickAskAssistantId).toBe('workspace-1')
+    expect(result.currentWorkspaceAgentId).toBe('workspace-1')
+  })
+
+  it('clears workspace agent references that are disabled or orphaned', () => {
+    const settings = parseYoloSettings({
+      version: SETTINGS_SCHEMA_VERSION,
+      assistants: [{ id: 'assistant-1', name: 'Assistant 1' }],
+      workspaceAgents: [
+        {
+          id: 'disabled-agent',
+          name: 'Disabled',
+          templateId: 'assistant-1',
+          disabled: true,
+          workspacePolicy: {
+            workspaceRoot: 'Projects/Disabled',
+            readAllowlist: [],
+            readDenylist: [],
+            writeDenylist: [],
+          },
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      currentAssistantId: 'disabled-agent',
+      quickAskAssistantId: 'disabled-agent',
+      currentWorkspaceAgentId: 'disabled-agent',
+    })
+
+    const result = normalizeYoloSettingsReferences(settings)
+
+    expect(result.currentAssistantId).toBeUndefined()
+    expect(result.quickAskAssistantId).toBeUndefined()
+    expect(result.currentWorkspaceAgentId).toBeUndefined()
   })
 
   it('preserves legacy learning settings as an opaque handoff payload', () => {

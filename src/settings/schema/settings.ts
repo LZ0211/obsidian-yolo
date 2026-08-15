@@ -59,6 +59,15 @@ export function normalizeYoloSettingsReferences(
     }
   })
   const validAssistantIds = new Set(assistants.map((assistant) => assistant.id))
+  const workspaceAgents = settings.workspaceAgents.filter((agent) =>
+    validAssistantIds.has(agent.templateId),
+  )
+  const validAgentIds = new Set([
+    ...validAssistantIds,
+    ...workspaceAgents
+      .filter((agent) => !agent.disabled)
+      .map((agent) => agent.id),
+  ])
   const normalizedChatModelId =
     normalizeModelReference(
       settings.chatModelId,
@@ -96,15 +105,24 @@ export function normalizeYoloSettingsReferences(
       ),
     },
     assistants,
+    workspaceAgents,
     currentAssistantId:
       settings.currentAssistantId &&
-      validAssistantIds.has(settings.currentAssistantId)
+      validAgentIds.has(settings.currentAssistantId)
         ? settings.currentAssistantId
         : undefined,
     quickAskAssistantId:
       settings.quickAskAssistantId &&
-      validAssistantIds.has(settings.quickAskAssistantId)
+      validAgentIds.has(settings.quickAskAssistantId)
         ? settings.quickAskAssistantId
+        : undefined,
+    currentWorkspaceAgentId:
+      settings.currentWorkspaceAgentId &&
+      workspaceAgents.some(
+        (agent) =>
+          !agent.disabled && agent.id === settings.currentWorkspaceAgentId,
+      )
+        ? settings.currentWorkspaceAgentId
         : undefined,
   }
 

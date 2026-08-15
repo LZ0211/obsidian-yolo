@@ -25,6 +25,7 @@ import type { McpManager } from '../mcp/mcpManager'
 import { getToolName } from '../mcp/tool-name-utils'
 import { listLiteSkillEntries } from '../skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../skills/skillPolicy'
+import { findUnifiedAgentById } from './workspaceAgentResolver'
 
 import { resolveAgentApiContext } from './agent-api-context'
 import { DEFAULT_ASSISTANT_ID } from './default-assistant'
@@ -363,9 +364,7 @@ export async function resolveAgentApiRunInput({
 }): Promise<AgentApiRunInput> {
   const assistantId =
     request.assistantId ?? settings.currentAssistantId ?? DEFAULT_ASSISTANT_ID
-  const assistant =
-    settings.assistants.find((candidate) => candidate.id === assistantId) ??
-    null
+  const assistant = findUnifiedAgentById(settings, assistantId) ?? null
   const requestedModelId =
     request.modelId || assistant?.modelId || settings.chatModelId
   const resolvedClient = getChatModelClient({

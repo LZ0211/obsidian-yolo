@@ -1839,6 +1839,42 @@ describe('RequestContextBuilder project instructions injection', () => {
     expect(projectIdx).toBeGreaterThan(0)
   })
 
+  it('resolves project instructions from a workspace agent template', async () => {
+    const app = makeApp(new Map([['AGENTS.md', 'workspace rule']]))
+    const settings = {
+      ...baseSettings,
+      currentAssistantId: 'workspace-1',
+      assistants: [
+        {
+          id: 'template-1',
+          name: 'Template',
+          systemPrompt: '',
+          enableProjectInstructions: true,
+        },
+      ],
+      workspaceAgents: [
+        {
+          id: 'workspace-1',
+          name: 'Workspace 1',
+          templateId: 'template-1',
+          workspacePolicy: {
+            workspaceRoot: 'Projects/One',
+            readAllowlist: [],
+            readDenylist: [],
+            writeDenylist: [],
+          },
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+    } as unknown as YoloSettings
+
+    const content = await buildSystemContent(app, settings)
+
+    expect(content).toContain('## Project instructions: AGENTS.md')
+    expect(content).toContain('workspace rule')
+  })
+
   it('omits project instructions when current assistant disables it explicitly', async () => {
     const app = makeApp(new Map([['CLAUDE.md', 'rule from claude']]))
     const settings = {

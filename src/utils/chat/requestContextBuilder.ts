@@ -8,6 +8,7 @@ import {
   buildCompactionResumeMessage,
   buildCompactionSummaryMessage,
 } from '../../core/agent/compaction'
+import { findUnifiedAgentById } from '../../core/agent/workspaceAgentResolver'
 import { listDelegatableAssistantRoles } from '../../core/agent/subagent/delegatable-assistant'
 import type {
   SystemPromptSnapshot,
@@ -609,8 +610,7 @@ export class RequestContextBuilder {
   private getCurrentAssistant() {
     const currentAssistantId = this.settings.currentAssistantId
     if (!currentAssistantId) return null
-    const assistants = this.settings.assistants ?? []
-    return assistants.find((a) => a.id === currentAssistantId) ?? null
+    return findUnifiedAgentById(this.settings, currentAssistantId) ?? null
   }
 
   public async generateRequestMessages(args: {

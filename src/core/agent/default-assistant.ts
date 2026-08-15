@@ -122,15 +122,25 @@ export const ensureDefaultAssistantInSettings = (
     normalizedDefault,
     ...assistants.filter((assistant) => !isDefaultAssistantId(assistant.id)),
   ]
+  const validTemplateIds = new Set(nextAssistants.map((assistant) => assistant.id))
+  const validWorkspaceAgentIds = new Set(
+    (settings.workspaceAgents ?? [])
+      .filter(
+        (agent) => !agent.disabled && validTemplateIds.has(agent.templateId),
+      )
+      .map((agent) => agent.id),
+  )
+  const validAgentIds = new Set([
+    ...validTemplateIds,
+    ...validWorkspaceAgentIds,
+  ])
 
   return {
     ...settings,
     assistants: nextAssistants,
     currentAssistantId:
       settings.currentAssistantId &&
-      nextAssistants.some(
-        (assistant) => assistant.id === settings.currentAssistantId,
-      )
+      validAgentIds.has(settings.currentAssistantId)
         ? settings.currentAssistantId
         : DEFAULT_ASSISTANT_ID,
   }
