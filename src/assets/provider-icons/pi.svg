@@ -1,1 +1,23 @@
-<svg fill="currentColor" height="1em" style="flex:none;line-height:1" viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg"><title>pi</title><path d="M3 6.5a1.4 1.4 0 011.4-1.4h15.2a1.4 1.4 0 010 2.8h-1.9v10.9a1.4 1.4 0 01-2.8 0V7.9h-4.9v8.2a4.9 4.9 0 01-4.9 4.9 1.4 1.4 0 010-2.8 2.1 2.1 0 002.1-2.1V7.9H4.4A1.4 1.4 0 013 6.5z"></path></svg>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800">
+  <style>
+    .logo-mark { fill: #000; }
+  </style>
+  <path class="logo-mark" fill-rule="evenodd" d="
+    M165.29 165.29
+    H517.36
+    V400
+    H400
+    V517.36
+    H282.65
+    V634.72
+    H165.29
+    Z
+    M282.65 282.65
+    V400
+    H400
+    V282.65
+    Z
+  "/>
+  <path class="logo-mark" d="M517.36 400 H634.72 V634.72 H517.36 Z"/>
+</svg>

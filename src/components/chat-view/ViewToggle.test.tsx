@@ -4,6 +4,14 @@ jest.mock('../../assets/provider-icons/anthropic.svg', () => ({
   __esModule: true,
   default: 'anthropic-logo',
 }))
+jest.mock('../../assets/provider-icons/claude-code.svg', () => ({
+  __esModule: true,
+  default: 'claude-code-logo',
+}))
+jest.mock('../../assets/provider-icons/codex.svg', () => ({
+  __esModule: true,
+  default: 'codex-logo',
+}))
 jest.mock('../../assets/provider-icons/openai.svg', () => ({
   __esModule: true,
   default: 'openai-logo',
@@ -16,10 +24,14 @@ jest.mock('../../assets/provider-icons/pi.svg', () => ({
   __esModule: true,
   default: 'pi-logo',
 }))
+jest.mock('../../assets/provider-icons/opencode.svg', () => ({
+  __esModule: true,
+  default: 'opencode-logo',
+}))
 
 type CapturedRollerProps = {
   value: string
-  options: Array<{ value: string; label: string }>
+  options: Array<{ value: string; label: string; icon?: React.ReactNode }>
   onChange: (value: string) => void
   onValueClick: () => void
   onActivate: () => void
@@ -48,7 +60,14 @@ const BASE_PROPS = {
   onChangeView: () => {},
   activeRuntimeId: 'yolo' as const,
   onChangeRuntime: () => {},
-  runtimeOptions: ['yolo', 'claude-code', 'codex', 'hermes', 'pi'] as const,
+  runtimeOptions: [
+    'yolo',
+    'claude-code',
+    'codex',
+    'hermes',
+    'opencode',
+    'pi',
+  ] as const,
 }
 
 describe('ViewToggle single runtime picker', () => {
@@ -69,8 +88,19 @@ describe('ViewToggle single runtime picker', () => {
       'claude-code',
       'codex',
       'hermes',
+      'opencode',
       'pi',
     ])
+  })
+
+  it('attaches a provider logo to every CLI runtime option', () => {
+    renderToStaticMarkup(<ViewToggle {...BASE_PROPS} />)
+
+    expect(
+      mockRollerProps?.options
+        .filter((option) => option.value !== 'yolo')
+        .every((option) => option.icon != null),
+    ).toBe(true)
   })
 
   it('switches runtime directly from the picker menu', () => {

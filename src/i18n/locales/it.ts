@@ -200,7 +200,7 @@ export const it: DeepPartial<TranslationKeys> = {
       cliLabel: 'CLI',
       yoloLabel: 'YOLO',
       chatDescription: 'Chat integrata di YOLO',
-      cliDescription: 'Claude Code o Codex su questo dispositivo',
+      cliDescription: 'Runtime CLI disponibili su questo dispositivo',
       accessibleLabel: 'Provider CLI: {runtime}',
       menuLabel: 'Provider CLI',
       claudeCodeLabel: 'Claude Code',
@@ -209,6 +209,8 @@ export const it: DeepPartial<TranslationKeys> = {
       codexDescription: 'Codex su questo dispositivo',
       hermesLabel: 'Hermes',
       hermesDescription: 'Hermes su questo dispositivo',
+      opencodeLabel: 'OpenCode',
+      opencodeDescription: 'OpenCode su questo dispositivo',
       piLabel: 'Pi',
       piDescription: 'Pi su questo dispositivo',
       chatLabel: 'Agent',
@@ -220,7 +222,7 @@ export const it: DeepPartial<TranslationKeys> = {
       sectionLabel: 'Sessioni CLI',
       title: 'Sessioni CLI locali',
       loading: 'Caricamento delle sessioni CLI…',
-      empty: 'Nessuna sessione Claude Code o Codex trovata',
+      empty: 'Nessuna sessione CLI locale trovata',
       current: 'Attuale',
       pin: 'Fissa in YOLO',
       unpin: 'Rimuovi il fissaggio in YOLO',
@@ -1207,6 +1209,9 @@ export const it: DeepPartial<TranslationKeys> = {
       hermesCliPathName: 'Percorso CLI di Hermes',
       hermesCliPathDesc:
         'Percorso personalizzato dell\'eseguibile hermes — incolla l\'output di "which hermes". Lascia vuoto per il rilevamento automatico. Salvato solo su questo dispositivo.',
+      opencodeCliPathName: 'Percorso CLI di OpenCode',
+      opencodeCliPathDesc:
+        'Percorso personalizzato dell\'eseguibile opencode — incolla l\'output di "which opencode". Lascia vuoto per il rilevamento automatico. Salvato solo su questo dispositivo.',
       piCliPathName: 'Percorso CLI di Pi',
       piCliPathDesc:
         'Percorso personalizzato dell\'eseguibile pi — incolla l\'output di "which pi". Lascia vuoto per il rilevamento automatico. Salvato solo su questo dispositivo.',
@@ -2391,10 +2396,6 @@ export const it: DeepPartial<TranslationKeys> = {
       yoloBaseDirDesc:
         'Inserisci un percorso relativo al vault (senza / iniziale). Esempio: YOLO nella radice del vault, oppure setting/YOLO nella cartella setting. Directory skill attuale: {path}.',
       yoloBaseDirPlaceholder: 'YOLO',
-      yoloProjectsDir: 'Directory progetti',
-      yoloProjectsDirDesc:
-        "Cartella vault-relative per file di progetto e attività, indipendente dalla cartella base YOLO (es. Projects). I file di progetto sono gestiti dal tool project ed esclusi dall'indicizzazione RAG e dagli strumenti fs dell'agente.",
-      yoloProjectsDirPlaceholder: 'Projects',
       mineruEnabled: 'MinerU PDF conversion',
       mineruEnabledDesc:
         'When enabled, PDFs are first converted to Markdown and images by MinerU before entering the processing pipeline (fs_read / RAG indexing / attachments). Falls back to the original flow when the service is unavailable.',

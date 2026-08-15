@@ -109,6 +109,16 @@ export function AgentCliPathSection({ app }: AgentCliPathSectionProps) {
       />
       <CliPathRow
         app={app}
+        runtimeId="opencode"
+        name={t('settings.agent.opencodeCliPathName', 'OpenCode CLI path')}
+        desc={t(
+          'settings.agent.opencodeCliPathDesc',
+          'Custom path to the opencode executable — paste the output of "which opencode". Leave empty to auto-detect. Stored on this device only.',
+        )}
+        placeholder="~/.local/bin/opencode"
+      />
+      <CliPathRow
+        app={app}
         runtimeId="pi"
         name={t('settings.agent.piCliPathName', 'pi CLI path')}
         desc={t(

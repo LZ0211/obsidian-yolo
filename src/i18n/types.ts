@@ -97,6 +97,8 @@ export type TranslationKeys = {
       codexDescription: string
       hermesLabel: string
       hermesDescription: string
+      opencodeLabel: string
+      opencodeDescription: string
       piLabel: string
       piDescription: string
       chatLabel?: string
@@ -865,6 +867,8 @@ export type TranslationKeys = {
       codexCliPathDesc?: string
       hermesCliPathName?: string
       hermesCliPathDesc?: string
+      opencodeCliPathName?: string
+      opencodeCliPathDesc?: string
       piCliPathName?: string
       piCliPathDesc?: string
       cliPathMissing?: string

@@ -11,6 +11,7 @@ import { createCodexRuntimeFactory } from './codex/factory'
 import { CliConversationController } from './conversation-controller'
 import type { CliRuntimeAvailability } from './desktop'
 import { createHermesRuntimeFactory } from './hermes/factory'
+import { createOpenCodeRuntimeFactory } from './opencode/factory'
 import {
   CliModelCatalogService,
   type CliModelCatalogSnapshot,
@@ -135,17 +136,19 @@ const resolveWorkingDirectory = (
 const defaultLoadRuntimeFactories = async (
   deps: CliRuntimeFactoriesLoaderDeps,
 ): Promise<CliRuntimeFactories> => {
-  const [claudeFactory, codexFactory, hermesFactory, piFactory] =
+  const [claudeFactory, codexFactory, hermesFactory, opencodeFactory, piFactory] =
     await Promise.all([
       createClaudeRuntimeFactory(deps),
       createCodexRuntimeFactory(deps),
       createHermesRuntimeFactory(deps),
+      createOpenCodeRuntimeFactory(deps),
       createPiRuntimeFactory(deps),
     ])
   return {
     'claude-code': claudeFactory,
     codex: codexFactory,
     hermes: hermesFactory,
+    opencode: opencodeFactory,
     pi: piFactory,
   }
 }
@@ -273,6 +276,7 @@ class DesktopCliRuntimeWorkspace {
         ['claude-code', () => this.resolveRuntime('claude-code')],
         ['codex', () => this.resolveRuntime('codex')],
         ['hermes', () => this.resolveRuntime('hermes')],
+        ['opencode', () => this.resolveRuntime('opencode')],
         ['pi', () => this.resolveRuntime('pi')],
       ],
     })

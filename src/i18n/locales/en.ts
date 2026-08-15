@@ -79,7 +79,7 @@ export const en: TranslationKeys = {
       cliLabel: 'CLI',
       yoloLabel: 'YOLO',
       chatDescription: 'Built-in YOLO chat',
-      cliDescription: 'Claude Code or Codex on this device',
+      cliDescription: 'Available CLI runtimes on this device',
       accessibleLabel: 'CLI provider: {runtime}',
       menuLabel: 'CLI provider',
       claudeCodeLabel: 'Claude Code',
@@ -89,6 +89,8 @@ export const en: TranslationKeys = {
       codexDescription: 'Codex on this device',
       hermesLabel: 'Hermes',
       hermesDescription: 'Hermes on this device',
+      opencodeLabel: 'OpenCode',
+      opencodeDescription: 'OpenCode on this device',
       piLabel: 'Pi',
       piDescription: 'Pi on this device',
       chatLabel: 'Agent',
@@ -98,7 +100,7 @@ export const en: TranslationKeys = {
       sectionLabel: 'CLI sessions',
       title: 'Local CLI sessions',
       loading: 'Loading CLI sessions…',
-      empty: 'No Claude Code or Codex sessions found',
+      empty: 'No local CLI sessions found',
       current: 'Current',
       pin: 'Pin in YOLO',
       unpin: 'Unpin in YOLO',
@@ -1116,6 +1118,9 @@ export const en: TranslationKeys = {
       hermesCliPathName: 'Hermes CLI path',
       hermesCliPathDesc:
         'Custom path to the hermes executable — paste the output of "which hermes". Leave empty to auto-detect. Stored on this device only.',
+      opencodeCliPathName: 'OpenCode CLI path',
+      opencodeCliPathDesc:
+        'Custom path to the opencode executable — paste the output of "which opencode". Leave empty to auto-detect. Stored on this device only.',
       piCliPathName: 'Pi CLI path',
       piCliPathDesc:
         'Custom path to the pi executable — paste the output of "which pi". Leave empty to auto-detect. Stored on this device only.',
@@ -2275,10 +2280,6 @@ export const en: TranslationKeys = {
       yoloBaseDirDesc:
         'Enter a vault-relative path (without a leading /). Example: use YOLO at vault root, or setting/YOLO under the setting folder. Current skills directory: {path}.',
       yoloBaseDirPlaceholder: 'YOLO',
-      yoloProjectsDir: 'Project directory',
-      yoloProjectsDirDesc:
-        'Vault-relative folder for project and task files, independent of the YOLO root (e.g. Projects). Project files are managed by the project tool and excluded from RAG indexing and agent fs tools.',
-      yoloProjectsDirPlaceholder: 'Projects',
       mineruEnabled: 'MinerU PDF conversion',
       mineruEnabledDesc:
         'When enabled, PDFs are first converted to Markdown and images by MinerU before entering the processing pipeline (fs_read / RAG indexing / attachments). Falls back to the original flow when the service is unavailable.',

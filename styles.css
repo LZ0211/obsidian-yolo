@@ -11096,7 +11096,9 @@ button.yolo-runtime-selector:disabled {
   user-select: none;
 }
 
-body.theme-dark .yolo-runtime-selector__provider-logo[data-provider='openai'] {
+body.theme-dark .yolo-runtime-selector__provider-logo[data-provider='openai'],
+body.theme-dark .yolo-runtime-selector__provider-logo[data-provider='hermes'],
+body.theme-dark .yolo-runtime-selector__provider-logo[data-provider='pi'] {
   filter: invert(1);
 }
 
@@ -23481,6 +23483,11 @@ button.yolo-todo-panel__icon-button svg {
 .yolo-runtime-badge--hermes {
   background: color-mix(in srgb, var(--color-blue) 15%, transparent);
   color: color-mix(in srgb, var(--color-blue) 82%, var(--text-normal));
+}
+
+.yolo-runtime-badge--opencode {
+  background: color-mix(in srgb, var(--text-muted) 15%, transparent);
+  color: color-mix(in srgb, var(--text-muted) 82%, var(--text-normal));
 }
 
 .yolo-runtime-badge--pi {

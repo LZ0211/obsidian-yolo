@@ -31,6 +31,11 @@
   color: color-mix(in srgb, var(--color-blue) 82%, var(--text-normal));
 }
 
+.yolo-runtime-badge--opencode {
+  background: color-mix(in srgb, var(--text-muted) 15%, transparent);
+  color: color-mix(in srgb, var(--text-muted) 82%, var(--text-normal));
+}
+
 .yolo-runtime-badge--pi {
   background: color-mix(in srgb, var(--color-purple) 14%, transparent);
   color: color-mix(in srgb, var(--color-purple) 82%, var(--text-normal));

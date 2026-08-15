@@ -1,0 +1,139 @@
+/* eslint-disable import/no-nodejs-modules -- loaded only inside the desktop CLI runtime boundary */
+import { access, constants } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import * as path from 'node:path'
+/* eslint-enable import/no-nodejs-modules */
+
+import type { AcpResolvedCommand } from '../acp/agent-profile'
+
+const firstEnvironmentValue = (
+  env: NodeJS.ProcessEnv,
+  ...keys: string[]
+): string | undefined => {
+  for (const key of keys) {
+    const value = env[key]
+    if (value) return value
+  }
+  return undefined
+}
+
+const unique = (values: string[], platform: NodeJS.Platform): string[] => {
+  const seen = new Set<string>()
+  return values.filter((value) => {
+    if (!value) return false
+    const key = platform === 'win32' ? value.toLowerCase() : value
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+const existingFile = async (candidate: string): Promise<boolean> => {
+  try {
+    await access(candidate, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+type JoinPath = (...paths: string[]) => string
+
+const resolveJoinPath = (platform: NodeJS.Platform): JoinPath =>
+  (...paths) =>
+    platform === 'win32'
+      ? path.win32.join(...paths)
+      : path.posix.join(...paths)
+
+const expandHomePath = (
+  value: string,
+  home: string,
+  joinPath: JoinPath,
+): string => {
+  if (value === '~') return home
+  if (value.startsWith('~/')) return joinPath(home, value.slice(2))
+  return value
+}
+
+const resolveConfiguredExecutable = async (
+  configuredPath: string | undefined,
+  home: string,
+  platform: NodeJS.Platform,
+): Promise<string | null> => {
+  const trimmed = configuredPath?.trim().replace(/^"|"$/g, '')
+  if (!trimmed) return null
+  const joinPath = resolveJoinPath(platform)
+  const expanded =
+    platform === 'win32' ? trimmed : expandHomePath(trimmed, home, joinPath)
+  return (await existingFile(expanded)) ? expanded : null
+}
+
+/**
+ * OpenCode is installed through npm, so its executable follows the same PATH
+ * and per-user bin conventions as other npm-distributed CLI runtimes.
+ */
+export const findOpenCodeExecutable = async (
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): Promise<string | null> => {
+  const home = firstEnvironmentValue(env, 'HOME', 'USERPROFILE') ?? homedir()
+  const joinPath = resolveJoinPath(platform)
+  const delimiter = platform === 'win32' ? ';' : ':'
+  const pathEntries = (firstEnvironmentValue(env, 'PATH', 'Path', 'path') ?? '')
+    .split(delimiter)
+    .map((entry) => entry.trim().replace(/^"|"$/g, ''))
+    .filter(Boolean)
+  const commonEntries =
+    platform === 'win32'
+      ? [
+          env.APPDATA ? joinPath(env.APPDATA, 'npm') : '',
+          env.LOCALAPPDATA
+            ? joinPath(env.LOCALAPPDATA, 'Programs', 'nodejs')
+            : '',
+          env.NVM_SYMLINK ?? '',
+          env.VOLTA_HOME ? joinPath(env.VOLTA_HOME, 'bin') : '',
+          env.PNPM_HOME ??
+            (env.LOCALAPPDATA ? joinPath(env.LOCALAPPDATA, 'pnpm') : ''),
+          env.FNM_MULTISHELL_PATH ?? '',
+        ]
+      : [
+          joinPath(home, '.local', 'bin'),
+          joinPath(home, '.npm-global', 'bin'),
+          joinPath(home, '.volta', 'bin'),
+          '/usr/local/bin',
+          '/opt/homebrew/bin',
+          '/usr/bin',
+        ]
+  const names =
+    platform === 'win32'
+      ? ['opencode.exe', 'opencode.cmd', 'opencode.bat', 'opencode']
+      : ['opencode']
+
+  for (const directory of unique(
+    [...pathEntries, ...commonEntries],
+    platform,
+  )) {
+    for (const name of names) {
+      const candidate = joinPath(directory, name)
+      if (await existingFile(candidate)) return candidate
+    }
+  }
+  return null
+}
+
+/**
+ * Resolves the OpenCode executable and its official ACP launch args.
+ * Invalid local overrides fall through to automatic discovery.
+ */
+export const resolveOpenCodeCommand = async (
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+  cliPathOverride?: string,
+): Promise<AcpResolvedCommand | null> => {
+  const home = firstEnvironmentValue(env, 'HOME', 'USERPROFILE') ?? homedir()
+  const command =
+    (await resolveConfiguredExecutable(cliPathOverride, home, platform)) ??
+    (await findOpenCodeExecutable(env, platform))
+  if (!command) return null
+  return { command, args: ['acp'] }
+}

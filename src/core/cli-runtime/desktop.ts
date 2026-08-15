@@ -9,6 +9,7 @@ export const EMPTY_CLI_RUNTIME_AVAILABILITY: CliRuntimeAvailability = {
   'claude-code': false,
   codex: false,
   hermes: false,
+  opencode: false,
   pi: false,
 }
 
@@ -47,6 +48,7 @@ export const detectCliRuntimeAvailability = async (
       { resolveClaudeProcessSupport },
       { resolveCodexLaunch },
       { resolveHermesCommand },
+      { resolveOpenCodeCommand },
       { resolvePiCommand },
     ] = await Promise.all([
       import('./cli-path-override'),
@@ -54,11 +56,12 @@ export const detectCliRuntimeAvailability = async (
       import('./claude/process'),
       import('./codex/launch'),
       import('./hermes/resolve-command'),
+      import('./opencode/resolve-command'),
       import('./pi/resolve-command'),
     ])
     const vaultPath = app.vault.adapter.getBasePath()
     const environment = await loadLoginShellEnvironment()
-    const [claudeResult, codexResult, hermesResult, piResult] =
+    const [claudeResult, codexResult, hermesResult, opencodeResult, piResult] =
       await Promise.allSettled([
         resolveClaudeProcessSupport({
           configuredCliPath: getCliPathOverride(app, 'claude-code'),
@@ -74,6 +77,11 @@ export const detectCliRuntimeAvailability = async (
           process.platform,
           getCliPathOverride(app, 'hermes'),
         ),
+        resolveOpenCodeCommand(
+          environment as NodeJS.ProcessEnv,
+          process.platform,
+          getCliPathOverride(app, 'opencode'),
+        ),
         resolvePiCommand(
           environment as NodeJS.ProcessEnv,
           process.platform,
@@ -88,6 +96,9 @@ export const detectCliRuntimeAvailability = async (
         codexResult.value.command.length > 0,
       hermes:
         hermesResult.status === 'fulfilled' && hermesResult.value !== null,
+      opencode:
+        opencodeResult.status === 'fulfilled' &&
+        opencodeResult.value !== null,
       pi: piResult.status === 'fulfilled' && piResult.value !== null,
     }
   } catch {

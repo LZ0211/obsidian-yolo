@@ -96,6 +96,7 @@ const runtimeHarness = () => {
   const claudeRuntimes: TestRuntime[] = []
   const codexRuntimes: TestRuntime[] = []
   const hermesRuntimes: TestRuntime[] = []
+  const opencodeRuntimes: TestRuntime[] = []
   const piRuntimes: TestRuntime[] = []
   const createClaudeRuntime = jest.fn(() => {
     const runtime = new TestRuntime('claude-code')
@@ -112,6 +113,11 @@ const runtimeHarness = () => {
     hermesRuntimes.push(runtime)
     return runtime
   })
+  const createOpenCodeRuntime = jest.fn(() => {
+    const runtime = new TestRuntime('opencode')
+    opencodeRuntimes.push(runtime)
+    return runtime
+  })
   const createPiRuntime = jest.fn(() => {
     const runtime = new TestRuntime('pi')
     piRuntimes.push(runtime)
@@ -121,16 +127,19 @@ const runtimeHarness = () => {
     'claude-code': { create: createClaudeRuntime },
     codex: { create: createCodexRuntime },
     hermes: { create: createHermesRuntime },
+    opencode: { create: createOpenCodeRuntime },
     pi: { create: createPiRuntime },
   }
   return {
     claudeRuntimes,
     codexRuntimes,
     hermesRuntimes,
+    opencodeRuntimes,
     piRuntimes,
     createClaudeRuntime,
     createCodexRuntime,
     createHermesRuntime,
+    createOpenCodeRuntime,
     createPiRuntime,
     factories,
   }
@@ -234,6 +243,15 @@ describe('CLI runtime coordinator', () => {
     expect(scope.resolveRuntime('codex')).toBe(scope.resolveRuntime('codex'))
     expect(harness.createCodexRuntime).toHaveBeenCalledTimes(1)
     expect(harness.createCodexRuntime).toHaveBeenCalledWith({
+      app,
+      vaultPath: '/vault/current',
+      workingDirectory: '/',
+    })
+    expect(scope.resolveRuntime('opencode')).toBe(
+      scope.resolveRuntime('opencode'),
+    )
+    expect(harness.createOpenCodeRuntime).toHaveBeenCalledTimes(1)
+    expect(harness.createOpenCodeRuntime).toHaveBeenCalledWith({
       app,
       vaultPath: '/vault/current',
       workingDirectory: '/',
@@ -386,6 +404,7 @@ describe('CLI runtime coordinator', () => {
     expect(harness.createClaudeRuntime).toHaveBeenCalledTimes(1)
     expect(harness.createCodexRuntime).toHaveBeenCalledTimes(1)
     expect(harness.createHermesRuntime).toHaveBeenCalledTimes(1)
+    expect(harness.createOpenCodeRuntime).toHaveBeenCalledTimes(1)
     expect(harness.createPiRuntime).toHaveBeenCalledTimes(1)
 
     await scope.dispose()

@@ -9,6 +9,9 @@ jest.mock('./codex/launch', () => ({
 jest.mock('./hermes/resolve-command', () => ({
   resolveHermesCommand: jest.fn(),
 }))
+jest.mock('./opencode/resolve-command', () => ({
+  resolveOpenCodeCommand: jest.fn(),
+}))
 jest.mock('./pi/resolve-command', () => ({
   resolvePiCommand: jest.fn(),
 }))
@@ -28,6 +31,7 @@ import {
   resolveAvailableChatRuntimeIds,
 } from './desktop'
 import { resolveHermesCommand } from './hermes/resolve-command'
+import { resolveOpenCodeCommand } from './opencode/resolve-command'
 import { resolvePiCommand } from './pi/resolve-command'
 
 const mockedResolveClaudeProcessSupport = jest.mocked(
@@ -35,6 +39,7 @@ const mockedResolveClaudeProcessSupport = jest.mocked(
 )
 const mockedResolveCodexLaunch = jest.mocked(resolveCodexLaunch)
 const mockedResolveHermesCommand = jest.mocked(resolveHermesCommand)
+const mockedResolveOpenCodeCommand = jest.mocked(resolveOpenCodeCommand)
 const mockedResolvePiCommand = jest.mocked(resolvePiCommand)
 
 class TestFileSystemAdapter extends FileSystemAdapter {
@@ -87,12 +92,17 @@ describe('CLI runtime desktop gate', () => {
       command: '/bin/hermes',
       args: ['acp'],
     })
+    mockedResolveOpenCodeCommand.mockResolvedValue({
+      command: '/bin/opencode',
+      args: ['acp'],
+    })
     mockedResolvePiCommand.mockResolvedValue({ command: '/bin/pi' })
 
     await expect(detectCliRuntimeAvailability(desktopApp)).resolves.toEqual({
       'claude-code': true,
       codex: false,
       hermes: true,
+      opencode: true,
       pi: true,
     })
   })
@@ -106,9 +116,10 @@ describe('CLI runtime desktop gate', () => {
           'claude-code': true,
           codex: false,
           hermes: true,
+          opencode: true,
           pi: true,
         },
       }),
-    ).toEqual(['yolo', 'claude-code', 'hermes', 'pi'])
+    ).toEqual(['yolo', 'claude-code', 'hermes', 'opencode', 'pi'])
   })
 })

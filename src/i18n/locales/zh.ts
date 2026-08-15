@@ -79,7 +79,7 @@ export const zh: TranslationKeys = {
       cliLabel: 'CLI',
       yoloLabel: 'YOLO',
       chatDescription: 'YOLO 内置聊天',
-      cliDescription: '使用本机 Claude Code 或 Codex',
+      cliDescription: '使用本机可用的 CLI 运行时',
       accessibleLabel: 'CLI 提供方：{runtime}',
       menuLabel: 'CLI 提供方',
       claudeCodeLabel: 'Claude Code',
@@ -89,6 +89,8 @@ export const zh: TranslationKeys = {
       codexDescription: '本机 Codex 运行时',
       hermesLabel: 'Hermes',
       hermesDescription: '本机 Hermes 运行时',
+      opencodeLabel: 'OpenCode',
+      opencodeDescription: '本机 OpenCode 运行时',
       piLabel: 'Pi',
       piDescription: '本机 Pi 运行时',
       chatLabel: 'Agent',
@@ -98,7 +100,7 @@ export const zh: TranslationKeys = {
       sectionLabel: 'CLI 会话',
       title: '本机 CLI 会话',
       loading: '正在加载 CLI 会话…',
-      empty: '未找到 Claude Code 或 Codex 会话',
+      empty: '未找到本机 CLI 会话',
       current: '当前',
       pin: '在 YOLO 中置顶',
       unpin: '在 YOLO 中取消置顶',
@@ -1025,6 +1027,9 @@ export const zh: TranslationKeys = {
       hermesCliPathName: 'Hermes CLI 路径',
       hermesCliPathDesc:
         '自定义 hermes 可执行文件路径，可粘贴 which hermes 的输出。留空则自动检测；仅保存在本设备，不随库同步。',
+      opencodeCliPathName: 'OpenCode CLI 路径',
+      opencodeCliPathDesc:
+        '自定义 opencode 可执行文件路径，可粘贴 which opencode 的输出。留空则自动检测；仅保存在本设备，不随库同步。',
       piCliPathName: 'Pi CLI 路径',
       piCliPathDesc:
         '自定义 pi 可执行文件路径，可粘贴 which pi 的输出。留空则自动检测；仅保存在本设备，不随库同步。',
@@ -2104,10 +2109,6 @@ export const zh: TranslationKeys = {
       yoloBaseDirDesc:
         '填写库内相对路径（不要以 / 开头）。例如：放在库根目录填 YOLO；放在 setting 文件夹下填 setting/YOLO。当前技能目录：{path}。',
       yoloBaseDirPlaceholder: 'YOLO',
-      yoloProjectsDir: '项目目录',
-      yoloProjectsDirDesc:
-        '存放项目与任务文件的库内相对目录，独立于 YOLO 根目录（例如：Projects）。项目文件由 project 工具管理，并自动从 RAG 索引与 Agent 的 fs 工具中排除。',
-      yoloProjectsDirPlaceholder: 'Projects',
       mineruEnabled: 'MinerU PDF 转换',
       mineruEnabledDesc:
         '开启后 PDF 先经 MinerU 转为 Markdown 与图片再进入处理链（fs_read/RAG 索引/附件）。接口不可用时自动回退原流程。',

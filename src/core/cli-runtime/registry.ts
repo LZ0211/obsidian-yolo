@@ -1,6 +1,7 @@
-import anthropicLogo from '../../assets/provider-icons/anthropic.svg'
+import claudeCodeLogo from '../../assets/provider-icons/claude-code.svg'
+import codexLogo from '../../assets/provider-icons/codex.svg'
 import hermesLogo from '../../assets/provider-icons/hermes.svg'
-import openaiLogo from '../../assets/provider-icons/openai.svg'
+import openCodeLogo from '../../assets/provider-icons/opencode.svg'
 import piLogo from '../../assets/provider-icons/pi.svg'
 
 import { RUNTIME_CAPABILITIES } from './capabilities'
@@ -40,14 +41,14 @@ const DESCRIPTORS_BY_ID: Readonly<Record<CliRuntimeId, CliRuntimeDescriptor>> =
       labelKey: 'sidebar.runtimeSelector.claudeCodeLabel',
       shortLabelKey: 'sidebar.runtimeSelector.claudeCodeShortLabel',
       descriptionKey: 'sidebar.runtimeSelector.claudeCodeDescription',
-      icon: { src: anthropicLogo, provider: 'anthropic' },
+      icon: { src: claudeCodeLogo, provider: 'anthropic' },
       capabilities: RUNTIME_CAPABILITIES['claude-code'],
     },
     codex: {
       id: 'codex',
       labelKey: 'sidebar.runtimeSelector.codexLabel',
       descriptionKey: 'sidebar.runtimeSelector.codexDescription',
-      icon: { src: openaiLogo, provider: 'openai' },
+      icon: { src: codexLogo, provider: 'codex' },
       capabilities: RUNTIME_CAPABILITIES.codex,
     },
     hermes: {
@@ -56,6 +57,13 @@ const DESCRIPTORS_BY_ID: Readonly<Record<CliRuntimeId, CliRuntimeDescriptor>> =
       descriptionKey: 'sidebar.runtimeSelector.hermesDescription',
       icon: { src: hermesLogo, provider: 'hermes' },
       capabilities: RUNTIME_CAPABILITIES.hermes,
+    },
+    opencode: {
+      id: 'opencode',
+      labelKey: 'sidebar.runtimeSelector.opencodeLabel',
+      descriptionKey: 'sidebar.runtimeSelector.opencodeDescription',
+      icon: { src: openCodeLogo, provider: 'opencode' },
+      capabilities: RUNTIME_CAPABILITIES.opencode,
     },
     pi: {
       id: 'pi',

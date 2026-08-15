@@ -18,6 +18,7 @@ describe('CLI runtime registry', () => {
   it('resolves a descriptor by id', () => {
     expect(getCliRuntimeDescriptor('claude-code').id).toBe('claude-code')
     expect(getCliRuntimeDescriptor('codex').id).toBe('codex')
+    expect(getCliRuntimeDescriptor('opencode').id).toBe('opencode')
   })
 
   it('gives every descriptor a label, description, and icon', () => {
