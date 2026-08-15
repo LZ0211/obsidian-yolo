@@ -42,6 +42,7 @@ import {
 import { openExternalLink } from '../../../utils/openExternalLink'
 import { ObsidianButton } from '../../common/ObsidianButton'
 import { ObsidianToggle } from '../../common/ObsidianToggle'
+import { CliLlmInjectionSection } from './CliLlmInjectionSection'
 import { AddChatModelModal } from '../modals/AddChatModelModal'
 import { AddEmbeddingModelModal } from '../modals/AddEmbeddingModelModal'
 import { AddRerankModelModal } from '../modals/AddRerankModelModal'
@@ -1605,6 +1606,17 @@ export function ProvidersAndModelsSection({
 
   const handleConfirmDeleteProvider = (provider: LLMProvider) => {
     cancelPendingDeleteProvider()
+    // 被 CLI 注入引用的 provider 删除后同步清空注入引用。
+    if (settings.cliLlmInjection?.providerId === provider.id) {
+      void setSettings({
+        ...settings,
+        cliLlmInjection: {
+          ...settings.cliLlmInjection,
+          providerId: '',
+          modelId: '',
+        },
+      })
+    }
     handleDeleteProvider(provider)
   }
 
@@ -1625,6 +1637,10 @@ export function ProvidersAndModelsSection({
         await setSettings({
           ...settings,
           chatModels: settings.chatModels.filter((v) => v.id !== modelId),
+          // 被 CLI 注入引用的模型删除后同步清空注入引用。
+          ...(settings.cliLlmInjection?.modelId === modelId
+            ? { cliLlmInjection: { ...settings.cliLlmInjection, modelId: '' } }
+            : {}),
         })
       } catch (error: unknown) {
         console.error('[YOLO] Failed to delete chat model:', error)
@@ -1820,6 +1836,8 @@ export function ProvidersAndModelsSection({
           </DndContext>
         </div>
       </section>
+
+      <CliLlmInjectionSection settings={settings} setSettings={setSettings} />
     </div>
   )
 }

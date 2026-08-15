@@ -113,6 +113,8 @@ export type ClaudeCliRuntimeOptions = {
   cliChatMode?: CliChatMode
   /** When true with agent mode, maps to bypassPermissions. */
   yoloEnabled?: boolean
+  /** CLI LLM 注入 env（cc-switch 式）；缺省时 SDK 用自身配置。 */
+  llmEnv?: Record<string, string>
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -291,6 +293,7 @@ export class ClaudeCliRuntime implements CliRuntime {
   private reasoningEffort: string | null = null
   private cliChatMode: CliChatMode
   private yoloEnabled: boolean
+  private readonly llmEnv: Record<string, string>
   private activeAssistant?: ChatAssistantMessage
   private activeAssistantKey?: string
   private reasoningTracker?: ReasoningPhaseTracker
@@ -311,6 +314,7 @@ export class ClaudeCliRuntime implements CliRuntime {
         }))
     this.cliChatMode = options.cliChatMode ?? 'agent'
     this.yoloEnabled = options.yoloEnabled ?? false
+    this.llmEnv = options.llmEnv ?? {}
   }
 
   async listSessions(): Promise<CliSessionMetadata[]> {
@@ -449,7 +453,7 @@ export class ClaudeCliRuntime implements CliRuntime {
           abortController: nativeAbortController,
           cwd: this.vaultPath,
           pathToClaudeCodeExecutable: processSupport.cliPath,
-          env: processSupport.env,
+          env: { ...processSupport.env, ...this.llmEnv },
           spawnClaudeCodeProcess: processSupport.spawnClaudeCodeProcess,
           includePartialMessages: true,
           enableFileCheckpointing: true,

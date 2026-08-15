@@ -48,6 +48,8 @@ import { PiRpcTransport } from './transport'
 export type PiCliRuntimeOptions = {
   app: App
   vaultPath: string
+  /** CLI LLM 注入 env（cc-switch 式）；缺省时 SDK 用自身配置。 */
+  llmEnv?: Record<string, string>
 }
 
 type PiProcessHandle = {
@@ -444,6 +446,7 @@ export class PiCliRuntime implements CliRuntime {
       command,
       args,
       cwd: this.options.vaultPath,
+      env: this.options.llmEnv,
     })
     const transport = new PiRpcTransport(process)
     return { process, transport }

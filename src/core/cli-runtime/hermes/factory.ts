@@ -1,5 +1,6 @@
 import { getCliPathOverride } from '../cli-path-override'
 import { loadLoginShellEnvironment } from '../login-shell-env'
+import { resolveRuntimeLlmEnv } from '../llm-injection'
 import type { CliRuntimeFactory, CliRuntimeFactoryDeps } from '../types'
 import { resolveCliRuntimeWorkingPath } from '../working-directory'
 
@@ -24,7 +25,13 @@ export const createHermesRuntimeFactory = async (
   const { AcpHostPool } = await import('../acp/host')
 
   const resolveProcessOptions = async () => {
-    const env = (await loadLoginShellEnvironment()) as NodeJS.ProcessEnv
+    const env = {
+      ...((await loadLoginShellEnvironment()) as NodeJS.ProcessEnv),
+      ...(resolveRuntimeLlmEnv(
+        () => deps.getSettings?.() ?? null,
+        'hermes',
+      ) ?? {}),
+    }
     const cliPathOverride = getCliPathOverride(deps.app, 'hermes')
     const resolved = await hermesAgentProfile.resolveCommand(
       env,

@@ -648,6 +648,17 @@ export const yoloSettingsSchema = z.object({
   memoryReflectionEnabled: z.boolean().catch(false),
   embeddingModelId: z.string().catch(''), // model for embedding
 
+  // CLI runtime 的 LLM 注入（cc-switch 式）：开启时 CLI runtime 使用
+  // YOLO 配置的 provider/模型；关闭时 SDK 用自身配置。
+  cliLlmInjection: z
+    .object({
+      enabled: z.boolean().catch(false),
+      providerId: z.string().catch(''),
+      modelId: z.string().catch(''),
+    })
+    .catch({ enabled: false, providerId: '', modelId: '' })
+    .optional(),
+
   // System Prompt
   systemPrompt: z.string().catch(''),
 

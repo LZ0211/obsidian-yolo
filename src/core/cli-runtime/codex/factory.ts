@@ -1,4 +1,5 @@
 import { getCliPathOverride } from '../cli-path-override'
+import { resolveRuntimeLlmEnv } from '../llm-injection'
 import { loadLoginShellEnvironment } from '../login-shell-env'
 import type { CliRuntimeFactory, CliRuntimeFactoryDeps } from '../types'
 import { resolveCliRuntimeWorkingPath } from '../working-directory'
@@ -54,6 +55,10 @@ export const createCodexRuntimeFactory = async (
       spawnCwd: launchSnapshot.spawnCwd,
       launchArgs: launchSnapshot.launchArgs,
       mapRuntimePathToHost: launchSnapshot.mapRuntimePathToHost,
+      // getProcessEnv 会把 options.env 合并到进程环境之上，这里只需注入增量。
+      env:
+        resolveRuntimeLlmEnv(() => deps.getSettings?.() ?? null, 'codex') ??
+        undefined,
     })
     resolveProcessOptions = async (): Promise<CodexProcessOptions> => {
       launchSnapshot = await resolveLaunch()

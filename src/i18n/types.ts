@@ -1123,6 +1123,18 @@ export type TranslationKeys = {
       badgeAdded?: string
       kind?: Record<string, string>
       providersCount: string
+      cliInjection: {
+        title: string
+        desc: string
+        enabledLabel: string
+        enabledDesc: string
+        providerLabel: string
+        providerDesc: string
+        modelLabel: string
+        modelDesc: string
+        providerPlaceholder: string
+        modelPlaceholder: string
+      }
       editProvider: string
       editProviderTitle: string
       deleteProvider: string

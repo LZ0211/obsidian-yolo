@@ -371,6 +371,8 @@ export type CliRuntime = {
 export type CliRuntimeFactoryDeps = Readonly<{
   app: App
   vaultPath: string
+  /** 可选：CLI LLM 注入（cc-switch 式）依据的当前设置。 */
+  getSettings?: () => import('../../types/yoloSettingsLike').YoloSettingsLike | null
 }>
 
 export type CliRuntimeCreateDeps = CliRuntimeFactoryDeps &

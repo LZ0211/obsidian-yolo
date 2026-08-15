@@ -1,3 +1,4 @@
+import { resolveRuntimeLlmEnv } from '../llm-injection'
 import type { CliRuntimeFactory, CliRuntimeFactoryDeps } from '../types'
 import { resolveCliRuntimeWorkingPath } from '../working-directory'
 
@@ -11,7 +12,7 @@ export type PiRuntimeFactoryDeps = CliRuntimeFactoryDeps
  * `PiCliRuntime`'s class doc).
  */
 export const createPiRuntimeFactory = async (
-  _deps: PiRuntimeFactoryDeps,
+  deps: PiRuntimeFactoryDeps,
 ): Promise<CliRuntimeFactory> => {
   const { PiCliRuntime } = await import('./PiCliRuntime')
   return {
@@ -22,6 +23,9 @@ export const createPiRuntimeFactory = async (
           createDeps.vaultPath,
           createDeps.workingDirectory,
         ),
+        llmEnv:
+          resolveRuntimeLlmEnv(() => deps.getSettings?.() ?? null, 'pi') ??
+          undefined,
       }),
   }
 }

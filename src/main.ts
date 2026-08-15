@@ -711,6 +711,39 @@ export default class YoloPlugin extends Plugin {
     clearGeminiOAuthService(providerId)
   }
 
+  /** CLI LLM 注入的全局配置同步（codex config.toml / opencode.json）。 */
+  private async syncCliLlmInjection(): Promise<void> {
+    if (!Platform.isDesktop) return
+    try {
+      const { createLlmProviderSync } = await import(
+        './core/cli-runtime/llm-provider-sync'
+      )
+      const sync = createLlmProviderSync({
+        app: {
+          loadLocalStorage: (key: string): unknown => {
+            try {
+              return window.localStorage.getItem(key)
+            } catch {
+              return null
+            }
+          },
+          saveLocalStorage: (key: string, value: unknown): void => {
+            try {
+              window.localStorage.setItem(key, String(value))
+            } catch {
+              // Best-effort; re-apply on next boot is acceptable.
+            }
+          },
+        },
+        getSettings: () => this.settings,
+        injection: () => this.settings.cliLlmInjection,
+      })
+      await sync.apply()
+    } catch (error: unknown) {
+      console.warn('[YOLO] Failed to sync CLI LLM injection', error)
+    }
+  }
+
   private syncOAuthRuntimesFromSettings(
     settings: Pick<YoloSettings, 'providers'> = this.settings,
   ): void {
@@ -2535,6 +2568,7 @@ export default class YoloPlugin extends Plugin {
     this.warnIfInstallationIncomplete()
     this.activateModules()
     this.syncOAuthRuntimesFromSettings()
+    void this.syncCliLlmInjection()
     await this.initializeLocalMcpServer().catch((error) => {
       console.error('[YOLO] Failed to initialize local MCP server', error)
     })
@@ -3817,6 +3851,11 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
 
     this.syncOAuthRuntimesFromSettings(settingsToApply)
     this.ragCoordinator?.updateSettings(settingsToApply)
+
+    // CLI LLM 注入（cc-switch 式）：设置变更后同步 codex/opencode 全局配置。
+    if (Platform.isDesktop) {
+      void this.syncCliLlmInjection()
+    }
 
     // When RAG is disabled, stop all pending auto-update timers and clear
     // any retry_scheduled state so the background-activity UI disappears.
