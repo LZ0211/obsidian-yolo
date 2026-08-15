@@ -151,6 +151,7 @@ export function createWebYoloRuntime({
     string,
     Set<(state: AgentConversationState) => void>
   >()
+  const agentStateRefreshGeneration = new Map<string, number>()
   const runSummaryListeners = new Set<
     (summaries: Map<string, AgentConversationRunSummary>) => void
   >()
@@ -226,9 +227,18 @@ export function createWebYoloRuntime({
 
   const refreshAgentState = async (conversationId: string) => {
     if (disposed) return
+    const generation =
+      (agentStateRefreshGeneration.get(conversationId) ?? 0) + 1
+    agentStateRefreshGeneration.set(conversationId, generation)
     const state = await api.getJson<AgentConversationState>(
       `/api/agent/state?conversationId=${encodeURIComponent(conversationId)}`,
     )
+    if (
+      disposed ||
+      agentStateRefreshGeneration.get(conversationId) !== generation
+    ) {
+      return
+    }
     emitState(conversationId, normalizeAgentState(state))
   }
 
@@ -633,6 +643,7 @@ export function createWebYoloRuntime({
       runtimeAbortController.abort()
       settingsListeners.clear()
       stateListeners.clear()
+      agentStateRefreshGeneration.clear()
       runSummaryListeners.clear()
       pendingResultListeners.clear()
       abortedQueueListeners.clear()

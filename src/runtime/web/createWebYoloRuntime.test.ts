@@ -91,6 +91,17 @@ jest.mock('../../hooks/useChatHistory', () => {
 
 import { createWebYoloRuntime } from './createWebYoloRuntime'
 
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+} {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
 describe('createWebYoloRuntime', () => {
   it('does not send workspaceId selectors in web chat list requests', async () => {
     const api = {
@@ -466,6 +477,104 @@ describe('createWebYoloRuntime', () => {
     expect(failed?.isRunning).toBe(false)
     expect(failed?.messageIds).toEqual(['user-1'])
     expect(runtime.agent.isRunning('conv-1')).toBe(false)
+  })
+
+  it('does not let an older REST state refresh overwrite a newer state', async () => {
+    const older = deferred<unknown>()
+    const newer = deferred<unknown>()
+    const refreshesStarted = deferred<void>()
+    const streams = [
+      (() => {
+        let controller: ReadableStreamDefaultController<Uint8Array> | null =
+          null
+        const body = new ReadableStream<Uint8Array>({
+          start(nextController) {
+            controller = nextController
+          },
+        })
+        return { body, close: () => controller?.close() }
+      })(),
+      (() => {
+        let controller: ReadableStreamDefaultController<Uint8Array> | null =
+          null
+        const body = new ReadableStream<Uint8Array>({
+          start(nextController) {
+            controller = nextController
+          },
+        })
+        return { body, close: () => controller?.close() }
+      })(),
+    ]
+    let runCount = 0
+    let refreshCount = 0
+    const api = {
+      getJson: jest.fn(async (path: string) => {
+        if (!path.startsWith('/api/agent/state')) return []
+        refreshCount += 1
+        if (refreshCount === 2) refreshesStarted.resolve(undefined)
+        return refreshCount === 1 ? older.promise : newer.promise
+      }),
+      getJsonOrNull: jest.fn(),
+      postJson: jest.fn(async (path: string) => {
+        if (path === '/api/agent/run') {
+          runCount += 1
+          return { conversationId: 'conv-1', runId: `run-${runCount}` }
+        }
+        return {}
+      }),
+      openSseFetch: jest
+        .fn()
+        .mockReturnValueOnce({ ok: true, body: streams[0].body })
+        .mockReturnValueOnce({ ok: true, body: streams[1].body }),
+    } as {
+      getJson: jest.Mock
+      getJsonOrNull: jest.Mock
+      postJson: jest.Mock
+      openSseFetch: jest.Mock
+    }
+
+    const runtime = createWebYoloRuntime({
+      api: api as never,
+      bootstrap: {
+        serverUrl: 'http://127.0.0.1:27123',
+        phase: 2,
+        workspaceAgentConfigured: true,
+        authRequired: false,
+        session: { agentId: 'agent-1' },
+        allowedAgents: [{ id: 'agent-1', name: 'Agent 1' }],
+        settings: { webRuntimeEnabled: true },
+      },
+      initialSettings: { version: 72 } as never,
+      initialVaultIndex: [],
+    })
+    const states: string[] = []
+    const unsubscribe = runtime.agent.subscribe(
+      'conv-1',
+      (state) => states.push(state.status),
+      { emitCurrent: false },
+    )
+
+    await runtime.agent.run({ conversationId: 'conv-1', messages: [] } as never)
+    await runtime.agent.run({ conversationId: 'conv-1', messages: [] } as never)
+    await Promise.resolve()
+    await Promise.resolve()
+    streams.forEach((stream) => stream.close())
+    await refreshesStarted.promise
+
+    const state = (status: string) => ({
+      conversationId: 'conv-1',
+      status,
+      messages: [],
+      compaction: [],
+      pendingCompactionAnchorMessageId: null,
+    })
+    newer.resolve(state('completed'))
+    await Promise.resolve()
+    older.resolve(state('running'))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    unsubscribe()
+
+    expect(states.at(-1)).toBe('completed')
   })
 
   it('hydrates compat vault files from the vault index endpoint', async () => {
