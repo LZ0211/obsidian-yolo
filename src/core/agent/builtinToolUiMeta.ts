@@ -182,6 +182,13 @@ export const BUILTIN_TOOL_UI_META: Record<string, BuiltinToolUiMeta> = {
     descFallback:
       'Grouped scheduled task operations: create, update, delete, list, get, and run tasks now.',
   },
+  project_ops: {
+    labelKey: 'settings.agent.builtinProjectOpsLabel',
+    descKey: 'settings.agent.builtinProjectOpsDesc',
+    labelFallback: 'Project Management Toolset',
+    descFallback:
+      'Manage durable project and task files under the host-managed Projects directory: init, get, status, update, and review.',
+  },
   [CONTEXT_MANAGE_GROUP_TOOL_NAME]: {
     labelKey: 'settings.agent.builtinContextManageLabel',
     descKey: 'settings.agent.builtinContextManageDesc',
@@ -260,12 +267,14 @@ export type BuiltinToolCategory =
   | 'vault'
   | 'context'
   | 'scheduling'
+  | 'projects'
   | 'external'
 
 export const BUILTIN_TOOL_CATEGORY_ORDER: BuiltinToolCategory[] = [
   'vault',
   'context',
   'scheduling',
+  'projects',
   'external',
 ]
 
@@ -287,6 +296,7 @@ const BUILTIN_TOOL_CATEGORY_MAP: Record<string, BuiltinToolCategory> = {
   ask_user_question: 'context',
   [MEMORY_OPS_GROUP_TOOL_NAME]: 'context',
   [SCHEDULED_TASK_OPS_GROUP_TOOL_NAME]: 'scheduling',
+  project_ops: 'projects',
   [WEB_OPS_GROUP_TOOL_NAME]: 'external',
   send_attachment: 'external',
   js_eval: 'external',
@@ -312,6 +322,7 @@ const BUILTIN_TOOL_DISPLAY_ORDER: Record<BuiltinToolCategory, string[]> = {
   vault: [],
   context: [],
   scheduling: [],
+  projects: [],
   external: [
     WEB_OPS_GROUP_TOOL_NAME,
     'js_eval',
@@ -343,6 +354,10 @@ export const BUILTIN_TOOL_CATEGORY_I18N: Record<
   scheduling: {
     key: 'settings.agent.toolsGroupBuiltinScheduling',
     fallback: 'Scheduled Tasks',
+  },
+  projects: {
+    key: 'settings.agent.toolsGroupBuiltinProjects',
+    fallback: 'Projects',
   },
   external: {
     key: 'settings.agent.toolsGroupBuiltinExternal',

@@ -1171,6 +1171,10 @@ export const zh: TranslationKeys = {
       builtinScheduledTaskOpsLabel: '定时任务工具集',
       builtinScheduledTaskOpsDesc:
         '创建、更新、删除、列出、查询定时任务，以及立即执行',
+      builtinProjectOpsLabel: '项目管理工具集',
+      builtinProjectOpsDesc:
+        '管理宿主项目目录下的持久化项目与任务文件：创建、读取、状态、更新与评审。',
+      toolsGroupBuiltinProjects: '项目管理',
       builtinScheduledTaskCreateLabel: '创建定时任务',
       builtinScheduledTaskCreateDesc:
         '创建一个新的定时智能体任务，可按 cron、间隔或一次性时间执行。',

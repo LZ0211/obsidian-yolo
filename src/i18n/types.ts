@@ -974,6 +974,9 @@ export type TranslationKeys = {
       editorModeYolo?: string
       editorModeYoloDesc?: string
       toolsGroupBuiltinScheduling?: string
+      toolsGroupBuiltinProjects?: string
+      builtinProjectOpsLabel?: string
+      builtinProjectOpsDesc?: string
       builtinConversationHistoryLabel?: string
       builtinConversationHistoryDesc?: string
       builtinMetaSearchLabel?: string

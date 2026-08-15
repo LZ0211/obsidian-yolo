@@ -1313,6 +1313,10 @@ export const it: DeepPartial<TranslationKeys> = {
       builtinScheduledTaskOpsLabel: 'Set attività pianificate',
       builtinScheduledTaskOpsDesc:
         'Crea, aggiorna, elimina, elenca, ottieni ed esegui subito attività pianificate',
+      builtinProjectOpsLabel: 'Set di gestione progetti',
+      builtinProjectOpsDesc:
+        "Gestisci file di progetto e task persistenti nella directory Projects gestita dall'host: init, get, status, update e review.",
+      toolsGroupBuiltinProjects: 'Progetti',
       builtinScheduledTaskCreateLabel: 'Crea attività pianificata',
       builtinScheduledTaskCreateDesc:
         'Crea una nuova attività agent pianificata con schedulazione cron, a intervalli o una tantum.',

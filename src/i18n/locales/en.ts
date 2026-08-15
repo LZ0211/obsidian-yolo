@@ -1267,6 +1267,10 @@ export const en: TranslationKeys = {
       builtinScheduledTaskOpsLabel: 'Scheduled Tasks Toolset',
       builtinScheduledTaskOpsDesc:
         'Create, update, delete, list, get, and run scheduled tasks',
+      builtinProjectOpsLabel: 'Project Management Toolset',
+      builtinProjectOpsDesc:
+        'Manage durable project and task files under the host-managed Projects directory: init, get, status, update, and review.',
+      toolsGroupBuiltinProjects: 'Projects',
       builtinScheduledTaskCreateLabel: 'Create Scheduled Task',
       builtinScheduledTaskCreateDesc:
         'Create a new scheduled agent task with a cron, interval, or one-time schedule.',
