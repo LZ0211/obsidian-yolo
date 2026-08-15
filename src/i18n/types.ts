@@ -676,10 +676,6 @@ export type TranslationKeys = {
       enableAllTools?: string
       disableAllTools?: string
       descriptionColumn?: string
-      builtinFsListLabel?: string
-      builtinFsListDesc?: string
-      builtinFsSearchLabel?: string
-      builtinFsSearchDesc?: string
       builtinFsReadLabel?: string
       builtinFsReadDesc?: string
       builtinMineruConvertLabel?: string
@@ -2599,8 +2595,6 @@ export type TranslationKeys = {
         unknown?: string
       }
       displayName?: {
-        fs_list?: string
-        fs_search?: string
         fs_read?: string
         fs_edit?: string
         fs_edit_ops?: string
@@ -2617,13 +2611,6 @@ export type TranslationKeys = {
       }
       writeAction?: {
         write?: string
-        delete?: string
-        create_dir?: string
-        move?: string
-        // Legacy keys kept for rendering historical conversations.
-        create_file?: string
-        delete_file?: string
-        delete_dir?: string
       }
       readMode?: {
         full?: string
