@@ -192,11 +192,14 @@ export function autoRejectPendingApprovals(runtime: NativeAgentRuntime): void {
   const last = snapshot.messages.at(-1)
   if (!last || last.role !== 'tool') return
   for (const toolCall of last.toolCalls) {
-    if (toolCall.response.status === ToolCallResponseStatus.PendingApproval) {
+    if (
+      toolCall.response.status === ToolCallResponseStatus.PendingApproval ||
+      toolCall.response.status === ToolCallResponseStatus.AwaitingUserInput
+    ) {
       runtime.setToolCallResponse(toolCall.request.id, {
         status: ToolCallResponseStatus.Error,
         error:
-          'Tool approval timed out: the user did not respond within 5 minutes, so this call was auto-rejected. Try a different approach or summarise the situation in your final reply so the user can take over.',
+          'Tool interaction timed out: the user did not respond within 5 minutes, so this call was auto-rejected. Try a different approach or summarise the situation in your final reply so the user can take over.',
       })
     }
   }

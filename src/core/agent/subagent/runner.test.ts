@@ -179,6 +179,28 @@ describe('autoRejectPendingApprovals', () => {
     autoRejectPendingApprovals(runtime)
     expect(setToolCallResponse).not.toHaveBeenCalled()
   })
+
+  it('auto-rejects awaiting user input so the paused run can resume', () => {
+    const { runtime, setToolCallResponse } = makeRuntime({
+      role: 'tool',
+      toolCalls: [
+        {
+          request: { id: 'question-1', name: 'ask_user_question' },
+          response: { status: ToolCallResponseStatus.AwaitingUserInput },
+        },
+      ],
+    })
+
+    autoRejectPendingApprovals(runtime)
+
+    expect(setToolCallResponse).toHaveBeenCalledWith(
+      'question-1',
+      expect.objectContaining({
+        status: ToolCallResponseStatus.Error,
+        error: expect.stringContaining('5 minutes'),
+      }),
+    )
+  })
 })
 
 describe('hasUnsettledApprovalBatch', () => {
@@ -594,9 +616,7 @@ describe('runSubagent ephemeral dispatch', () => {
     await waitForRunGate()
     const liveTranscript = subagentTaskRegistry.getLiveTranscript(result.taskId)
     const content =
-      liveTranscript?.[0]?.role === 'assistant'
-        ? liveTranscript[0].content
-        : ''
+      liveTranscript?.[0]?.role === 'assistant' ? liveTranscript[0].content : ''
     // The registry-side transcript is bounded at the configured result cap,
     // not the raw megabyte blob.
     expect(content).toContain('…[truncated]…')
@@ -661,7 +681,6 @@ describe('runSubagent ephemeral dispatch', () => {
     )
     jest.useRealTimers()
   })
-
 })
 
 describe('approval pause parent deadline renewal (F5)', () => {
