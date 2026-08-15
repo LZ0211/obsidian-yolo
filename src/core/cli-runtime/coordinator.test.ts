@@ -70,6 +70,10 @@ class TestRuntime implements CliRuntime {
 
   async rewriteTurn() {}
 
+  async listSessions() {
+    return []
+  }
+
   async respondApproval() {
     return true
   }
@@ -371,6 +375,21 @@ describe('CLI runtime coordinator', () => {
     expect(harness.createClaudeRuntime).not.toHaveBeenCalled()
     expect(harness.createCodexRuntime).toHaveBeenCalledTimes(1)
     expect(harness.codexRuntimes[0].cancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('discovers sessions through every registered runtime provider', async () => {
+    const { coordinator, harness } = await createCoordinator()
+    const scope = coordinator.createScope()
+
+    await scope.sessionService.discoverSessions()
+
+    expect(harness.createClaudeRuntime).toHaveBeenCalledTimes(1)
+    expect(harness.createCodexRuntime).toHaveBeenCalledTimes(1)
+    expect(harness.createHermesRuntime).toHaveBeenCalledTimes(1)
+    expect(harness.createPiRuntime).toHaveBeenCalledTimes(1)
+
+    await scope.dispose()
+    await coordinator.dispose()
   })
 
   it('does not duplicate a runtime when actions first access it concurrently', async () => {

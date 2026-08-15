@@ -232,6 +232,16 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
           (call.init?.method ?? 'GET') === 'GET',
       ),
     ).toBe(true)
+    expect(
+      calls.map((call) => call.url),
+    ).toEqual(
+      expect.arrayContaining([
+        'http://localhost/api/chat-runtime/claude-code/sessions',
+        'http://localhost/api/chat-runtime/codex/sessions',
+        'http://localhost/api/chat-runtime/hermes/sessions',
+        'http://localhost/api/chat-runtime/pi/sessions',
+      ]),
+    )
     expect(discovery.sessions[0]).toMatchObject({
       ref: { runtimeId: 'codex', nativeSessionId: 'thread-1' },
       title: 'Fix login',
@@ -257,6 +267,9 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
             ok: false,
             error: { kind: 'failed', message: 'host rejected discovery' },
           })
+        }
+        if (String(url).includes('/sessions')) {
+          return jsonResponse({ ok: true, sessions: [] })
         }
         return jsonResponse({ ok: true })
       },

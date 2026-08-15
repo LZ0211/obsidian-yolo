@@ -272,6 +272,8 @@ class DesktopCliRuntimeWorkspace {
       runtimeProviders: [
         ['claude-code', () => this.resolveRuntime('claude-code')],
         ['codex', () => this.resolveRuntime('codex')],
+        ['hermes', () => this.resolveRuntime('hermes')],
+        ['pi', () => this.resolveRuntime('pi')],
       ],
     })
     return this.sessionServiceInstance

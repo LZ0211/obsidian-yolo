@@ -16,7 +16,10 @@ import type { AgentEventStore } from '../agent/agentEventStore'
 import type { AgentConversationState, AgentService } from '../agent/service'
 import { createCliChatRuntime } from '../chat-runtime/cli/createCliChatRuntime'
 import type { CliRuntimeScope } from '../cli-runtime/coordinator'
-import { detectCliRuntimeAvailability } from '../cli-runtime/desktop'
+import {
+  detectCliRuntimeAvailability,
+  EMPTY_CLI_RUNTIME_AVAILABILITY,
+} from '../cli-runtime/desktop'
 import type { McpManager } from '../mcp/mcpManager'
 import { getYoloBaseDir } from '../paths/yoloPaths'
 import { normalizeConversationWorkingDirectory } from '../workspace/conversationFileScope'
@@ -561,11 +564,7 @@ export function registerWebServerRoutes(
   options.server.router.get('/api/cli/availability', async (req, res) => {
     const scope = await (options.getCliRuntimeScope?.() ?? null)
     if (!scope) {
-      writeJson(res, 200, {
-        'claude-code': false,
-        codex: false,
-        hermes: false,
-      })
+      writeJson(res, 200, EMPTY_CLI_RUNTIME_AVAILABILITY)
       return
     }
     writeJson(res, 200, await detectCliRuntimeAvailability(options.app))

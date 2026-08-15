@@ -241,6 +241,28 @@ describe('registerWebServerRoutes CLI runtime binding', () => {
     }
   })
 
+  it('returns the complete unavailable CLI runtime shape without a scope', async () => {
+    const harness = createHarness(
+      [],
+      null as unknown as CliRuntimeScope,
+      [],
+    )
+
+    try {
+      const response = await dispatchGet(harness.router, '/api/cli/availability')
+
+      expect(response.statusCode).toBe(200)
+      expect(JSON.parse(response.rawBody)).toEqual({
+        'claude-code': false,
+        codex: false,
+        hermes: false,
+        pi: false,
+      })
+    } finally {
+      await harness.dispose()
+    }
+  })
+
   it('rechecks conversation authorization before returning a cached runtime', async () => {
     const conversation = makeConversation({
       id: 'cli-warm-cache-authorization',

@@ -386,8 +386,6 @@ export type WebCliRuntimeScopeOptions = {
   fetchImpl?: typeof fetch
 }
 
-const RUNTIME_IDS: readonly CliRuntimeId[] = ['claude-code', 'codex']
-
 export function createWebCliRuntimeScope(
   options: WebCliRuntimeScopeOptions,
 ): CliRuntimeScope & {
@@ -458,7 +456,7 @@ export function createWebCliRuntimeScope(
   const listSessions = async (): Promise<CliSessionDiscoveryResult> => {
     const errors: CliSessionDiscoveryResult['errors'] = {}
     const results = await Promise.all(
-      RUNTIME_IDS.map(async (runtimeId) => {
+      CLI_RUNTIME_IDS.map(async (runtimeId) => {
         try {
           const result = await getAdapter(runtimeId).listSessions()
           if (result.ok) return result.sessions
