@@ -357,6 +357,47 @@ describe('BotService lifecycle', () => {
     expect(runTurn).toHaveBeenCalledTimes(1)
   })
 
+  it('starts a queued turn even when the previous turn used the full timeout window', async () => {
+    jest.useFakeTimers()
+    let releaseFirstTurn!: () => void
+    const runTurn = jest.mocked(runBotAgentTurn)
+    runTurn
+      .mockReset()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseFirstTurn = resolve
+          }),
+      )
+      .mockResolvedValue(undefined)
+
+    const h = makeHarness()
+    try {
+      await h.service.initialize()
+      await h.service.handleIncoming(
+        makeEvent({ messageId: 'timeout-first' }),
+        makeTelegramConfig(),
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(runTurn).toHaveBeenCalledTimes(1)
+
+      await h.service.handleIncoming(
+        makeEvent({ messageId: 'timeout-second' }),
+        makeTelegramConfig(),
+      )
+      await jest.advanceTimersByTimeAsync(11 * 60 * 1000)
+
+      releaseFirstTurn()
+      await jest.advanceTimersByTimeAsync(0)
+
+      expect(runTurn).toHaveBeenCalledTimes(2)
+    } finally {
+      await h.service.cleanup()
+      jest.useRealTimers()
+    }
+  })
+
   it('onSettingsChanged starts a newly added platform', async () => {
     const h = makeHarness({ platforms: [] })
     await h.service.initialize()

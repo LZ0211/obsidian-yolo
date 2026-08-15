@@ -703,13 +703,7 @@ export class BotService {
     if (!this.acceptingEvents) return
     const previous = this.turnQueues.get(params.queueKey) ?? Promise.resolve()
     const abortController = new AbortController()
-    // Whole-turn duration budget: a stuck agent loop must not occupy the
-    // per-session serial queue forever (see agent-runner.ts). The abort
-    // reason lets the runner tell a timeout apart from a user/plugin cancel.
-    const turnTimeoutHandle = setTimeout(
-      () => abortController.abort(BOT_TURN_TIMEOUT_REASON),
-      BOT_TURN_MAX_DURATION_MS,
-    )
+    let turnTimeoutHandle: ReturnType<typeof setTimeout> | undefined
     this.activeTurnAbortControllers.add(abortController)
     // Set only when the agent turn actually ran (not when it was skipped by an
     // abort/unload) — the open chat view reloads on this event, so a turn that
@@ -719,6 +713,12 @@ export class BotService {
       .catch(() => undefined)
       .then(async () => {
         if (!this.acceptingEvents || abortController.signal.aborted) return
+        // The execution budget starts after this turn reaches the front of the
+        // per-session queue; time spent waiting for an earlier turn is not work.
+        turnTimeoutHandle = setTimeout(
+          () => abortController.abort(BOT_TURN_TIMEOUT_REASON),
+          BOT_TURN_MAX_DURATION_MS,
+        )
         const mcpManager = await this.deps.getMcpManager()
         if (!this.acceptingEvents || abortController.signal.aborted) return
         turnRan = true
@@ -745,7 +745,7 @@ export class BotService {
         console.error('[YOLO Bot] Failed to run agent turn:', error)
       })
       .finally(() => {
-        clearTimeout(turnTimeoutHandle)
+        if (turnTimeoutHandle) clearTimeout(turnTimeoutHandle)
         this.activeTurnAbortControllers.delete(abortController)
         if (turnRan) {
           emitBotConversationUpdated(params.conversationId)
