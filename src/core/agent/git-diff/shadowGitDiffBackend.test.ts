@@ -265,6 +265,42 @@ describe('ShadowGitDiffBackend', () => {
     }
   })
 
+  it('keeps protected descendants excluded when finish receives an ancestor directory', async () => {
+    const repo = await createRepo()
+    try {
+      await mkdir(join(repo.vault, 'YOLO'), { recursive: true })
+      await writeFile(join(repo.vault, 'YOLO', 'secret.md'), 'before\n')
+      await writeFile(join(repo.vault, 'YOLO', 'notes.md'), 'before\n')
+      await commitAll(repo.root, 'initial')
+
+      const backend = new ShadowGitDiffBackend({
+        vaultPath: repo.vault,
+        snapshotRoot: join(repo.root, 'snapshots'),
+      })
+      const baseline = await backend.begin(
+        policy({
+          workspaceRoot: '/',
+          protectedPaths: [{ kind: 'exact', path: 'YOLO/secret.md' }],
+        }),
+      )
+      expect(baseline).not.toBeNull()
+
+      await writeFile(
+        join(repo.vault, 'YOLO', 'secret.md'),
+        'before\nafter\n',
+      )
+      await writeFile(join(repo.vault, 'YOLO', 'notes.md'), 'before\nafter\n')
+
+      await expect(
+        backend.finish(baseline!, [change('YOLO')]),
+      ).resolves.toEqual(
+        new Map([['YOLO/notes.md', { additions: 1, deletions: 0 }]]),
+      )
+    } finally {
+      await repo.cleanup()
+    }
+  })
+
   it('does not re-root write exclusions from outside the writable root', async () => {
     const repo = await createRepo()
     try {
