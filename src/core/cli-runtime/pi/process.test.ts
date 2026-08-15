@@ -121,7 +121,8 @@ describe('PiSubprocess — stdout decoding', () => {
     expect(fakeChild?.killed).toBe(true)
     expect(settled).toBe(false)
 
-    fakeChild?.exitCode = 0
+    expect(fakeChild).toBeDefined()
+    if (fakeChild) fakeChild.exitCode = 0
     fakeChild?.emit('close', 0, null)
     await shutdown
 

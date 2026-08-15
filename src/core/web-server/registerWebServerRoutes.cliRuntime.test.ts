@@ -623,6 +623,7 @@ function createResponse() {
     writableEnded: boolean
     setHeader: (name: string, value: string) => void
     end: (chunk?: string) => void
+    readonly rawBody: string
   }
   response.statusCode = 200
   response.writableEnded = false
