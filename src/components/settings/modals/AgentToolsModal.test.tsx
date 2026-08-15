@@ -43,8 +43,9 @@ jest.mock('../../common/ObsidianToggle', () => ({
 }))
 
 jest.mock('../common/CollapsibleToolDescription', () => ({
-  CollapsibleToolDescription: ({ description }: { description: string }) =>
-    description,
+  CollapsibleToolDescription: ({ description }: { description: string }) => (
+    <div className="yolo-mcp-tool-description">{description}</div>
+  ),
 }))
 
 jest.mock('../sections/McpSection', () => ({
@@ -100,7 +101,7 @@ describe('AgentToolsModal layout', () => {
     Reflect.deleteProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT')
   })
 
-  it('uses the description column through the space before controls', () => {
+  it('keeps the switch column beside the description column', () => {
     const plugin = {
       settings: { mcp: { builtinToolOptions: {} } },
       t: (key: string, fallback?: string) => fallback ?? key,
@@ -120,7 +121,10 @@ describe('AgentToolsModal layout', () => {
 
     const header = container.querySelector('.yolo-builtin-tools-table-header')
     const row = container.querySelector('.yolo-builtin-tools-table-row')
-    expect(header?.children).toHaveLength(3)
-    expect(row?.children).toHaveLength(3)
+    expect(header?.children).toHaveLength(4)
+    expect(row?.children).toHaveLength(4)
+    expect(
+      row?.children[1].querySelector('.yolo-mcp-tool-description'),
+    ).not.toBeNull()
   })
 })
