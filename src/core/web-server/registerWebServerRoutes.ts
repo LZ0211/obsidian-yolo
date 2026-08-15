@@ -404,6 +404,15 @@ export function registerWebServerRoutes(
       const current = await getChat(conversationId)
       if (!current) return false
       await options.chatManager.deleteChat(conversationId)
+      try {
+        const mcpManager = await options.getMcpManager()
+        mcpManager.removeAllowedTools(conversationId)
+      } catch (error) {
+        console.error(
+          '[YOLO Web] Failed to revoke MCP tool allowances:',
+          error,
+        )
+      }
       await invalidateChatRuntimeConversation(conversationId)
       return true
     },

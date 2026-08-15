@@ -285,6 +285,29 @@ describe('registerWebServerRoutes chat write boundary', () => {
       await harness.dispose()
     }
   })
+
+  it('revokes MCP allowances when a web conversation is deleted', async () => {
+    const conversation = makeConversation({
+      id: 'chat-mcp-cleanup',
+      webBinding: {
+        initialAgentId: 'agent-current',
+        activeAgentId: 'agent-current',
+        rootHash: 'root-current',
+      },
+    })
+    const harness = createHarness([conversation])
+
+    try {
+      const response = await dispatchChat(harness.router, '/api/chat/delete', {
+        conversationId: conversation.id,
+      })
+
+      expect(response.statusCode).toBe(200)
+      expect(harness.removeAllowedTools).toHaveBeenCalledWith(conversation.id)
+    } finally {
+      await harness.dispose()
+    }
+  })
 })
 
 function makeConversation(
@@ -324,6 +347,8 @@ function createHarness(seed: WebChatConversation[]) {
     createChat: jest.fn(),
     deleteChat: jest.fn(),
   } as unknown as ChatManager
+  const removeAllowedTools = jest.fn()
+  const getMcpManager = jest.fn(async () => ({ removeAllowedTools }) as never)
   const getState = jest.fn((conversationId: string) => ({
     conversationId,
     status: 'idle',
@@ -378,7 +403,7 @@ function createHarness(seed: WebChatConversation[]) {
     host: '127.0.0.1',
     port: 18900,
     getAgentService: () => agentService,
-    getMcpManager: jest.fn(async () => ({}) as never),
+    getMcpManager,
   })
 
   return {
@@ -387,6 +412,7 @@ function createHarness(seed: WebChatConversation[]) {
     getState,
     getConversation: (conversationId: string) =>
       conversations.get(conversationId),
+    removeAllowedTools,
     dispose: registered.dispose,
   }
 }

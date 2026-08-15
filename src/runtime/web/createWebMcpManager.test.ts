@@ -53,6 +53,14 @@ describe('createWebMcpManager', () => {
     })
   })
 
+  it('provides the shared conversation cleanup entry point', () => {
+    const manager = createManager() as {
+      removeAllowedTools?: (conversationId: string) => void
+    }
+
+    expect(manager.removeAllowedTools).toEqual(expect.any(Function))
+  })
+
   it('returns an empty server snapshot instead of throwing', () => {
     const manager = createManager()
 
