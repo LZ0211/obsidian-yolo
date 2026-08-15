@@ -3,11 +3,92 @@ import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 
-import { createMcpSharingSync } from './llm-provider-sync'
+import {
+  createLlmProviderSync,
+  createMcpSharingSync,
+} from './llm-provider-sync'
 
 jest.mock('obsidian', () => ({
   Platform: { isDesktop: true },
 }))
+
+function makeProviderSettings() {
+  return {
+    providers: [
+      {
+        id: 'provider-1',
+        name: 'Provider One',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'key-one',
+      },
+    ],
+    chatModels: [
+      {
+        id: 'model-1',
+        providerId: 'provider-1',
+        model: 'model-one',
+      },
+    ],
+  }
+}
+
+describe('createLlmProviderSync', () => {
+  let configDir: string
+
+  beforeEach(async () => {
+    configDir = await mkdtemp(path.join(tmpdir(), 'yolo-llm-sync-'))
+  })
+
+  afterEach(async () => {
+    await rm(configDir, { recursive: true, force: true })
+  })
+
+  it('rewrites config when selected provider settings change', async () => {
+    const settings = makeProviderSettings()
+    const storage = new Map<string, unknown>()
+    const sync = createLlmProviderSync({
+      app: {
+        loadLocalStorage: (key) => storage.get(key),
+        saveLocalStorage: (key, value) => storage.set(key, value),
+      },
+      getSettings: () => settings as never,
+      injection: () => ({
+        enabled: true,
+        providerId: 'provider-1',
+        modelId: 'model-1',
+      }),
+      configDirOverride: configDir,
+    })
+
+    expect(await sync.apply()).toBe(true)
+    settings.providers[0].baseUrl = 'https://api.example.com/v2'
+    settings.providers[0].apiKey = 'key-two'
+    settings.chatModels[0].model = 'model-two'
+
+    expect(await sync.apply()).toBe(true)
+
+    const opencode = JSON.parse(
+      await readFile(path.join(configDir, 'opencode.json'), 'utf8'),
+    ) as {
+      provider: {
+        yolo: {
+          options: { apiKey: string; baseURL: string }
+          models: Record<string, { name: string }>
+        }
+      }
+    }
+    expect(opencode.provider.yolo.options).toEqual({
+      apiKey: 'key-two',
+      baseURL: 'https://api.example.com/v2',
+    })
+    expect(opencode.provider.yolo.models).toEqual({
+      'model-two': { name: 'model-two' },
+    })
+    expect(storage.get('yolo-cli-llm-injection-last-applied')).not.toContain(
+      'key-two',
+    )
+  })
+})
 
 describe('createMcpSharingSync', () => {
   let configDir: string

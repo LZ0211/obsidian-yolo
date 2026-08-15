@@ -15,6 +15,35 @@ const BACKUP_SUFFIX = '.yolo-backup'
 const LAST_APPLIED_KEY = 'yolo-cli-llm-injection-last-applied'
 const OPENCODE_PROVIDER_ID = 'yolo'
 
+type ResolvedLlmInjection = NonNullable<
+  ReturnType<typeof resolveLlmInjection>
+>
+
+async function createLlmProviderSignature(
+  resolved: ResolvedLlmInjection,
+): Promise<string> {
+  // eslint-disable-next-line import/no-nodejs-modules -- desktop-only signature
+  const { createHash } = await import('node:crypto')
+  const providerApiType = (resolved.provider as { apiType?: string }).apiType
+  const modelName = resolved.model.model.trim() || 'gpt-5.6-sol'
+  const responsesSupported =
+    providerApiType === 'openai-responses' ||
+    (resolved.model as { codexResponsesSupported?: boolean })
+      .codexResponsesSupported === true
+  const payload = JSON.stringify({
+    providerId: resolved.provider.id,
+    providerName: resolved.provider.name ?? resolved.provider.id,
+    baseUrl: resolved.provider.baseUrl ?? '',
+    apiKey: resolved.provider.apiKey ?? '',
+    modelId: resolved.model.id,
+    modelName,
+    providerApiType: providerApiType ?? '',
+    responsesSupported,
+  })
+  const digest = createHash('sha256').update(payload).digest('hex')
+  return `on:${resolved.provider.id}:${resolved.model.id}:${digest}`
+}
+
 async function loadFs(): Promise<{
   fs: typeof import('node:fs/promises')
   path: typeof import('node:path')
@@ -212,7 +241,7 @@ export function createLlmProviderSync(input: {
         getSettings: input.getSettings,
       })
       const signature = resolved
-        ? `on:${resolved.provider.id}:${resolved.model.id}`
+        ? await createLlmProviderSignature(resolved)
         : 'off'
       if (signature === readSignature()) return false
 
