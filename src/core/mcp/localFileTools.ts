@@ -312,14 +312,17 @@ type FsReadOperation =
       format?: BrowserReadFormat
     }
 
-type LocalToolCallResultMetadata = {
+// Exported additively (not previously exported) so `src/core/tools/types.ts`
+// can reuse this exact shape for `ToolContext['execute']`'s return type
+// instead of redeclaring it. No existing export or behavior changes.
+export type LocalToolCallResultMetadata = {
   editSummary?: ToolEditSummary
   fsReadOperation?: ToolFsReadOperationSummary
   appliedAt?: number
   truncated?: { totalBytes: number; omittedBytes: number }
 }
 
-type LocalToolCallResult =
+export type LocalToolCallResult =
   | {
       status: ToolCallResponseStatus.Success
       text: string
@@ -393,7 +396,11 @@ const LOCAL_FS_WRITE_TOOL_NAMES = new Set<string>([
   'memory_delete',
 ])
 
-const asErrorMessage = (error: unknown): string => {
+// Exported additively so `src/core/tools/*` definition files can reuse these
+// generic arg-parsing / formatting helpers instead of duplicating them.
+// `localFileTools.ts` keeps owning them for now (see master.md §7: retention
+// of tool-unrelated helpers here is out of scope for this project).
+export const asErrorMessage = (error: unknown): string => {
   if (error instanceof Error) {
     return error.message
   }
@@ -1465,7 +1472,7 @@ const getOptionalBooleanArg = (
   return value
 }
 
-const getStringArrayArg = (
+export const getStringArrayArg = (
   args: Record<string, unknown>,
   key: string,
 ): string[] => {
@@ -1479,7 +1486,7 @@ const getStringArrayArg = (
   return value
 }
 
-const getRecordArrayArg = (
+export const getRecordArrayArg = (
   args: Record<string, unknown>,
   key: string,
 ): Record<string, unknown>[] => {
@@ -1875,7 +1882,7 @@ const getFsReadOperation = (args: Record<string, unknown>): FsReadOperation => {
   }
 }
 
-const formatJsonResult = (payload: unknown): string => {
+export const formatJsonResult = (payload: unknown): string => {
   return JSON.stringify(payload, null, 2)
 }
 
@@ -2498,7 +2505,11 @@ const executeFsFileOps = async ({
   }
 }
 
-async function invokeMemoryTool<T extends { filePath: string }>(
+// Exported additively so the new `src/core/tools/memory_*` definitions can
+// share this exact implementation with the still-live `callLocalFileTool`
+// switch below, instead of forking it. Used by all three memory tools alike,
+// so it stays put rather than moving into any single tool's directory.
+export async function invokeMemoryTool<T extends { filePath: string }>(
   promptSourceWatcher: PromptSourceWatcher | undefined,
   fn: (hooks: { onInternalWrite?: (path: string) => void }) => Promise<T>,
 ): Promise<T> {
