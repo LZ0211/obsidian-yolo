@@ -209,6 +209,19 @@ describe('RagAutoUpdateService', () => {
     cleanup()
   })
 
+  it('runs a restored retry through the index retry policy without a separate health probe', async () => {
+    const { service, runIndex, cleanup } = createService()
+    mockProbe.mockResolvedValueOnce({ status: 'error', totalMs: 1 })
+
+    service.restoreRetryScheduled(Date.now())
+    jest.advanceTimersByTime(0)
+    await flushAsync()
+
+    expect(runIndex).toHaveBeenCalledTimes(1)
+    expect(mockProbe).not.toHaveBeenCalled()
+    cleanup()
+  })
+
   it('does not keep retrying after permanent failure', async () => {
     const permanentError = Object.assign(new Error('invalid api key'), {
       status: 401,

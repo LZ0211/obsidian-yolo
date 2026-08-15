@@ -1,7 +1,6 @@
 import { minimatch } from 'minimatch'
 import { TAbstractFile, TFile, TFolder } from 'obsidian'
 
-import { testEmbeddingModelHealth } from '../llm/health-check'
 import {
   getProtectedVaultPathRules,
   isProtectedVaultPath,
@@ -286,27 +285,6 @@ export class RagAutoUpdateService {
     return includePatterns.some((p) => minimatch(path, p))
   }
 
-  /**
-   * Live probe: reuse the provider-settings connectivity test to verify an
-   * embedding request can actually pass through before committing to a run.
-   * Runs only when an update is about to fire, so a dead endpoint never burns
-   * the automatic retry budget.
-   */
-  private async isEmbeddingModelReachable(): Promise<boolean> {
-    const settings = this.getSettings()
-    const id = settings.embeddingModelId
-    const model = settings.embeddingModels.find((m) => m.id === id)
-    if (!model) return false
-    try {
-      const result = await testEmbeddingModelHealth(settings, model, {
-        signal: new AbortController().signal,
-      })
-      return result.status === 'ok'
-    } catch {
-      return false
-    }
-  }
-
   private scheduleAutoUpdate(delayMs: number) {
     if (this.autoUpdateTimer) {
       clearTimeout(this.autoUpdateTimer)
@@ -337,16 +315,6 @@ export class RagAutoUpdateService {
         RagAutoUpdateService.SUCCESS_COOLDOWN_MS -
           (Date.now() - this.lastRunFinishedAt),
       )
-      return
-    }
-
-    if (!(await this.isEmbeddingModelReachable())) {
-      // The embedding model cannot serve requests right now; abandon the run
-      // instead of failing it, so the retry budget stays quiet. Pending paths
-      // are kept so a later reachable run (triggered by the next edit)
-      // reconciles everything accumulated.
-      this.hasRecoveredRetry = false
-      this.hasPendingTransientRetry = false
       return
     }
 
