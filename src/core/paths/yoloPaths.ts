@@ -66,18 +66,11 @@ export const getYoloBaseDir = (settings?: YoloSettingsLike | null): string => {
   return normalizeVaultRelativeDir(settings?.yolo?.baseDir)
 }
 
-/** Host-managed project zone root (protected from agent tools and indexing). */
+/** Host-managed project zone root — baseDir 的子目录，随 baseDir 兜底规则一起受保护。 */
 export const getYoloProjectsDir = (
   settings?: YoloSettingsLike | null,
 ): string => {
-  // A settings-aware override may be added later; the default is a top-level
-  // vault-visible Projects directory independent of `yolo.baseDir`.
-  const configured = (settings?.yolo?.projectsDir ?? '').trim()
-  const normalized = configured
-    .replace(/^(\.\/)+/, '')
-    .replace(/^\/+/, '')
-    .replace(/\/+$/, '')
-  return normalizePath(normalized || YOLO_PROJECTS_DIR_NAME)
+  return normalizePath(`${getYoloBaseDir(settings)}/${YOLO_PROJECTS_DIR_NAME}`)
 }
 
 /** True when a vault-relative path contains a segment Obsidian will not index. */

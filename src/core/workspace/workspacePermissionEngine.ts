@@ -59,11 +59,6 @@ const WRITE_OPERATIONS = new Set<WorkspaceIoOperation>([
   'skill_write',
 ])
 
-const SKILL_OPERATIONS = new Set<WorkspaceIoOperation>([
-  'skill_read',
-  'skill_write',
-])
-
 export function normalizeVaultRootPath(input: string): string {
   return normalizeVaultPath(input, { allowBlankAsRoot: false })
 }
@@ -118,12 +113,8 @@ export function decideWorkspacePathAccess(
   if (!resolved.ok) return denyForOperation(input.operation)
 
   // 宿主托管 + agent 配置的保护路径清单：读写与列表一视同仁拒绝。
-  // skill 通道单独放行（技能系统有独立校验，skills 目录在 baseDir 下，
-  // 兜底规则不能误伤用户内容）。
-  if (
-    !SKILL_OPERATIONS.has(input.operation) &&
-    isProtectedVaultPath(resolved.path, input.policy.protectedPaths)
-  ) {
+  // 技能路径在清单里以 except 规则挖除（见 getProtectedVaultPathRules）。
+  if (isProtectedVaultPath(resolved.path, input.policy.protectedPaths)) {
     return denyForOperation(input.operation)
   }
 

@@ -508,7 +508,7 @@ describe('host-managed protected-path deny', () => {
     ).toBe(false)
     expect(() =>
       resolveWritablePath(
-        'Projects/proj-x/project.md',
+        'YOLO/Projects/proj-x/project.md',
         denyPolicy({ enabled: false }),
       ),
     ).toThrow(/host-managed protected zone/i)
@@ -522,22 +522,26 @@ describe('host-managed protected-path deny', () => {
 
   it('denies protected paths regardless of workspaceRoot or policy allowlists', () => {
     const rootAccess = denyPolicy({ workspaceRoot: '/' })
-    const projectsAccess = denyPolicy({ workspaceRoot: 'Projects' })
+    const projectsAccess = denyPolicy({ workspaceRoot: 'YOLO/Projects' })
 
     for (const access of [rootAccess, projectsAccess]) {
-      expect(isReadablePath('Projects/proj-x/project.md', access)).toBe(false)
-      expect(isWritablePath('Projects/proj-x/project.md', access)).toBe(false)
+      expect(
+        isReadablePath('YOLO/Projects/proj-x/project.md', access),
+      ).toBe(false)
+      expect(
+        isWritablePath('YOLO/Projects/proj-x/project.md', access),
+      ).toBe(false)
       expect(() =>
-        resolveReadablePath('Projects/proj-x/project.md', access),
+        resolveReadablePath('YOLO/Projects/proj-x/project.md', access),
       ).toThrow(/host-managed protected zone/i)
       expect(() =>
-        resolveWritablePath('Projects/proj-x/project.md', access),
+        resolveWritablePath('YOLO/Projects/proj-x/project.md', access),
       ).toThrow(/host-managed protected zone/i)
     }
   })
 
   it('denies relative writes that resolve into a protected zone', () => {
-    const access = denyPolicy({ workspaceRoot: 'Projects' })
+    const access = denyPolicy({ workspaceRoot: 'YOLO/Projects' })
     expect(() => resolveWritablePath('proj-x/project.md', access)).toThrow(
       /host-managed protected zone/i,
     )

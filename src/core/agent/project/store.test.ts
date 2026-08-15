@@ -157,11 +157,11 @@ describe('ProjectStore.initProject', () => {
     })
 
     expect(result.ok).toBe(true)
-    expect(await adapter.exists('Projects/proj-1/project.md')).toBe(true)
-    expect(await adapter.exists('Projects/proj-1/tasks/T-001.md')).toBe(true)
-    expect(await adapter.exists('Projects/proj-1/tasks/T-002.md')).toBe(true)
+    expect(await adapter.exists('YOLO/Projects/proj-1/project.md')).toBe(true)
+    expect(await adapter.exists('YOLO/Projects/proj-1/tasks/T-001.md')).toBe(true)
+    expect(await adapter.exists('YOLO/Projects/proj-1/tasks/T-002.md')).toBe(true)
 
-    const taskFile = await adapter.read('Projects/proj-1/tasks/T-001.md')
+    const taskFile = await adapter.read('YOLO/Projects/proj-1/tasks/T-001.md')
     const split = extractFrontmatter(taskFile)
     expect(parseTaskRecord(split!.frontmatter!)).toMatchObject({
       projectId: 'proj-1',
@@ -270,7 +270,7 @@ describe('ProjectStore.updateTask', () => {
     })
 
     const before = (await store.readTask('proj-1', 'T-001'))!
-    const beforeContent = await adapter.read('Projects/proj-1/tasks/T-001.md')
+    const beforeContent = await adapter.read('YOLO/Projects/proj-1/tasks/T-001.md')
 
     const result = await store.updateTask(
       'proj-1',
@@ -284,7 +284,7 @@ describe('ProjectStore.updateTask', () => {
       expect(result.noop).toBe(true)
       expect(result.revision).toBe(before.revision)
     }
-    expect(await adapter.read('Projects/proj-1/tasks/T-001.md')).toBe(beforeContent)
+    expect(await adapter.read('YOLO/Projects/proj-1/tasks/T-001.md')).toBe(beforeContent)
   })
 
   it('rejects an invalid status transition', async () => {
@@ -320,12 +320,12 @@ describe('ProjectStore.listTasks + status', () => {
         { taskId: 'T-001', title: 'First' },
       ],
     })
-    await adapter.write('Projects/proj-1/tasks/broken.md', 'no frontmatter here')
+    await adapter.write('YOLO/Projects/proj-1/tasks/broken.md', 'no frontmatter here')
 
     const { tasks, invalid } = await store.listTasks('proj-1')
     expect(tasks.map((entry) => entry.task.taskId)).toEqual(['T-001', 'T-002'])
     expect(invalid.map((entry) => entry.path)).toContain(
-      'Projects/proj-1/tasks/broken.md',
+      'YOLO/Projects/proj-1/tasks/broken.md',
     )
   })
 
@@ -620,7 +620,7 @@ describe('status signals and lazy reclaim', () => {
     const read = await store.readTask('p1', 't1')
     await store.claimTask('p1', 't1', preconditionOf(read), { runKey: 'run-1', durationMs: -1000 })
 
-    const taskPath = 'Projects/p1/tasks/t1.md'
+    const taskPath = 'YOLO/Projects/p1/tasks/t1.md'
     // Let `status()`'s listTasks snapshot see the stale running+expired record
     // while the on-disk file is advanced by a concurrent ingest before the
     // reclaim write lands (the read that hit the window that previously let

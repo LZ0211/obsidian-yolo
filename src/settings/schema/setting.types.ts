@@ -398,6 +398,7 @@ export const protectedPathRuleSchema = z.union([
   z.object({ kind: z.literal('prefix'), path: z.string() }),
   z.object({ kind: z.literal('exact'), path: z.string() }),
   z.object({ kind: z.literal('namePrefix'), dir: z.string(), name: z.string() }),
+  z.object({ kind: z.literal('except'), path: z.string() }),
 ])
 
 export const workspaceAgentPolicySchema = z.object({

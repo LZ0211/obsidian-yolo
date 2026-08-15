@@ -3,35 +3,25 @@ import { normalizePath } from 'obsidian'
 import type { WorkspaceAccessPolicy } from '../../types/assistant.types'
 import type { YoloSettingsLike } from '../../types/yoloSettingsLike'
 import {
-  CONVERSATION_JOURNAL_SQLITE_FILE_NAME,
-  SESSION_JOURNAL_SQLITE_FILE_NAME,
-  YOLO_MEMORY_SUBDIR,
   YOLO_SYNC_POINTER_FILE_NAME,
-  YOLO_VECTOR_DB_FILE_NAME,
   getYoloBaseDir,
-  getYoloDataJsonPath,
-  getYoloJsonDbRootDir,
-  getYoloProjectsDir,
+  getYoloSkillsDir,
+  getYoloSnippetsPath,
 } from './yoloPaths'
 
 /**
- * A settings-driven host-managed deny rule. `prefix` denies the exact path and
- * everything below it; `exact` denies only that exact vault-relative path;
- * `namePrefix` denies files under `dir` whose name starts with `name`. Every
- * path is a normalized vault-relative path.
+ * 宿主托管保护规则：`prefix`/`exact`/`namePrefix` 拒绝；`except` 从已匹配
+ * 的保护中挖除（技能文件是用户内容，位于 baseDir 下但必须可达）。
  */
 export type ProtectedPathRule =
   | { kind: 'prefix'; path: string }
   | { kind: 'exact'; path: string }
   | { kind: 'namePrefix'; dir: string; name: string }
-
-const SCHEDULED_TASKS_SQLITE_FILE_NAME = 'scheduled-tasks.sqlite'
+  | { kind: 'except'; path: string }
 
 /**
- * Host-managed paths that the agent's own fs tools and git-diff tools must
- * never reach, regardless of the assistant workspaceRoot or policy. Read from
- * current settings each call so baseDir/projectsDir changes take effect
- * immediately.
+ * 保护路径 = baseDir 整体 − 技能相关路径。项目目录是 baseDir 的子目录
+ * （projects），随兜底规则一起受保护。不做专门规则体系。
  */
 export const getProtectedVaultPathRules = (
   settings?: YoloSettingsLike | null,
@@ -41,30 +31,14 @@ export const getProtectedVaultPathRules = (
     .replace(/^\/+/, '')
     .replace(/\/+$/, '')
   const rules: ProtectedPathRule[] = [
-    // 整目录兜底：YOLO 目录及其子目录全部保护（含未逐一枚举的
-    // share-token-pepper、agent.sqlite 等私有文件）。skills 等用户内容
-    // 由引擎对 skill_read/skill_write 单独放行。
     ...(normalizedBaseDir
       ? [{ kind: 'prefix' as const, path: normalizedBaseDir }]
       : []),
-    // Plugin-private data under `yolo.baseDir`.
-    { kind: 'prefix', path: getYoloJsonDbRootDir(settings) },
-    { kind: 'exact', path: getYoloDataJsonPath(settings) },
-    { kind: 'exact', path: `${baseDir}/${SESSION_JOURNAL_SQLITE_FILE_NAME}` },
-    {
-      kind: 'exact',
-      path: `${baseDir}/${CONVERSATION_JOURNAL_SQLITE_FILE_NAME}`,
-    },
-    {
-      kind: 'exact',
-      path: `${baseDir}/${SCHEDULED_TASKS_SQLITE_FILE_NAME}`,
-    },
-    { kind: 'prefix', path: `${baseDir}/${YOLO_MEMORY_SUBDIR}` },
-    { kind: 'exact', path: `${baseDir}/${YOLO_VECTOR_DB_FILE_NAME}` },
-    // Fixed-name pointer file at the vault root.
+    // 技能文件（skills 目录 + snippets 文件）是 baseDir 下的用户内容。
+    { kind: 'except', path: getYoloSkillsDir(settings) },
+    { kind: 'except', path: getYoloSnippetsPath(settings) },
+    // Vault 根的固定指针文件（不在 baseDir 内）。
     { kind: 'exact', path: YOLO_SYNC_POINTER_FILE_NAME },
-    // The whole host-managed project zone.
-    { kind: 'prefix', path: getYoloProjectsDir(settings) },
   ]
   return rules
 }
@@ -100,6 +74,16 @@ export const isProtectedVaultPath = (
   if (!rules || rules.length === 0) return false
   const normalized = normalizeProtectedPath(vaultPath)
   if (normalized.length === 0) return false
+
+  const matchesPrefixLike = (path: string, rulePath: string): boolean =>
+    path === rulePath || path.startsWith(`${rulePath}/`)
+
+  // 挖除优先：技能路径即使落入 baseDir 兜底也不算受保护。
+  for (const rule of rules) {
+    if (rule.kind !== 'except') continue
+    if (matchesPrefixLike(normalized, rule.path)) return false
+  }
+
   for (const rule of rules) {
     if (rule.kind === 'exact') {
       if (normalized === rule.path) return true
@@ -116,7 +100,7 @@ export const isProtectedVaultPath = (
       if (lastSegment.startsWith(rule.name)) return true
       continue
     }
-    if (normalized === rule.path || normalized.startsWith(`${rule.path}/`)) {
+    if (rule.kind === 'prefix' && matchesPrefixLike(normalized, rule.path)) {
       return true
     }
   }

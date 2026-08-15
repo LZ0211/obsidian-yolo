@@ -237,25 +237,29 @@ describe('workspacePermissionEngine', () => {
     ).toEqual({ ok: true, path: '/Projects/A/.skill-cache/data.json' })
   })
 
-  it('exempts skill operations from the protected-path list (skills 单独处理)', () => {
+  it('carves skill paths out of the protected blanket via except rules', () => {
     const protectedPolicy = {
       ...policy,
-      protectedPaths: [{ kind: 'prefix' as const, path: 'Projects/A/YOLO' }],
+      protectedPaths: [
+        { kind: 'prefix' as const, path: 'Projects/A/YOLO' },
+        { kind: 'except' as const, path: 'Projects/A/YOLO/skills' },
+      ],
     }
-
-    expect(
-      decideWorkspacePathAccess({
-        policy: protectedPolicy,
-        operation: 'skill_read',
-        path: 'YOLO/skills/review/SKILL.md',
-      }),
-    ).toEqual({ ok: true, path: '/Projects/A/YOLO/skills/review/SKILL.md' })
 
     expect(
       decideWorkspacePathAccess({
         policy: protectedPolicy,
         operation: 'read',
         path: 'YOLO/skills/review/SKILL.md',
+      }),
+    ).toEqual({ ok: true, path: '/Projects/A/YOLO/skills/review/SKILL.md' })
+
+    // 非技能路径仍受兜底保护。
+    expect(
+      decideWorkspacePathAccess({
+        policy: protectedPolicy,
+        operation: 'read',
+        path: 'YOLO/data/chats/c.json',
       }),
     ).toMatchObject({ ok: false })
   })

@@ -229,8 +229,11 @@ describe('ShadowGitDiffBackend', () => {
   it('excludes host-managed protected paths from the diff even under a full-vault root', async () => {
     const repo = await createRepo()
     try {
-      await mkdir(join(repo.vault, 'Projects'), { recursive: true })
-      await writeFile(join(repo.vault, 'Projects', 'project.md'), 'before\n')
+      await mkdir(join(repo.vault, 'YOLO', 'Projects'), { recursive: true })
+      await writeFile(
+        join(repo.vault, 'YOLO', 'Projects', 'project.md'),
+        'before\n',
+      )
       await writeFile(join(repo.vault, 'Allowed', 'a.md'), 'before\n')
       await commitAll(repo.root, 'initial')
 
@@ -247,14 +250,14 @@ describe('ShadowGitDiffBackend', () => {
       expect(baseline).not.toBeNull()
 
       await writeFile(
-        join(repo.vault, 'Projects', 'project.md'),
+        join(repo.vault, 'YOLO', 'Projects', 'project.md'),
         'before\nafter\n',
       )
       await writeFile(join(repo.vault, 'Allowed', 'a.md'), 'before\nafter\n')
 
       await expect(
         backend.finish(baseline!, [
-          change('Projects/project.md'),
+          change('YOLO/Projects/project.md'),
           change('Allowed/a.md'),
         ]),
       ).resolves.toEqual(

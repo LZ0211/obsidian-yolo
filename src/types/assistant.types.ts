@@ -129,6 +129,7 @@ export const workspaceAccessPolicySchema = z.object({
           dir: z.string(),
           name: z.string(),
         }),
+        z.object({ kind: z.literal('except'), path: z.string() }),
       ]),
     )
     .optional(),

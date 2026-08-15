@@ -287,8 +287,9 @@ export async function runBotAgentTurn(
     // host-managed protected-path deny rules — bot turns must never reach
     // the plugin's own data through fs/git-diff tools, no matter what the
     // bound assistant's policy says.
-    workspaceAccessPolicy: augmentWorkspacePolicyWithProtectedPaths(
-      resolveWorkspaceAccessPolicyForRuntimeInput(assistant),
+    workspaceAccessPolicy: resolveWorkspaceAccessPolicyForRuntimeInput(
+      assistant,
+      undefined,
       settings,
     ),
     allowedSkillPaths,

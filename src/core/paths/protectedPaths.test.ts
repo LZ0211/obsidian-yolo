@@ -9,58 +9,59 @@ import {
 
 const defaultSettings = {} as unknown as YoloSettingsLike
 
-const customSettings = (yolo: { baseDir?: string; projectsDir?: string }) =>
+const customSettings = (yolo: { baseDir?: string }) =>
   ({ yolo }) as unknown as YoloSettingsLike
 
 describe('getProtectedVaultPathRules', () => {
-  it('covers plugin-private baseDir data, the sync pointer, and the project zone', () => {
+  it('blanket-protects the whole baseDir minus skill paths, plus the sync pointer', () => {
     const rules = getProtectedVaultPathRules(defaultSettings)
-    const prefixPaths = rules
-      .filter(
-        (rule): rule is { kind: 'prefix'; path: string } =>
-          rule.kind === 'prefix',
-      )
-      .map((rule) => rule.path)
-    const exactPaths = rules
-      .filter(
-        (rule): rule is { kind: 'exact'; path: string } =>
-          rule.kind === 'exact',
-      )
-      .map((rule) => rule.path)
-    expect(prefixPaths).toEqual(
-      expect.arrayContaining(['YOLO/.yolo_json_db', 'YOLO/memory', 'Projects']),
+    expect(rules).toEqual([
+      { kind: 'prefix', path: 'YOLO' },
+      { kind: 'except', path: 'YOLO/skills' },
+      { kind: 'except', path: 'YOLO/snippets.md' },
+      { kind: 'exact', path: '.yolo_sync' },
+    ])
+  })
+
+  it('derives the blanket from the current baseDir setting', () => {
+    const rules = getProtectedVaultPathRules(
+      customSettings({ baseDir: 'Config/YoloData' }),
     )
-    expect(exactPaths).toEqual(
+    expect(rules).toEqual(
       expect.arrayContaining([
-        'YOLO/.yolo_data.json',
-        'YOLO/sessions.sqlite',
-        'YOLO/conversation.sqlite',
-        'YOLO/scheduled-tasks.sqlite',
-        'YOLO/.yolo_vector_db.tar.gz',
-        '.yolo_sync',
+        { kind: 'prefix', path: 'Config/YoloData' },
+        { kind: 'except', path: 'Config/YoloData/skills' },
+        { kind: 'exact', path: '.yolo_sync' },
       ]),
     )
   })
 
-  it('derives the deny set from current baseDir and projectsDir settings', () => {
-    const rules = getProtectedVaultPathRules(
-      customSettings({
-        baseDir: 'Config/YoloData',
-        projectsDir: 'Work/Projects',
-      }),
+  it('augments a policy with the generated rules', () => {
+    const policy: WorkspaceAccessPolicy = {
+      enabled: true,
+      workspaceRoot: '/Notes',
+      readExtraIncludes: [],
+      readExcludes: [],
+      writeExcludes: [],
+    }
+    const augmented = augmentWorkspacePolicyWithProtectedPaths(
+      policy,
+      defaultSettings,
     )
-    const paths = rules
-      .filter(
-        (rule): rule is { kind: 'prefix' | 'exact'; path: string } =>
-          rule.kind === 'prefix' || rule.kind === 'exact',
-      )
-      .map((rule) => rule.path)
-    expect(paths).toEqual(
-      expect.arrayContaining([
-        'Config/YoloData/.yolo_json_db',
-        'Config/YoloData/.yolo_data.json',
-        'Work/Projects',
-      ]),
+    expect(augmented?.protectedPaths).toEqual(
+      getProtectedVaultPathRules(defaultSettings),
+    )
+    expect(augmented?.workspaceRoot).toBe('/Notes')
+  })
+
+  it('augments a missing policy with a disabled one carrying the rules', () => {
+    const augmented = augmentWorkspacePolicyWithProtectedPaths(
+      undefined,
+      defaultSettings,
+    )
+    expect(augmented?.enabled).toBe(false)
+    expect(augmented?.protectedPaths).toEqual(
+      getProtectedVaultPathRules(defaultSettings),
     )
   })
 })
@@ -68,144 +69,42 @@ describe('getProtectedVaultPathRules', () => {
 describe('isProtectedVaultPath', () => {
   const rules = getProtectedVaultPathRules(defaultSettings)
 
-  it('denies plugin-private baseDir data', () => {
-    expect(isProtectedVaultPath('YOLO/.yolo_data.json', rules)).toBe(true)
-    expect(
-      isProtectedVaultPath('YOLO/.yolo_json_db/chats/chat.json', rules),
-    ).toBe(true)
-    expect(isProtectedVaultPath('YOLO/.yolo_json_db', rules)).toBe(true)
-    expect(isProtectedVaultPath('YOLO/sessions.sqlite', rules)).toBe(true)
-    expect(isProtectedVaultPath('YOLO/conversation.sqlite', rules)).toBe(true)
-    expect(isProtectedVaultPath('YOLO/scheduled-tasks.sqlite', rules)).toBe(
-      true,
-    )
-    expect(isProtectedVaultPath('YOLO/memory/index.sqlite', rules)).toBe(true)
-    expect(isProtectedVaultPath('YOLO/.yolo_vector_db.tar.gz', rules)).toBe(
-      true,
-    )
-  })
-
-  it('denies the vault-root sync pointer', () => {
-    expect(isProtectedVaultPath('.yolo_sync', rules)).toBe(true)
-  })
-
-  it('denies the whole project zone', () => {
-    expect(isProtectedVaultPath('Projects', rules)).toBe(true)
-    expect(isProtectedVaultPath('Projects/proj-alpha/project.md', rules)).toBe(
-      true,
-    )
-    expect(
-      isProtectedVaultPath('Projects/proj-alpha/tasks/T-001.md', rules),
-    ).toBe(true)
-  })
-
-  it('blanket-protects the whole YOLO base dir (skill channel exempts at the engine level)', () => {
+  it('protects everything under the baseDir', () => {
     expect(isProtectedVaultPath('YOLO', rules)).toBe(true)
-    expect(isProtectedVaultPath('YOLO/skills/review/SKILL.md', rules)).toBe(
+    expect(isProtectedVaultPath('YOLO/agent.sqlite', rules)).toBe(true)
+    expect(isProtectedVaultPath('YOLO/share-token-pepper', rules)).toBe(true)
+    expect(isProtectedVaultPath('YOLO/Projects/proj-a/project.md', rules)).toBe(
       true,
     )
-    expect(isProtectedVaultPath('YOLO/snippets.md', rules)).toBe(true)
-    expect(isProtectedVaultPath('YOLO/share-token-pepper', rules)).toBe(true)
-    expect(isProtectedVaultPath('YOLO/agent.sqlite', rules)).toBe(true)
+    expect(isProtectedVaultPath('YOLO/data/chats/chat_index.json', rules)).toBe(
+      true,
+    )
+  })
+
+  it('carves skill-related paths out of the blanket', () => {
+    expect(isProtectedVaultPath('YOLO/skills', rules)).toBe(false)
+    expect(isProtectedVaultPath('YOLO/skills/review/SKILL.md', rules)).toBe(
+      false,
+    )
+    expect(isProtectedVaultPath('YOLO/snippets.md', rules)).toBe(false)
+  })
+
+  it('protects the vault-root sync pointer and ignores unrelated content', () => {
+    expect(isProtectedVaultPath('.yolo_sync', rules)).toBe(true)
     expect(isProtectedVaultPath('notes/plain.md', rules)).toBe(false)
     expect(isProtectedVaultPath('', rules)).toBe(false)
   })
 
-  it('protects the pepper and agent event store under the base dir', () => {
-    expect(isProtectedVaultPath('YOLO/share-token-pepper', rules)).toBe(true)
-    expect(isProtectedVaultPath('YOLO/agent.sqlite', rules)).toBe(true)
-  })
-
   it('handles vault-root addressing with a leading slash', () => {
-    expect(isProtectedVaultPath('/Projects/proj-alpha/project.md', rules)).toBe(
-      true,
-    )
     expect(isProtectedVaultPath('/YOLO/sessions.sqlite', rules)).toBe(true)
+    expect(isProtectedVaultPath('/YOLO/skills/review/SKILL.md', rules)).toBe(
+      false,
+    )
     expect(isProtectedVaultPath('/notes/plain.md', rules)).toBe(false)
   })
 
-  it('returns false for a protected path when rules are absent', () => {
+  it('returns false when rules are absent', () => {
     expect(isProtectedVaultPath('YOLO/sessions.sqlite', undefined)).toBe(false)
     expect(isProtectedVaultPath('YOLO/sessions.sqlite', [])).toBe(false)
-  })
-
-  it('respects a custom projectsDir', () => {
-    const customRules = getProtectedVaultPathRules(
-      customSettings({ projectsDir: 'Work/Projects' }),
-    )
-    expect(
-      isProtectedVaultPath('Work/Projects/proj-x/project.md', customRules),
-    ).toBe(true)
-    expect(
-      isProtectedVaultPath('Projects/proj-x/project.md', customRules),
-    ).toBe(false)
-  })
-})
-
-describe('augmentWorkspacePolicyWithProtectedPaths', () => {
-  it('replaces any persisted protectedPaths with the current settings-derived rules (runtime injection wins)', () => {
-    const stalePersisted: WorkspaceAccessPolicy = {
-      enabled: true,
-      workspaceRoot: '04-专利',
-      readExtraIncludes: [],
-      readExcludes: [],
-      writeExcludes: [],
-      // A stale value persisted through the schema (e.g. the baseDir moved
-      // since it was saved). Must never reach the runtime.
-      protectedPaths: [{ kind: 'prefix', path: 'OLD-BASE/sessions.sqlite' }],
-    }
-
-    const augmented = augmentWorkspacePolicyWithProtectedPaths(
-      stalePersisted,
-      defaultSettings,
-    )
-
-    expect(augmented?.protectedPaths).toEqual(
-      getProtectedVaultPathRules(defaultSettings),
-    )
-    expect(
-      isProtectedVaultPath('YOLO/sessions.sqlite', augmented?.protectedPaths),
-    ).toBe(true)
-    expect(
-      isProtectedVaultPath(
-        'OLD-BASE/sessions.sqlite',
-        augmented?.protectedPaths,
-      ),
-    ).toBe(false)
-  })
-
-  it('keeps the rest of the policy untouched while attaching the rules', () => {
-    const policy: WorkspaceAccessPolicy = {
-      enabled: true,
-      workspaceRoot: '04-专利',
-      readExtraIncludes: ['00-Email'],
-      readExcludes: [],
-      writeExcludes: ['04-专利/archive'],
-    }
-
-    const augmented = augmentWorkspacePolicyWithProtectedPaths(
-      policy,
-      defaultSettings,
-    )
-
-    expect(augmented).toMatchObject({
-      enabled: true,
-      workspaceRoot: '04-专利',
-      readExtraIncludes: ['00-Email'],
-      writeExcludes: ['04-专利/archive'],
-    })
-  })
-
-  it('creates a protection-only policy when no workspace policy exists', () => {
-    expect(
-      augmentWorkspacePolicyWithProtectedPaths(undefined, defaultSettings),
-    ).toEqual({
-      enabled: false,
-      workspaceRoot: '',
-      readExtraIncludes: [],
-      readExcludes: [],
-      writeExcludes: [],
-      protectedPaths: getProtectedVaultPathRules(defaultSettings),
-    })
   })
 })

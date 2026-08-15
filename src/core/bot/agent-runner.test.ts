@@ -1,8 +1,16 @@
-jest.mock('../../components/chat-view/chat-runtime-inputs', () => ({
-  resolveWorkspaceAccessPolicyForRuntimeInput: jest.fn(() => ({
-    workspaceRoot: 'assistant-root',
-  })),
-}))
+jest.mock('../../components/chat-view/chat-runtime-inputs', () => {
+  const { getProtectedVaultPathRules } = jest.requireActual(
+    '../paths/protectedPaths',
+  ) as typeof import('../paths/protectedPaths')
+  return {
+    resolveWorkspaceAccessPolicyForRuntimeInput: jest.fn(
+      (_assistant, _workingDirectory, settings) => ({
+        workspaceRoot: 'assistant-root',
+        protectedPaths: getProtectedVaultPathRules(settings),
+      }),
+    ),
+  }
+})
 
 jest.mock('../../components/chat-view/chat-runtime-profiles', () => ({
   CHAT_BLOCKED_TOOL_NAMES: [
@@ -594,10 +602,12 @@ describe('runBotAgentTurn', () => {
       mentionables: [],
     })
 
-    expect(runCalls[0].input.workspaceAccessPolicy).toEqual({
-      workspaceRoot: 'assistant-root',
-      protectedPaths: getProtectedVaultPathRules(settings),
-    })
+    expect(runCalls[0].input.workspaceAccessPolicy).toEqual(
+      expect.objectContaining({
+        workspaceRoot: 'assistant-root',
+        protectedPaths: getProtectedVaultPathRules(settings),
+      }),
+    )
   })
 
   it('streams progressive updates through a streaming-capable adapter and finalizes once', async () => {

@@ -767,16 +767,13 @@ export function useChatStreamManager({
             : resolveWorkspaceScopeForRuntimeInput(selectedAssistant),
           // fork 特有：工作目录领域（backup 语义）同样受模块模式隔离——
           // assistant 不参与时，其 workspace access policy 不得泄入运行。
-          // 注入宿主托管保护路径（backup agent-api 语义）：chat 运行的
-          // fs/bash/git-diff 工具永远不能触达插件私有数据，无论绑定的
-          // assistant 的 policy 怎么配置。
+          // 宿主托管保护路径由 resolveWorkspaceAccessPolicyForRuntimeInput
+          // 统一注入（fs/bash/git-diff 永远不能触达插件私有数据）。
           workspaceAccessPolicy: isModuleMode
             ? undefined
-            : augmentWorkspacePolicyWithProtectedPaths(
-                resolveWorkspaceAccessPolicyForRuntimeInput(
-                  selectedAssistant,
-                  conversationOverrides?.workingDirectory ?? undefined,
-                ),
+            : resolveWorkspaceAccessPolicyForRuntimeInput(
+                selectedAssistant,
+                conversationOverrides?.workingDirectory ?? undefined,
                 settings,
               ),
           allowedSkillPaths,
