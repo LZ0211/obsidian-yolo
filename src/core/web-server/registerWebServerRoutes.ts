@@ -408,40 +408,42 @@ export function registerWebServerRoutes(
       return true
     },
     saveChat: async (request) => {
-      const current = await getChat(request.id)
-      if (!current) {
-        return registerChatRoutesContext.createChat(request)
-      }
-      const patch: Record<string, unknown> = {
-        messages: request.messages,
-        overrides: request.overrides,
-        conversationModelId: request.conversationModelId,
-        messageModelMap: request.messageModelMap,
-        activeBranchByUserMessageId: request.activeBranchByUserMessageId,
-        assistantGroupBoundaryMessageIds:
-          request.assistantGroupBoundaryMessageIds,
-        reasoningLevel: request.reasoningLevel,
-        compaction: request.compaction,
-      }
-      if (request.workingDirectory !== undefined) {
-        patch.workingDirectory = request.workingDirectory
-      }
-      // ChatManager.updateChat 是 spread 合并：客户端对象里 webBinding 通常
-      // 是 undefined（web 会话绑定由服务端维护），直接写入会把 run 时打上的
-      // webBinding 抹掉，导致后续审批/访问控制 404。undefined 时保留现状。
-      if (request.webBinding !== undefined) {
-        patch.webBinding = request.webBinding
-      }
-      await options.chatManager.updateChat(
-        request.id,
-        patch as unknown as ChatManagerUpdatePatch,
-        { touchUpdatedAt: request.touchUpdatedAt === true },
-      )
-      const saved = await getChat(request.id)
-      if (saved && saved.workingDirectory !== current?.workingDirectory) {
-        await invalidateChatRuntimeConversation(request.id)
-      }
-      return saved
+      return ChatManager.withConversationLock(request.id, async () => {
+        const current = await getChat(request.id)
+        if (!current) {
+          return registerChatRoutesContext.createChat(request)
+        }
+        const patch: Record<string, unknown> = {
+          messages: request.messages,
+          overrides: request.overrides,
+          conversationModelId: request.conversationModelId,
+          messageModelMap: request.messageModelMap,
+          activeBranchByUserMessageId: request.activeBranchByUserMessageId,
+          assistantGroupBoundaryMessageIds:
+            request.assistantGroupBoundaryMessageIds,
+          reasoningLevel: request.reasoningLevel,
+          compaction: request.compaction,
+        }
+        if (request.workingDirectory !== undefined) {
+          patch.workingDirectory = request.workingDirectory
+        }
+        // ChatManager.updateChat 是 spread 合并：客户端对象里 webBinding 通常
+        // 是 undefined（web 会话绑定由服务端维护），直接写入会把 run 时打上的
+        // webBinding 抹掉，导致后续审批/访问控制 404。undefined 时保留现状。
+        if (request.webBinding !== undefined) {
+          patch.webBinding = request.webBinding
+        }
+        await options.chatManager.updateChat(
+          request.id,
+          patch as unknown as ChatManagerUpdatePatch,
+          { touchUpdatedAt: request.touchUpdatedAt === true },
+        )
+        const saved = await getChat(request.id)
+        if (saved && saved.workingDirectory !== current?.workingDirectory) {
+          await invalidateChatRuntimeConversation(request.id)
+        }
+        return saved
+      })
     },
     generateTitle: async ({ conversationId, messages, force }) => {
       const current = await getChat(conversationId)
@@ -473,20 +475,22 @@ export function registerWebServerRoutes(
         settings: options.getSettings(),
       }),
     appendMessages: async (id, baseCount, newMessages, metadata) => {
-      const current = await getChat(id)
-      if (!current || current.messages.length !== baseCount) {
-        return { ok: false, conflict: true }
-      }
-      const updated = await options.chatManager.updateChat(
-        id,
-        {
-          ...metadata,
-          messages: [...current.messages, ...newMessages],
-        } as unknown as ChatManagerUpdatePatch,
-        { touchUpdatedAt: true },
-      )
-      if (!updated) return { ok: false, conflict: true }
-      return { ok: true, updatedAt: updated.updatedAt }
+      return ChatManager.withConversationLock(id, async () => {
+        const current = await getChat(id)
+        if (!current || current.messages.length !== baseCount) {
+          return { ok: false, conflict: true }
+        }
+        const updated = await options.chatManager.updateChat(
+          id,
+          {
+            ...metadata,
+            messages: [...current.messages, ...newMessages],
+          } as unknown as ChatManagerUpdatePatch,
+          { touchUpdatedAt: true },
+        )
+        if (!updated) return { ok: false, conflict: true }
+        return { ok: true, updatedAt: updated.updatedAt }
+      })
     },
     resolveChatBinding: (sessionId) => {
       const resolved = resolver.resolve({ sessionId })

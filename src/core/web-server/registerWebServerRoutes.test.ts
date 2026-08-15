@@ -234,6 +234,59 @@ describe('registerWebServerRoutes legacy external-agent web binding repair', () 
   })
 })
 
+describe('registerWebServerRoutes chat write boundary', () => {
+  beforeEach(() => {
+    mockResolveAgentContext.mockReset()
+  })
+
+  it('uses the same conversation lock for append and full save', async () => {
+    const conversation = makeConversation({
+      id: 'chat-write-boundary',
+      webBinding: {
+        initialAgentId: 'agent-current',
+        activeAgentId: 'agent-current',
+        rootHash: 'root-current',
+      },
+    })
+    const lock = jest.spyOn(ChatManager, 'withConversationLock')
+    const harness = createHarness([conversation])
+
+    try {
+      const appendResponse = await dispatchChat(
+        harness.router,
+        '/api/chat/append-messages',
+        {
+          id: conversation.id,
+          baseCount: 0,
+          newMessages: [
+            { id: 'message-1', role: 'user', content: 'append' },
+          ],
+        },
+      )
+      const saveResponse = await dispatchChat(
+        harness.router,
+        '/api/chat/save',
+        {
+          id: conversation.id,
+          messages: [
+            { id: 'message-2', role: 'user', content: 'save' },
+          ],
+        },
+      )
+
+      expect(appendResponse.statusCode).toBe(200)
+      expect(saveResponse.statusCode).toBe(200)
+      expect(lock.mock.calls).toEqual([
+        [conversation.id, expect.any(Function)],
+        [conversation.id, expect.any(Function)],
+      ])
+    } finally {
+      lock.mockRestore()
+      await harness.dispose()
+    }
+  })
+})
+
 function makeConversation(
   overrides: Partial<WebChatConversation>,
 ): WebChatConversation {
@@ -386,6 +439,30 @@ async function dispatchAgentState(
   request.method = 'GET'
   request.url = url
   request.headers = { [WEB_SESSION_HEADER]: sessionId }
+  const response = createResponse()
+  await resolved.handler(request as never, response as never, resolved.params)
+  return response
+}
+
+async function dispatchChat(
+  router: WebRouter,
+  route: string,
+  body: Record<string, unknown>,
+  sessionId = 'session-current',
+) {
+  const resolved = router.resolve('POST', route)
+  if (!resolved) throw new Error(`missing route: POST ${route}`)
+  const request = Readable.from([JSON.stringify(body)]) as Readable & {
+    method: string
+    url: string
+    headers: Record<string, string>
+  }
+  request.method = 'POST'
+  request.url = route
+  request.headers = {
+    [WEB_SESSION_HEADER]: sessionId,
+    'content-type': 'application/json',
+  }
   const response = createResponse()
   await resolved.handler(request as never, response as never, resolved.params)
   return response
