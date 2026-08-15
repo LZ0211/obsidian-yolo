@@ -282,7 +282,6 @@ function AgentToolsModalContent({
             <div className="yolo-mcp-servers-header yolo-builtin-tools-table-header">
               <div>{t('settings.mcp.tools', 'Tools')}</div>
               <div>{t('settings.agent.descriptionColumn', 'Description')}</div>
-              <div />
               <div>{t('settings.mcp.enabled', 'Enabled')}</div>
             </div>
             <div className="yolo-mcp-server yolo-builtin-tools-table-body">
@@ -297,7 +296,6 @@ function AgentToolsModalContent({
                       description={tool.description}
                     />
                   </div>
-                  <div />
                   <div className="yolo-builtin-tools-table-control">
                     {tool.hasSettings ? (
                       <button
