@@ -68,17 +68,18 @@ describe('RemoteChatRuntimeAdapter', () => {
 
   it('does not reconnect after session_closed and surfaces a terminal error', () => {
     const { transport, calls } = createFakeTransport()
+    const open = jest.fn(() => transport)
     const adapter = new RemoteChatRuntimeAdapter(
       'claude-code',
       {
-        open: () => transport,
+        open,
         post: async () => ({ ok: true, json: async () => ({}) }),
         get: async () => ({ ok: true, json: async () => ({}) }),
       },
       'conv-1',
     )
     const runStates: Array<{ state: string; error?: string }> = []
-    adapter.subscribe((event) => {
+    const unsubscribe = adapter.subscribe((event) => {
       if (event.type === 'run.state') {
         runStates.push({
           state: event.payload.state,
@@ -99,6 +100,9 @@ describe('RemoteChatRuntimeAdapter', () => {
     const closeCalls = calls.filter((call) => call === 'close')
     expect(closeCalls.length).toBe(1)
     expect(calls).not.toContain('close-error')
+    unsubscribe()
+    adapter.subscribe(() => undefined)
+    expect(open).toHaveBeenCalledTimes(1)
     adapter.dispose()
   })
 

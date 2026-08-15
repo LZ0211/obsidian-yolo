@@ -389,6 +389,7 @@ export class RemoteChatRuntimeAdapter implements ChatRuntime {
     // 会话撤销（token revoke / 登出）：服务端发 `session_closed` 命名事件后
     // 关闭流。这是终态——继续退避重连只会撞上 401 并无限循环。
     this.eventSource.addEventListener('session_closed', () => {
+      this.disposed = true
       this.eventSource?.close()
       this.eventSource = null
       if (this.reconnectTimer != null) {
