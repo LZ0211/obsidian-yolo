@@ -282,6 +282,7 @@ export class MemoryIndexRuntime {
     this.knownPartitions.set(input.partition.partitionKey, input.partition)
     const store = await this.getStore()
     if (store.capability !== 'sqlite' || this.closed) return
+    let startsPeriodicMaintenance = false
     if (!this.queue) {
       this.queue = new MemoryIndexMaintenanceQueue({
         store,
@@ -306,9 +307,10 @@ export class MemoryIndexRuntime {
           }
         },
       })
-      this.ensurePeriodicMaintenance()
+      startsPeriodicMaintenance = true
     }
     this.queue.enqueueReconcile(input)
+    if (startsPeriodicMaintenance) this.ensurePeriodicMaintenance()
   }
 
   /**

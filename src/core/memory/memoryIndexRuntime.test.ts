@@ -21,6 +21,7 @@ import {
   planMemorySettingsReconcile,
   resolveMemoryRename,
 } from './memoryIndexRuntime'
+import { MemoryIndexMaintenanceQueue } from './memoryIndexMaintenanceQueue'
 import type { MemorySourceSnapshot } from './memoryManager'
 import { MemoryRecallOrchestrator } from './memoryRecallOrchestrator'
 import type { MemoryPartition } from './memoryTypes'
@@ -245,6 +246,46 @@ describe('memory index runtime adapter', () => {
     )
     expect(enqueueMaintenance).toHaveBeenCalledTimes(2)
     await runtime.close()
+  })
+
+  it('queues the initial reconcile before startup maintenance', async () => {
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const order: string[] = []
+    const store = {
+      capability: 'sqlite' as const,
+      close: jest.fn(async () => undefined),
+    } as unknown as MemoryIndexMaintenanceStore
+    const runtime = new MemoryIndexRuntime({ vault: {} } as never, () => ({
+      advancedMemoryIndexEnabled: true,
+    }))
+    const privateRuntime = runtime as unknown as {
+      storePromise: Promise<MemoryIndexMaintenanceStore>
+    }
+    privateRuntime.storePromise = Promise.resolve(store)
+    const enqueueMaintenance = jest
+      .spyOn(MemoryIndexMaintenanceQueue.prototype, 'enqueueMaintenance')
+      .mockImplementation(() => {
+        order.push('maintenance')
+      })
+    const enqueueReconcile = jest
+      .spyOn(MemoryIndexMaintenanceQueue.prototype, 'enqueueReconcile')
+      .mockImplementation(() => {
+        order.push('reconcile')
+      })
+
+    try {
+      runtime.onSourceCommitted({
+        partition,
+        sourcePath: 'YOLO/memory/global.md',
+      })
+      await new Promise<void>((resolve) => setImmediate(resolve))
+
+      expect(order).toEqual(['reconcile', 'maintenance'])
+    } finally {
+      enqueueMaintenance.mockRestore()
+      enqueueReconcile.mockRestore()
+      await runtime.close()
+    }
   })
 
   it('shares one app-scoped store and disables it through current settings', async () => {
