@@ -103,6 +103,7 @@ export type YoloChatRecord = {
 
 export type SaveYoloChatInput = {
   id: string
+  title?: string
   messages: ChatMessage[]
   assistantId?: string
   overrides?: ConversationOverrideSettings | null

@@ -50,6 +50,7 @@ const WORKING_DIRECTORY_LOCKED_MESSAGE =
 
 export type SaveChatRequest = {
   id: string
+  title?: string
   messages: ChatConversation['messages']
   overrides?: ChatConversation['overrides']
   conversationModelId?: ChatConversation['conversationModelId']

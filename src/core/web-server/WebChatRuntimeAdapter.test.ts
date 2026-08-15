@@ -611,7 +611,7 @@ describe('WebChatRuntimeAdapter.prepareRun', () => {
     expect(createChatMock).toHaveBeenCalledWith(
       expect.objectContaining({
         id: 'conv-1',
-        title: 'New chat',
+        title: '',
         origin: 'external-agent',
       }),
     )

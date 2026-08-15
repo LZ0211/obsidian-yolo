@@ -26,6 +26,11 @@ import type {
 } from '../yoloRuntime.types'
 
 import { createWebCompatApp } from './createWebCompatApp'
+import {
+  createWebChatManager,
+  type ChatClient,
+  type WebChatManager,
+} from './webChatManager'
 import { createWebCompatibilityBridge } from './createWebCompatibilityBridge'
 import { createWebCompatPlugin } from './createWebCompatPlugin'
 import { createWebMcpManager } from './createWebMcpManager'
@@ -616,6 +621,11 @@ export function createWebYoloRuntime({
       },
     },
   }
+
+  // Chat 组件/useChatHistory 的 chatManager 注入点：web 端走服务端
+  // /api/chat/*（session 作用域），不落客户端内存缓存。
+  ;(app as unknown as { __yoloWebChat?: WebChatManager }).__yoloWebChat =
+    createWebChatManager(runtime.chat as ChatClient)
 
   return Object.assign(runtime, {
     __yoloDispose: () => {

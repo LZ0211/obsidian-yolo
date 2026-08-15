@@ -606,7 +606,7 @@ async function resolveUniqueMarkdownPath(
 
 export type ExportChatConversationParams = {
   app: App
-  chatManager: ChatManager
+  chatManager: Pick<ChatManager, 'findById'>
   conversationId: string
   settings?: YoloSettingsLike | null
 }

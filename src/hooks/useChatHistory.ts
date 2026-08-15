@@ -318,6 +318,9 @@ export function useChatHistory(): UseChatHistory {
         if (yoloRuntime?.mode === 'web') {
           await yoloRuntime.chat.save({
             ...initialConversation,
+            // 空串"未命名"哨兵必须显式传给服务端——缺省时服务端回退
+            // 'New chat'，自动命名会误判为"已命名"而跳过。
+            title: DEFAULT_UNTITLED_CONVERSATION_TITLE,
             messages: compactedMessages.map((message) =>
               deserializeChatMessage(message, app),
             ),

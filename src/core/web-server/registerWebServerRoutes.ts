@@ -340,7 +340,10 @@ export function registerWebServerRoutes(
       const createdAt = Date.now()
       await options.chatManager.createChat({
         id: conversationId,
-        title: chat.title?.trim() ? chat.title : 'New chat',
+        // 显式空串是客户端"未命名"哨兵（桌面端语义）；仅缺省时才回退
+        // 'New chat'——空串会被 ChatManager.createChat 原样落库，自动命名
+        // 逻辑据此判定"仍未命名"。
+        title: chat.title !== undefined ? chat.title : 'New chat',
         messages: (chat.messages ?? []) as never,
         createdAt,
         updatedAt: createdAt,

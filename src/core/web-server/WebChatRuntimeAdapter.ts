@@ -1,5 +1,6 @@
 import type { App } from 'obsidian'
 
+import { DEFAULT_UNTITLED_CONVERSATION_TITLE } from '../../constants'
 import type { ChatMode } from '../../components/chat-view/chat-input/ChatModeSelect'
 import { resolveChatModeRuntime } from '../../components/chat-view/chat-runtime-profiles'
 import type { ChatManager } from '../../database/json/chat/ChatManager'
@@ -480,7 +481,9 @@ export class WebChatRuntimeAdapter {
       // 读都读到 binding）。
       return await this.options.chatManager.createChat({
         id: input.conversationId,
-        title: 'New chat',
+        // 空串"未命名"哨兵（桌面端语义）：标题为 'New chat' 会让自动命名
+        // 判定为"已命名"而跳过（isUntitledConversationTitle 不认该字面量）。
+        title: DEFAULT_UNTITLED_CONVERSATION_TITLE,
         messages: [],
         createdAt,
         updatedAt: createdAt,
