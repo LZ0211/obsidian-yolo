@@ -913,12 +913,16 @@ export function registerWebServerRoutes(
       }
       return {
         ok: true as const,
-        // 注入宿主托管保护路径清单（YOLO 数据目录等）——与桌面端 agent 通道
-        // （augmentWorkspacePolicyWithProtectedPaths）保持同一来源与替换语义。
-        // web 的 vault 路由此前缺失这一步，文件树/读写均未拦截保护路径。
+        // 合并 agent 配置的保护路径清单（workspacePolicy.protectedPaths）
+        // 与宿主托管规则（getProtectedVaultPathRules：YOLO 私有数据、pepper、
+        // journals 等）。web 的 vault 路由此前完全没有执行该清单。
         policy: {
           ...resolved.context.activeAgent.workspacePolicy,
-          protectedPaths: getProtectedVaultPathRules(options.getSettings()),
+          protectedPaths: [
+            ...(resolved.context.activeAgent.workspacePolicy.protectedPaths ??
+              []),
+            ...getProtectedVaultPathRules(options.getSettings()),
+          ],
         },
       }
     },

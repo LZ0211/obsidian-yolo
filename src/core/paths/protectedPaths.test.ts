@@ -109,6 +109,11 @@ describe('isProtectedVaultPath', () => {
     expect(isProtectedVaultPath('', rules)).toBe(false)
   })
 
+  it('protects the pepper and agent event store under the base dir', () => {
+    expect(isProtectedVaultPath('YOLO/share-token-pepper', rules)).toBe(true)
+    expect(isProtectedVaultPath('YOLO/agent.sqlite', rules)).toBe(true)
+  })
+
   it('handles vault-root addressing with a leading slash', () => {
     expect(isProtectedVaultPath('/Projects/proj-alpha/project.md', rules)).toBe(
       true,

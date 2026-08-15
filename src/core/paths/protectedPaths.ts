@@ -52,6 +52,9 @@ export const getProtectedVaultPathRules = (
     },
     { kind: 'prefix', path: `${baseDir}/${YOLO_MEMORY_SUBDIR}` },
     { kind: 'exact', path: `${baseDir}/${YOLO_VECTOR_DB_FILE_NAME}` },
+    // 加密材料与事件库：非点前缀、不在常规目录下，必须显式列入。
+    { kind: 'exact', path: `${baseDir}/share-token-pepper` },
+    { kind: 'exact', path: `${baseDir}/agent.sqlite` },
     // Fixed-name pointer file at the vault root.
     { kind: 'exact', path: YOLO_SYNC_POINTER_FILE_NAME },
     // The whole host-managed project zone.

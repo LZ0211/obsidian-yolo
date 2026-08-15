@@ -237,6 +237,29 @@ describe('workspacePermissionEngine', () => {
     ).toEqual({ ok: true, path: '/Projects/A/.skill-cache/data.json' })
   })
 
+  it('exempts skill operations from the protected-path list (skills 单独处理)', () => {
+    const protectedPolicy = {
+      ...policy,
+      protectedPaths: [{ kind: 'prefix' as const, path: 'Projects/A/YOLO' }],
+    }
+
+    expect(
+      decideWorkspacePathAccess({
+        policy: protectedPolicy,
+        operation: 'skill_read',
+        path: 'YOLO/skills/review/SKILL.md',
+      }),
+    ).toEqual({ ok: true, path: '/Projects/A/YOLO/skills/review/SKILL.md' })
+
+    expect(
+      decideWorkspacePathAccess({
+        policy: protectedPolicy,
+        operation: 'read',
+        path: 'YOLO/skills/review/SKILL.md',
+      }),
+    ).toMatchObject({ ok: false })
+  })
+
   it('denies protected paths for read, list, and write regardless of the workspace root', () => {
     const protectedPolicy = {
       ...policy,
