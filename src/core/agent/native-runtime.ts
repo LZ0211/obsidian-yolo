@@ -251,7 +251,6 @@ export class NativeAgentRuntime implements AgentRuntime {
       workspaceAccessPolicy: input.workspaceAccessPolicy,
       allowedSkillPaths: input.allowedSkillPaths,
       apiType: input.apiType,
-      runContext: input.runContext,
       subagentParentContext: input.systemPromptOverride
         ? undefined
         : buildSubagentParentContext(input, this.loopConfig),

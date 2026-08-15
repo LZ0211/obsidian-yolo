@@ -118,6 +118,8 @@ import type {
   RuntimeComponentLease,
 } from '../runtime-components/contracts'
 import { setRuntimeComponentAcquirerForTests } from '../runtime-components/runtimeComponentAccess'
+import { executeBuiltinTool } from '../tools/dispatcher'
+import type { LocalToolCallResult, ToolContext } from '../tools/types'
 
 import { buildJsSandboxToolDescription } from './jsSandboxSettings'
 import {
@@ -129,13 +131,37 @@ import {
 } from './jsSandboxTool'
 import { USER_FACING_LOCAL_TOOL_SHORT_NAMES } from './localFileToolNames'
 import {
-  callLocalFileTool,
   getLocalFileTools,
   isLocalFsWriteToolName,
   parseLocalFsActionFromToolArgs,
   recoverLikelyEscapedBackslashSequences,
   workspacePolicyToUpstreamScope,
 } from './localFileTools'
+
+/**
+ * The old `callLocalFileTool` switch was deleted once every built-in tool
+ * lived in the registry (docs/plans/2026-08-15-tool-registry, D12). These
+ * suites are the original behavioural coverage for those tools, so they
+ * stay — re-pointed at the one remaining execution path. The adapter keeps
+ * their call shape unchanged so the re-point is visibly a boundary swap and
+ * nothing else.
+ */
+const callLocalFileTool = ({
+  toolName,
+  args,
+  ...context
+}: ToolContext & {
+  toolName: string
+  args: Record<string, unknown>
+}): Promise<LocalToolCallResult> =>
+  executeBuiltinTool(toolName, args, {
+    // `delegate_subagent` used to import `runner.ts` itself; it now receives
+    // it through `ToolContext` (mcpManager.ts does the same injection in
+    // production). Defaulted here so the suites below keep asserting against
+    // the module mock at the top of this file, and still overridable per call.
+    runSubagent: runSubagent as unknown as ToolContext['runSubagent'],
+    ...context,
+  })
 
 afterEach(() => {
   editUndoSnapshotStore.clear()

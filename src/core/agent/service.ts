@@ -2,7 +2,6 @@ import { v4 as uuidv4 } from 'uuid'
 
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import {
-  AgentFileChange,
   ChatConversationCompactionLike,
   ChatConversationCompactionState,
   ChatMessage,
@@ -26,18 +25,11 @@ import { captureLLMDebugOperation } from '../llm/debugCapture'
 import {
   TERMINAL_COMMAND_TOOL_NAME,
   getLocalFileToolServerName,
-} from '../mcp/localFileToolNames'
-import type { McpManager } from '../mcp/mcpManager'
+} from '../mcp/localFileTools'
 import { parseToolName } from '../mcp/tool-name-utils'
-import {
-  MemoryExtractionQueue,
-  type MemoryExtractionQueueTask,
-} from '../memory/memoryExtractionQueue'
 
-import type { AgentFileChangeTracker } from './agentFileChangeTracker'
 import {
   type BackgroundTaskEvent,
-  type SubagentCumulativeUsage,
   backgroundTaskCompletionBus,
 } from './background-task/completion-bus'
 import {
@@ -46,10 +38,7 @@ import {
 } from './bash/command-classifier'
 import type { BashTaskRecord } from './bash/types'
 import { DEFAULT_BRANCH_ID } from './branch'
-import {
-  CitationRegistry,
-  attachSourcesToLatestAssistant,
-} from './citationRegistry'
+import { CitationRegistry } from './citationRegistry'
 import { NativeAgentRuntime } from './native-runtime'
 import { PromptSourceWatcher } from './promptSourceWatcher'
 import {
@@ -57,33 +46,12 @@ import {
   buildSubagentParentContext,
 } from './subagent/parent-context'
 import {
-  PARENT_SUBAGENT_TIMEOUT_ERROR,
-  clearParentSubagentDeadline,
-  clearParentSubagentTimeoutSettled,
-  hasParentSubagentDeadline,
-  isParentSubagentToolCallTimedOut,
-  markParentSubagentTimeoutSettled,
-  recordParentSubagentSuccess,
-  recordParentSubagentTimeout,
-  registerParentSubagentDeadline,
-} from './subagent/pending-timeout-registry'
-import {
-  SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH,
-  getSubagentResultMaxChars,
-  truncateSubagentResult,
-} from './subagent/result-limit'
-import {
   type SubagentRuntimeEntry,
   subagentRuntimeRegistry,
 } from './subagent/runtime-registry'
 import { subagentTaskRegistry } from './subagent/task-registry'
-import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './subagent/tool-name-utils'
-import type {
-  SubagentTaskCompletionRecord,
-  SubagentTaskSummary,
-} from './subagent/types'
+import type { SubagentTaskRecord } from './subagent/types'
 import { SystemPromptSnapshotStore } from './systemPromptSnapshotStore'
-import type { MemoryExtractionRequest } from './types'
 import {
   AgentRunContext,
   AgentRuntimeLoopConfig,
@@ -224,8 +192,6 @@ type AgentServiceOptions = {
     status: AgentRunStatus
     touchUpdatedAt?: boolean
   }) => Promise<void>
-  /** Tracks file changes made during a run (workspace-scoped). */
-  fileChangeTracker?: AgentFileChangeTracker
 }
 
 export type AgentReplaceConversationMessagesReason =
@@ -239,51 +205,11 @@ export type AgentReplaceConversationMessagesReason =
 // in-flight upload of the same file.
 export const RUNNING_PERSIST_MIN_INTERVAL_MS = 15_000
 
-const isDelegateSubagentToolName = (toolName: string): boolean =>
-  (toolName.includes('__')
-    ? toolName.slice(toolName.indexOf('__') + 2)
-    : (toolName.split(/[/:]/).pop() ?? toolName)) ===
-  DELEGATE_SUBAGENT_TOOL_SHORT_NAME
-
-/** Locate the child task record (if any) whose parent tool call is `toolCallId`. */
-const findSubagentTaskByParentToolCall = (
-  toolCallId: string,
-): SubagentTaskSummary | undefined =>
-  subagentTaskRegistry
-    .list()
-    .find(
-      (record) =>
-        record.source.type === 'llm_tool_call' &&
-        record.source.toolCallId === toolCallId,
-    )
-
-/**
- * Synthetic completion text injected when a parent `delegate_subagent` call
- * expires without a heartbeat (pre `native-runtime.ts:183-185`).
- */
-const SUBAGENT_TIMEOUT_CONTENT =
-  'The delegated subagent did not respond before its deadline, so this delegation timed out and the child run was aborted. The parent agent may retry with a different approach or take over the task directly.'
-
 function buildSubagentResultMessage(
-  record: SubagentTaskCompletionRecord,
-  usage?: SubagentCumulativeUsage,
+  record: SubagentTaskRecord,
 ): ChatSubagentResultMessage {
   const completedAt = record.completedAt ?? Date.now()
   const result = record.result
-  // Bound the child's result text to the configured cap before it is injected
-  // into the parent conversation (pre `withBoundedSubagentResultContent`). The
-  // content budget reserves room for the truncation marker so the injected
-  // total stays at or under `subagentResultMaxChars`. The full result remains
-  // in the child's durable session transcript — this only caps the copy
-  // re-sent to the parent.
-  const contentBudget = Math.max(
-    1,
-    getSubagentResultMaxChars() - SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH,
-  )
-  const content = truncateSubagentResult(
-    result?.content ?? record.error ?? '',
-    contentBudget,
-  ).text
   return {
     role: 'subagent_result',
     id: uuidv4(),
@@ -293,25 +219,14 @@ function buildSubagentResultMessage(
     status:
       result?.status ??
       (record.status === 'running' ? 'completed' : record.status),
-    content,
+    content: result?.content ?? record.error ?? '',
     activityLog: result?.activityLog ?? record.activityLog,
     durationMs: result?.durationMs ?? completedAt - record.createdAt,
     toolUseCount: result?.toolUseCount ?? 0,
-    // Prefer the bus event's cumulative projection (whole-transcript sum) over
-    // the record's own `result.usage` (same source, kept as fallback for
-    // events carrying no projection). Pre `service.ts:281-287` semantics.
-    usage: usage
-      ? {
-          prompt_tokens: usage.inputTokens,
-          completion_tokens: usage.outputTokens,
-          total_tokens: usage.inputTokens + usage.outputTokens,
-        }
-      : result?.usage,
+    usage: result?.usage,
     prompt: result?.prompt ?? record.prompt,
     modelName: result?.modelName,
     transcript: result?.transcript ?? record.liveTranscript,
-    // F2/F11: project the delegated role display name (write site: runner).
-    delegatedRoleName: result?.delegatedRoleName,
     delegateAssistantMessageId:
       record.source.type === 'llm_tool_call'
         ? record.source.assistantMessageId
@@ -1000,18 +915,6 @@ export class AgentService {
    * while the microtask spawning the next `run()` is still pending.
    */
   private continuationScheduledByKey = new Set<string>()
-  /**
-   * Tool-call ids whose parent-side deadline was registered through the
-   * approval path (`registerApprovedSubagentDeadline`), keyed by conversation.
-   * Unlike the auto-approved path (whose deadlines are run-scoped in
-   * `NativeAgentRuntime.teardownSubagentDeadlines`), these are registered
-   * outside any `run()` call, so they need a conversation-scoped teardown of
-   * their own: when the parent conversation is aborted or dropped, every
-   * entry is cleared so a stale `setTimeout` cannot fire later and inject a
-   * synthetic timeout record into the abandoned conversation while also
-   * incrementing the breaker (pre `native-runtime.ts` teardown semantics).
-   */
-  private approvedSubagentDeadlineToolCallIds = new Map<string, Set<string>>()
   private abortedQueuedMessagesSubscribers =
     new Set<AbortedQueuedMessagesSubscriber>()
   /**
@@ -1021,18 +924,6 @@ export class AgentService {
    */
   private readonly systemPromptSnapshotStore = new SystemPromptSnapshotStore()
   private readonly promptSourceWatcher = new PromptSourceWatcher()
-  private readonly memoryExtractionQueue = new MemoryExtractionQueue<
-    MemoryExtractionQueueTask & { request: MemoryExtractionRequest }
-  >(async (task, signal) => {
-    if (task.request.signal.aborted || signal.aborted) return
-    await task.request.requestContextBuilder.processMemoryTurn({
-      messages: task.request.messages,
-      providerClient: task.request.providerClient,
-      model: task.request.model,
-      assistantId: task.request.assistantId,
-      signal,
-    })
-  })
 
   constructor(private readonly options: AgentServiceOptions = {}) {}
 
@@ -1072,10 +963,6 @@ export class AgentService {
       runEntry.runtime?.abort()
       this.runEntriesByKey.delete(getRunKey(conversationId, runEntry.branchId))
     }
-    // The dropped conversation is abandoned: clear approval-path subagent
-    // deadlines so a stale timer cannot resurrect the conversation entry with
-    // a synthetic timeout record (and pollute the breaker) after deletion.
-    this.teardownApprovedSubagentDeadlines(conversationId)
 
     const runKeyPrefix = `${conversationId}::`
     for (const key of [...this.pendingUserMessagesByKey.keys()]) {
@@ -1227,47 +1114,6 @@ export class AgentService {
 
   private handleBackgroundTaskCompleted(event: BackgroundTaskEvent): void {
     const { conversationId } = event
-    // Subagent settlement bookkeeping (pre `service.ts:2065-2095` semantics):
-    // - The result landed: clear the parent-side deadline so the pending
-    //   `delegate_subagent` call no longer awaits a timeout.
-    // - A timed-out delegation aborts the child, whose own run then emits an
-    //   (aborted) completion through the same bus. Discard that child result:
-    //   only the synthetic timeout result should be projected, and the marker
-    //   is no longer needed once the racing completion is consumed.
-    // - A genuine successful completion proves the delegation pipeline has
-    //   recovered: reset the per-conversation consecutive-timeout breaker so
-    //   new delegation is allowed again. The synthetic timeout settlement is
-    //   aborted, so it never counts as a success.
-    if (
-      event.kind === 'subagent' &&
-      event.record.source.type === 'llm_tool_call'
-    ) {
-      const toolCallId = event.record.source.toolCallId
-      clearParentSubagentDeadline(toolCallId)
-      // Keep the approval-path teardown set bounded: the result landed, so no
-      // abort-time cleanup is needed for this call anymore.
-      this.approvedSubagentDeadlineToolCallIds
-        .get(conversationId)
-        ?.delete(toolCallId)
-      if (
-        event.record.error !== PARENT_SUBAGENT_TIMEOUT_ERROR &&
-        isParentSubagentToolCallTimedOut(toolCallId)
-      ) {
-        clearParentSubagentTimeoutSettled(toolCallId)
-        this.compactCompletedBackgroundTaskRecord(event)
-        return
-      }
-      if (
-        this.findToolCall(conversationId, toolCallId)?.toolCall.response
-          .status === ToolCallResponseStatus.Aborted
-      ) {
-        this.compactCompletedBackgroundTaskRecord(event)
-        return
-      }
-      if (event.record.result?.status === 'completed') {
-        recordParentSubagentSuccess(conversationId)
-      }
-    }
     if (this.droppedConversationIds.has(conversationId)) {
       this.compactCompletedBackgroundTaskRecord(event)
       return
@@ -1304,7 +1150,7 @@ export class AgentService {
   ): ChatMessage {
     switch (event.kind) {
       case 'subagent':
-        return buildSubagentResultMessage(event.record, event.usage)
+        return buildSubagentResultMessage(event.record)
       case 'terminal_command':
       case 'terminal_command_waiting':
         return buildTerminalCommandResultMessage(event.record)
@@ -1573,11 +1419,6 @@ export class AgentService {
     const lastRunInput = activeRunInput ?? recoveryContext?.lastRunInput ?? null
     const lastLoopConfig =
       activeLoopConfig ?? recoveryContext?.lastLoopConfig ?? null
-    const lastRunContext =
-      located.runEntry?.lastRunContext ??
-      recoveryContext?.lastRunContext ??
-      null
-
     if (!lastRunInput || !lastLoopConfig) {
       return false
     }
@@ -1647,19 +1488,6 @@ export class AgentService {
       return false
     }
 
-    // A previously approval-paused `delegate_subagent` call enters `Running`
-    // only here (the tool-phase registration in `NativeAgentRuntime` skipped
-    // it because it was not auto-approved). Register a deadline so a
-    // post-approval hang still settles as a timeout, aborts the child, and
-    // increments the breaker (pre `native-runtime.ts:307-313` semantics).
-    if (isDelegateSubagentToolName(toolCall.request.name)) {
-      this.registerApprovedSubagentDeadline({
-        toolCallId,
-        conversationId,
-        mcpManager: lastRunInput.mcpManager,
-      })
-    }
-
     const toolArgs = getToolCallArgumentsObject(toolCall.request.arguments)
     const debugTraceId = this.findDebugTraceIdForToolCall(
       messagesBeforeApproval,
@@ -1690,23 +1518,17 @@ export class AgentService {
             conversationMessages: runningMessages,
             roundId: toolMessage.id,
             chatModelId: lastRunInput.model.id,
-            workspaceAccessPolicy: lastRunInput.workspaceAccessPolicy,
-            runContext: lastRunContext ?? undefined,
+            workspaceScope: lastRunInput.workspaceScope,
             subagentParentContext: buildSubagentParentContext(
               lastRunInput,
               lastLoopConfig,
             ),
             // This call bypasses `AgentToolGateway` (approval already
-            // happened), so it can't read the gateway's live options — read
-            // the persisted snapshot instead. See
+            // happened), so it can't read the gateway's live `bashReadOnly`
+            // option — read the persisted snapshot instead. See
             // `ToolCallRequest.metadata.executionConstraints`.
             bashReadOnly:
               toolCall.request.metadata?.executionConstraints?.bashReadOnly,
-            bashApprovalMode:
-              toolCall.request.metadata?.executionConstraints?.bashApprovalMode,
-            allowedSkillPaths:
-              toolCall.request.metadata?.executionConstraints
-                ?.allowedSkillPaths,
           }),
         getResponseBody: (response) => response,
       }),
@@ -1721,23 +1543,6 @@ export class AgentService {
       return false
     }
 
-    // The dispatch failed before a child was admitted (invalid
-    // delegatedRoleId / empty model pool / unregistered model all fail inside
-    // `callTool`, returning an Error response without spawning a subagent), so
-    // no child completion will ever land through the completion bus to clear
-    // the deadline registered above. Clear it here, mirroring the auto path's
-    // `NativeAgentRuntime.cleanupSettledSubagentDeadlines`: a terminal
-    // non-Success result means no live child, and leaving the timer armed
-    // would later inject a synthetic timeout into the settled call and
-    // increment the breaker (ghost timeout). `Success` keeps the deadline —
-    // the child runs in the background and its completion clears it.
-    if (
-      result.status !== ToolCallResponseStatus.Success &&
-      result.status !== ToolCallResponseStatus.Running
-    ) {
-      this.cleanupApprovedSubagentDeadline({ toolCallId, conversationId })
-    }
-
     if (isTrailingResolvedToolMessage(nextMessages, toolMessage.id)) {
       await this.run({
         conversationId,
@@ -1747,234 +1552,6 @@ export class AgentService {
     }
 
     return true
-  }
-
-  /**
-   * Register a wall-clock deadline for an approval-paused `delegate_subagent`
-   * call that the user just approved. The auto-approved path registers in the
-   * runtime's `tool_phase`; this covers calls that were `PendingApproval` at
-   * tool-message creation and only enter `Running` after `approveToolCall`
-   * executes them. `onExpire` settles the call as `error`, aborts the child,
-   * injects a synthetic timeout result, and increments the breaker.
-   */
-  private registerApprovedSubagentDeadline({
-    toolCallId,
-    conversationId,
-    mcpManager,
-  }: {
-    toolCallId: string
-    conversationId: string
-    mcpManager: McpManager
-  }): void {
-    if (hasParentSubagentDeadline(toolCallId)) return
-    // Track the call in the conversation-scoped teardown set so an aborted or
-    // dropped parent conversation clears the deadline (see
-    // `teardownApprovedSubagentDeadlines`). The completion path also removes
-    // the id here (`handleBackgroundTaskCompleted`), keeping the set bounded
-    // to live deadlines.
-    const registered =
-      this.approvedSubagentDeadlineToolCallIds.get(conversationId)
-    if (registered) {
-      registered.add(toolCallId)
-    } else {
-      this.approvedSubagentDeadlineToolCallIds.set(
-        conversationId,
-        new Set([toolCallId]),
-      )
-    }
-    registerParentSubagentDeadline({
-      toolCallId,
-      conversationId,
-      onExpire: ({
-        toolCallId: expiredToolCallId,
-        conversationId: expiredConversationId,
-      }) => {
-        this.handleParentSubagentDeadlineExpiry({
-          toolCallId: expiredToolCallId,
-          conversationId: expiredConversationId,
-          mcpManager,
-        })
-      },
-    })
-  }
-
-  /**
-   * Approval-path mirror of `NativeAgentRuntime.cleanupSettledSubagentDeadlines`
-   * for the auto path: an approved `delegate_subagent` dispatch that settled to
-   * a terminal non-Success outcome admitted no child, so no completion will
-   * ever arrive through the bus to clear the deadline. Clear it (plus the
-   * teardown-set entry and any settled marker when no child task exists) so the
-   * timer cannot fire later into the settled call — synthetic timeout injection
-   * + breaker increment (ghost timeout).
-   */
-  private cleanupApprovedSubagentDeadline({
-    toolCallId,
-    conversationId,
-  }: {
-    toolCallId: string
-    conversationId: string
-  }): void {
-    clearParentSubagentDeadline(toolCallId)
-    // Keep the approval-path teardown set bounded like
-    // `handleBackgroundTaskCompleted` does for the success path.
-    this.approvedSubagentDeadlineToolCallIds
-      .get(conversationId)
-      ?.delete(toolCallId)
-    if (!findSubagentTaskByParentToolCall(toolCallId)) {
-      clearParentSubagentTimeoutSettled(toolCallId)
-    }
-  }
-
-  /**
-   * Conversation-scoped teardown of approval-path deadlines, mirroring
-   * `NativeAgentRuntime.teardownSubagentDeadlines(aborted)` for the auto path:
-   * when the parent run is aborted or the conversation dropped, every
-   * registered deadline and settled marker is cleared so a stale timer cannot
-   * fire later into the abandoned conversation (synthetic timeout injection +
-   * breaker increment). On an aborted conversation the child's own run is
-   * aborted too, so no live deadline is being discarded.
-   */
-  private teardownApprovedSubagentDeadlines(conversationId: string): void {
-    const toolCallIds =
-      this.approvedSubagentDeadlineToolCallIds.get(conversationId)
-    if (!toolCallIds) return
-    for (const toolCallId of toolCallIds) {
-      clearParentSubagentDeadline(toolCallId)
-      clearParentSubagentTimeoutSettled(toolCallId)
-    }
-    this.approvedSubagentDeadlineToolCallIds.delete(conversationId)
-  }
-
-  private handleParentSubagentDeadlineExpiry({
-    toolCallId,
-    conversationId,
-    mcpManager,
-  }: {
-    toolCallId: string
-    conversationId: string
-    mcpManager: McpManager
-  }): void {
-    // 1. Abort the child run through the existing per-task abort path.
-    const childTask = findSubagentTaskByParentToolCall(toolCallId)
-    if (childTask) {
-      subagentTaskRegistry.abort(childTask.taskId)
-    }
-    // 2. Settle a still-in-flight `mcpManager.callTool` executor (the approval
-    //    path bypasses the tool gateway) so the approve call can return.
-    mcpManager.abortToolCall(toolCallId)
-    // 3. Record the timeout settlement in the survival set (independent of the
-    //    deadline entry, which this handler's own synthetic result clears via
-    //    `handleBackgroundTaskCompleted`) so the double-injection guard keeps
-    //    working against the child's racing (abort) completion.
-    markParentSubagentTimeoutSettled(toolCallId)
-    // 4. Mark the tool call `error` in the authoritative conversation state.
-    //    Master's `ToolCallResponseStatus` has no `timeout` variant, so the
-    //    `PARENT_SUBAGENT_TIMEOUT_ERROR` marker on the error carries the
-    //    settlement classification.
-    this.updateToolCallResponse({
-      conversationId,
-      toolCallId,
-      response: {
-        status: ToolCallResponseStatus.Error,
-        error: PARENT_SUBAGENT_TIMEOUT_ERROR,
-      },
-    })
-    // 5. Inject a synthetic timeout result through the same completion bus the
-    //    subagent runner uses, mirroring the service's completion-injection
-    //    path (`buildBackgroundTaskResultMessage`).
-    const syntheticRecord = this.buildSubagentTimeoutCompletionRecord({
-      toolCallId,
-      childTask,
-      conversationId,
-    })
-    backgroundTaskCompletionBus.pushCompleted({
-      kind: 'subagent',
-      taskId: syntheticRecord.taskId,
-      conversationId: syntheticRecord.conversationId,
-      record: syntheticRecord,
-    })
-    // 6. Increment the per-conversation breaker.
-    recordParentSubagentTimeout(conversationId)
-  }
-
-  private buildSubagentTimeoutCompletionRecord({
-    toolCallId,
-    childTask,
-    conversationId,
-  }: {
-    toolCallId: string
-    childTask?: SubagentTaskSummary
-    conversationId: string
-  }): SubagentTaskCompletionRecord {
-    const now = Date.now()
-    const located = this.findToolCall(conversationId, toolCallId)
-    const requestArgs = located
-      ? getToolCallArgumentsObject(located.toolCall.request.arguments)
-      : undefined
-    const title =
-      typeof requestArgs?.description === 'string'
-        ? requestArgs.description
-        : 'Subagent task'
-    const prompt =
-      typeof requestArgs?.prompt === 'string' ? requestArgs.prompt : ''
-    const taskId = childTask?.taskId ?? `sub_timeout_${toolCallId}`
-    const createdAt = childTask?.createdAt ?? now
-    return {
-      taskId,
-      conversationId,
-      source: {
-        type: 'llm_tool_call',
-        toolCallId,
-        assistantMessageId: this.findSourceAssistantMessageId(
-          conversationId,
-          toolCallId,
-        ),
-      },
-      title,
-      status: 'aborted',
-      createdAt,
-      completedAt: now,
-      prompt,
-      activityLog: '[state] subagent timed out',
-      error: PARENT_SUBAGENT_TIMEOUT_ERROR,
-      result: {
-        taskId,
-        status: 'aborted',
-        content: SUBAGENT_TIMEOUT_CONTENT,
-        activityLog: '[state] subagent timed out',
-        durationMs: now - createdAt,
-        toolUseCount: 0,
-        prompt,
-        ...(childTask?.result?.modelName
-          ? { modelName: childTask.result.modelName }
-          : {}),
-      },
-    }
-  }
-
-  private findSourceAssistantMessageId(
-    conversationId: string,
-    toolCallId: string,
-  ): string {
-    const located = this.findToolCall(conversationId, toolCallId)
-    if (!located) return ''
-    const messages =
-      located.runEntry?.state.messages ??
-      this.getOrCreateConversationEntry(conversationId).state.messages
-    const toolMessageIndex = messages.findIndex(
-      (message) =>
-        message.role === 'tool' &&
-        message.toolCalls.some(
-          (toolCall) => toolCall.request.id === toolCallId,
-        ),
-    )
-    if (toolMessageIndex === -1) return ''
-    for (let index = toolMessageIndex - 1; index >= 0; index -= 1) {
-      if (messages[index].role === 'assistant') {
-        return messages[index].id
-      }
-    }
-    return ''
   }
 
   /**
@@ -2209,27 +1786,11 @@ export class AgentService {
       // Scope the per-conversation allow to the parent conversation so the
       // user's "allow for this chat" decision applies uniformly to both the
       // parent and any subagents it dispatches.
-      if (request.metadata?.approvalPolicy === 'always-require-user') {
-        // Mirrors the parent-conversation guard in `approveToolCall`:
-        // module chat mode tools declared `requiresApproval: true` are an
-        // unconditional per-call confirmation gate and must never be added
-        // to the conversation's "always allow" list, even when the approval
-        // is routed into a subagent runtime.
-        console.warn(
-          '[YOLO] Ignoring allowForConversation: tool call approval policy is always-require-user',
-          {
-            conversationId: entry.parentConversationId,
-            toolCallId,
-            toolName: request.name,
-          },
-        )
-      } else {
-        entry.mcpManager.allowToolForConversation(
-          request.name,
-          entry.parentConversationId,
-          getToolCallArgumentsObject(request.arguments),
-        )
-      }
+      entry.mcpManager.allowToolForConversation(
+        request.name,
+        entry.parentConversationId,
+        getToolCallArgumentsObject(request.arguments),
+      )
     }
 
     entry.runtime.setToolCallResponse(toolCallId, {
@@ -2247,17 +1808,6 @@ export class AgentService {
           conversationId: entry.parentConversationId,
           conversationMessages: entry.runtime.getMessages(),
           roundId: located.toolMessage.id,
-          signal: entry.abortSignal,
-          workspaceAccessPolicy: request.metadata?.workspaceAccessPolicy,
-          // This call bypasses `AgentToolGateway` (approval already
-          // happened), so it can't read the gateway's live options — read
-          // the persisted snapshot instead. See
-          // `ToolCallRequest.metadata.executionConstraints`.
-          bashReadOnly: request.metadata?.executionConstraints?.bashReadOnly,
-          bashApprovalMode:
-            request.metadata?.executionConstraints?.bashApprovalMode,
-          allowedSkillPaths:
-            request.metadata?.executionConstraints?.allowedSkillPaths,
         }),
       )
     } catch (error) {
@@ -2313,16 +1863,6 @@ export class AgentService {
       conversationId,
       toolCallId,
     )
-    // A manual abort of a `delegate_subagent` call must reach the child too:
-    // `delegate_subagent` returns immediately after spawning, so by the time
-    // the user hits abort the call is no longer in `mcpManager.activeToolCalls`
-    // and the child would otherwise keep running to completion and inject a
-    // `[subagent_result]`. Reuse the deadline path's lookup (service.ts
-    // registerParentSubagentDeadline onExpire) to abort the child run.
-    const childTask = findSubagentTaskByParentToolCall(toolCallId)
-    if (childTask) {
-      subagentTaskRegistry.abort(childTask.taskId)
-    }
     const located = this.findToolCall(conversationId, toolCallId)
     if (!located) {
       return abortedForegroundTool
@@ -2435,13 +1975,14 @@ export class AgentService {
     }
   }
 
-  private attachFileChangesToLatestAssistant(
+  private attachSourcesToLatestAssistant(
     messages: ChatMessage[],
-    fileChanges: AgentFileChange[],
+    registry: CitationRegistry,
   ): ChatMessage[] {
-    if (fileChanges.length === 0) {
+    if (registry.size === 0) {
       return messages
     }
+    const sources = registry.toArray()
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index]
       if (message.role !== 'assistant') {
@@ -2452,7 +1993,7 @@ export class AgentService {
         ...message,
         metadata: {
           ...message.metadata,
-          fileChanges,
+          sources,
         },
       }
       return next
@@ -2543,37 +2084,9 @@ export class AgentService {
     const historyMergeAnchorMessageId =
       input.sourceUserMessageId ?? input.messages.at(-1)?.id
 
-    // Workspace-scoped file change tracking: changes made during this run are
-    // collected (and git-diff enriched when a backend is available), bounded
-    // to the run's workspace access policy.
-    const fileChangeRunToken = this.options.fileChangeTracker?.beginRun({
-      workspaceAccessPolicy: input.workspaceAccessPolicy,
-    })
-    let fileChangesPromise: Promise<AgentFileChange[]> | null = null
-    const finishFileChangeTracking = (): Promise<AgentFileChange[]> => {
-      if (fileChangesPromise) return fileChangesPromise
-      // Git-diff enrichment may fail (e.g. vault without a git repo); a
-      // tracking failure must never break the run itself.
-      fileChangesPromise = (
-        fileChangeRunToken && this.options.fileChangeTracker
-          ? this.options.fileChangeTracker.finishRun(fileChangeRunToken)
-          : Promise.resolve([])
-      ).catch(() => [])
-      return fileChangesPromise
-    }
-
     const runtimeInput: AgentRuntimeRunInput = {
       ...input,
       runContext,
-      enqueueMemoryExtraction: input.systemPromptOverride
-        ? undefined
-        : (request) => {
-            this.memoryExtractionQueue.enqueue({
-              assistantId: request.assistantId,
-              id: `${conversationId}:${runId}`,
-              request,
-            })
-          },
       drainPendingUserMessages: () => {
         const queue = this.pendingUserMessagesByKey.get(runKey)
         if (!queue || queue.length === 0) {
@@ -2650,19 +2163,15 @@ export class AgentService {
     const backgroundExecutionReleasePromise = acquireBackgroundExecution()
     try {
       await runtime.run(runtimeInput)
-      const trackedFileChanges = await finishFileChangeTracking()
 
       const currentRunEntry = this.runEntriesByKey.get(runKey)
       if (!currentRunEntry || currentRunEntry.runToken !== runToken) {
         return
       }
 
-      const nextMessages = this.attachFileChangesToLatestAssistant(
-        attachSourcesToLatestAssistant(
-          currentRunEntry.state.messages,
-          citationRegistry,
-        ),
-        trackedFileChanges,
+      const nextMessages = this.attachSourcesToLatestAssistant(
+        currentRunEntry.state.messages,
+        citationRegistry,
       )
 
       currentRunEntry.state = {
@@ -2680,13 +2189,8 @@ export class AgentService {
       const aborted =
         input.abortSignal?.aborted ||
         (error instanceof Error && error.name === 'AbortError')
-      const trackedFileChanges = await finishFileChangeTracking()
       currentRunEntry.state = {
         ...currentRunEntry.state,
-        messages: this.attachFileChangesToLatestAssistant(
-          currentRunEntry.state.messages,
-          trackedFileChanges,
-        ),
         status: aborted ? 'aborted' : 'error',
         pendingCompactionAnchorMessageId: null,
         errorMessage: aborted ? undefined : formatErrorMessageWithCauses(error),
@@ -2697,7 +2201,6 @@ export class AgentService {
       }
     } finally {
       unsubscribe()
-      void finishFileChangeTracking()
       const currentRunEntry = this.runEntriesByKey.get(runKey)
       if (currentRunEntry && currentRunEntry.runToken === runToken) {
         currentRunEntry.runToken = null
@@ -2706,12 +2209,6 @@ export class AgentService {
         }
       }
       this.finalizeSettledConversationRuns(conversationId)
-      // An aborted parent run abandons the conversation: clear approval-path
-      // subagent deadlines (the auto path tears its own down inside
-      // `NativeAgentRuntime`, the approval path registers outside any run).
-      if (input.abortSignal?.aborted) {
-        this.teardownApprovedSubagentDeadlines(conversationId)
-      }
       this.maybeScheduleAfterRunContinuation({
         conversationId,
         branchId,
@@ -2867,19 +2364,6 @@ export class AgentService {
       for (const subscriber of this.abortedQueuedMessagesSubscribers) {
         subscriber(conversationId, droppedQueuedByConversation)
       }
-    }
-    // An aborted parent conversation must not keep approval-path subagent
-    // deadlines alive: a stale timer would inject a synthetic timeout record
-    // into the abandoned conversation and increment the breaker (pre
-    // `native-runtime.ts` teardown semantics).
-    this.teardownApprovedSubagentDeadlines(conversationId)
-    // Stop the conversation's running child subagents as well — without this,
-    // children whose parent tool call already settled keep running to
-    // completion after the parent session is stopped/aborted.
-    for (const task of subagentTaskRegistry.listByConversation(
-      conversationId,
-    )) {
-      subagentTaskRegistry.abort(task.taskId)
     }
     return didAbort
   }
