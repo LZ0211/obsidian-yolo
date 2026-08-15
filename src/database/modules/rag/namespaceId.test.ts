@@ -82,31 +82,10 @@ describe('vectorNamespaceId', () => {
     )
   })
 
-  it('isolates provider and endpoint identities', () => {
-    const openAi = vectorNamespaceId({
-      ...baseNamespace,
-      providerIdentity: 'provider-a',
-      endpointIdentity: 'https://api.example.com/v1/',
-    })
-    const otherProvider = vectorNamespaceId({
-      ...baseNamespace,
-      providerIdentity: 'provider-b',
-      endpointIdentity: 'https://api.example.com/v1/',
-    })
-    const otherEndpoint = vectorNamespaceId({
-      ...baseNamespace,
-      providerIdentity: 'provider-a',
-      endpointIdentity: 'https://proxy.example.com/v1',
-    })
-
-    expect(openAi).not.toBe(otherProvider)
-    expect(openAi).not.toBe(otherEndpoint)
-    expect(
-      vectorNamespaceId({
-        ...baseNamespace,
-        providerIdentity: 'provider-a',
-        endpointIdentity: 'https://api.example.com/v1',
-      }),
-    ).toBe(openAi)
+  it('keys namespaces by model and dimension only — provider/endpoint do not split them', () => {
+    // 同一模型的嵌入向量跨 provider/endpoint 兼容；endpoint 参与键值会
+    // 在换服务器时产生新 namespace（空索引表 → 每次全量重建）。
+    const base = vectorNamespaceId(baseNamespace)
+    expect(base).toBe('text-embedding-3-large-d1536')
   })
 })

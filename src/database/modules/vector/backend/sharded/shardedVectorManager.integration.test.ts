@@ -478,12 +478,12 @@ describe('VectorManager.reconcile over the sharded backend (端到端全链路)'
     expect(deletedPaths()).toEqual([])
   })
 
-  it('reports rebuild required when the manifest belongs to another embedding identity', async () => {
+  it('reuses the index when the embedding endpoint changes (identity removed from the key)', async () => {
     const legacyNamespace = createEmbeddingVectorNamespace({
       model: 'text-embedding-3-large',
       dimension: EMBEDDING_DIMENSION,
     })
-    const identityNamespace = createEmbeddingVectorNamespace({
+    const sameModelOtherEndpoint = createEmbeddingVectorNamespace({
       model: 'text-embedding-3-large',
       dimension: EMBEDDING_DIMENSION,
       providerId: 'openai',
@@ -507,9 +507,11 @@ describe('VectorManager.reconcile over the sharded backend (端到端全链路)'
       ],
     })
 
-    await expect(store.getStatus(identityNamespace)).resolves.toMatchObject({
-      rebuildRequired: true,
-      recoveryAction: 'rebuild_index',
+    // 同一模型换 provider：命名空间键相同，既有索引直接沿用。
+    await expect(
+      store.getStatus(sameModelOtherEndpoint),
+    ).resolves.toMatchObject({
+      rebuildRequired: false,
     })
     await expect(
       vault.adapter.read(getShardedManifestPath(BASE_DIR)),

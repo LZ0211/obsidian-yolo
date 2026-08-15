@@ -257,18 +257,11 @@ describe('SqliteVectorStore persistence', () => {
     fs.rmSync(rootDir, { recursive: true, force: true })
   })
 
-  test('does not claim a pre-identity index for a new embedding endpoint', async () => {
+  test('reuses the existing index across embedding endpoint changes (same model)', async () => {
+    // 命名空间只按模型+维度键控：同一模型换 endpoint 必须沿用既有索引，
+    // 而不是另建空 namespace 触发全量重建。
     const { rootDir, baseDir } = createTempStoreRoot()
-    const identityNamespace: VectorNamespace = {
-      ...namespace,
-      providerIdentity: 'openai',
-      endpointIdentity: 'https://api.openai.com/v1',
-    }
-    const legacyDbPath = getSqliteDbPath(baseDir, vectorNamespaceId(namespace))
-    const identityDbPath = getSqliteDbPath(
-      baseDir,
-      vectorNamespaceId(identityNamespace),
-    )
+    const indexDbPath = getSqliteDbPath(baseDir, vectorNamespaceId(namespace))
 
     const legacyStore = createStore(baseDir)
     await legacyStore.open()
@@ -281,12 +274,11 @@ describe('SqliteVectorStore persistence', () => {
     const store = createStore(baseDir)
     await store.open()
     try {
-      await expect(store.getStatus(identityNamespace)).resolves.toMatchObject({
-        rebuildRequired: true,
-        recoveryAction: 'rebuild_index',
+      await expect(store.getStatus(namespace)).resolves.toMatchObject({
+        rebuildRequired: false,
+        recoveryAction: 'none',
       })
-      expect(fs.existsSync(legacyDbPath)).toBe(true)
-      expect(fs.existsSync(identityDbPath)).toBe(false)
+      expect(fs.existsSync(indexDbPath)).toBe(true)
     } finally {
       await store.close()
       fs.rmSync(rootDir, { recursive: true, force: true })
