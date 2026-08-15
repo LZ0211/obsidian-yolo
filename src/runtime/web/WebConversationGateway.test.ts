@@ -33,6 +33,17 @@ const makeCommand = (
     ...draft,
   }) as ConversationCommand
 
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+} {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
 describe('createWebConversationGateway', () => {
   it('keeps a missing conversation at sequence 0 so the first submit creates it', async () => {
     const saves: unknown[] = []
@@ -295,5 +306,43 @@ describe('createWebConversationGateway', () => {
     ).settled
     expect(submitResult.status).toBe('accepted')
     expect((appends.at(-1) as { baseCount: number }).baseCount).toBe(2)
+  })
+
+  it('does not let an older refresh overwrite a newer projection', async () => {
+    const older = deferred<YoloChatRecord>()
+    const newer = deferred<YoloChatRecord>()
+    let requestCount = 0
+    const chat = {
+      get: async () => {
+        requestCount += 1
+        return requestCount === 1 ? older.promise : newer.promise
+      },
+    }
+    const gateway = createWebConversationGateway({ getChat: () => chat as never })
+
+    const olderRefresh = gateway.forceRefreshConversation('conv-race')
+    const newerRefresh = gateway.forceRefreshConversation('conv-race')
+    newer.resolve({
+      id: 'conv-race',
+      title: 'new',
+      messages: [{ id: 'new-message' }] as never,
+      createdAt: 1,
+      updatedAt: 2,
+      revision: 2,
+    } as never)
+    await newerRefresh
+    older.resolve({
+      id: 'conv-race',
+      title: 'old',
+      messages: [{ id: 'old-message' }] as never,
+      createdAt: 1,
+      updatedAt: 1,
+      revision: 1,
+    } as never)
+    await olderRefresh
+
+    expect(gateway.getSnapshot('conv-race').timelineIds).toEqual([
+      'new-message',
+    ])
   })
 })

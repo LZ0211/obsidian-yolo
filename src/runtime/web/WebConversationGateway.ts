@@ -202,11 +202,12 @@ export function createWebConversationGateway(input: {
       }
       return
     }
-    entry.localSequence = Math.max(
-      entry.localSequence,
+    const recordSequence = Math.max(
       record.revision ?? 0,
       record.messages.length > 0 ? 1 : 0,
     )
+    if (recordSequence < entry.localSequence) return
+    entry.localSequence = recordSequence
     entry.projection.applyDurableState(
       toState(record, entry.localSequence),
     )
