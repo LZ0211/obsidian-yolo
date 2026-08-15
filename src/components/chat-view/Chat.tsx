@@ -1620,12 +1620,12 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
 
   const dismissNativeCliSession = useCallback(
     async (conversationId: string, ref: CliSessionRef) => {
+      await cliRuntimeScope?.sessionService.removeOverlay(ref)
       setDismissedNativeCliSessions((previous) => {
         const next = new Set(previous)
         next.add(getCliSessionIdentity(ref))
         return next
       })
-      await cliRuntimeScope?.sessionService.removeOverlay(ref)
       if (conversationId === activeHistoryConversationId) {
         handleNewChat()
       }
@@ -1693,6 +1693,11 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       deletedConversationIdsRef.current.add(conversationId)
       try {
         const conversation = await getConversationById(conversationId)
+        if (conversation?.cliSession && cliRuntimeScope) {
+          await cliRuntimeScope.sessionService.removeOverlay(
+            conversation.cliSession,
+          )
+        }
         await deleteConversation(conversationId)
         // Per-conversation MCP tool allowances ("always allow in this chat")
         // die with the conversation — a later conversationId reuse must not
@@ -1708,9 +1713,6 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
             )
           })
         if (conversation?.cliSession && cliRuntimeScope) {
-          await cliRuntimeScope.sessionService.removeOverlay(
-            conversation.cliSession,
-          )
           // 删除只移除 YOLO overlay，provider 原生 transcript 仍在，discovery
           // 会再次发现该会话。不把身份记入 dismissedNativeCliSessions 的话，
           // 幽灵条目会立即回到历史列表，而 deletedConversationIdsRef 又禁止
