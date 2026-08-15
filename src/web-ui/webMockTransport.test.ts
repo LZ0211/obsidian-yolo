@@ -56,6 +56,18 @@ describe('createMockTransport', () => {
     expect(response.messages[19]?.content).toContain('```ts')
   })
 
+  it('serves the vault index used by the web runtime mention store', async () => {
+    const { client } = createMockTransport()
+
+    await expect(client.listVaultIndex()).resolves.toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ path: 'Projects/Smart RAG/README.md' }),
+      ]),
+      hasMore: false,
+      nextCursor: null,
+    })
+  })
+
   it('exposes the web skill endpoint and complete workspace-agent policies', async () => {
     const { client } = createMockTransport({ workspaceRoot: 'Projects' })
     const typedClient = client as typeof client & {

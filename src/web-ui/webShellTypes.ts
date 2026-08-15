@@ -31,6 +31,7 @@ export type ShellClient = {
     agentId: string,
   ) => Promise<{ session: { agentId: string }; allowedAgents: AllowedAgent[] }>
   listVaultFolder: WebApiClient['listVaultFolder']
+  listVaultIndex: WebApiClient['listVaultIndex']
   searchVault: WebApiClient['searchVault']
   previewVaultText: WebApiClient['previewVaultText']
   readVaultBinary: WebApiClient['readVaultBinary']

@@ -456,6 +456,13 @@ export function createMockTransport(options?: {
         hasMore: false,
       }
     },
+    async listVaultIndex() {
+      return {
+        items: getItems(),
+        nextCursor: null,
+        hasMore: false,
+      }
+    },
     async searchVault(query: string) {
       const q = query.toLowerCase()
       const allItems = getItems()
