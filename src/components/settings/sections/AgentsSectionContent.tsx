@@ -3,7 +3,7 @@ import {
   BookOpen,
   Check,
   ChevronDown,
-  Folder,
+  FolderOpen,
   Maximize2,
   User,
   Wrench,
@@ -28,8 +28,9 @@ import {
   getAssistantModelSelectValue,
   modelIdFromAssistantModelSelectValue,
 } from '../../../core/agent/assistant-model'
+import { countEnabledVisibleAssistantTools } from '../../../core/agent/tool-display-count'
 import {
-  buildDefaultBuiltinToolPreferences,
+  buildDefaultBuiltinCapabilityPreferences,
   buildServerToolTokenBudgets,
   getAssistantToolApprovalMode,
   getAssistantToolDisclosureMode,
@@ -42,7 +43,7 @@ import {
 } from '../../../core/agent/tool-preferences'
 import { applyDynamicToolDescriptions } from '../../../core/agent/tool-selection'
 import { getJsSandboxSettings } from '../../../core/mcp/jsSandboxSettings'
-import { getLocalFileToolServerName } from '../../../core/mcp/localFileToolNames'
+import { getLocalFileToolServerName } from '../../../core/mcp/localFileTools'
 import { getToolName, parseToolName } from '../../../core/mcp/tool-name-utils'
 import { getYoloSkillsDir } from '../../../core/paths/yoloPaths'
 import {
@@ -63,11 +64,7 @@ import {
   listCapabilities,
 } from '../../../core/tools/registry'
 import { useLiteSkillEntries } from '../../../hooks/useLiteSkillEntries'
-import {
-  type WorkspaceAgent,
-  type WorkspaceAgentBehaviorOverrides,
-  YoloSettings,
-} from '../../../settings/schema/setting.types'
+import { YoloSettings } from '../../../settings/schema/setting.types'
 import {
   AgentPersona,
   Assistant,
@@ -75,6 +72,7 @@ import {
   AssistantToolApprovalMode,
   AssistantToolDisclosureMode,
   AssistantToolPreference,
+  AssistantWorkspaceScope,
 } from '../../../types/assistant.types'
 import { McpTool } from '../../../types/mcp.types'
 import { stableStringify } from '../../../utils/json/stableStringify'
@@ -103,49 +101,6 @@ type AgentsSectionContentProps = {
   onClose: () => void
   initialAssistantId?: string
   initialCreate?: boolean
-  workspaceAgentId?: string
-  workspaceAgentTemplateId?: string
-  workspaceAgentName?: string
-  workspaceRoot?: string
-}
-
-type WorkspaceAgentDraft = {
-  agent: WorkspaceAgent
-  template: Assistant
-  effective: Assistant
-  agentModeAllowed: boolean
-}
-
-function buildInitialWorkspaceAgentDraft(input: {
-  workspaceAgentId?: string
-  workspaceAgentTemplateId?: string
-  workspaceAgentName?: string
-  workspaceRoot?: string
-  workspaceAgents: WorkspaceAgent[]
-  assistants: Assistant[]
-}): WorkspaceAgentDraft | null {
-  if (input.workspaceAgentId) {
-    const agent = input.workspaceAgents.find(
-      (item) => item.id === input.workspaceAgentId,
-    )
-    const template = agent
-      ? input.assistants.find((item) => item.id === agent.templateId)
-      : undefined
-    return agent && template
-      ? toWorkspaceAgentEffectiveDraft(agent, template)
-      : null
-  }
-  if (!input.workspaceAgentTemplateId) return null
-  const template = input.assistants.find(
-    (assistant) => assistant.id === input.workspaceAgentTemplateId,
-  )
-  return template
-    ? createWorkspaceAgentDraft(
-        template,
-        input.workspaceAgentName,
-        input.workspaceRoot,
-      )
-    : null
 }
 
 type AgentEditorTab = 'profile' | 'tools' | 'skills' | 'workspace'
@@ -181,7 +136,7 @@ const AGENT_EDITOR_TAB_ICONS = {
   profile: User,
   tools: Wrench,
   skills: BookOpen,
-  workspace: Folder,
+  workspace: FolderOpen,
 } as const
 
 const DEFAULT_PERSONA: AgentPersona = 'balanced'
@@ -342,7 +297,8 @@ function createNewAgent(): Assistant {
     enableTools: true,
     includeBuiltinTools: true,
     enabledToolNames: [],
-    toolPreferences: buildDefaultBuiltinToolPreferences(),
+    toolPreferences: {},
+    builtinCapabilityPreferences: buildDefaultBuiltinCapabilityPreferences(),
     toolServerPreferences: {},
     enabledSkills: [],
     skillPreferences: {},
@@ -361,6 +317,7 @@ function toDraftAgent(assistant: Assistant): Assistant {
     modelId: assistant.modelId || undefined,
     enabledToolNames: getExplicitlyEnabledAssistantToolNames(assistant),
     toolPreferences: getAssistantToolPreferences(assistant),
+    builtinCapabilityPreferences: assistant.builtinCapabilityPreferences ?? {},
     toolServerPreferences: assistant.toolServerPreferences ?? {},
     enabledSkills: assistant.enabledSkills ?? [],
     skillPreferences: assistant.skillPreferences ?? {},
@@ -371,150 +328,9 @@ function toDraftAgent(assistant: Assistant): Assistant {
   }
 }
 
-function toWorkspaceAgentEffectiveDraft(
-  agent: WorkspaceAgent,
-  template: Assistant,
-): WorkspaceAgentDraft {
-  const overrides = agent.behaviorOverrides ?? {}
-  return {
-    agent,
-    template,
-    effective: toDraftAgent({
-      ...template,
-      id: agent.id,
-      name: overrides.name ?? agent.name,
-      systemPrompt:
-        overrides.systemPromptOverride ??
-        overrides.promptOverride ??
-        template.systemPrompt,
-      toolPreferences: {
-        ...(template.toolPreferences ?? {}),
-        ...(overrides.toolConfigOverrides ?? {}),
-      },
-      enabledToolNames: getExplicitlyEnabledAssistantToolNames(template).filter(
-        (toolName) => !(overrides.disabledToolNames ?? []).includes(toolName),
-      ),
-      skillPreferences: {
-        ...(template.skillPreferences ?? {}),
-        ...(overrides.skillConfigOverrides ?? {}),
-      },
-      enabledSkills: (template.enabledSkills ?? []).filter(
-        (skillName) => !(overrides.disabledSkillIds ?? []).includes(skillName),
-      ),
-    }),
-    agentModeAllowed: overrides.agentModeAllowed ?? true,
-  }
-}
-
-function createWorkspaceAgentDraft(
-  template: Assistant,
-  name?: string,
-  workspaceRoot?: string,
-): WorkspaceAgentDraft {
-  const now = Date.now()
-  const agent: WorkspaceAgent = {
-    id: crypto.randomUUID(),
-    name: name?.trim() || `${template.name} Workspace Agent`,
-    templateId: template.id,
-    behaviorOverrides: {},
-    workspacePolicy: {
-      workspaceRoot: workspaceRoot?.trim() || '/',
-      readAllowlist: [],
-      readDenylist: [],
-      writeDenylist: [],
-    },
-    shareTokens: [],
-    createdAt: now,
-    updatedAt: now,
-  }
-  return toWorkspaceAgentEffectiveDraft(agent, template)
-}
-
-function buildWorkspaceAgentBehaviorOverrides(
-  agent: WorkspaceAgent,
-  template: Assistant,
-  effective: Assistant,
-  agentModeAllowed: boolean,
-): WorkspaceAgentBehaviorOverrides {
-  const overrides: WorkspaceAgentBehaviorOverrides = {
-    ...(agent.behaviorOverrides ?? {}),
-  }
-  const name = effective.name.trim()
-  if (name && name !== agent.name) overrides.name = name
-  else delete overrides.name
-
-  if (effective.systemPrompt !== template.systemPrompt) {
-    overrides.systemPromptOverride = effective.systemPrompt
-  } else {
-    delete overrides.systemPromptOverride
-    delete overrides.promptOverride
-  }
-
-  const disabledToolNames = getEnabledAssistantToolNames(template).filter(
-    (toolName) => !isAssistantToolEnabled(effective, toolName),
-  )
-  if (disabledToolNames.length > 0)
-    overrides.disabledToolNames = disabledToolNames
-  else delete overrides.disabledToolNames
-
-  const toolConfigOverrides: NonNullable<
-    WorkspaceAgentBehaviorOverrides['toolConfigOverrides']
-  > = {}
-  for (const toolName of getEnabledAssistantToolNames(template)) {
-    const templatePreference = template.toolPreferences?.[toolName]
-    const draftPreference = effective.toolPreferences?.[toolName]
-    const override: NonNullable<
-      WorkspaceAgentBehaviorOverrides['toolConfigOverrides']
-    >[string] = {}
-    if (
-      templatePreference?.approvalMode === 'full_access' &&
-      draftPreference?.approvalMode === 'require_approval'
-    ) {
-      override.approvalMode = 'require_approval'
-    }
-    if (
-      templatePreference?.disclosureMode === 'always' &&
-      draftPreference?.disclosureMode === 'on_demand'
-    ) {
-      override.disclosureMode = 'on_demand'
-    }
-    if (Object.keys(override).length > 0)
-      toolConfigOverrides[toolName] = override
-  }
-  if (Object.keys(toolConfigOverrides).length > 0) {
-    overrides.toolConfigOverrides = toolConfigOverrides
-  } else {
-    delete overrides.toolConfigOverrides
-  }
-
-  const disabledSkillIds = (template.enabledSkills ?? []).filter(
-    (skillName) => !effective.enabledSkills?.includes(skillName),
-  )
-  if (disabledSkillIds.length > 0) overrides.disabledSkillIds = disabledSkillIds
-  else delete overrides.disabledSkillIds
-
-  if (agentModeAllowed) delete overrides.agentModeAllowed
-  else overrides.agentModeAllowed = false
-  return overrides
-}
-
-function isToolWithinWorkspaceAgentTemplate(
-  toolName: string,
-  template: Assistant | null | undefined,
-): boolean {
-  return !template || isAssistantToolEnabled(template, toolName)
-}
-
-function isSkillWithinWorkspaceAgentTemplate(
-  skillName: string,
-  template: Assistant | null | undefined,
-): boolean {
-  return (
-    !template ||
-    resolveAssistantSkillPolicy({ assistant: template, skillName }).enabled
-  )
-}
-
+// Remote MCP tools only, post-D9: built-in tool state no longer lives in
+// `toolPreferences` at all (see `updateDraftBuiltinCapabilityPreferences`
+// below for the built-in counterpart).
 function updateDraftToolPreferences(
   assistant: Assistant,
   updater: (
@@ -537,43 +353,45 @@ function updateDraftToolPreferences(
   }
 }
 
+// Built-in capabilities only: writes a single capability's
+// `{ enabled, approvalMode }` entry in the draft's own
+// `builtinCapabilityPreferences` map. `updater` receives the capability's
+// *current effective* entry (explicit if present, else its registry
+// default) so callers can safely read-modify-write a single field without
+// clobbering the other.
+function updateDraftBuiltinCapabilityPreferences(
+  assistant: Assistant,
+  capabilityId: BuiltinCapabilityId,
+  updater: (
+    current: AssistantToolPreference | undefined,
+  ) => AssistantToolPreference,
+): Assistant {
+  const current = assistant.builtinCapabilityPreferences ?? {}
+  return {
+    ...assistant,
+    builtinCapabilityPreferences: {
+      ...current,
+      [capabilityId]: updater(current[capabilityId]),
+    },
+  }
+}
+
 export function AgentsSectionContent({
   app,
   onClose,
   initialAssistantId,
   initialCreate,
-  workspaceAgentId,
-  workspaceAgentTemplateId,
-  workspaceAgentName,
-  workspaceRoot,
 }: AgentsSectionContentProps) {
   const plugin = usePlugin()
   const { settings, setSettings } = useSettings()
   const { t } = useLanguage()
 
   const assistants = settings.assistants || []
-  const workspaceAgents = settings.workspaceAgents || []
   const enableToolDisclosure = settings.mcp.enableToolDisclosure
   const isDirectEditEntry = Boolean(initialAssistantId)
   const isDirectCreateEntry = Boolean(initialCreate)
-  const isWorkspaceAgentEntry = Boolean(
-    workspaceAgentId || workspaceAgentTemplateId,
-  )
-  const isDirectEntry =
-    isDirectEditEntry || isDirectCreateEntry || isWorkspaceAgentEntry
-  const [workspaceAgentDraft, setWorkspaceAgentDraft] =
-    useState<WorkspaceAgentDraft | null>(() =>
-      buildInitialWorkspaceAgentDraft({
-        workspaceAgentId,
-        workspaceAgentTemplateId,
-        workspaceAgentName,
-        workspaceRoot,
-        workspaceAgents,
-        assistants,
-      }),
-    )
+  const isDirectEntry = isDirectEditEntry || isDirectCreateEntry
   const [draftAgent, setDraftAgent] = useState<Assistant | null>(() => {
-    if (workspaceAgentDraft) return workspaceAgentDraft.effective
     if (initialCreate) {
       const draft = createNewAgent()
       draft.name = t('settings.agent.editorDefaultName', 'New agent')
@@ -614,14 +432,7 @@ export function AgentsSectionContent({
     setSystemPromptOverlayTarget(target)
   }, [isSystemPromptExpanded])
   const [availableTools, setAvailableTools] = useState<McpTool[]>([])
-  const editorTabs = useMemo(
-    () =>
-      workspaceAgentDraft
-        ? AGENT_EDITOR_TABS
-        : AGENT_EDITOR_TABS.filter((tab) => tab !== 'workspace'),
-    [workspaceAgentDraft],
-  )
-  const activeTabIndex = editorTabs.findIndex((tab) => tab === activeTab)
+  const activeTabIndex = AGENT_EDITOR_TABS.findIndex((tab) => tab === activeTab)
   const activeTabIndexRef = useRef(activeTabIndex)
   const tabsNavRef = useRef<HTMLDivElement | null>(null)
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
@@ -776,33 +587,6 @@ export function AgentsSectionContent({
       updatedAt: Date.now(),
     }
 
-    if (workspaceAgentDraft) {
-      const nextAgent: WorkspaceAgent = {
-        ...workspaceAgentDraft.agent,
-        name: normalized.name,
-        behaviorOverrides: buildWorkspaceAgentBehaviorOverrides(
-          workspaceAgentDraft.agent,
-          workspaceAgentDraft.template,
-          normalized,
-          workspaceAgentDraft.agentModeAllowed,
-        ),
-        updatedAt: Date.now(),
-      }
-      const exists = workspaceAgents.some((agent) => agent.id === nextAgent.id)
-      await setSettings({
-        ...settings,
-        workspaceAgents: exists
-          ? workspaceAgents.map((agent) =>
-              agent.id === nextAgent.id ? nextAgent : agent,
-            )
-          : [...workspaceAgents, nextAgent],
-        currentWorkspaceAgentId:
-          settings.currentWorkspaceAgentId ?? nextAgent.id,
-      })
-      onClose()
-      return
-    }
-
     const exists = assistants.some(
       (assistant) => assistant.id === normalized.id,
     )
@@ -825,30 +609,55 @@ export function AgentsSectionContent({
     setDraftAgent(null)
   }
 
-  const toggleTool = (toolNames: string[], enabled: boolean) => {
+  // `tools` mixes built-in capability rows (`capabilityId` set — a bulk
+  // toggle can span several) and MCP server tool rows (`capabilityId`
+  // undefined, `toggleTargets` always a single FQN). Each row is routed to
+  // its own persistence half: built-ins write
+  // `builtinCapabilityPreferences[capabilityId]`, everything else writes
+  // `toolPreferences[fqn]` — see `updateDraftBuiltinCapabilityPreferences` /
+  // `updateDraftToolPreferences`.
+  const toggleTool = (tools: AgentToolView[], enabled: boolean) => {
     setDraftAgent((prev) => {
       if (!prev) {
         return prev
       }
 
-      return updateDraftToolPreferences(prev, (current) => {
-        const next = { ...current }
-        for (const toolName of toolNames) {
-          next[toolName] = {
-            ...next[toolName],
-            enabled,
-            approvalMode:
-              next[toolName]?.approvalMode ??
-              getDefaultApprovalModeForTool(toolName),
-          }
+      let next = prev
+      for (const tool of tools) {
+        if (tool.capabilityId) {
+          const capabilityId = tool.capabilityId
+          next = updateDraftBuiltinCapabilityPreferences(
+            next,
+            capabilityId,
+            (current) => ({
+              enabled,
+              approvalMode:
+                current?.approvalMode ??
+                getDefaultApprovalModeForTool(tool.toggleTargets[0]),
+            }),
+          )
+          continue
         }
-        return next
-      })
+        next = updateDraftToolPreferences(next, (current) => {
+          const updated = { ...current }
+          for (const toolName of tool.toggleTargets) {
+            updated[toolName] = {
+              ...updated[toolName],
+              enabled,
+              approvalMode:
+                updated[toolName]?.approvalMode ??
+                getDefaultApprovalModeForTool(toolName),
+            }
+          }
+          return updated
+        })
+      }
+      return next
     })
   }
 
   const setToolApprovalMode = (
-    toolNames: string[],
+    tools: AgentToolView[],
     approvalMode: AssistantToolApprovalMode,
   ) => {
     setDraftAgent((prev) => {
@@ -856,17 +665,33 @@ export function AgentsSectionContent({
         return prev
       }
 
-      return updateDraftToolPreferences(prev, (current) => {
-        const next = { ...current }
-        for (const toolName of toolNames) {
-          next[toolName] = {
-            ...next[toolName],
-            enabled: next[toolName]?.enabled ?? true,
-            approvalMode,
-          }
+      let next = prev
+      for (const tool of tools) {
+        if (tool.capabilityId) {
+          const capabilityId = tool.capabilityId
+          next = updateDraftBuiltinCapabilityPreferences(
+            next,
+            capabilityId,
+            (current) => ({
+              enabled: current?.enabled ?? true,
+              approvalMode,
+            }),
+          )
+          continue
         }
-        return next
-      })
+        next = updateDraftToolPreferences(next, (current) => {
+          const updated = { ...current }
+          for (const toolName of tool.toggleTargets) {
+            updated[toolName] = {
+              ...updated[toolName],
+              enabled: updated[toolName]?.enabled ?? true,
+              approvalMode,
+            }
+          }
+          return updated
+        })
+      }
+      return next
     })
   }
 
@@ -923,6 +748,13 @@ export function AgentsSectionContent({
         ...prev,
         toolServerPreferences: nextPreferences,
       }
+    })
+  }
+
+  const setWorkspaceScope = (next: AssistantWorkspaceScope) => {
+    setDraftAgent((prev) => {
+      if (!prev) return prev
+      return { ...prev, workspaceScope: next }
     })
   }
 
@@ -985,7 +817,6 @@ export function AgentsSectionContent({
       { title: string; tools: AgentToolView[]; isBuiltin: boolean }
     >()
     const includeBuiltinTools = draftAgent?.includeBuiltinTools !== false
-    const templateCeiling = workspaceAgentDraft?.template
     // Which built-in tool *short* names are actually present in this
     // request's tool catalog (`availableTools` — respects runtime
     // availability, unlike the global settings pages' `getLocalFileTools()`;
@@ -995,9 +826,6 @@ export function AgentsSectionContent({
     const builtinToolNamesPresent = new Set<string>()
 
     availableTools.forEach((tool) => {
-      if (!isToolWithinWorkspaceAgentTemplate(tool.name, templateCeiling)) {
-        return
-      }
       let serverName = localFsServerName
       let toolName = tool.name
 
@@ -1019,11 +847,11 @@ export function AgentsSectionContent({
       }
 
       const key = serverName
-      const group: {
-        title: string
-        tools: AgentToolView[]
-        isBuiltin: boolean
-      } = groups.get(key) ?? { title: serverName, tools: [], isBuiltin: false }
+      const group = groups.get(key) ?? {
+        title: serverName,
+        tools: [],
+        isBuiltin: false,
+      }
       group.tools.push({
         fullName: tool.name,
         toggleTargets: [tool.name],
@@ -1035,7 +863,7 @@ export function AgentsSectionContent({
 
     if (includeBuiltinTools) {
       const rows = buildBuiltinCapabilityRows({
-        toolOptions: settings.mcp.builtinToolOptions,
+        toolOptions: settings.mcp.builtinCapabilityOptions,
         t,
       })
       for (const row of rows) {
@@ -1045,31 +873,18 @@ export function AgentsSectionContent({
         if (presentMembers.length === 0) {
           continue
         }
-        // A capability with a legacy group key (file_editing/memory/
-        // web_access) has one more legacy persistence key than member tool
-        // — see `getLegacyPersistenceKeysForCapability`. 1:1 capabilities
-        // have exactly as many of each. This is how the pre-D7 group-vs-
-        // single-tool `fullName` distinction (`${server}__${GROUP_NAME}` vs
-        // the tool's own FQN) is reproduced without re-listing the three
-        // group names here.
-        const isGroupCapability =
-          row.legacyPersistenceKeys.length > row.memberToolNames.length
-        const fullNameShortName = isGroupCapability
-          ? row.legacyPersistenceKeys[0]
-          : presentMembers[0]
 
         const key = `__builtin:${row.category}`
         const title = t(
           BUILTIN_TOOL_CATEGORY_I18N[row.category].key,
           BUILTIN_TOOL_CATEGORY_I18N[row.category].fallback,
         )
-        const group: {
-          title: string
-          tools: AgentToolView[]
-          isBuiltin: boolean
-        } = groups.get(key) ?? { title, tools: [], isBuiltin: true }
+        const group = groups.get(key) ?? { title, tools: [], isBuiltin: true }
         group.tools.push({
-          fullName: getToolName(localFsServerName, fullNameShortName),
+          // Only used as a React list key — any present member's own FQN is
+          // fine, there is no group-vs-single-tool distinction to preserve
+          // post-D9 (decision 12: no virtual tool names anywhere).
+          fullName: getToolName(localFsServerName, presentMembers[0]),
           toggleTargets: presentMembers.map((name) =>
             getToolName(localFsServerName, name),
           ),
@@ -1100,9 +915,8 @@ export function AgentsSectionContent({
     availableTools,
     draftAgent?.includeBuiltinTools,
     localFsServerName,
-    settings.mcp.builtinToolOptions,
+    settings.mcp.builtinCapabilityOptions,
     t,
-    workspaceAgentDraft?.template,
   ])
 
   const visibleToolsCount = useMemo(
@@ -1111,16 +925,8 @@ export function AgentsSectionContent({
   )
 
   const enabledVisibleToolsCount = useMemo(() => {
-    const enabled = new Set(getEnabledAssistantToolNames(draftAgent))
-    return visibleToolGroups.reduce(
-      (count, group) =>
-        count +
-        group.tools.filter((tool) =>
-          tool.toggleTargets.every((target) => enabled.has(target)),
-        ).length,
-      0,
-    )
-  }, [draftAgent, visibleToolGroups])
+    return countEnabledVisibleAssistantTools(draftAgent, availableTools)
+  }, [availableTools, draftAgent])
 
   const groupEnabledCounts = useMemo(() => {
     const enabled = new Set(getEnabledAssistantToolNames(draftAgent))
@@ -1305,12 +1111,6 @@ export function AgentsSectionContent({
   const skillRows = useMemo(() => {
     return skillEntries
       .filter((skill) => !disabledSkillNameSet.has(skill.name))
-      .filter((skill) =>
-        isSkillWithinWorkspaceAgentTemplate(
-          skill.name,
-          workspaceAgentDraft?.template,
-        ),
-      )
       .map((skill) => {
         const policy = resolveAssistantSkillPolicy({
           assistant: draftAgent,
@@ -1323,12 +1123,7 @@ export function AgentsSectionContent({
           loadMode: policy.loadMode,
         }
       })
-  }, [
-    disabledSkillNameSet,
-    draftAgent,
-    skillEntries,
-    workspaceAgentDraft?.template,
-  ])
+  }, [disabledSkillNameSet, draftAgent, skillEntries])
 
   // Same agent-scoped pattern as estimatedToolContextTokens above.
   const [estimatedSkillContextTokens, setEstimatedSkillContextTokens] =
@@ -1508,7 +1303,7 @@ export function AgentsSectionContent({
               ref={tabsNavRef}
               style={
                 {
-                  '--yolo-agent-tab-count': editorTabs.length,
+                  '--yolo-agent-tab-count': AGENT_EDITOR_TABS.length,
                   '--yolo-agent-tab-index': activeTabIndex,
                 } as React.CSSProperties
               }
@@ -1517,7 +1312,7 @@ export function AgentsSectionContent({
                 className="yolo-agent-editor-tabs-glider"
                 aria-hidden="true"
               />
-              {editorTabs.map((tab, index) => {
+              {AGENT_EDITOR_TABS.map((tab, index) => {
                 const TabIcon = AGENT_EDITOR_TAB_ICONS[tab]
                 return (
                   <button
@@ -2109,10 +1904,7 @@ export function AgentsSectionContent({
                               type="button"
                               className="yolo-agent-tool-group-bulk-toggle"
                               onClick={() =>
-                                toggleTool(
-                                  groupToggleTargets,
-                                  !allGroupToolsEnabled,
-                                )
+                                toggleTool(group.tools, !allGroupToolsEnabled)
                               }
                             >
                               {allGroupToolsEnabled
@@ -2193,7 +1985,7 @@ export function AgentsSectionContent({
                                           options={approvalOptions}
                                           onChange={(value) =>
                                             setToolApprovalMode(
-                                              tool.toggleTargets,
+                                              [tool],
                                               value as AssistantToolApprovalMode,
                                             )
                                           }
@@ -2206,7 +1998,7 @@ export function AgentsSectionContent({
                                   <ObsidianToggle
                                     value={Boolean(selected)}
                                     onChange={(value) =>
-                                      toggleTool(tool.toggleTargets, value)
+                                      toggleTool([tool], value)
                                     }
                                   />
                                 </div>
@@ -2357,22 +2149,13 @@ export function AgentsSectionContent({
             </div>
           )}
 
-          {activeTab === 'workspace' && workspaceAgentDraft && (
+          {activeTab === 'workspace' && (
             <div className="yolo-agent-editor-body">
               <AgentWorkspaceScopeEditor
                 app={app}
                 vault={app.vault}
-                value={workspaceAgentDraft.agent.workspacePolicy}
-                onChange={(workspacePolicy) =>
-                  setWorkspaceAgentDraft((current) =>
-                    current
-                      ? {
-                          ...current,
-                          agent: { ...current.agent, workspacePolicy },
-                        }
-                      : current,
-                  )
-                }
+                value={draftAgent.workspaceScope}
+                onChange={setWorkspaceScope}
               />
             </div>
           )}

@@ -222,8 +222,8 @@ describe('parseYoloSettings', () => {
       mcp: {
         servers: [],
         enableToolDisclosure: false,
-        builtinToolOptions: {
-          delegate_subagent: {
+        builtinCapabilityOptions: {
+          subagent_delegation: {
             allowedModelIds: [
               'openai/gpt-4.1-mini',
               'openai/disabled',
@@ -236,10 +236,10 @@ describe('parseYoloSettings', () => {
     })
 
     expect(
-      result.mcp.builtinToolOptions.delegate_subagent?.allowedModelIds,
+      result.mcp.builtinCapabilityOptions.subagent_delegation?.allowedModelIds,
     ).toEqual(['openai/gpt-4.1-mini', 'openai/disabled'])
     expect(
-      result.mcp.builtinToolOptions.delegate_subagent?.preferredModelId,
+      result.mcp.builtinCapabilityOptions.subagent_delegation?.preferredModelId,
     ).toBe('openai/gpt-4.1-mini')
   })
 
@@ -272,15 +272,15 @@ describe('parseYoloSettings', () => {
       mcp: {
         servers: [],
         enableToolDisclosure: false,
-        builtinToolOptions: {},
+        builtinCapabilityOptions: {},
       },
     })
 
     expect(
-      result.mcp.builtinToolOptions.delegate_subagent?.allowedModelIds,
+      result.mcp.builtinCapabilityOptions.subagent_delegation?.allowedModelIds,
     ).toEqual(['openai/gpt-5'])
     expect(
-      result.mcp.builtinToolOptions.delegate_subagent?.preferredModelId,
+      result.mcp.builtinCapabilityOptions.subagent_delegation?.preferredModelId,
     ).toBe('openai/gpt-5')
   })
 

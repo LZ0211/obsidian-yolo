@@ -46,6 +46,7 @@ export type SubagentParentContext = {
   forkContext?: ForkContext
   allowedToolNames?: string[]
   toolPreferences?: Record<string, AssistantToolPreference>
+  builtinCapabilityPreferences?: Record<string, AssistantToolPreference>
   toolServerPreferences?: Record<string, AssistantToolServerPreference>
   workspaceScope?: AssistantWorkspaceScope
   workspaceAccessPolicy?: import('../../../types/assistant.types').WorkspaceAccessPolicy
@@ -190,6 +191,7 @@ export function buildSubagentParentContext(
     parentMessages: input.messages,
     allowedToolNames: input.allowedToolNames,
     toolPreferences: input.toolPreferences,
+    builtinCapabilityPreferences: input.builtinCapabilityPreferences,
     toolServerPreferences: input.toolServerPreferences,
     workspaceScope: input.workspaceScope,
     workspaceAccessPolicy: input.workspaceAccessPolicy,

@@ -5,7 +5,7 @@ import { YoloSettings } from '../../settings/schema/setting.types'
 import type { ApplyViewState } from '../../types/apply-view.types'
 import type {
   AssistantToolApprovalMode,
-  WorkspaceAccessPolicy,
+  AssistantWorkspaceScope,
 } from '../../types/assistant.types'
 import type { ChatMessage } from '../../types/chat'
 import type { ChatModelModality } from '../../types/chat-model.types'
@@ -21,22 +21,17 @@ import {
   ToolCallResponse,
   ToolCallResponseStatus,
 } from '../../types/tool-call.types'
-import {
-  CONSOLIDATED_TOOL_ACTIONS,
-  CONSOLIDATED_TOOLS,
-  resolveConsolidatedAction,
-} from '../agent/consolidated-tools'
 import type { PromptSourceWatcher } from '../agent/promptSourceWatcher'
+import type { SubagentParentContext } from '../agent/subagent/parent-context'
 import type { AgentRunContext } from '../agent/types'
 import type { RAGEngine } from '../rag/ragEngine'
 import { executeBuiltinTool } from '../tools/dispatcher'
 import {
-  FILE_EDIT_GROUP_TOOL_NAME,
-  WEB_OPS_GROUP_TOOL_NAME,
-} from '../tools/legacy-persistence-keys'
-import { getToolDefinition, isBuiltinToolName } from '../tools/registry'
+  getCapabilityForTool,
+  getToolDefinition,
+  isBuiltinToolName,
+} from '../tools/registry'
 import type { ToolContext } from '../tools/types'
-import { WEB_SCRAPE_TOOL_NAME, WEB_SEARCH_TOOL_NAME } from '../web-search'
 
 import { InvalidToolNameException, McpNotAvailableException } from './exception'
 import type { InProcessToolServer } from './inProcessToolServer'
@@ -46,23 +41,11 @@ import {
 } from './jsSandboxSettings'
 import { disposeJsSandbox } from './jsSandboxTool'
 import {
-  LOCAL_FS_EDIT_TOOL_NAMES,
-  getLocalFileToolServerName,
-} from './localFileToolNames'
-// eslint-disable-next-line import/order -- false positive: sibling group is contiguous; rule miscounts the blank line above this group
-import {
-  LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
-  type ScheduledTaskServiceLike,
   callLocalFileTool,
+  getLocalFileToolServerName,
   getLocalFileTools,
   parseLocalFsActionFromToolArgs,
 } from './localFileTools'
-
-const LOCAL_FS_EDIT_TOOL_NAME_SET = new Set<string>(LOCAL_FS_EDIT_TOOL_NAMES)
-const LOCAL_MEMORY_SPLIT_TOOL_NAME_SET = new Set<string>(
-  LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
-)
-const CONSOLIDATED_TOOL_NAME_SET = new Set<string>(CONSOLIDATED_TOOLS)
 import { McpOAuthController } from './mcpOAuthController'
 import type { McpOAuthClientProvider } from './mcpOAuthProvider'
 import type { McpRemoteTransportBackend } from './remoteTransport'
@@ -98,7 +81,6 @@ export class McpManager {
   private readonly oauthController: McpOAuthController
   private readonly openApplyReview: (state: ApplyViewState) => Promise<boolean>
   private readonly getRagEngine?: () => Promise<RAGEngine>
-  private readonly getScheduledTasksService?: () => ScheduledTaskServiceLike | null
   private readonly promptSourceWatcher?: PromptSourceWatcher
   private settings: YoloSettings
   private unsubscribeFromSettings: () => void
@@ -111,10 +93,7 @@ export class McpManager {
 
   private servers: McpServerState[] = [] // IMPORTANT: Always use this.updateServers() to update this array
   private connectionAborts: Map<string, AbortController> = new Map()
-  private activeToolCalls: Map<
-    string,
-    { controller: AbortController; conversationId?: string }
-  > = new Map()
+  private activeToolCalls: Map<string, AbortController> = new Map()
   // Track clients we close on purpose so the onclose-driven self-heal path can
   // distinguish intentional teardown from server-side connection loss.
   private intentionalClientCloses: WeakSet<McpClient> = new WeakSet()
@@ -143,20 +122,9 @@ export class McpManager {
     try {
       const { serverName, toolName } = parseToolName(requestToolName)
       const action =
-        serverName !== getLocalFileToolServerName()
-          ? null
-          : CONSOLIDATED_TOOL_NAME_SET.has(toolName)
-            ? (() => {
-                try {
-                  return resolveConsolidatedAction(toolName, requestArgs).action
-                } catch {
-                  return null
-                }
-              })()
-            : parseLocalFsActionFromToolArgs({
-                toolName,
-                args: requestArgs,
-              })
+        serverName === getLocalFileToolServerName()
+          ? parseLocalFsActionFromToolArgs({ toolName, args: requestArgs })
+          : null
       if (serverName === getLocalFileToolServerName() && action) {
         return `${requestToolName}::${action}`
       }
@@ -166,14 +134,22 @@ export class McpManager {
     return requestToolName
   }
 
-  private isLocalToolEnabled(
-    toolName: string,
-    args?: Record<string, unknown>,
-  ): boolean {
-    if (!this.isLocalToolPersistedEnabled(toolName, args)) {
+  /**
+   * Two independent gates, applied in sequence: persisted user enablement
+   * (below), then, for tools already migrated into the registry, that
+   * tool's own `isAvailable(ctx)` (master.md §3.1b / decision 18 —
+   * environment availability is separate from user authorization).
+   */
+  private isLocalToolEnabled(toolName: string): boolean {
+    if (!this.isLocalToolPersistedEnabled(toolName)) {
       return false
     }
 
+    // Applied uniformly rather than per-tool-name-special-cased: any
+    // registered tool's `isAvailable` runs here, not just `web_search` /
+    // `terminal_command`. Today those are the only two definitions that
+    // declare one — `getToolDefinition(toolName)?.isAvailable` is `undefined`
+    // for everything else, which the `?.` short-circuits to "available".
     if (isBuiltinToolName(toolName)) {
       const definition = getToolDefinition(toolName)
       if (
@@ -187,64 +163,27 @@ export class McpManager {
     return true
   }
 
-  private isLocalToolPersistedEnabled(
-    toolName: string,
-    args?: Record<string, unknown>,
-  ): boolean {
-    if (CONSOLIDATED_TOOL_NAME_SET.has(toolName)) {
-      const option = this.settings.mcp.builtinToolOptions[toolName]
-      if (option?.disabled) return false
-      if (args !== undefined) {
-        let action: string
-        try {
-          action = resolveConsolidatedAction(toolName, args).action
-        } catch {
-          return false
-        }
-        return !option?.actionOptions?.[action]?.disabled
-      }
-      const actions =
-        CONSOLIDATED_TOOL_ACTIONS[
-          toolName as keyof typeof CONSOLIDATED_TOOL_ACTIONS
-        ] ?? []
-      return actions.some(
-        (action) => !option?.actionOptions?.[action]?.disabled,
-      )
+  /**
+   * As of the `80_to_81` settings migration (D9,
+   * docs/plans/2026-08-15-tool-registry/phase2-migration.md D9),
+   * `settings.mcp.builtinCapabilityOptions` is keyed by capability id — one
+   * entry per capability, no more group-key-plus-members aggregation. This
+   * collapses what used to be three special-cased group checks
+   * (`web_ops`/`fs_edit_ops`/`memory_ops`) plus a generic fallback into a
+   * single lookup through the tool's owning capability.
+   */
+  private isLocalToolPersistedEnabled(toolName: string): boolean {
+    const capability = getCapabilityForTool(toolName)
+    if (!capability) {
+      // Unknown/retired local short name (e.g. a pre-v79 `fs_list`) — no
+      // capability owns it, so there is nothing to disable. Matches the
+      // pre-D9 fallthrough (`directDisabled` undefined => enabled).
+      return true
     }
-    // Web tools share one persisted `web_ops` switch. Runtime readiness is
-    // evaluated generically by isLocalToolEnabled above.
-    if (
-      toolName === WEB_SEARCH_TOOL_NAME ||
-      toolName === WEB_SCRAPE_TOOL_NAME
-    ) {
-      const groupDisabled =
-        this.settings.mcp.builtinToolOptions[WEB_OPS_GROUP_TOOL_NAME]
-          ?.disabled ?? false
-      const splitToolDisabled =
-        this.settings.mcp.builtinToolOptions[toolName]?.disabled ?? false
-      return !(groupDisabled || splitToolDisabled)
-    }
-    if (LOCAL_FS_EDIT_TOOL_NAME_SET.has(toolName)) {
-      const splitToolDisabled =
-        this.settings.mcp.builtinToolOptions[toolName]?.disabled ?? false
-      const groupedEditOpsDisabled =
-        this.settings.mcp.builtinToolOptions[FILE_EDIT_GROUP_TOOL_NAME]
-          ?.disabled ?? false
-      return !(splitToolDisabled || groupedEditOpsDisabled)
-    }
-    if (LOCAL_MEMORY_SPLIT_TOOL_NAME_SET.has(toolName)) {
-      const splitToolDisabled =
-        this.settings.mcp.builtinToolOptions[toolName]?.disabled ?? false
-      const groupedMemoryOpsDisabled =
-        this.settings.mcp.builtinToolOptions.memory_ops?.disabled ?? false
-      return !(splitToolDisabled || groupedMemoryOpsDisabled)
-    }
-    const directDisabled =
-      this.settings.mcp.builtinToolOptions[toolName]?.disabled
-    if (typeof directDisabled === 'boolean') {
-      return !directDisabled
-    }
-    return true
+    return !(
+      this.settings.mcp.builtinCapabilityOptions[capability.id]?.disabled ??
+      false
+    )
   }
 
   constructor({
@@ -254,7 +193,6 @@ export class McpManager {
     openApplyReview,
     registerSettingsListener,
     getRagEngine,
-    getScheduledTasksService,
     promptSourceWatcher,
   }: {
     app: App
@@ -265,14 +203,12 @@ export class McpManager {
       listener: (settings: YoloSettings) => void,
     ) => () => void
     getRagEngine?: () => Promise<RAGEngine>
-    getScheduledTasksService?: () => ScheduledTaskServiceLike | null
     promptSourceWatcher?: PromptSourceWatcher
   }) {
     this.app = app
     this.oauthController = new McpOAuthController(app, pluginId)
     this.openApplyReview = openApplyReview
     this.getRagEngine = getRagEngine
-    this.getScheduledTasksService = getScheduledTasksService
     this.promptSourceWatcher = promptSourceWatcher
     this.settings = settings
     this.unsubscribeFromSettings = registerSettingsListener((newSettings) => {
@@ -329,10 +265,6 @@ export class McpManager {
     this.subscribers.clear()
     this.activeToolCalls.clear()
     this.reconnectAttempts.clear()
-    // Per-conversation tool allowances must not outlive the manager: they are
-    // in-memory permission grants keyed by conversationId, and a leaked entry
-    // would resurface on a future conversationId reuse after reinstall.
-    this.allowedToolsByConversation.clear()
     this.oauthController.close()
     disposeJsSandbox()
   }
@@ -988,15 +920,6 @@ export class McpManager {
    * local-file-tool server name, or collides with an already-registered
    * in-process server or a currently configured remote MCP server.
    */
-  /**
-   * Invalidate the available-tools cache. Call after the built-in local tool
-   * set changes at runtime (e.g. third-party plugins registering tools through
-   * `window.__yoloBridge__`).
-   */
-  public invalidateAvailableToolsCache(): void {
-    this.availableToolsCache.clear()
-  }
-
   public registerInProcessServer(
     serverName: string,
     server: InProcessToolServer,
@@ -1114,42 +1037,17 @@ export class McpManager {
     conversationId: string,
     requestArgs?: Record<string, unknown>,
   ): void {
-    const allowanceKey = this.buildExecutionAllowanceKey({
-      requestToolName,
-      requestArgs,
-    })
     let allowedTools = this.allowedToolsByConversation.get(conversationId)
     if (!allowedTools) {
       allowedTools = new Set<string>()
       this.allowedToolsByConversation.set(conversationId, allowedTools)
     }
+    const allowanceKey = this.buildExecutionAllowanceKey({
+      requestToolName,
+      requestArgs,
+    })
     allowedTools.add(allowanceKey)
-    if (
-      !CONSOLIDATED_TOOL_NAME_SET.has(parseToolName(requestToolName).toolName)
-    ) {
-      allowedTools.add(requestToolName)
-    }
-  }
-
-  /**
-   * Snapshot of the tools currently allow-listed for a conversation (the
-   * tool-name keys recorded by `allowToolForConversation`). Returns an empty
-   * array for unknown conversations. Exposed so the UI can surface the
-   * conversation's standing allowances and so lifecycle code can verify
-   * cleanup (`removeAllowedTools`) took effect.
-   */
-  public getAllowedTools(conversationId: string): string[] {
-    return [...(this.allowedToolsByConversation.get(conversationId) ?? [])]
-  }
-
-  /**
-   * Revoke every tool allowance recorded for a conversation. Idempotent:
-   * unknown conversation ids are a no-op. Call when a conversation is
-   * deleted so a later conversationId reuse cannot inherit stale permission
-   * grants.
-   */
-  public removeAllowedTools(conversationId: string): void {
-    this.allowedToolsByConversation.delete(conversationId)
+    allowedTools.add(requestToolName)
   }
 
   public isToolExecutionAllowed({
@@ -1166,7 +1064,7 @@ export class McpManager {
     try {
       const { serverName, toolName } = parseToolName(requestToolName)
       if (serverName === getLocalFileToolServerName()) {
-        if (!this.isLocalToolEnabled(toolName, requestArgs)) {
+        if (!this.isLocalToolEnabled(toolName)) {
           return false
         }
       } else if (this.inProcessServers.has(serverName)) {
@@ -1200,10 +1098,9 @@ export class McpManager {
         this.allowedToolsByConversation
           .get(conversationId)
           ?.has(allowanceKey) ||
-        (!CONSOLIDATED_TOOL_NAME_SET.has(toolName) &&
-          this.allowedToolsByConversation
-            .get(conversationId)
-            ?.has(requestToolName))
+        this.allowedToolsByConversation
+          .get(conversationId)
+          ?.has(requestToolName)
       ) {
         return true
       }
@@ -1227,7 +1124,7 @@ export class McpManager {
     signal,
     requireReview = false,
     chatModelId,
-    workspaceAccessPolicy,
+    workspaceScope,
     allowedSkillPaths,
     subagentParentContext,
     runContext,
@@ -1243,20 +1140,10 @@ export class McpManager {
     signal?: AbortSignal
     requireReview?: boolean
     chatModelId?: string
-    workspaceAccessPolicy?: WorkspaceAccessPolicy
+    workspaceScope?: AssistantWorkspaceScope
     allowedSkillPaths?: readonly string[]
     runContext?: AgentRunContext
-    /**
-     * 与 callLocalFileTool 一致的结构子集（仅消费/转发三个字段）——用完整
-     * SubagentParentContext 会建立 mcpManager → subagent/parent-context 的类型
-     * 边，与 parent-context → mcpManager 互成 2 环并把巨型 SCC 的枚举路径全部
-     * 拉到 parent-context（决策 B 断环，localFileTools.ts 同款声明）。
-     */
-    subagentParentContext?: {
-      workspaceAccessPolicy?: WorkspaceAccessPolicy
-      requestContextBuilder: unknown
-      assistantId?: string
-    }
+    subagentParentContext?: SubagentParentContext
     /** Effective approval tier for the bash tool; see tool-gateway.ts. */
     bashApprovalMode?: AssistantToolApprovalMode
     /** Forces the structurally read-only bash variant; see tool-gateway.ts. */
@@ -1266,12 +1153,9 @@ export class McpManager {
     if (id !== undefined) {
       const existingAbortController = this.activeToolCalls.get(id)
       if (existingAbortController) {
-        existingAbortController.controller.abort()
+        existingAbortController.abort()
       }
-      this.activeToolCalls.set(id, {
-        controller: toolAbortController,
-        conversationId,
-      })
+      this.activeToolCalls.set(id, toolAbortController)
     }
     const compositeSignal = toolAbortController.signal
     if (signal) {
@@ -1288,7 +1172,7 @@ export class McpManager {
       const parsedArgs: Record<string, unknown> | undefined = args
 
       if (serverName === getLocalFileToolServerName()) {
-        if (!this.isLocalToolEnabled(toolName, parsedArgs)) {
+        if (!this.isLocalToolEnabled(toolName)) {
           throw new Error(`Built-in tool ${toolName} is disabled`)
         }
         // Strangler-pattern fork: tools migrated into the new registry
@@ -1322,7 +1206,7 @@ export class McpManager {
               requireReview,
               signal: compositeSignal,
               chatModelId,
-              workspaceAccessPolicy,
+              workspaceScope,
               allowedSkillPaths,
               // `runContext` is deliberately omitted — `ToolContext`
               // doesn't carry it (see that type's doc comment in
@@ -1369,7 +1253,6 @@ export class McpManager {
               settings: this.settings,
               openApplyReview: this.openApplyReview,
               getRagEngine: this.getRagEngine,
-              getScheduledTasksService: this.getScheduledTasksService,
               conversationId,
               conversationMessages,
               roundId,
@@ -1379,7 +1262,7 @@ export class McpManager {
               requireReview,
               signal: compositeSignal,
               chatModelId,
-              workspaceAccessPolicy,
+              workspaceScope,
               allowedSkillPaths,
               runContext,
               subagentParentContext,
@@ -1513,23 +1396,16 @@ export class McpManager {
           error instanceof Error ? error.message : 'Unknown error occurred',
       }
     } finally {
-      if (
-        id !== undefined &&
-        this.activeToolCalls.get(id)?.controller === toolAbortController
-      ) {
+      if (id !== undefined) {
         this.activeToolCalls.delete(id)
       }
     }
   }
 
-  public abortToolCall(id: string, conversationId?: string): boolean {
-    const activeToolCall = this.activeToolCalls.get(id)
-    if (
-      activeToolCall &&
-      (conversationId === undefined ||
-        activeToolCall.conversationId === conversationId)
-    ) {
-      activeToolCall.controller.abort()
+  public abortToolCall(id: string): boolean {
+    const toolAbortController = this.activeToolCalls.get(id)
+    if (toolAbortController) {
+      toolAbortController.abort()
       this.activeToolCalls.delete(id)
       return true
     }
@@ -1645,23 +1521,7 @@ export class McpManager {
 
         // Settings may have toggled this server off mid-reconnect.
         const latest = this.servers.find((s) => s.name === name)
-        // ...or the user may have edited the server config (URL/command/args/
-        // auth) while the reconnect was in flight. handleSettingsUpdate aborts
-        // this attempt in that flow, but the settings reference can change
-        // through other paths, so re-verify the captured snapshot is still
-        // what the current settings describe. If it is not, `reconnected` was
-        // computed against a stale config — writing it back would clobber the
-        // user's edit, so discard it and let the settings-update path own the
-        // probe of the new config.
-        const settingsConfig = this.settings.mcp.servers.find(
-          (s) => s.id === name,
-        )
-        const configStillCurrent =
-          settingsConfig !== undefined &&
-          settingsConfig.enabled === current.config.enabled &&
-          settingsConfig.auth === current.config.auth &&
-          isEqual(settingsConfig.parameters, current.config.parameters)
-        if (!latest || !latest.config.enabled || !configStillCurrent) {
+        if (!latest || !latest.config.enabled) {
           if (reconnected.status === McpServerStatus.Connected) {
             void this.closeClient(reconnected.client).catch(() => {
               /* best-effort teardown of orphan client */

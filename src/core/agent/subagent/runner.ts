@@ -1,11 +1,7 @@
 import { v4 as uuidv4 } from 'uuid'
 
-import type {
-  ChatMessage,
-  ChatUserMessage,
-  DelegatedRoleMetadata,
-  TaskSource,
-} from '../../../types/chat'
+import type { TaskSource } from '../../../types/chat'
+import type { ChatMessage, ChatUserMessage } from '../../../types/chat'
 import type { ChatModel } from '../../../types/chat-model.types'
 import type {
   LLMProvider,
@@ -18,13 +14,9 @@ import { runWithBackgroundExecution } from '../../background/backgroundExecution
 import type { BaseLLMProvider } from '../../llm/base'
 import { type YoloAgentEvent, conversationStateToEvents } from '../agent-api'
 import { backgroundTaskCompletionBus } from '../background-task/completion-bus'
-import {
-  CitationRegistry,
-  attachSourcesToLatestAssistant,
-} from '../citationRegistry'
+import { CitationRegistry } from '../citationRegistry'
 import { liveTaskStreamBus } from '../live-stream/taskStreamBus'
 import { NativeAgentRuntime } from '../native-runtime'
-import type { ProjectTaskBinding } from '../project/types'
 import type { AgentConversationState } from '../service'
 import type { AgentRuntimeLoopConfig, AgentRuntimeRunInput } from '../types'
 
@@ -32,19 +24,13 @@ import {
   SUBAGENT_DEFAULT_SYSTEM_PROMPT,
   SUBAGENT_MAX_AUTO_ITERATIONS,
 } from './constants'
-import type { DelegatedAssistantProfile } from './delegated-assistant-profile'
-import {
-  type SubagentParentContext,
-  composeParentContextPrompt,
-} from './parent-context'
-import { truncateLiveTranscriptMessages } from './result-limit'
+import type { SubagentParentContext } from './parent-context'
 import { subagentRuntimeRegistry } from './runtime-registry'
 import { subagentTaskRegistry } from './task-registry'
 import { filterAllowedToolsForSubagent } from './tool-filter'
 import type {
   SubagentAcceptedResult,
   SubagentResult,
-  SubagentTaskCompletionRecord,
   SubagentTaskRecord,
 } from './types'
 
@@ -59,56 +45,7 @@ export type RunSubagentParams = {
     model: ChatModel
     apiType?: LLMProviderApiType | null
   }
-  delegatedProfile?: DelegatedAssistantProfile
   signal?: AbortSignal
-  /**
-   * Project delivery binding (parent-only): the parent resolves the task,
-   * composes its body + acceptance criteria into the child prompt, and binds
-   * the delivery back to the task. See project/deliveryBridge.
-   */
-  projectTask?: ProjectTaskBinding
-  /** Durable-session parity identifiers (ephemeral runner defaults below). */
-  sessionId?: string
-  runSequence?: number
-  runKey?: string
-}
-
-/**
- * 每次结算都推送完成事件到父会话（R5：消费方按 taskId 去重/追加；subagent 为
- * 纯 ephemeral，每个 taskId 只结算一次）。移植自 backup runner.ts:158。
- */
-const publishBackgroundSubagentCompletion = (
-  record: SubagentTaskRecord,
-): void => {
-  const updatedRecord = subagentTaskRegistry.get(record.taskId)
-  if (updatedRecord && updatedRecord.status !== 'running') {
-    const { abortController: _abortController, ...recordWithoutAbort } = record
-    const completionRecord: SubagentTaskCompletionRecord = {
-      ...recordWithoutAbort,
-      ...updatedRecord,
-      ...(record.liveTranscript
-        ? { liveTranscript: record.liveTranscript }
-        : {}),
-    }
-    // `result.usage` is the child's CUMULATIVE per-turn usage, summed by
-    // `collectTotalAssistantUsage` over its whole transcript. Project it to the
-    // `{ inputTokens, outputTokens }` shape the parent diagnostics consume.
-    const cumulativeUsage = updatedRecord.result?.usage
-    backgroundTaskCompletionBus.pushCompleted({
-      kind: 'subagent',
-      taskId: updatedRecord.taskId,
-      conversationId: updatedRecord.conversationId,
-      record: completionRecord,
-      ...(cumulativeUsage
-        ? {
-            usage: {
-              inputTokens: cumulativeUsage.prompt_tokens,
-              outputTokens: cumulativeUsage.completion_tokens,
-            },
-          }
-        : {}),
-    })
-  }
 }
 
 function countToolUses(messages: ChatMessage[]): number {
@@ -192,14 +129,11 @@ export function autoRejectPendingApprovals(runtime: NativeAgentRuntime): void {
   const last = snapshot.messages.at(-1)
   if (!last || last.role !== 'tool') return
   for (const toolCall of last.toolCalls) {
-    if (
-      toolCall.response.status === ToolCallResponseStatus.PendingApproval ||
-      toolCall.response.status === ToolCallResponseStatus.AwaitingUserInput
-    ) {
+    if (toolCall.response.status === ToolCallResponseStatus.PendingApproval) {
       runtime.setToolCallResponse(toolCall.request.id, {
         status: ToolCallResponseStatus.Error,
         error:
-          'Tool interaction timed out: the user did not respond within 5 minutes, so this call was auto-rejected. Try a different approach or summarise the situation in your final reply so the user can take over.',
+          'Tool approval timed out: the user did not respond within 5 minutes, so this call was auto-rejected. Try a different approach or summarise the situation in your final reply so the user can take over.',
       })
     }
   }
@@ -207,18 +141,6 @@ export function autoRejectPendingApprovals(runtime: NativeAgentRuntime): void {
 
 /** Auto-reject window for paused subagent tool calls. */
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000
-
-/**
- * F5: cadence at which the runner renews the parent-side subagent deadline
- * while the child is paused on user approval. The parent deadline is
- * heartbeat-driven (liveTaskStreamBus events), and an approval pause produces
- * no events — without this renewal the parent deadline (default 5min) trips
- * at the same wall-clock moment as the child's own autoReject and the whole
- * child run is aborted + breaker incremented, shadowing the intended
- * autoReject fallback. Must stay well below both `APPROVAL_TIMEOUT_MS` and
- * the configured parent `timeoutMs`.
- */
-const APPROVAL_PARENT_DEADLINE_RENEWAL_INTERVAL_MS = 60 * 1000
 
 function extractLastAssistantText(messages: ChatMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -303,99 +225,29 @@ function projectSubagentEvent({
   return undefined
 }
 
-/**
- * Resolves the child run policy from a delegated role profile when present,
- * otherwise from the generic parent capabilities (behind the subagent
- * deny-list). Ported from backup runner.ts:254-306; fields absent from the
- * master runtime input (`rejectToolApproval` / `temporaryApprovedToolNames`)
- * and the R1-excluded `isSubagentChildRun` flag are intentionally dropped.
- */
-export function resolveSubagentRunPolicy({
-  parent,
-  delegatedProfile,
-}: {
-  parent: SubagentParentContext
-  delegatedProfile?: DelegatedAssistantProfile
-}) {
-  if (delegatedProfile) {
-    return {
-      loopConfig: delegatedProfile.loopConfig,
-      allowedToolNames: filterAllowedToolsForSubagent(
-        delegatedProfile.allowedToolNames,
-      ),
-      toolPreferences: delegatedProfile.toolPreferences,
-      toolServerPreferences: delegatedProfile.toolServerPreferences,
-      workspaceAccessPolicy: parent.workspaceAccessPolicy,
-      allowedSkillPaths: delegatedProfile.allowedSkillPaths,
-      enableToolDisclosure: parent.enableToolDisclosure,
-      reasoningLevel: parent.reasoningLevel,
-      requestParams: parent.requestParams,
-      requestContextBuilder: delegatedProfile.requestContextBuilder,
-      bypassToolApproval: parent.bypassToolApproval,
-      systemPromptOverride: undefined,
-    }
-  }
-
-  return {
-    loopConfig: {
-      enableTools: parent.loopConfig.enableTools,
-      includeBuiltinTools: parent.loopConfig.includeBuiltinTools,
-      maxAutoIterations: SUBAGENT_MAX_AUTO_ITERATIONS,
-    },
-    allowedToolNames: filterAllowedToolsForSubagent(parent.allowedToolNames),
-    toolPreferences: parent.toolPreferences,
-    toolServerPreferences: parent.toolServerPreferences,
-    workspaceAccessPolicy: parent.workspaceAccessPolicy,
-    allowedSkillPaths: parent.allowedSkillPaths,
-    enableToolDisclosure: parent.enableToolDisclosure,
-    reasoningLevel: parent.reasoningLevel,
-    requestParams: parent.requestParams,
-    requestContextBuilder: parent.requestContextBuilder,
-    bypassToolApproval: parent.bypassToolApproval,
-    systemPromptOverride: SUBAGENT_DEFAULT_SYSTEM_PROMPT,
-  }
-}
-
-// F3: the former exported `buildSubagentInitialRunInput` was the only
-// consumer-less duplicate of runChildAgent's inline construction, and NOT
-// byte-identical to it (missing `workspaceScope`, shared citationRegistry,
-// delegatedRole metadata). Deleted — the inline construction is the single
-// source of truth. See the F3 决策点 in the fix report.
 async function runChildAgent(
   record: SubagentTaskRecord,
   parent: SubagentParentContext,
   childModel: RunSubagentParams['childModel'],
-  delegatedProfile?: DelegatedAssistantProfile,
-  promptMessageId?: string,
-  runInputOverride?: AgentRuntimeRunInput,
 ): Promise<void> {
   const startedAt = record.createdAt
   const childUserMessage: ChatUserMessage = {
     role: 'user',
-    id: promptMessageId ?? uuidv4(),
+    id: uuidv4(),
     content: null,
-    // Task 14 fork（F3 后为唯一构造点）：parent 携带 forkContext +
-    // parentMessages（buildSubagentParentContext 从父 run input 快照），
-    // none/undefined 时返回原 prompt——与迁移前逐字节一致。
-    promptContent: composeParentContextPrompt({
-      prompt: record.prompt,
-      parentMessages: parent.parentMessages ?? [],
-      forkContext: parent.forkContext,
-    }),
+    promptContent: record.prompt,
     mentionables: [],
   }
 
-  // 策略统一走 resolveSubagentRunPolicy：非 delegated 时产出与旧内联构造完全
-  // 一致（filterAllowedToolsForSubagent + SUBAGENT_DEFAULT_SYSTEM_PROMPT +
-  // SUBAGENT_MAX_AUTO_ITERATIONS），delegated 时按角色覆盖 loop/tools/系统提示。
-  const policy = resolveSubagentRunPolicy({ parent, delegatedProfile })
-  const loopConfig: AgentRuntimeLoopConfig = policy.loopConfig
-  const delegatedRole: DelegatedRoleMetadata | undefined = delegatedProfile
-    ? Object.freeze({
-        assistantId: delegatedProfile.delegatedRole.id,
-        assistantName: delegatedProfile.delegatedRole.name,
-      })
-    : undefined
+  const childAllowedToolNames = filterAllowedToolsForSubagent(
+    parent.allowedToolNames,
+  )
+
+  const loopConfig: AgentRuntimeLoopConfig = {
+    enableTools: parent.loopConfig.enableTools,
+    includeBuiltinTools: parent.loopConfig.includeBuiltinTools,
+    maxAutoIterations: SUBAGENT_MAX_AUTO_ITERATIONS,
+  }
 
   const runtime = new NativeAgentRuntime(loopConfig)
   const citationRegistry = new CitationRegistry()
@@ -415,36 +267,32 @@ async function runChildAgent(
   })
   appendActivityLine(activityLines, parentToolCallId, '[state] starting')
 
-  const runInput: AgentRuntimeRunInput =
-    runInputOverride ??
-    ({
-      providerClient: childModel.providerClient,
-      model: childModel.model,
-      apiType: childModel.apiType,
-      messages: [childUserMessage],
-      requestMessages: [childUserMessage],
-      conversationId: record.taskId,
-      sourceUserMessageId: childUserMessage.id,
-      assistantId: parent.assistantId,
-      requestContextBuilder: policy.requestContextBuilder,
-      mcpManager: parent.mcpManager,
-      allowedToolNames: policy.allowedToolNames,
-      toolPreferences: policy.toolPreferences,
-      toolServerPreferences: policy.toolServerPreferences,
-      workspaceScope: parent.workspaceScope,
-      workspaceAccessPolicy: policy.workspaceAccessPolicy,
-      allowedSkillPaths: policy.allowedSkillPaths,
-      enableToolDisclosure: policy.enableToolDisclosure,
-      reasoningLevel: policy.reasoningLevel,
-      requestParams: policy.requestParams,
-      abortSignal: abortController.signal,
-      systemPromptOverride: policy.systemPromptOverride,
-      toolApprovalConversationId: parent.conversationId,
-      bypassToolApproval: policy.bypassToolApproval,
-      runContext: { citationRegistry },
-    } satisfies AgentRuntimeRunInput)
-  const sourceUserMessageId =
-    runInput.sourceUserMessageId ?? childUserMessage.id
+  const runInput: AgentRuntimeRunInput = {
+    providerClient: childModel.providerClient,
+    model: childModel.model,
+    apiType: childModel.apiType,
+    messages: [childUserMessage],
+    requestMessages: [childUserMessage],
+    conversationId: record.taskId,
+    sourceUserMessageId: childUserMessage.id,
+    assistantId: parent.assistantId,
+    requestContextBuilder: parent.requestContextBuilder,
+    mcpManager: parent.mcpManager,
+    allowedToolNames: childAllowedToolNames,
+    toolPreferences: parent.toolPreferences,
+    builtinCapabilityPreferences: parent.builtinCapabilityPreferences,
+    toolServerPreferences: parent.toolServerPreferences,
+    workspaceScope: parent.workspaceScope,
+    allowedSkillPaths: parent.allowedSkillPaths,
+    enableToolDisclosure: parent.enableToolDisclosure,
+    reasoningLevel: parent.reasoningLevel,
+    requestParams: parent.requestParams,
+    abortSignal: abortController.signal,
+    systemPromptOverride: SUBAGENT_DEFAULT_SYSTEM_PROMPT,
+    toolApprovalConversationId: parent.conversationId,
+    bypassToolApproval: parent.bypassToolApproval,
+    runContext: { citationRegistry },
+  }
 
   const unsubscribe = runtime.subscribe((snapshot) => {
     const state: AgentConversationState = {
@@ -456,15 +304,11 @@ async function runChildAgent(
         snapshot.pendingCompactionAnchorMessageId,
     }
     subagentTaskRegistry.update(record.taskId, {
-      // S4: the registry holds the latest snapshot for the task's lifetime
-      // (live UI preview), so cap oversized text pieces at the configured
-      // `subagentResultMaxChars` — same window the parent-side result
-      // injection uses. The final result transcript stays untruncated.
-      liveTranscript: truncateLiveTranscriptMessages(snapshot.messages),
+      liveTranscript: snapshot.messages,
     })
     const nextEvents = conversationStateToEvents({
       state,
-      sourceUserMessageId,
+      sourceUserMessageId: childUserMessage.id,
       previous,
     })
     previous = nextEvents.nextTracker
@@ -508,7 +352,6 @@ async function runChildAgent(
     taskId: record.taskId,
     runtime,
     mcpManager: parent.mcpManager,
-    abortSignal: runInput.abortSignal ?? abortController.signal,
     parentConversationId: record.conversationId,
     parentToolCallId,
     resumeRun,
@@ -538,27 +381,12 @@ async function runChildAgent(
         autoRejectPendingApprovals(runtime)
         void resumeRun()
       }, APPROVAL_TIMEOUT_MS)
-      // F5: the child produces no heartbeat while paused on approval, so the
-      // parent deadline would otherwise trip at the same moment as this
-      // autoReject window and abort the whole child (+ breaker increment),
-      // shadowing the intended per-call fallback. Renew the parent deadline
-      // while the gate is open so the child's own autoReject fires first.
-      // Dynamic import keeps the madge edge dynamic (accepted repo pattern;
-      // see localFileTools delegate_subagent case).
-      const { renewParentSubagentDeadline } = await import(
-        './pending-timeout-registry'
-      )
-      const renewalHandle = setInterval(() => {
-        // No-op when the parent deadline is not (or no longer) registered.
-        renewParentSubagentDeadline(parentToolCallId)
-      }, APPROVAL_PARENT_DEADLINE_RENEWAL_INTERVAL_MS)
       try {
         await new Promise<void>((resolve) => {
           approvalResolver = resolve
         })
       } finally {
         clearTimeout(timeoutHandle)
-        clearInterval(renewalHandle)
       }
       if (abortController.signal.aborted) {
         break
@@ -567,13 +395,7 @@ async function runChildAgent(
     }
 
     const snapshot = runtime.getSnapshot()
-    // The child registry collects retrieval hits during the run (bash
-    // `search`); attach them to the final transcript so SubagentDetailModal's
-    // message rendering shows the source cards (same shape as the main chat).
-    const finalMessages = attachSourcesToLatestAssistant(
-      snapshot.messages,
-      citationRegistry,
-    )
+    const finalMessages = snapshot.messages
     const content = extractLastAssistantText(finalMessages)
     const completedEventText =
       projectSubagentEvent({
@@ -597,12 +419,6 @@ async function runChildAgent(
       prompt: record.prompt,
       modelName: childModel.model.name ?? childModel.model.model,
       transcript: finalMessages,
-      ...(delegatedRole ? { delegatedRole } : {}),
-      // F2/F11: role display name — write site (projected by the service onto
-      // the parent subagent_result message).
-      ...(delegatedProfile
-        ? { delegatedRoleName: delegatedProfile.delegatedRole.name }
-        : {}),
     }
 
     subagentTaskRegistry.update(record.taskId, {
@@ -625,26 +441,21 @@ async function runChildAgent(
       toolCallId: parentToolCallId,
       status: 'done',
     })
-    const result: SubagentResult = {
-      taskId: record.taskId,
-      status,
-      content: errorMessage,
-      activityLog: activityLines.join('\n'),
-      durationMs: completedAt - startedAt,
-      toolUseCount: 0,
-      prompt: record.prompt,
-      modelName: childModel.model.name ?? childModel.model.model,
-      ...(delegatedRole ? { delegatedRole } : {}),
-      ...(delegatedProfile
-        ? { delegatedRoleName: delegatedProfile.delegatedRole.name }
-        : {}),
-    }
     subagentTaskRegistry.update(record.taskId, {
       status,
       completedAt,
       error: errorMessage,
       activityLog: activityLines.join('\n'),
-      result,
+      result: {
+        taskId: record.taskId,
+        status,
+        content: errorMessage,
+        activityLog: activityLines.join('\n'),
+        durationMs: completedAt - startedAt,
+        toolUseCount: 0,
+        prompt: record.prompt,
+        modelName: childModel.model.name ?? childModel.model.model,
+      },
     })
   } finally {
     subagentRuntimeRegistry.unregister(record.taskId)
@@ -653,148 +464,79 @@ async function runChildAgent(
     // ensure the gate is resolved so we don't leak the promise on the
     // exception path either.
     wakeApprovalGate()
-    // Settlement must run unconditionally — the catch branch lands here too,
-    // instead of relying on "no return in catch → fall through to the code
-    // after try/catch/finally" (a future `return` in catch would silently
-    // break the parent-side settlement). A push failure is logged and does
-    // not change the run's terminal semantics.
-    unsubscribe()
-    try {
-      publishBackgroundSubagentCompletion(record)
-    } catch (settleError) {
-      console.error(
-        '[YOLO][Subagent] failed to publish completion',
-        settleError,
-      )
-    }
+  }
+
+  unsubscribe()
+
+  const updatedRecord = subagentTaskRegistry.get(record.taskId)
+  if (updatedRecord && updatedRecord.status !== 'running') {
+    backgroundTaskCompletionBus.pushCompleted({
+      kind: 'subagent',
+      taskId: updatedRecord.taskId,
+      conversationId: updatedRecord.conversationId,
+      record: updatedRecord,
+    })
   }
 }
 
 export async function runSubagent(
   params: RunSubagentParams,
 ): Promise<SubagentAcceptedResult> {
-  let abortListener: (() => void) | undefined
-  try {
-    const {
-      description,
-      prompt,
-      conversationId,
-      source,
-      parent,
-      childModel,
-      delegatedProfile,
-      signal,
-      projectTask,
-      sessionId,
-      runSequence,
-      runKey,
-    } = params
+  const {
+    description,
+    prompt,
+    conversationId,
+    source,
+    parent,
+    childModel,
+    signal,
+  } = params
 
-    if (signal?.aborted) {
-      throw new Error('Subagent dispatch was aborted before start.')
-    }
+  if (signal?.aborted) {
+    throw new Error('Subagent dispatch was aborted before start.')
+  }
 
-    const title = description.trim()
-    if (!title) {
-      throw new Error('description is required.')
-    }
-    const taskPrompt = prompt.trim()
-    if (!taskPrompt) {
-      throw new Error('prompt is required.')
-    }
+  const title = description.trim()
+  if (!title) {
+    throw new Error('description is required.')
+  }
+  const taskPrompt = prompt.trim()
+  if (!taskPrompt) {
+    throw new Error('prompt is required.')
+  }
 
-    // 纯 ephemeral：每次派发都是全新子代理（无 durable session 层），taskId
-    // 即唯一身份（与旧 ephemeral 路径同构：sessionId === taskId === sub_xxx）。
-    const taskId = `sub_${uuidv4().replace(/-/g, '').slice(0, 12)}`
-    const abortController = new AbortController()
-    if (signal) {
-      abortListener = () => abortController.abort()
-      signal.addEventListener('abort', abortListener, { once: true })
-    }
+  const taskId = `sub_${uuidv4().replace(/-/g, '').slice(0, 12)}`
+  const abortController = new AbortController()
+  if (signal) {
+    signal.addEventListener('abort', () => abortController.abort(), {
+      once: true,
+    })
+  }
 
-    const delegatedRole: DelegatedRoleMetadata | undefined = delegatedProfile
-      ? Object.freeze({
-          assistantId: delegatedProfile.delegatedRole.id,
-          assistantName: delegatedProfile.delegatedRole.name,
-        })
-      : undefined
-    const record: SubagentTaskRecord = {
-      taskId,
-      conversationId,
-      source,
-      title,
-      status: 'running',
-      createdAt: Date.now(),
-      prompt: taskPrompt,
-      abortController,
-      // 纯 ephemeral 下 sessionId/runKey/runSequence 的缺省与 backup runner
-      // `record.runKey ?? ${taskId}:${runSequence ?? 1}` 同语义：
-      // sessionId === taskId === sub_xxx、runKey === taskId、runSequence === 1。
-      ...(projectTask ? { projectTask } : {}),
-      ...(sessionId ? { sessionId } : { sessionId: taskId }),
-      ...(runSequence !== undefined ? { runSequence } : { runSequence: 1 }),
-      ...(runKey ? { runKey } : { runKey: taskId }),
-    }
+  const record: SubagentTaskRecord = {
+    taskId,
+    conversationId,
+    source,
+    title,
+    status: 'running',
+    createdAt: Date.now(),
+    prompt: taskPrompt,
+    abortController,
+  }
 
-    subagentTaskRegistry.register(record)
+  subagentTaskRegistry.register(record)
 
-    // fire-and-forget（Task 7 审查 #3：不得 await 子 run 阻塞父 turn——
-    // runSubagent 立即返回 accepted，交付靠 pushCompleted 事件）。
-    void runChildAgent(record, parent, childModel, delegatedProfile)
-      .catch(async (error: unknown) => {
-        const completedAt = Date.now()
-        const status = abortController.signal.aborted ? 'aborted' : 'failed'
-        abortController.abort()
-        const errorMessage = formatErrorMessageWithCauses(error)
-        const result: SubagentResult = {
-          taskId: record.taskId,
-          status,
-          content: errorMessage,
-          durationMs: completedAt - record.createdAt,
-          toolUseCount: 0,
-          prompt: record.prompt,
-          modelName: childModel.model.name ?? childModel.model.model,
-          ...(delegatedRole ? { delegatedRole } : {}),
-          ...(delegatedProfile
-            ? { delegatedRoleName: delegatedProfile.delegatedRole.name }
-            : {}),
-        }
-        subagentTaskRegistry.update(record.taskId, {
-          status,
-          completedAt,
-          error: errorMessage,
-          result,
-        })
-        try {
-          publishBackgroundSubagentCompletion(record)
-        } catch (settleError) {
-          console.error(
-            '[YOLO][Subagent] failed to publish completion',
-            settleError,
-          )
-        }
-      })
-      .finally(() => {
-        if (signal && abortListener) {
-          signal.removeEventListener('abort', abortListener)
-          abortListener = undefined
-        }
-      })
+  void runChildAgent(record, parent, childModel).catch(() => {
+    // Errors are persisted on the record; avoid unhandled rejection.
+  })
 
-    return {
-      accepted: true,
-      taskId,
-      title,
-      status: 'running',
-      note: 'Subagent started asynchronously. The result will arrive as a follow-up background event when the child run completes.',
-      modelName: childModel.model.name ?? childModel.model.model,
-    }
-  } catch (error) {
-    if (params.signal && abortListener) {
-      params.signal.removeEventListener('abort', abortListener)
-      abortListener = undefined
-    }
-    throw error instanceof Error ? error : new Error(String(error))
+  return {
+    accepted: true,
+    taskId,
+    title,
+    status: 'running',
+    note: 'Subagent started asynchronously. The result will arrive as a follow-up background event when the child run completes.',
+    modelName: childModel.model.name ?? childModel.model.model,
   }
 }
 
