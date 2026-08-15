@@ -236,6 +236,9 @@ describe('ChatManager', () => {
             title: 'Cached title',
             updatedAt: 10,
             schemaVersion: CHAT_SCHEMA_VERSION,
+            // 新索引行恒带 webBinding 键（null 表示无绑定）；缺键的行走
+            // 旧行自愈路径（重读文件补全）。
+            webBinding: null,
           },
         ]),
         [`${CHATS_DIR}/v1_${idA}.json`]: JSON.stringify(conversation),
@@ -381,6 +384,72 @@ describe('ChatManager', () => {
           `${CHATS_DIR}/chat_index.json`,
         ]),
       )
+    })
+  })
+
+  describe('web binding in the index', () => {
+    const idA = '123e4567-e89b-12d3-a456-426614174000'
+    const binding = {
+      initialAgentId: 'agent-1',
+      activeAgentId: 'agent-1',
+      rootHash: 'root-1',
+    }
+
+    test('listChats returns web binding from the index without re-reading files', async () => {
+      const { app, adapter } = createFakeFs({})
+      const manager = new ChatManager(app)
+      await manager.createChat({
+        id: idA,
+        title: 'Titled',
+        messages: [],
+        webBinding: binding,
+        workspaceId: 'ws-1',
+        agentInstanceId: 'agent-1',
+      } as never)
+      adapter.read.mockClear()
+
+      const result = await manager.listChats()
+
+      expect(result).toEqual([
+        expect.objectContaining({
+          id: idA,
+          webBinding: binding,
+          workspaceId: 'ws-1',
+          agentInstanceId: 'agent-1',
+        }),
+      ])
+      expect(adapter.read).not.toHaveBeenCalledWith(
+        `${CHATS_DIR}/v1_${idA}.json`,
+      )
+    })
+
+    test('falls back to reading the file for legacy index rows without binding fields', async () => {
+      const conversation = makeConversation(idA, 'Legacy', 100)
+      const { app, adapter } = createFakeFs({
+        [`${CHATS_DIR}/chat_index.json`]: JSON.stringify([
+          {
+            id: idA,
+            title: 'Legacy',
+            updatedAt: 100,
+            schemaVersion: 1,
+            origin: 'external-agent',
+          },
+        ]),
+        [`${CHATS_DIR}/v1_${idA}.json`]: JSON.stringify({
+          ...conversation,
+          webBinding: binding,
+          workspaceId: 'ws-1',
+          agentInstanceId: 'agent-1',
+        }),
+      })
+      const manager = new ChatManager(app)
+
+      const result = await manager.listChats()
+
+      expect(result).toEqual([
+        expect.objectContaining({ id: idA, webBinding: binding }),
+      ])
+      expect(adapter.read).toHaveBeenCalled()
     })
   })
 })

@@ -14,6 +14,7 @@ import {
   CHAT_SCHEMA_VERSION,
   ChatConversation,
   ChatConversationMetadata,
+  ChatConversationWebBinding,
   getChatConversationOrigin,
 } from './types'
 
@@ -251,8 +252,12 @@ export class ChatManager extends AbstractJsonRepository<
           // has an empty title (createChat/updateChat reject it), so an empty
           // title marks a placeholder previously written for an unreadable
           // file — fall through and re-read it so it can self-heal.
+          // 旧索引行（webBinding 键缺失）同样回退读文件：绑定字段需要从
+          // 全量会话 JSON 补全，读一次后经 writeIndexIfChanged 自愈。
           const cached = cachedById.get(meta.id)
-          if (cached && cached.title) return cached
+          if (cached && cached.title && cached.webBinding !== undefined) {
+            return cached
+          }
           const conversation = await this.readSafe(meta.fileName)
           return this.toMetadata(conversation ?? meta)
         }),
@@ -325,7 +330,13 @@ export class ChatManager extends AbstractJsonRepository<
     source: Pick<
       ChatConversation,
       'id' | 'title' | 'updatedAt' | 'schemaVersion' | 'origin' | 'cliSession'
-    > & { isPinned?: boolean; pinnedAt?: number },
+    > & {
+      isPinned?: boolean
+      pinnedAt?: number
+      workspaceId?: string | null
+      agentInstanceId?: string | null
+      webBinding?: ChatConversationWebBinding | null
+    },
   ): ChatConversationMetadata {
     return {
       id: source.id,
@@ -336,6 +347,9 @@ export class ChatManager extends AbstractJsonRepository<
       pinnedAt: source.pinnedAt,
       origin: getChatConversationOrigin(source),
       cliSession: source.cliSession,
+      workspaceId: source.workspaceId ?? null,
+      agentInstanceId: source.agentInstanceId ?? null,
+      webBinding: source.webBinding ?? null,
     }
   }
 
@@ -390,6 +404,11 @@ export class ChatManager extends AbstractJsonRepository<
     const index = (await this.readIndex()) ?? []
     const normalized = this.normalizeIndex(index)
     const targetIndex = normalized.findIndex((item) => item.id === chat.id)
+    const bindingFields = chat as ChatConversation & {
+      workspaceId?: string | null
+      agentInstanceId?: string | null
+      webBinding?: ChatConversationWebBinding | null
+    }
     const entry: ChatConversationMetadata = {
       id: chat.id,
       title: chat.title,
@@ -399,6 +418,11 @@ export class ChatManager extends AbstractJsonRepository<
       pinnedAt: chat.pinnedAt,
       origin: getChatConversationOrigin(chat),
       cliSession: chat.cliSession,
+      // 显式写 null 而非省略：索引行有该键即视为"已补全"，列表信任缓存
+      // 不再逐会话读文件；省略会让行落入旧行自愈路径（每次读全文件）。
+      workspaceId: bindingFields.workspaceId ?? null,
+      agentInstanceId: bindingFields.agentInstanceId ?? null,
+      webBinding: bindingFields.webBinding ?? null,
     }
     if (targetIndex === -1) {
       normalized.push(entry)

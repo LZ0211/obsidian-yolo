@@ -46,6 +46,7 @@ import { createWebAgentContextResolver } from './webAgentContextResolver'
 import { WebAgentLifecycleService } from './webAgentLifecycleService'
 import { WebAgentRunBridge } from './WebAgentRunBridge'
 import type {
+  ChatWebBinding,
   WebChatConversation,
   WebChatConversationMetadata,
 } from './webAgentTypes'
@@ -311,13 +312,21 @@ export function registerWebServerRoutes(
   }
 
   const registerChatRoutesContext: Parameters<typeof registerChatRoutes>[1] = {
-    // ChatManager.listChats() 的 metadata 不带 webBinding（toMetadata 剥离），
-    // 而 /api/chat/list 的 canAccessConversation 又必须按 webBinding 过滤——
-    // 直接透传会让 web 历史列表永远为空。逐条补回 webBinding/实例字段。
+    // ChatManager.listChats() 的 metadata 已携带 webBinding/实例字段（索引
+    // 缓存，见 database/json/chat/types）。索引行缺该键（旧行）时才回退逐条
+    // 读全文件补全——读一次后 ChatManager 会写回索引自愈，后续列表零文件读。
     listChats: async () => {
       const metadata = await options.chatManager.listChats()
       const enriched = await Promise.all(
         metadata.map(async (meta): Promise<WebChatConversationMetadata> => {
+          if (meta.webBinding !== undefined) {
+            return {
+              ...meta,
+              workspaceId: meta.workspaceId ?? null,
+              agentInstanceId: meta.agentInstanceId ?? null,
+              webBinding: (meta.webBinding ?? null) as ChatWebBinding | null,
+            }
+          }
           const chat = (await options.chatManager.findById(
             meta.id,
           )) as WebChatConversation | null

@@ -57,4 +57,26 @@ export type ChatConversationMetadata = {
   pinnedAt?: number
   origin?: ChatConversationOrigin
   cliSession?: ChatConversationCliSession
+  /**
+   * Web 会话绑定（web-server 的 ChatWebBinding 结构等价物，数据库层不
+   * 反向依赖 web-server）。写入 chat_index.json 后，web 列表不必逐会话
+   * 读全文件来补全绑定字段——索引行缺该键（undefined）视为旧行，回退
+   * 读文件自愈。
+   */
+  workspaceId?: string | null
+  agentInstanceId?: string | null
+  webBinding?: ChatConversationWebBinding | null
+}
+
+export type ChatConversationWebBinding = {
+  initialAgentId: string
+  activeAgentId: string
+  rootHash: string
+  accessState?: 'active' | 'orphaned'
+  orphanedReason?:
+    | 'agent_deleted'
+    | 'template_deleted'
+    | 'root_unavailable'
+    | 'agent_invalid'
+  updatedAt?: number
 }
