@@ -1257,6 +1257,13 @@ export class AgentService {
         this.compactCompletedBackgroundTaskRecord(event)
         return
       }
+      if (
+        this.findToolCall(conversationId, toolCallId)?.toolCall.response
+          .status === ToolCallResponseStatus.Aborted
+      ) {
+        this.compactCompletedBackgroundTaskRecord(event)
+        return
+      }
       if (event.record.result?.status === 'completed') {
         recordParentSubagentSuccess(conversationId)
       }
@@ -1698,7 +1705,8 @@ export class AgentService {
             bashApprovalMode:
               toolCall.request.metadata?.executionConstraints?.bashApprovalMode,
             allowedSkillPaths:
-              toolCall.request.metadata?.executionConstraints?.allowedSkillPaths,
+              toolCall.request.metadata?.executionConstraints
+                ?.allowedSkillPaths,
           }),
         getResponseBody: (response) => response,
       }),

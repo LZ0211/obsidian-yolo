@@ -1876,6 +1876,106 @@ describe('AgentService parent subagent deadline settlement', () => {
     }
   })
 
+  it('discards a child completion after its parent delegate call is manually aborted', async () => {
+    const service = new AgentService()
+    const userMessage = makeUserMessage('u1', 'dispatch once')
+    const runPromise = service.run({
+      conversationId: 'conv-manual-abort-race',
+      loopConfig: {
+        enableTools: true,
+        maxAutoIterations: 100,
+        includeBuiltinTools: true,
+      },
+      input: {
+        conversationId: 'conv-manual-abort-race',
+        messages: [userMessage],
+        mcpManager: { abortToolCall: jest.fn() },
+      } as unknown as AgentRuntimeRunInput,
+    })
+    const runtime = runtimeInstances[0]
+    runtime.emitSnapshot([
+      userMessage,
+      {
+        role: 'assistant',
+        id: 'assistant-1',
+        content: '',
+        metadata: { generationState: 'streaming' },
+      },
+      {
+        role: 'tool',
+        id: 'tool-1',
+        toolCalls: [
+          {
+            request: {
+              id: 'call-manual-abort-race',
+              name: 'yolo_local__delegate_subagent',
+            },
+            response: { status: ToolCallResponseStatus.Running },
+          },
+        ],
+      },
+    ])
+    subagentTaskRegistry.register({
+      taskId: 'sub_manual_abort_race',
+      conversationId: 'conv-manual-abort-race',
+      source: {
+        type: 'llm_tool_call',
+        toolCallId: 'call-manual-abort-race',
+        assistantMessageId: 'assistant-1',
+      },
+      title: 'Child task',
+      status: 'running',
+      createdAt: 1,
+      prompt: 'child prompt',
+      abortController: new AbortController(),
+    })
+    service.startBackgroundTaskResultListener()
+
+    try {
+      expect(
+        service.abortToolCall({
+          conversationId: 'conv-manual-abort-race',
+          toolCallId: 'call-manual-abort-race',
+        }),
+      ).toBe(true)
+
+      runtime.resolveRun()
+      await runPromise
+
+      backgroundTaskCompletionBus.pushCompleted({
+        kind: 'subagent',
+        taskId: 'sub_manual_abort_race',
+        conversationId: 'conv-manual-abort-race',
+        record: makeCompletedSubagentCompletionRecord({
+          taskId: 'sub_manual_abort_race',
+          conversationId: 'conv-manual-abort-race',
+          source: {
+            type: 'llm_tool_call',
+            toolCallId: 'call-manual-abort-race',
+            assistantMessageId: 'assistant-1',
+          },
+          status: 'aborted',
+          result: {
+            taskId: 'sub_manual_abort_race',
+            status: 'aborted',
+            content: 'aborted by parent',
+            activityLog: '[state] aborted',
+            durationMs: 1,
+            toolUseCount: 0,
+          },
+        }),
+      })
+
+      expect(
+        service
+          .getState('conv-manual-abort-race')
+          .messages.filter((message) => message.role === 'subagent_result'),
+      ).toHaveLength(0)
+    } finally {
+      service.stopBackgroundTaskResultListener()
+    }
+  })
+
   it('approveToolCall registers a deadline for an approval-paused delegate_subagent call', async () => {
     const service = new AgentService()
     const userMessage = makeUserMessage('u1', 'dispatch once')
