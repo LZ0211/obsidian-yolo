@@ -248,6 +248,22 @@ const server = http.createServer(async (req, res) => {
       writeJson(res, settings)
       return
     }
+    if (url.pathname === '/api/cli/availability') {
+      writeJson(res, {
+        'claude-code': false,
+        codex: false,
+        hermes: false,
+        pi: false,
+      })
+      return
+    }
+    if (
+      /^\/api\/chat-runtime\/[^/]+\/sessions$/.test(url.pathname) &&
+      req.method === 'GET'
+    ) {
+      writeJson(res, { ok: true, sessions: [] })
+      return
+    }
     if (url.pathname === '/api/vault/index') {
       writeJson(
         res,
