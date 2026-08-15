@@ -2620,7 +2620,8 @@ export default class YoloPlugin extends Plugin {
     this.updateToastCleanup = mountUpdateToast(this)
     // The toast is anchored to the window (not a chat view), so trigger the
     // check at load time rather than waiting for a chat view to open.
-    this.checkForUpdatesOnce()
+    // 本地分发模式（组件随插件分发、无下载器）：禁用启动时的更新检查。
+    // this.checkForUpdatesOnce()
     let shouldStartAgentNotifications = true
     void this.warmupAgentService()
       .then(() => {
