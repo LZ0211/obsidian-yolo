@@ -762,6 +762,14 @@ export async function runSubagent(
           error: errorMessage,
           result,
         })
+        try {
+          publishBackgroundSubagentCompletion(record)
+        } catch (settleError) {
+          console.error(
+            '[YOLO][Subagent] failed to publish completion',
+            settleError,
+          )
+        }
       })
       .finally(() => {
         if (signal && abortListener) {

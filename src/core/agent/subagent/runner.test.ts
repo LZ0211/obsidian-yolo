@@ -462,6 +462,33 @@ describe('runSubagent ephemeral dispatch', () => {
     expect(subagentTaskRegistry.get(result.taskId)?.status).toBe('failed')
   })
 
+  it('pushes a completion event when child runtime initialization fails', async () => {
+    const nativeRuntimeModule = jest.requireMock<{
+      NativeAgentRuntime: jest.Mock
+    }>('../native-runtime')
+    nativeRuntimeModule.NativeAgentRuntime.mockImplementationOnce(() => {
+      throw new Error('runtime initialization failed')
+    })
+
+    const result = await runSubagent(makeParams())
+    if (!result.accepted) return
+    await flushMicrotasks()
+
+    const pushCompleted = (
+      backgroundTaskCompletionBus as unknown as {
+        pushCompleted: jest.Mock
+      }
+    ).pushCompleted
+    expect(pushCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'subagent',
+        taskId: result.taskId,
+        record: expect.objectContaining({ status: 'failed' }),
+      }),
+    )
+    expect(subagentTaskRegistry.get(result.taskId)?.status).toBe('failed')
+  })
+
   it('reports cumulative input/output tokens on a multi-turn child completion', async () => {
     // Override the module-level NativeAgentRuntime mock for this run only:
     // the child transcript has two assistant turns whose per-turn usage sums
