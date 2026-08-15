@@ -739,6 +739,42 @@ export default class YoloPlugin extends Plugin {
         injection: () => this.settings.cliLlmInjection,
       })
       await sync.apply()
+
+      const { createMcpSharingSync } = await import(
+        './core/cli-runtime/llm-provider-sync'
+      )
+      const { getLocalMcpServerUrl } = await import(
+        './core/mcp/localMcpServerConfig'
+      )
+      const mcpSync = createMcpSharingSync({
+        app: {
+          loadLocalStorage: (key: string): unknown => {
+            try {
+              return window.localStorage.getItem(key)
+            } catch {
+              return null
+            }
+          },
+          saveLocalStorage: (key: string, value: unknown): void => {
+            try {
+              window.localStorage.setItem(key, String(value))
+            } catch {
+              // Best-effort; re-apply on next boot is acceptable.
+            }
+          },
+        },
+        enabled: () => this.settings.cliMcpSharing?.enabled === true,
+        getServer: () => {
+          const local = this.settings.mcp.localServer
+          if (!local.token.trim()) return null
+          return {
+            enabled: true,
+            url: getLocalMcpServerUrl(local.port),
+            token: local.token,
+          }
+        },
+      })
+      await mcpSync.apply()
     } catch (error: unknown) {
       console.warn('[YOLO] Failed to sync CLI LLM injection', error)
     }

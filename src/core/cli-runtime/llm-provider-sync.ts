@@ -269,3 +269,131 @@ export function createLlmProviderSync(input: {
     },
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* MCP 共享：把 YOLO 本地 MCP HTTP 服务（127.0.0.1:<port>/mcp + Bearer */
+/* token）写入各 CLI 的 MCP 配置。独立开关，与 provider 注入解耦。      */
+/* ------------------------------------------------------------------ */
+
+export type McpSharingInput = {
+  enabled: boolean
+  url: string
+  token: string
+}
+
+/** claude-code / hermes 共用 ~/.claude.json 的 mcpServers 段。 */
+async function writeClaudeJsonMcpServer(
+  configPath: string,
+  server: McpSharingInput | null,
+): Promise<void> {
+  const { fs } = await loadFs()
+  let current: Record<string, unknown> = {}
+  try {
+    const raw = await fs.readFile(configPath, 'utf8')
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      current = parsed as Record<string, unknown>
+    }
+  } catch {
+    current = {}
+  }
+  const servers =
+    current.mcpServers && typeof current.mcpServers === 'object'
+      ? (current.mcpServers as Record<string, unknown>)
+      : {}
+  if (server) {
+    servers.yolo = {
+      type: 'http',
+      url: server.url,
+      headers: { Authorization: `Bearer ${server.token}` },
+    }
+  } else {
+    delete servers.yolo
+  }
+  await atomicWriteWithBackup(
+    configPath,
+    `${JSON.stringify({ ...current, mcpServers: servers }, null, 2)}
+`,
+  )
+}
+
+/** opencode.json 的 mcp 段（remote 类型）。 */
+async function writeOpenCodeMcpServer(
+  configPath: string,
+  server: McpSharingInput | null,
+): Promise<void> {
+  const { fs } = await loadFs()
+  let current: Record<string, unknown> = {}
+  try {
+    const raw = await fs.readFile(configPath, 'utf8')
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      current = parsed as Record<string, unknown>
+    }
+  } catch {
+    current = {}
+  }
+  const servers =
+    current.mcp && typeof current.mcp === 'object'
+      ? (current.mcp as Record<string, unknown>)
+      : {}
+  if (server) {
+    servers.yolo = {
+      type: 'remote',
+      url: server.url,
+      enabled: true,
+      headers: { Authorization: `Bearer ${server.token}` },
+    }
+  } else {
+    delete servers.yolo
+  }
+  await atomicWriteWithBackup(
+    configPath,
+    `${JSON.stringify({ ...current, mcp: servers }, null, 2)}
+`,
+  )
+}
+
+export type McpSharingSync = {
+  apply(): Promise<boolean>
+}
+
+export function createMcpSharingSync(input: {
+  app: { loadLocalStorage: (key: string) => unknown; saveLocalStorage: (key: string, value: unknown) => void }
+  enabled: () => boolean
+  getServer: () => McpSharingInput | null
+  configDirOverride?: string
+}): McpSharingSync {
+  const SIGNATURE_KEY = 'yolo-cli-mcp-sharing-last-applied'
+  const readSignature = (): string | null => {
+    const value = input.app.loadLocalStorage(SIGNATURE_KEY)
+    return typeof value === 'string' && value ? value : null
+  }
+  const writeSignature = (value: string | null): void => {
+    input.app.saveLocalStorage(SIGNATURE_KEY, value)
+  }
+
+  return {
+    apply: async (): Promise<boolean> => {
+      if (!Platform.isDesktop) return false
+      const server = input.enabled() ? input.getServer() : null
+      const signature = server ? `on:${server.url}` : 'off'
+      if (signature === readSignature()) return false
+
+      const home = await resolveHomeDir()
+      const claudePath = input.configDirOverride
+        ? `${input.configDirOverride}/claude.json`
+        : `${home}/.claude.json`
+      const opencodePath = input.configDirOverride
+        ? `${input.configDirOverride}/opencode.json`
+        : `${home}/.config/opencode/opencode.json`
+
+      await Promise.allSettled([
+        writeClaudeJsonMcpServer(claudePath, server),
+        writeOpenCodeMcpServer(opencodePath, server),
+      ])
+      writeSignature(signature)
+      return true
+    },
+  }
+}

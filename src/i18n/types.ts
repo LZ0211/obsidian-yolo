@@ -1123,6 +1123,13 @@ export type TranslationKeys = {
       badgeAdded?: string
       kind?: Record<string, string>
       providersCount: string
+      cliMcpSharing: {
+        title: string
+        desc: string
+        enabledLabel: string
+        enabledDesc: string
+        noToken: string
+      }
       cliInjection: {
         title: string
         desc: string

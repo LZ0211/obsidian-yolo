@@ -659,6 +659,12 @@ export const yoloSettingsSchema = z.object({
     .catch({ enabled: false, providerId: '', modelId: '' })
     .optional(),
 
+  // MCP 共享：开启时把 YOLO 本地 MCP HTTP 服务写入各 CLI 的 MCP 配置。
+  cliMcpSharing: z
+    .object({ enabled: z.boolean().catch(false) })
+    .catch({ enabled: false })
+    .optional(),
+
   // System Prompt
   systemPrompt: z.string().catch(''),
 

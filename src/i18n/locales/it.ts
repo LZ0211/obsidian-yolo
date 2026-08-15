@@ -1566,6 +1566,13 @@ export const it: DeepPartial<TranslationKeys> = {
       badgeOAuth: 'OAuth',
       badgeAdded: 'Aggiunto',
       providersCount: '{count} provider aggiunti',
+      cliMcpSharing: {
+        title: 'Condivisione MCP runtime CLI',
+        desc: 'Se attivo, il server MCP locale di YOLO viene condiviso via HTTP con i runtime CLI (Claude Code / Hermes / OpenCode); se disattivo, ogni SDK usa la propria configurazione.',
+        enabledLabel: 'Abilita condivisione MCP',
+        enabledDesc: 'Scrive l\'endpoint MCP HTTP locale nella config MCP di ogni CLI (.claude.json / opencode.json). L\'attivazione abilita anche il server MCP locale e genera un token.',
+        noToken: 'Token del server MCP locale mancante; abilita prima il server MCP locale.',
+      },
       cliInjection: {
         title: 'Iniezione provider CLI runtime',
         desc: "Se attivo, i runtime CLI (Claude Code / Codex / Hermes / Pi / OpenCode) usano il provider e il modello sottostanti; se disattivo, ogni SDK usa la propria configurazione.",

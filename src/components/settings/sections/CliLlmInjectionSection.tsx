@@ -4,6 +4,7 @@ import { ObsidianSetting } from '../../common/ObsidianSetting'
 import { ObsidianDropdown } from '../../common/ObsidianDropdown'
 import { ObsidianToggle } from '../../common/ObsidianToggle'
 import { useLanguage } from '../../../contexts/language-context'
+import { generateLocalMcpServerToken } from '../../../core/mcp/localMcpServerConfig'
 import type { YoloSettings } from '../../../settings/schema/setting.types'
 
 type CliLlmInjectionSectionProps = {
@@ -136,6 +137,77 @@ export function CliLlmInjectionSection({
             />
           </ObsidianSetting>
         </>
+      )}
+    </section>
+  )
+}
+
+export function CliMcpSharingSection({
+  settings,
+  setSettings,
+}: {
+  settings: YoloSettings
+  setSettings: (settings: YoloSettings) => Promise<boolean> | void
+}) {
+  const { t } = useLanguage()
+  const sharing = settings.cliMcpSharing ?? { enabled: false }
+  const localServer = settings.mcp.localServer
+
+  const update = (enabled: boolean) => {
+    // 开启共享时确保本地 MCP 服务已启用且 token 存在。
+    void setSettings({
+      ...settings,
+      cliMcpSharing: { enabled },
+      ...(enabled
+        ? {
+            mcp: {
+              ...settings.mcp,
+              localServer: {
+                ...localServer,
+                enabled: true,
+                token: localServer.token || generateLocalMcpServerToken(),
+              },
+            },
+          }
+        : {}),
+    })
+  }
+
+  return (
+    <section className="yolo-models-block">
+      <div className="yolo-models-block-head">
+        <div className="yolo-models-block-head-title-row">
+          <div className="yolo-settings-sub-header yolo-models-block-title">
+            {t('settings.providers.cliMcpSharing.title', 'CLI Runtime MCP 共享')}
+          </div>
+          <div className="yolo-settings-desc yolo-models-block-desc">
+            {t(
+              'settings.providers.cliMcpSharing.desc',
+              '开启后通过 HTTP 把 YOLO 本地 MCP 服务共享给 CLI runtime（Claude Code / Hermes / OpenCode）；关闭时各 SDK 使用自身配置。',
+            )}
+          </div>
+        </div>
+      </div>
+      <ObsidianSetting
+        name={t(
+          'settings.providers.cliMcpSharing.enabledLabel',
+          '启用 MCP 共享',
+        )}
+        desc={t(
+          'settings.providers.cliMcpSharing.enabledDesc',
+          '写入各 CLI 的 MCP 配置（.claude.json / opencode.json），指向本地 MCP HTTP 服务。开启时自动启用本地 MCP 服务并生成 token。',
+        )}
+        className="yolo-settings-card"
+      >
+        <ObsidianToggle value={sharing.enabled} onChange={update} />
+      </ObsidianSetting>
+      {sharing.enabled && !localServer.token.trim() && (
+        <div className="yolo-settings-desc">
+          {t(
+            'settings.providers.cliMcpSharing.noToken',
+            '本地 MCP 服务的 token 未生成，请先启用本地 MCP 服务。',
+          )}
+        </div>
       )}
     </section>
   )

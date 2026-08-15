@@ -42,7 +42,7 @@ import {
 import { openExternalLink } from '../../../utils/openExternalLink'
 import { ObsidianButton } from '../../common/ObsidianButton'
 import { ObsidianToggle } from '../../common/ObsidianToggle'
-import { CliLlmInjectionSection } from './CliLlmInjectionSection'
+import { CliLlmInjectionSection, CliMcpSharingSection } from './CliLlmInjectionSection'
 import { AddChatModelModal } from '../modals/AddChatModelModal'
 import { AddEmbeddingModelModal } from '../modals/AddEmbeddingModelModal'
 import { AddRerankModelModal } from '../modals/AddRerankModelModal'
@@ -1838,6 +1838,7 @@ export function ProvidersAndModelsSection({
       </section>
 
       <CliLlmInjectionSection settings={settings} setSettings={setSettings} />
+      <CliMcpSharingSection settings={settings} setSettings={setSettings} />
     </div>
   )
 }
