@@ -160,7 +160,10 @@ export class BotService {
     Promise<string | null>
   >()
   private readonly turnQueues = new Map<string, Promise<void>>()
-  private readonly activeTurnAbortControllers = new Set<AbortController>()
+  private readonly activeTurnAbortControllers = new Map<
+    AbortController,
+    string
+  >()
   private readonly adapterUnsubscribers = new Map<string, Array<() => void>>()
   /** Last adapter start-failure message per platform id — surfaced through
    * `getHealth` so the Bots settings UI can show why a platform never came
@@ -290,7 +293,7 @@ export class BotService {
         for (const dispose of unsubscribe) dispose()
       }
       this.adapterUnsubscribers.clear()
-      for (const controller of this.activeTurnAbortControllers) {
+      for (const controller of this.activeTurnAbortControllers.keys()) {
         controller.abort()
       }
       await this.settingsChangeQueue
@@ -324,7 +327,7 @@ export class BotService {
       // Abort in-flight turns before stopping adapters — the same order as
       // `cleanup()`: without the abort, a queued turn would keep running and
       // try to reply through an already-stopped adapter, failing silently.
-      for (const controller of this.activeTurnAbortControllers) {
+      for (const controller of this.activeTurnAbortControllers.keys()) {
         controller.abort()
       }
       await Promise.all(
@@ -704,7 +707,7 @@ export class BotService {
     const previous = this.turnQueues.get(params.queueKey) ?? Promise.resolve()
     const abortController = new AbortController()
     let turnTimeoutHandle: ReturnType<typeof setTimeout> | undefined
-    this.activeTurnAbortControllers.add(abortController)
+    this.activeTurnAbortControllers.set(abortController, params.queueKey)
     // Set only when the agent turn actually ran (not when it was skipped by an
     // abort/unload) — the open chat view reloads on this event, so a turn that
     // changed nothing must not churn its message state.
@@ -1106,6 +1109,10 @@ export class BotService {
   }
 
   private async stopPlatform(id: string): Promise<void> {
+    const queuePrefix = `${id}\u0000`
+    for (const [controller, queueKey] of this.activeTurnAbortControllers) {
+      if (queueKey.startsWith(queuePrefix)) controller.abort()
+    }
     const unsubscribe = this.adapterUnsubscribers.get(id)
     if (unsubscribe) {
       for (const dispose of unsubscribe) dispose()

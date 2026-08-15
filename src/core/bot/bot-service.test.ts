@@ -996,6 +996,41 @@ describe('BotService disable aborts in-flight turns', () => {
     expect(h.adaptersByPlatformId.get('bot-1')!.stop).toHaveBeenCalled()
     releaseTurn?.()
   })
+
+  it('does not start queued turns after their platform is removed', async () => {
+    let releaseFirstTurn!: () => void
+    const firstTurnBlocked = new Promise<void>((resolve) => {
+      releaseFirstTurn = resolve
+    })
+    const runTurn = jest.mocked(runBotAgentTurn)
+    runTurn
+      .mockReset()
+      .mockImplementationOnce(async () => firstTurnBlocked)
+      .mockResolvedValue(undefined)
+
+    const h = makeHarness()
+    await h.service.initialize()
+    await h.service.handleIncoming(
+      makeEvent({ messageId: 'platform-stop-first' }),
+      makeTelegramConfig(),
+    )
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(runTurn).toHaveBeenCalledTimes(1)
+
+    await h.service.handleIncoming(
+      makeEvent({ messageId: 'platform-stop-second' }),
+      makeTelegramConfig(),
+    )
+    await h.service.onSettingsChanged(
+      h.getCurrentSettings().bots,
+      makeBotsSettings({ platforms: [] }),
+    )
+
+    releaseFirstTurn()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(runTurn).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('Bot conversation titles', () => {
