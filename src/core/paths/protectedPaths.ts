@@ -37,7 +37,16 @@ export const getProtectedVaultPathRules = (
   settings?: YoloSettingsLike | null,
 ): ProtectedPathRule[] => {
   const baseDir = getYoloBaseDir(settings)
+  const normalizedBaseDir = normalizePath(baseDir.trim())
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
   const rules: ProtectedPathRule[] = [
+    // 整目录兜底：YOLO 目录及其子目录全部保护（含未逐一枚举的
+    // share-token-pepper、agent.sqlite 等私有文件）。skills 等用户内容
+    // 由引擎对 skill_read/skill_write 单独放行。
+    ...(normalizedBaseDir
+      ? [{ kind: 'prefix' as const, path: normalizedBaseDir }]
+      : []),
     // Plugin-private data under `yolo.baseDir`.
     { kind: 'prefix', path: getYoloJsonDbRootDir(settings) },
     { kind: 'exact', path: getYoloDataJsonPath(settings) },
@@ -52,9 +61,6 @@ export const getProtectedVaultPathRules = (
     },
     { kind: 'prefix', path: `${baseDir}/${YOLO_MEMORY_SUBDIR}` },
     { kind: 'exact', path: `${baseDir}/${YOLO_VECTOR_DB_FILE_NAME}` },
-    // 加密材料与事件库：非点前缀、不在常规目录下，必须显式列入。
-    { kind: 'exact', path: `${baseDir}/share-token-pepper` },
-    { kind: 'exact', path: `${baseDir}/agent.sqlite` },
     // Fixed-name pointer file at the vault root.
     { kind: 'exact', path: YOLO_SYNC_POINTER_FILE_NAME },
     // The whole host-managed project zone.

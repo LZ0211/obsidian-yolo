@@ -99,12 +99,14 @@ describe('isProtectedVaultPath', () => {
     ).toBe(true)
   })
 
-  it('allows user content including skills, snippets, and learning', () => {
+  it('blanket-protects the whole YOLO base dir (skill channel exempts at the engine level)', () => {
+    expect(isProtectedVaultPath('YOLO', rules)).toBe(true)
     expect(isProtectedVaultPath('YOLO/skills/review/SKILL.md', rules)).toBe(
-      false,
+      true,
     )
-    expect(isProtectedVaultPath('YOLO/snippets.md', rules)).toBe(false)
-    expect(isProtectedVaultPath('YOLO/learning/notes.md', rules)).toBe(false)
+    expect(isProtectedVaultPath('YOLO/snippets.md', rules)).toBe(true)
+    expect(isProtectedVaultPath('YOLO/share-token-pepper', rules)).toBe(true)
+    expect(isProtectedVaultPath('YOLO/agent.sqlite', rules)).toBe(true)
     expect(isProtectedVaultPath('notes/plain.md', rules)).toBe(false)
     expect(isProtectedVaultPath('', rules)).toBe(false)
   })
