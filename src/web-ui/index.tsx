@@ -396,7 +396,7 @@ function App(): void {
     }
     disposers.push(() => disposeRuntime())
 
-    let tabManager: ReturnType<typeof createChatTabManager> | null = null
+    let tabManager: ReturnType<typeof createChatTabManager>
     // selectEl is captured when the center topbar is rendered so that
     // handleSwitchAgent can restore it on failure without a global DOM query.
     const selectEl: HTMLSelectElement | null = null
@@ -534,7 +534,7 @@ function App(): void {
           openConversation,
           () => {
             void tabManager
-              ?.whenActiveChatReady()
+              .whenActiveChatReady()
               .then((ref) => ref.openNewChat())
               .catch((err) =>
                 console.warn('Failed to start new conversation:', err),
@@ -543,8 +543,8 @@ function App(): void {
           () =>
             requestToken === historyRefreshToken && leftPaneMode === 'history',
           async (conversationId) => {
-            const chatRef = await tabManager?.whenActiveChatReady()
-            await chatRef?.deleteConversationWithCleanup(conversationId)
+            const chatRef = await tabManager.whenActiveChatReady()
+            await chatRef.deleteConversationWithCleanup(conversationId)
           },
         )
       } finally {
@@ -731,7 +731,7 @@ function App(): void {
       const prevWorkspaceRoot = (state as ReadyShellState).workspaceRoot
       const workspaceRootChanged = prevWorkspaceRoot !== next.workspaceRoot
 
-      tabManager?.destroy()
+      tabManager.destroy()
       tabManager = createChatTabManager(shell, next.runtime, {
         dialogContainer: rootEl,
         getAssistantName: makeAssistantNameGetter(next.runtime),
@@ -772,7 +772,7 @@ function App(): void {
       getAgentModeAllowed: () => resolveAgentModeAllowed(state),
       sessionId: readyState.client.currentSessionId,
     })
-    disposers.push(() => tabManager?.destroy())
+    disposers.push(() => tabManager.destroy())
 
     const controller: ReadyController = {
       shell,
