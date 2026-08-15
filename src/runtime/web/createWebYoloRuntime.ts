@@ -136,7 +136,9 @@ export function createWebYoloRuntime({
   initialAgents?: Assistant[]
   initialVaultIndex?: YoloVaultIndexEntry[]
 }): YoloRuntime {
-  let currentSettings = initialSettings
+  let currentSettings = bootstrap.session?.agentId
+    ? { ...initialSettings, currentAssistantId: bootstrap.session.agentId }
+    : initialSettings
   const currentAgents = initialAgents
   const settingsListeners = new Set<(settings: YoloSettings) => void>()
   const agentStates = new Map<string, AgentConversationState>()

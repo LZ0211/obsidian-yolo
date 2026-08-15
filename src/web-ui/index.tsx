@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unused-vars -- backup 逐字节拷贝：selectEl/handleSwitchAgent 为后续接线预留的占位（web 端智能体切换由 chat header 的 AssistantSelector 承担） */
 /* eslint-disable no-alert -- web 运行时使用浏览器原生 prompt/confirm（Obsidian 桌面端 Modal 约定不适用） */
 import {
   WebApiClient,
@@ -17,6 +16,7 @@ import { renderLightweightModalView } from './webAuthModal'
 import { createChatTabManager } from './webChatTabs'
 import { renderHistoryPane } from './webHistoryPane'
 import { createMockTransport } from './webMockTransport'
+import { createWebAgentSelector } from './webAgentSelector'
 import type {
   HistoryClient,
   LeftPaneMode,
@@ -397,9 +397,6 @@ function App(): void {
     disposers.push(() => disposeRuntime())
 
     let tabManager: ReturnType<typeof createChatTabManager>
-    // selectEl is captured when the center topbar is rendered so that
-    // handleSwitchAgent can restore it on failure without a global DOM query.
-    const selectEl: HTMLSelectElement | null = null
     const openConversation = async (conversationId: string): Promise<void> => {
       if (!tabManager) throw new Error('Chat tabs are not initialized')
       await tabManager.openConversation(conversationId)
@@ -665,12 +662,33 @@ function App(): void {
     shell.centerTabListButtonEl.addClass('is-hidden')
     shell.centerTabListButtonEl.setAttribute('aria-hidden', 'true')
 
-    function renderCenterTopBar(_next: ReadyShellState): void {
-      // Agent switching is handled by the chat header's AssistantSelector
-      // (yolo-assistant-selector-button), so the center topbar title and
-      // actions stay empty on web.
+    function renderCenterTopBar(next: ReadyShellState): void {
       shell.centerTopBarTitleEl.empty()
       shell.centerTopBarActionsEl.empty()
+
+      const activeAgent = next.allowedAgents.find(
+        (agent) => agent.id === next.agentId,
+      )
+      const title = document.createElement('span')
+      title.className = 'yolo-web-center-topbar-title-text'
+      title.textContent = activeAgent?.name ?? next.agentId
+      shell.centerTopBarTitleEl.append(title)
+
+      const selector = createWebAgentSelector({
+        agents: next.allowedAgents,
+        activeAgentId: next.agentId,
+        onChange: async (agentId, changedSelector) => {
+          changedSelector.disabled = true
+          try {
+            await handleSwitchAgent(agentId, changedSelector)
+          } finally {
+            if (changedSelector.isConnected) {
+              changedSelector.disabled = false
+            }
+          }
+        },
+      })
+      shell.centerTopBarActionsEl.append(selector)
     }
 
     function renderLeftRibbonLogout(): void {

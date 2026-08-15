@@ -43,10 +43,13 @@ describe('createWebMcpManager', () => {
     }
     const manager = createManager(api)
 
-    await expect(manager.abortToolCall('tool-call-1')).resolves.toBe(true)
+    await expect(
+      manager.abortToolCall('tool-call-1', 'conversation-1'),
+    ).resolves.toBe(true)
 
     expect(api.postJson).toHaveBeenCalledWith('/api/mcp/abort-tool-call', {
       id: 'tool-call-1',
+      conversationId: 'conversation-1',
     })
   })
 

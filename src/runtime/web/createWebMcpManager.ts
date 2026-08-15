@@ -45,10 +45,10 @@ export function createWebMcpManager({
       }),
     callTool: (input: Record<string, unknown>) =>
       api.postJson('/api/mcp/call-tool', input),
-    abortToolCall: async (id: string) => {
+    abortToolCall: async (id: string, conversationId?: string) => {
       const response = await api.postJson<{ aborted: boolean }>(
         '/api/mcp/abort-tool-call',
-        { id },
+        { id, ...(conversationId ? { conversationId } : {}) },
       )
       return response.aborted
     },

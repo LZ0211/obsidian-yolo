@@ -818,6 +818,11 @@ export function registerWebServerRoutes(
       }
       return { ok: true as const, context: resolved.context }
     },
+    canAccessConversation: (conversationId, context) =>
+      canUseOrRepairWebConversation(conversationId, {
+        activeAgentId: context.activeAgent.id,
+        rootHash: context.rootHash,
+      }),
   })
 
   registerBootstrapRoutes(options.server.router, {

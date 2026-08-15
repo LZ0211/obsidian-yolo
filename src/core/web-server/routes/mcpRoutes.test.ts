@@ -64,6 +64,7 @@ describe('mcpRoutes', () => {
           listAvailableTools,
         }) as never,
       resolveMcpAccess: createAuthorizedResolve(),
+      canAccessConversation: () => true,
     })
 
     const resolved = router.resolve('POST', '/api/mcp/list-tools')
@@ -100,6 +101,7 @@ describe('mcpRoutes', () => {
           allowToolForConversation,
         }) as never,
       resolveMcpAccess: createAuthorizedResolve(),
+      canAccessConversation: () => true,
     })
 
     const resolved = router.resolve(
@@ -150,6 +152,7 @@ describe('mcpRoutes', () => {
           isToolExecutionAllowed: jest.fn().mockReturnValue(true),
         }) as never,
       resolveMcpAccess: createAuthorizedResolve(),
+      canAccessConversation: () => true,
     })
 
     const resolved = router.resolve('POST', '/api/mcp/call-tool')
@@ -212,6 +215,7 @@ describe('mcpRoutes', () => {
           isToolExecutionAllowed,
         }) as never,
       resolveMcpAccess: createAuthorizedResolve(),
+      canAccessConversation: () => true,
     })
 
     const resolved = router.resolve('POST', '/api/mcp/call-tool')
@@ -257,19 +261,20 @@ describe('mcpRoutes', () => {
           abortToolCall,
         }) as never,
       resolveMcpAccess: createAuthorizedResolve(),
+      canAccessConversation: () => true,
     })
 
     const resolved = router.resolve('POST', '/api/mcp/abort-tool-call')
     const req = createRequest({
       method: 'POST',
       url: '/api/mcp/abort-tool-call',
-      body: { id: 'tool-1' },
+      body: { id: 'tool-1', conversationId: 'chat-1' },
     })
     const res = createResponse()
 
     await resolved?.handler(req as never, res as never, {})
 
-    expect(abortToolCall).toHaveBeenCalledWith('tool-1')
+    expect(abortToolCall).toHaveBeenCalledWith('tool-1', 'chat-1')
     expect(res.statusCode).toBe(200)
     expect(res.jsonBody).toEqual({ aborted: true })
   })
@@ -318,9 +323,50 @@ describe('mcpRoutes', () => {
     const { router } = createHarness({ denied: true })
     const res = await dispatch(router, 'POST', '/api/mcp/abort-tool-call', {
       id: 'tool-1',
+      conversationId: 'chat-1',
     })
 
     expect(res.statusCode).toBe(401)
+  })
+
+  it('rejects MCP actions for conversations outside the active web session', async () => {
+    const allowToolForConversation = jest.fn()
+    const callTool = jest.fn()
+    const abortToolCall = jest.fn()
+    const { router } = createHarness({
+      getMcpManager: async () =>
+        ({
+          allowToolForConversation,
+          callTool,
+          abortToolCall,
+          isToolExecutionAllowed: jest.fn().mockReturnValue(true),
+        }) as never,
+      canAccessConversation: () => false,
+    })
+
+    const allowResponse = await dispatch(
+      router,
+      'POST',
+      '/api/mcp/allow-tool-for-conversation',
+      { requestToolName: 'builtin__fs_read', conversationId: 'other-chat' },
+    )
+    const callResponse = await dispatch(router, 'POST', '/api/mcp/call-tool', {
+      name: 'builtin__fs_read',
+      conversationId: 'other-chat',
+    })
+    const abortResponse = await dispatch(
+      router,
+      'POST',
+      '/api/mcp/abort-tool-call',
+      { id: 'tool-1', conversationId: 'other-chat' },
+    )
+
+    expect(allowResponse.statusCode).toBe(404)
+    expect(callResponse.statusCode).toBe(404)
+    expect(abortResponse.statusCode).toBe(404)
+    expect(allowToolForConversation).not.toHaveBeenCalled()
+    expect(callTool).not.toHaveBeenCalled()
+    expect(abortToolCall).not.toHaveBeenCalled()
   })
 
   it('derives workspace policy and skill paths from the session, ignoring client-supplied values', async () => {
@@ -341,6 +387,7 @@ describe('mcpRoutes', () => {
           isToolExecutionAllowed: jest.fn().mockReturnValue(true),
         }) as never,
       resolveMcpAccess: createAuthorizedResolve(),
+      canAccessConversation: () => true,
     })
 
     const resolved = router.resolve('POST', '/api/mcp/call-tool')
@@ -350,6 +397,7 @@ describe('mcpRoutes', () => {
       body: {
         name: 'builtin__fs_read',
         args: { path: 'A.md' },
+        conversationId: 'chat-1',
         // Client-supplied values must be ignored in favor of the session's
         // active agent policy and enabled skills.
         workspaceAccessPolicy: {
@@ -387,9 +435,11 @@ describe('mcpRoutes', () => {
 function createHarness({
   denied = false,
   getMcpManager = async () => ({}),
+  canAccessConversation = () => true,
 }: {
   denied?: boolean
   getMcpManager?: () => Promise<Partial<McpManager>>
+  canAccessConversation?: (conversationId: string) => boolean | Promise<boolean>
 } = {}) {
   const router = new WebRouter()
   registerMcpRoutes(router, {
@@ -399,6 +449,7 @@ function createHarness({
     resolveMcpAccess: denied
       ? createDeniedResolve()
       : createAuthorizedResolve(),
+    canAccessConversation,
   })
   return { router }
 }

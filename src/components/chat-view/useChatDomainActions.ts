@@ -400,7 +400,7 @@ export function useChatDomainActions({
             toolCallId: request.id,
             abort: () => {
               foregroundToolAbortController.abort()
-              mcpManager.abortToolCall(request.id)
+              mcpManager.abortToolCall(request.id, conversationId)
             },
           })
 
@@ -1253,7 +1253,10 @@ export function useChatDomainActions({
       void (async () => {
         const mcpManager = await getMcpManager()
         toolMessage.toolCalls.forEach((toolCall) => {
-          mcpManager.abortToolCall(toolCall.request.id)
+          mcpManager.abortToolCall(
+            toolCall.request.id,
+            currentConversationId,
+          )
         })
       })()
     },
@@ -1298,7 +1301,7 @@ export function useChatDomainActions({
       if (!didFindToolMessage || shouldAbortMissingToolCall) {
         void (async () => {
           const mcpManager = await getMcpManager()
-          mcpManager.abortToolCall(toolCallId)
+          mcpManager.abortToolCall(toolCallId, currentConversationId)
         })()
       }
     },

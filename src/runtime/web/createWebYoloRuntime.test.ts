@@ -292,6 +292,40 @@ describe('createWebYoloRuntime', () => {
     expect(runtime.getAgents().map((a) => a.id)).toEqual(['agent-1'])
   })
 
+  it('binds the web settings selection to the authenticated session agent', () => {
+    const runtime = createWebYoloRuntime({
+      api: {
+        getJson: jest.fn(),
+        getJsonOrNull: jest.fn(),
+        postJson: jest.fn(),
+        openSseFetch: jest.fn(),
+      } as never,
+      bootstrap: {
+        serverUrl: 'http://127.0.0.1:27123',
+        phase: 2,
+        workspaceAgentConfigured: true,
+        authRequired: false,
+        session: { agentId: 'agent-2' },
+        allowedAgents: [
+          { id: 'agent-1', name: 'Agent 1' },
+          { id: 'agent-2', name: 'Agent 2' },
+        ],
+        settings: { webRuntimeEnabled: true },
+      },
+      initialSettings: {
+        version: 72,
+        currentAssistantId: 'agent-1',
+      } as never,
+      initialAgents: [
+        { id: 'agent-1', name: 'Agent 1' },
+        { id: 'agent-2', name: 'Agent 2' },
+      ] as never,
+      initialVaultIndex: [],
+    })
+
+    expect(runtime.settings.get().currentAssistantId).toBe('agent-2')
+  })
+
   it('normalizes primed user messages before exposing running state', async () => {
     const api = {
       getJson: jest.fn(async () => []),

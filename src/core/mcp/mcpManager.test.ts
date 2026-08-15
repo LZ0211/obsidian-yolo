@@ -205,10 +205,12 @@ describe('McpManager mobile built-in tool behavior', () => {
         oldText: 'hello world',
         newText: 'updated',
       },
+      conversationId: 'chat-1',
       requireReview: true,
     })
 
-    expect(manager.abortToolCall('tool-call-1')).toBe(true)
+    expect(manager.abortToolCall('tool-call-1', 'other-chat')).toBe(false)
+    expect(manager.abortToolCall('tool-call-1', 'chat-1')).toBe(true)
     await expect(pendingResult).resolves.toEqual({
       status: ToolCallResponseStatus.Aborted,
     })

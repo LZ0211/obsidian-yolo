@@ -24,6 +24,10 @@ export type McpRoutesContext = {
   ) =>
     | { ok: true; context: ResolvedWebAgentContext }
     | { ok: false; statusCode: number; body: ReturnType<typeof apiError> }
+  canAccessConversation: (
+    conversationId: string,
+    context: ResolvedWebAgentContext,
+  ) => Promise<boolean> | boolean
 }
 
 export function registerMcpRoutes(
@@ -73,6 +77,15 @@ export function registerMcpRoutes(
       writeJson(res, 400, apiError('invalid_request', parsed.message))
       return
     }
+    if (
+      !(await context.canAccessConversation(
+        parsed.value.conversationId,
+        access.context,
+      ))
+    ) {
+      writeJson(res, 404, apiError('not_found', 'Not found'))
+      return
+    }
     const manager = await context.getMcpManager()
     manager.allowToolForConversation(
       parsed.value.requestToolName,
@@ -96,6 +109,15 @@ export function registerMcpRoutes(
     const parsed = parseCallToolRequest(body.value, context.app)
     if (!parsed.ok) {
       writeJson(res, 400, apiError('invalid_request', parsed.message))
+      return
+    }
+    if (
+      !(await context.canAccessConversation(
+        parsed.value.conversationId,
+        access.context,
+      ))
+    ) {
+      writeJson(res, 404, apiError('not_found', 'Not found'))
       return
     }
     const manager = await context.getMcpManager()
@@ -154,12 +176,30 @@ export function registerMcpRoutes(
       return
     }
     const id = body.value.id
+    const conversationId = body.value.conversationId
     if (typeof id !== 'string' || id.length === 0) {
       writeJson(res, 400, apiError('invalid_request', 'id is required'))
       return
     }
+    if (
+      typeof conversationId !== 'string' ||
+      conversationId.length === 0
+    ) {
+      writeJson(
+        res,
+        400,
+        apiError('invalid_request', 'conversationId is required'),
+      )
+      return
+    }
+    if (
+      !(await context.canAccessConversation(conversationId, access.context))
+    ) {
+      writeJson(res, 404, apiError('not_found', 'Not found'))
+      return
+    }
     const manager = await context.getMcpManager()
-    writeJson(res, 200, { aborted: manager.abortToolCall(id) })
+    writeJson(res, 200, { aborted: manager.abortToolCall(id, conversationId) })
   })
 }
 
@@ -203,14 +243,27 @@ function parseAllowToolRequest(value: Record<string, unknown>):
   }
 }
 
+type WebMcpCallToolInput = Omit<
+  Parameters<McpManager['callTool']>[0],
+  'conversationId'
+> & {
+  conversationId: string
+}
+
 function parseCallToolRequest(
   value: Record<string, unknown>,
   app: App,
 ):
-  | { ok: true; value: Parameters<McpManager['callTool']>[0] }
+  | { ok: true; value: WebMcpCallToolInput }
   | { ok: false; message: string } {
   if (typeof value.name !== 'string' || value.name.length === 0) {
     return { ok: false, message: 'name is required' }
+  }
+  if (
+    typeof value.conversationId !== 'string' ||
+    value.conversationId.length === 0
+  ) {
+    return { ok: false, message: 'conversationId is required' }
   }
   if (
     value.args !== undefined &&
@@ -230,10 +283,7 @@ function parseCallToolRequest(
       name: value.name,
       args: value.args as Record<string, unknown> | undefined,
       id: typeof value.id === 'string' ? value.id : undefined,
-      conversationId:
-        typeof value.conversationId === 'string'
-          ? value.conversationId
-          : undefined,
+      conversationId: value.conversationId,
       roundId: typeof value.roundId === 'string' ? value.roundId : undefined,
       conversationMessages: conversationMessages,
       requireReview:

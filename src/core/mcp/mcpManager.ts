@@ -112,7 +112,10 @@ export class McpManager {
 
   private servers: McpServerState[] = [] // IMPORTANT: Always use this.updateServers() to update this array
   private connectionAborts: Map<string, AbortController> = new Map()
-  private activeToolCalls: Map<string, AbortController> = new Map()
+  private activeToolCalls: Map<
+    string,
+    { controller: AbortController; conversationId?: string }
+  > = new Map()
   // Track clients we close on purpose so the onclose-driven self-heal path can
   // distinguish intentional teardown from server-side connection loss.
   private intentionalClientCloses: WeakSet<McpClient> = new WeakSet()
@@ -1251,9 +1254,12 @@ export class McpManager {
     if (id !== undefined) {
       const existingAbortController = this.activeToolCalls.get(id)
       if (existingAbortController) {
-        existingAbortController.abort()
+        existingAbortController.controller.abort()
       }
-      this.activeToolCalls.set(id, toolAbortController)
+      this.activeToolCalls.set(id, {
+        controller: toolAbortController,
+        conversationId,
+      })
     }
     const compositeSignal = toolAbortController.signal
     if (signal) {
@@ -1422,16 +1428,23 @@ export class McpManager {
           error instanceof Error ? error.message : 'Unknown error occurred',
       }
     } finally {
-      if (id !== undefined) {
+      if (
+        id !== undefined &&
+        this.activeToolCalls.get(id)?.controller === toolAbortController
+      ) {
         this.activeToolCalls.delete(id)
       }
     }
   }
 
-  public abortToolCall(id: string): boolean {
-    const toolAbortController = this.activeToolCalls.get(id)
-    if (toolAbortController) {
-      toolAbortController.abort()
+  public abortToolCall(id: string, conversationId?: string): boolean {
+    const activeToolCall = this.activeToolCalls.get(id)
+    if (
+      activeToolCall &&
+      (conversationId === undefined ||
+        activeToolCall.conversationId === conversationId)
+    ) {
+      activeToolCall.controller.abort()
       this.activeToolCalls.delete(id)
       return true
     }
