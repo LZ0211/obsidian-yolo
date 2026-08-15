@@ -200,6 +200,45 @@ describe('RagIndexService', () => {
     })
   })
 
+  it('releases the run after the initial snapshot write fails', async () => {
+    const saveLocalStorage = jest.fn().mockImplementationOnce(() => {
+      throw new Error('initial snapshot write failed')
+    })
+    const updateVaultIndex = jest.fn().mockResolvedValue({
+      permanentFailedPaths: [],
+      chunkifyFailedPaths: [],
+    })
+    const service = new RagIndexService({
+      app: {
+        loadLocalStorage: jest.fn().mockReturnValue(null),
+        saveLocalStorage,
+      } as never,
+      getRagEngine: jest.fn().mockResolvedValue({ updateVaultIndex }),
+      activityRegistry: new BackgroundActivityRegistry(),
+      isRagEnabled: () => true,
+      t: (_key, fallback) => fallback ?? '',
+    })
+
+    await service.initialize()
+    const options = {
+      mode: 'sync' as const,
+      scope: { kind: 'all' as const },
+      trigger: 'manual' as const,
+      retryPolicy: 'none' as const,
+    }
+
+    await expect(service.runIndex(options)).rejects.toThrow(
+      'initial snapshot write failed',
+    )
+    expect(service.isRunning()).toBe(false)
+
+    await expect(service.runIndex(options)).resolves.toEqual({
+      permanentFailedPaths: [],
+      chunkifyFailedPaths: [],
+    })
+    expect(updateVaultIndex).toHaveBeenCalledTimes(1)
+  })
+
   it('serializes in-flight progress writes before the terminal snapshot so the final localStorage value is completed', async () => {
     // Simulates a slow progress localStorage write that resolves only after
     // the run has finished. Without the serialization tail the progress

@@ -387,9 +387,9 @@ export class RagIndexService {
       retryAt: undefined,
       retryCount: attempt === 'automatic-retry' ? this.snapshot.retryCount : 0,
     }
-    await this.persistSnapshot()
 
     try {
+      await this.persistSnapshot()
       const ragEngine = await this.getRagEngine()
       const result = await ragEngine.updateVaultIndex(
         {
