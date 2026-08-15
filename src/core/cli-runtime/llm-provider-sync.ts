@@ -281,6 +281,15 @@ export type McpSharingInput = {
   token: string
 }
 
+async function createMcpSharingSignature(
+  server: McpSharingInput,
+): Promise<string> {
+  // eslint-disable-next-line import/no-nodejs-modules -- desktop-only signature
+  const { createHash } = await import('node:crypto')
+  const tokenHash = createHash('sha256').update(server.token).digest('hex')
+  return `on:${server.url}:${tokenHash}`
+}
+
 /** claude-code / hermes 共用 ~/.claude.json 的 mcpServers 段。 */
 async function writeClaudeJsonMcpServer(
   configPath: string,
@@ -377,7 +386,7 @@ export function createMcpSharingSync(input: {
     apply: async (): Promise<boolean> => {
       if (!Platform.isDesktop) return false
       const server = input.enabled() ? input.getServer() : null
-      const signature = server ? `on:${server.url}` : 'off'
+      const signature = server ? await createMcpSharingSignature(server) : 'off'
       if (signature === readSignature()) return false
 
       const home = await resolveHomeDir()
@@ -388,10 +397,17 @@ export function createMcpSharingSync(input: {
         ? `${input.configDirOverride}/opencode.json`
         : `${home}/.config/opencode/opencode.json`
 
-      await Promise.allSettled([
+      const results = await Promise.allSettled([
         writeClaudeJsonMcpServer(claudePath, server),
         writeOpenCodeMcpServer(opencodePath, server),
       ])
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          throw result.reason instanceof Error
+            ? result.reason
+            : new Error(String(result.reason))
+        }
+      }
       writeSignature(signature)
       return true
     },
