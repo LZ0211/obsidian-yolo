@@ -394,11 +394,19 @@ export type AgentShareTokenRecord = z.infer<typeof agentShareTokenRecordSchema>
  * Workspace agent policy (migrated from the local fork): the agent's home
  * directory and read/write boundary rules around it.
  */
+export const protectedPathRuleSchema = z.union([
+  z.object({ kind: z.literal('prefix'), path: z.string() }),
+  z.object({ kind: z.literal('exact'), path: z.string() }),
+  z.object({ kind: z.literal('namePrefix'), dir: z.string(), name: z.string() }),
+])
+
 export const workspaceAgentPolicySchema = z.object({
   workspaceRoot: z.string().trim().min(1, 'Workspace root cannot be blank'),
   readAllowlist: z.array(z.string()).catch([]),
   readDenylist: z.array(z.string()).catch([]),
   writeDenylist: z.array(z.string()).catch([]),
+  // 宿主托管清单；设置编辑器不管理该字段，服务端路由在执行时注入。
+  protectedPaths: z.array(protectedPathRuleSchema).optional(),
 })
 export type WorkspaceAgentPolicy = z.infer<typeof workspaceAgentPolicySchema>
 

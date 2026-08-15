@@ -21,6 +21,7 @@ import {
   EMPTY_CLI_RUNTIME_AVAILABILITY,
 } from '../cli-runtime/desktop'
 import type { McpManager } from '../mcp/mcpManager'
+import { getProtectedVaultPathRules } from '../paths/protectedPaths'
 import { getYoloBaseDir } from '../paths/yoloPaths'
 import { normalizeConversationWorkingDirectory } from '../workspace/conversationFileScope'
 
@@ -912,7 +913,13 @@ export function registerWebServerRoutes(
       }
       return {
         ok: true as const,
-        policy: resolved.context.activeAgent.workspacePolicy,
+        // 注入宿主托管保护路径清单（YOLO 数据目录等）——与桌面端 agent 通道
+        // （augmentWorkspacePolicyWithProtectedPaths）保持同一来源与替换语义。
+        // web 的 vault 路由此前缺失这一步，文件树/读写均未拦截保护路径。
+        policy: {
+          ...resolved.context.activeAgent.workspacePolicy,
+          protectedPaths: getProtectedVaultPathRules(options.getSettings()),
+        },
       }
     },
   })

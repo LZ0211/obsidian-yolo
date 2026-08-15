@@ -236,4 +236,90 @@ describe('workspacePermissionEngine', () => {
       }),
     ).toEqual({ ok: true, path: '/Projects/A/.skill-cache/data.json' })
   })
+
+  it('denies protected paths for read, list, and write regardless of the workspace root', () => {
+    const protectedPolicy = {
+      ...policy,
+      workspaceRoot: '/',
+      protectedPaths: [
+        { kind: 'prefix' as const, path: 'YOLO/data' },
+        { kind: 'exact' as const, path: 'YOLO/data.json' },
+        { kind: 'namePrefix' as const, dir: 'YOLO', name: '.journal' },
+      ],
+    }
+
+    expect(
+      decideWorkspacePathAccess({
+        policy: protectedPolicy,
+        operation: 'read',
+        path: 'YOLO/data/chats/c.json',
+      }),
+    ).toMatchObject({ ok: false })
+
+    expect(
+      decideWorkspacePathAccess({
+        policy: protectedPolicy,
+        operation: 'list',
+        path: 'YOLO/data',
+      }),
+    ).toMatchObject({ ok: false })
+
+    expect(
+      decideWorkspacePathAccess({
+        policy: protectedPolicy,
+        operation: 'write',
+        path: 'YOLO/data/chats/c.json',
+      }),
+    ).toMatchObject({ ok: false })
+
+    expect(
+      decideWorkspacePathAccess({
+        policy: protectedPolicy,
+        operation: 'read',
+        path: 'YOLO/data.json',
+      }),
+    ).toMatchObject({ ok: false })
+
+    expect(
+      decideWorkspacePathAccess({
+        policy: protectedPolicy,
+        operation: 'read',
+        path: 'YOLO/.journal-session.sqlite',
+      }),
+    ).toMatchObject({ ok: false })
+
+    // 未被清单覆盖的路径不受影响
+    expect(
+      decideWorkspacePathAccess({
+        policy: protectedPolicy,
+        operation: 'read',
+        path: 'YOLO/notes.md',
+      }),
+    ).toEqual({ ok: true, path: '/YOLO/notes.md' })
+  })
+
+  it('denies move/rename into or out of protected paths', () => {
+    const protectedPolicy = {
+      ...policy,
+      protectedPaths: [{ kind: 'prefix' as const, path: 'Projects/A/YOLO' }],
+    }
+
+    expect(
+      decideWorkspacePathAccess({
+        policy: protectedPolicy,
+        operation: 'move',
+        path: 'YOLO/a.md',
+        targetPath: 'notes/b.md',
+      }),
+    ).toMatchObject({ ok: false })
+
+    expect(
+      decideWorkspacePathAccess({
+        policy: protectedPolicy,
+        operation: 'move',
+        path: 'notes/a.md',
+        targetPath: 'YOLO/b.md',
+      }),
+    ).toMatchObject({ ok: false })
+  })
 })

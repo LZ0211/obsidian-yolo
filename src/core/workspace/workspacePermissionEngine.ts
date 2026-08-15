@@ -1,5 +1,6 @@
 import path from 'path-browserify'
 
+import { isProtectedVaultPath } from '../paths/protectedPaths'
 import type { WorkspaceAgentPolicy } from '../../settings/schema/setting.types'
 
 export type WorkspaceIoOperation =
@@ -111,6 +112,11 @@ export function decideWorkspacePathAccess(
   const resolved = resolveRealpath(candidate.path, input.realpath)
   if (!resolved.ok) return denyForOperation(input.operation)
 
+  // 宿主托管 + agent 配置的保护路径清单：读写与列表一视同仁拒绝。
+  if (isProtectedVaultPath(resolved.path, input.policy.protectedPaths)) {
+    return denyForOperation(input.operation)
+  }
+
   if (READ_OPERATIONS.has(input.operation)) {
     return canRead(resolved.path, input.policy, root, input.operation)
   }
@@ -154,6 +160,13 @@ function decideMoveLike(
   if (!resolvedSource.ok) return forbidden()
   const resolvedTarget = resolveDestinationPath(target.path, input.realpath)
   if (!resolvedTarget.ok) return resolvedTarget
+
+  if (
+    isProtectedVaultPath(resolvedSource.path, input.policy.protectedPaths) ||
+    isProtectedVaultPath(resolvedTarget.path, input.policy.protectedPaths)
+  ) {
+    return forbidden()
+  }
 
   const sourceDecision = canWrite(
     resolvedSource.path,
