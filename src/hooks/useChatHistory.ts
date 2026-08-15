@@ -485,11 +485,16 @@ export function useChatHistory(): UseChatHistory {
       compaction?: ChatConversationCompactionState
       cliSession?: ChatConversationCliSession
     } | null> => {
-      const conversation = await chatManager.findById(id)
+      const isWebRuntime = yoloRuntime?.mode === 'web'
+      const conversation = isWebRuntime
+        ? await yoloRuntime.chat.get(id)
+        : await chatManager.findById(id)
       if (!conversation) return null
-      const messages = conversation.messages.map((m) =>
-        deserializeChatMessage(m, app),
-      )
+      const messages = isWebRuntime
+        ? (conversation.messages as ChatMessage[])
+        : (conversation.messages as SerializedChatMessage[]).map((message) =>
+            deserializeChatMessage(message, app),
+          )
       await hydrateImageCacheRefs(messages, app, settingsRef.current)
       return {
         messages,
@@ -508,7 +513,7 @@ export function useChatHistory(): UseChatHistory {
         cliSession: conversation.cliSession,
       }
     },
-    [chatManager, app],
+    [chatManager, app, yoloRuntime],
   )
 
   const updateConversationTitle = useCallback(

@@ -225,13 +225,9 @@ test.describe('web e2e harness', () => {
         markHistoryLoadStarted = resolve
       })
       let conversationReadCount = 0
-      await page.route('**/api/vault/read?*', async (route) => {
-        if (!route.request().url().includes(conversationId)) {
-          await route.continue()
-          return
-        }
+      await page.route(`**/api/chat/get/${conversationId}`, async (route) => {
         conversationReadCount += 1
-        if (conversationReadCount === 1) {
+        if (conversationReadCount < 3) {
           await route.continue()
           return
         }

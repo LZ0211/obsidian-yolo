@@ -17,10 +17,18 @@ const chatManager = {
 const dropConversation = jest.fn()
 const deleteRemoteConversation = jest.fn().mockResolvedValue(true)
 const saveRemoteConversation = jest.fn().mockResolvedValue(undefined)
+const getRemoteConversation = jest.fn().mockResolvedValue({
+  id: 'conversation-existing',
+  title: 'Existing conversation',
+  messages: [],
+  createdAt: 1,
+  updatedAt: 1,
+})
 const runtime = {
   mode: 'web',
   chat: {
     delete: deleteRemoteConversation,
+    get: getRemoteConversation,
     save: saveRemoteConversation,
   },
 } as unknown as YoloRuntime
@@ -97,6 +105,27 @@ describe('useChatHistory web runtime', () => {
       }),
     )
     expect(chatManager.createChat).not.toHaveBeenCalled()
+
+    await act(async () => root.unmount())
+  })
+
+  it('loads a conversation through the web runtime', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    let history: ReturnType<typeof useChatHistory> | null = null
+
+    function Probe() {
+      history = useChatHistory()
+      return null
+    }
+
+    await act(async () => root.render(<Probe />))
+    await act(async () => {
+      await history?.getConversationById('conversation-existing')
+    })
+
+    expect(getRemoteConversation).toHaveBeenCalledWith('conversation-existing')
+    expect(chatManager.findById).not.toHaveBeenCalled()
 
     await act(async () => root.unmount())
   })
