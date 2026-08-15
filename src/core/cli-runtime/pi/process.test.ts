@@ -105,4 +105,26 @@ describe('PiSubprocess — stdout decoding', () => {
 
     expect(chunks.join('')).toBe('�')
   })
+
+  it('waits for the child close event after sending SIGTERM', async () => {
+    const process = await PiSubprocess.start({
+      command: 'pi',
+      args: [],
+      cwd: '/vault',
+    })
+    let settled = false
+    const shutdown = process.shutdown().then(() => {
+      settled = true
+    })
+
+    await Promise.resolve()
+    expect(fakeChild?.killed).toBe(true)
+    expect(settled).toBe(false)
+
+    fakeChild?.exitCode = 0
+    fakeChild?.emit('close', 0, null)
+    await shutdown
+
+    expect(settled).toBe(true)
+  })
 })

@@ -51,6 +51,8 @@ const getProcessEnv = async (
 /** Spawns and owns one ACP agent subprocess. Mirrors `codex/process.ts`'s spawn/env/cleanup pattern. */
 export class AcpChildProcess implements AcpProcessLike {
   private readonly exitListeners = new Set<AcpProcessExitListener>()
+  private readonly exited: Promise<void>
+  private resolveExited!: () => void
   private readonly started: Promise<void>
   private stderr = ''
   private termination:
@@ -61,6 +63,9 @@ export class AcpChildProcess implements AcpProcessLike {
     private readonly runtimeId: CliRuntimeId,
     private readonly child: ChildProcess,
   ) {
+    this.exited = new Promise<void>((resolve) => {
+      this.resolveExited = resolve
+    })
     this.started = new Promise<void>((resolve, reject) => {
       let settled = false
       child.once('spawn', () => {
@@ -134,15 +139,17 @@ export class AcpChildProcess implements AcpProcessLike {
   }
 
   async shutdown(): Promise<void> {
-    if (this.termination || this.child.exitCode !== null || this.child.killed) {
+    if (this.termination || this.child.exitCode !== null) {
       return
     }
     this.child.kill('SIGTERM')
+    await this.exited
   }
 
   private signalExit(code: number | null, signal: NodeJS.Signals | null): void {
     if (this.termination) return
     this.termination = { code, signal }
+    this.resolveExited()
     for (const listener of this.exitListeners) listener(code, signal)
   }
 }
