@@ -62,7 +62,7 @@ const RUNS_KEEP_LAST_N_PER_TASK = 50
  * scheduler.start(), so an Obsidian startup with many overdue recurring tasks
  * doesn't storm the queue with make-up runs while cold-start IO is settling
  * (cherry-studio's 60s startup-recovery delay, halved). The only startup work
- * is recoverOrphanedRuns via onLeaderAcquired (backup behavior, unchanged).
+ * is recoverOrphanedRuns via beforeFirstCheck (backup behavior, unchanged).
  */
 const CATCH_UP_QUIET_WINDOW_MS = 30_000
 
@@ -129,13 +129,8 @@ export class ScheduledTaskScheduler {
        * Returns null/undefined to disable the cap.
        */
       getMaxAgentRunsPerTick?: () => number | null | undefined
-      /** One-shot hook, fired exactly once per leader acquisition just before the first due-check.
-       * Lets the leader recover cross-window/crash state (e.g. orphaned RUNNING runs) before it
-       * starts polling, so a second Obsidian window that never wins the leader lock can't touch a
-       * live run. May return a promise (e.g. recovery) — the poll loop awaits it so the first check
-       * always observes the recovered state. (Typed `unknown` so both sync callbacks and
-       * promise-returning recovery like `recoverOrphanedRuns` are accepted.) */
-      onLeaderAcquired?: () => unknown
+      /** One-shot hook, fired once per start just before the first due-check. */
+      beforeFirstCheck?: () => unknown
     },
   ) {
     this.queue = new TaskQueue(deps.queuePolicy)
@@ -231,12 +226,12 @@ export class ScheduledTaskScheduler {
   private async runPollLoop(): Promise<void> {
     if (this.stopped) return
     try {
-      await this.deps.onLeaderAcquired?.()
+      await this.deps.beforeFirstCheck?.()
     } catch (error) {
       // A throwing startup hook (e.g. recoverOrphanedRuns -> store.listRunningRuns) must not stop
       // this scheduler's poll loop. Log and keep going so the interval still gets installed.
       console.error(
-        '[YOLO][ScheduledTasks] leader hook failed; continuing to poll',
+        '[YOLO][ScheduledTasks] before-first-check hook failed; continuing to poll',
         error,
       )
     }
@@ -245,7 +240,7 @@ export class ScheduledTaskScheduler {
     if (this.stopped) return
     this.checkAndEnqueueScheduledTasks()
     // Run-history retention is deliberately NOT applied here (only on the
-    // periodic tick): recovery (onLeaderAcquired) must finish first and its
+    // periodic tick): recovery (beforeFirstCheck) must finish first and its
     // recovered runs stay visible to the operator until the next tick.
     this.checkInterval = setInterval(() => {
       this.checkAndEnqueueScheduledTasks()
@@ -586,7 +581,7 @@ export class ScheduledTaskScheduler {
 
   /**
    * Catch-up scan, held back by the startup quiet window: during the first
-   * 30s after start() only onLeaderAcquired (recoverOrphanedRuns) touches
+   * 30s after start() only beforeFirstCheck (recoverOrphanedRuns) touches
    * startup state — overdue triggers wait, so an Obsidian startup with many
    * missed recurring tasks doesn't storm the queue (cherry's 60s
    * startup-recovery delay, halved). Returns the cron/interval tasks with a
@@ -911,8 +906,8 @@ export class ScheduledTaskScheduler {
    * prevents task_runs from growing without bound on a long-lived vault (only
    * terminal runs, so crash-recovery can always find a RUNNING orphan).
    * Prunes at most once per PRUNE_INTERVAL_MS, on the poll tick only — never
-   * during leader acquisition, where recovery is still completing. Failures
-   * are logged and polling continues (same containment as the leader-hook
+   * during startup, while recovery is still completing. Failures
+   * are logged and polling continues (same containment as the startup-hook
    * path) — housekeeping must not take down the schedule loop.
    */
   private maybePruneRuns(): void {

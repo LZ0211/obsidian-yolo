@@ -119,11 +119,11 @@ async function flushPromises(): Promise<void> {
 }
 
 /**
- * Regression for the startup-hook error path: if `onLeaderAcquired` throws (e.g.
+ * Regression for the startup-hook error path: if `beforeFirstCheck` throws (e.g.
  * recoverOrphanedRuns -> store.listRunningRuns rejects), the poll loop must still install its
  * interval and pick up due tasks without producing an unhandled rejection.
  */
-async function assertPollingContinuesWhenLeaderHookThrows(): Promise<void> {
+async function assertPollingContinuesWhenStartupHookThrows(): Promise<void> {
   const dir = makeTempDir()
   const unhandledRejections: unknown[] = []
   const onUnhandledRejection = (reason: unknown): void => {
@@ -147,7 +147,7 @@ async function assertPollingContinuesWhenLeaderHookThrows(): Promise<void> {
       store,
       executor,
       eventBus: new TaskEventBus(),
-      onLeaderAcquired: hook,
+      beforeFirstCheck: hook,
     })
 
     const now = Date.now()
@@ -1201,7 +1201,7 @@ describe('ScheduledTaskScheduler', () => {
         now - 2000,
       )
 
-      // The poll loop is async because it awaits onLeaderAcquired,
+      // The poll loop is async because it awaits beforeFirstCheck,
       // so the first check happens on a microtask: flush before stop() both lets it run and lets
       // stop() clear the interval it installs.
       scheduler.start()
@@ -1222,7 +1222,7 @@ describe('ScheduledTaskScheduler', () => {
     }
   })
 
-  it('runs onLeaderAcquired exactly once per start, before the first check', async () => {
+  it('runs beforeFirstCheck exactly once per start', async () => {
     const dir = makeTempDir()
     const store = createScheduledTasksStore(dir)
     const { agentApi, resolveRun } = makeDeferredAgentApi() // stays RUNNING until the finally block
@@ -1232,7 +1232,7 @@ describe('ScheduledTaskScheduler', () => {
       store,
       executor,
       eventBus: new TaskEventBus(),
-      onLeaderAcquired: async () => {
+      beforeFirstCheck: async () => {
         // Ordering contract: the hook fires before the first checkAndEnqueueScheduledTasks, so a
         // due task must not have been picked up yet at the moment recovery runs.
         executingAtHook.push(scheduler.getExecutingTasks().length)
@@ -1277,10 +1277,10 @@ describe('ScheduledTaskScheduler', () => {
   })
 
   it('continues polling when the startup hook throws without an unhandled rejection', async () => {
-    await assertPollingContinuesWhenLeaderHookThrows()
+    await assertPollingContinuesWhenStartupHookThrows()
   })
 
-  it('does not install an interval or run a check when stop() lands while the leader hook is still pending', async () => {
+  it('does not install an interval or run a check when stop() lands while the startup hook is still pending', async () => {
     const dir = makeTempDir()
     try {
       const store = createScheduledTasksStore(dir)
@@ -1294,7 +1294,7 @@ describe('ScheduledTaskScheduler', () => {
         store,
         executor,
         eventBus: new TaskEventBus(),
-        onLeaderAcquired: () =>
+        beforeFirstCheck: () =>
           new Promise<void>((resolve) => {
             resolveHook = resolve
           }),

@@ -124,7 +124,7 @@ export class ScheduledTasksService implements IScheduledTasksService {
       queuePolicy: deps.queuePolicy,
       getMaxAgentRunsPerTick: deps.getMaxAgentRunsPerTick,
       // Orphan recovery runs once before the scheduler's first due-check.
-      onLeaderAcquired: () => this.recoverOrphanedRuns(),
+      beforeFirstCheck: () => this.recoverOrphanedRuns(),
     })
   }
 
