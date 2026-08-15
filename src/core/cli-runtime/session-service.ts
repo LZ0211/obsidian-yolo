@@ -368,6 +368,7 @@ export class CliSessionService {
           : {}),
       }),
     )
+    await this.indexStore.remove(previousRef)
   }
 
   async rememberConfiguration(

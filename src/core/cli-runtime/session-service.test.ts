@@ -394,6 +394,7 @@ describe('CliSessionService', () => {
       reasoningEffort: 'high',
       turnOverlays: [{ userMessage: { id: 'user-keep' } }],
     })
+    await expect(index.get(previousRef)).resolves.toBeNull()
   })
 
   it('discovers host-known sessions with title fallback and pin/rename round-trips', async () => {
