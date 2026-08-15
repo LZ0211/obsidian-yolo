@@ -119,28 +119,18 @@ async function flushPromises(): Promise<void> {
 }
 
 /**
- * Regression for the leader-hook error path: if `onLeaderAcquired` throws (e.g.
+ * Regression for the startup-hook error path: if `onLeaderAcquired` throws (e.g.
  * recoverOrphanedRuns -> store.listRunningRuns rejects), the poll loop must still install its
- * interval and pick up due tasks, and the lock-request / poll-loop promise must NOT produce an
- * unhandled rejection — otherwise this window silently stops polling and another window takes over
- * and re-runs the same due tasks. `navigatorValue` selects the Web Locks vs fallback path.
+ * interval and pick up due tasks without producing an unhandled rejection.
  */
-async function assertPollingContinuesWhenLeaderHookThrows(
-  navigatorValue: unknown,
-): Promise<void> {
+async function assertPollingContinuesWhenLeaderHookThrows(): Promise<void> {
   const dir = makeTempDir()
-  const originalNavigator = globalThis.navigator
   const unhandledRejections: unknown[] = []
   const onUnhandledRejection = (reason: unknown): void => {
     unhandledRejections.push(reason)
   }
   process.on('unhandledRejection', onUnhandledRejection)
   try {
-    Object.defineProperty(globalThis, 'navigator', {
-      value: navigatorValue,
-      configurable: true,
-    })
-
     const store = createScheduledTasksStore(dir)
     const executor = new TaskExecutor({
       getAgentApi: () =>
@@ -188,10 +178,6 @@ async function assertPollingContinuesWhenLeaderHookThrows(
     store.close()
   } finally {
     process.removeListener('unhandledRejection', onUnhandledRejection)
-    Object.defineProperty(globalThis, 'navigator', {
-      value: originalNavigator,
-      configurable: true,
-    })
     cleanup(dir)
   }
 }
@@ -1176,70 +1162,18 @@ describe('ScheduledTaskScheduler', () => {
     }
   })
 
-  it('two schedulers sharing the same vault only let the leader-lock holder poll — no double-execution', async () => {
-    const dir = makeTempDir()
-    try {
-      const store = createScheduledTasksStore(dir)
-      const agentApi = makeAgentApi(async () => ({
-        conversationId: 'conv-1',
-        text: 'done',
-        status: 'completed',
-      }))
-      const executor = new TaskExecutor({ getAgentApi: () => agentApi })
-      const eventBus = new TaskEventBus() // shared across both schedulers purely so the test can observe a single combined event stream
-      const schedulerA = new ScheduledTaskScheduler({
-        store,
-        executor,
-        eventBus,
-      })
-      const schedulerB = new ScheduledTaskScheduler({
-        store,
-        executor,
-        eventBus,
-      })
-
-      const now = Date.now()
-      store.createTask(
-        'interval-task',
-        makeTaskConfig({
-          scheduleType: 'interval',
-          intervalSeconds: 60,
-          nextRunTime: now - 1000,
-        }),
-        now - 2000,
-      )
-
-      const events: TaskEvent[] = []
-      eventBus.subscribeAll((e) => events.push(e))
-
-      // Simulates opening a second Obsidian window against the same vault while the first is
-      // already running: both call start(), but only the one that wins the exclusive lock may
-      // actually poll and enqueue — otherwise the due task would be picked up and executed twice.
-      schedulerA.start()
-      schedulerB.start()
-      await flushPromises()
-      await flushPromises()
-
-      expect(events.filter((e) => e.type === 'task_started')).toHaveLength(1)
-
-      schedulerA.stop()
-      schedulerB.stop()
-      await flushPromises() // lets the non-leader's now-stale lock grant (if any) settle as a no-op instead of leaking a pending promise
-
-      store.close()
-    } finally {
-      cleanup(dir)
-    }
-  })
-
-  it('falls back to polling directly (no leader election) when navigator.locks is unavailable', async () => {
+  it('polls directly even when navigator.locks is present', async () => {
     const dir = makeTempDir()
     const originalNavigator = globalThis.navigator
     try {
-      // Simulates an environment without the Web Locks API (older runtimes) — the scheduler
-      // must still run its poll loop unguarded rather than hanging forever waiting on a lock.
+      // A scheduler is already singleton-owned by the plugin process. A Web Locks request
+      // must not gate its first check or depend on an unrelated browser lock holder.
       Object.defineProperty(globalThis, 'navigator', {
-        value: {},
+        value: {
+          locks: {
+            request: jest.fn(() => new Promise<never>(() => {})),
+          },
+        },
         configurable: true,
       })
 
@@ -1267,8 +1201,7 @@ describe('ScheduledTaskScheduler', () => {
         now - 2000,
       )
 
-      // No navigator.locks — the scheduler must still run its first check rather than hang on a
-      // lock grant that will never come. The poll loop is now async (it awaits onLeaderAcquired),
+      // The poll loop is async because it awaits onLeaderAcquired,
       // so the first check happens on a microtask: flush before stop() both lets it run and lets
       // stop() clear the interval it installs.
       scheduler.start()
@@ -1289,9 +1222,8 @@ describe('ScheduledTaskScheduler', () => {
     }
   })
 
-  it('runs onLeaderAcquired exactly once per leader acquisition, before the first check', async () => {
+  it('runs onLeaderAcquired exactly once per start, before the first check', async () => {
     const dir = makeTempDir()
-    const originalNavigator = globalThis.navigator
     const store = createScheduledTasksStore(dir)
     const { agentApi, resolveRun } = makeDeferredAgentApi() // stays RUNNING until the finally block
     const executor = new TaskExecutor({ getAgentApi: () => agentApi })
@@ -1307,13 +1239,6 @@ describe('ScheduledTaskScheduler', () => {
       },
     })
     try {
-      // Fall back to the no-Web-Locks path so leadership is granted synchronously inside start(),
-      // making the hook's ordering relative to the first due-check deterministic.
-      Object.defineProperty(globalThis, 'navigator', {
-        value: {},
-        configurable: true,
-      })
-
       store.createTask(
         'interval-task',
         makeTaskConfig({
@@ -1327,11 +1252,11 @@ describe('ScheduledTaskScheduler', () => {
       scheduler.start()
       await flushPromises()
 
-      // Exactly once on this acquisition, and it ran before the first check enqueued the due task.
+      // Exactly once on this start, and it ran before the first check enqueued the due task.
       expect(executingAtHook).toEqual([0])
       expect(scheduler.getExecutingTasks()).toHaveLength(1)
 
-      // Re-acquiring leadership (stop -> start) fires the one-shot again — once per acquisition.
+      // Restarting fires the one-shot again — once per start.
       scheduler.stop()
       scheduler.start()
       await flushPromises()
@@ -1347,40 +1272,17 @@ describe('ScheduledTaskScheduler', () => {
       await flushPromises()
       scheduler.stop()
       store.close()
-      Object.defineProperty(globalThis, 'navigator', {
-        value: originalNavigator,
-        configurable: true,
-      })
       cleanup(dir)
     }
   })
 
-  it('continues polling when the leader hook throws — no unhandled rejection on either lock path', async () => {
-    // Web Locks path: navigator.locks.request()'s returned promise must resolve, not reject, even
-    // though the hook (e.g. recoverOrphanedRuns) throws inside its callback.
-    await assertPollingContinuesWhenLeaderHookThrows({
-      locks: {
-        request: (
-          _name: string,
-          _opts: unknown,
-          callback: () => Promise<void>,
-        ) => Promise.resolve().then(callback),
-      },
-    })
-    // Fallback path (no navigator.locks): void runLeaderPollLoop() must not reject either.
-    await assertPollingContinuesWhenLeaderHookThrows({})
+  it('continues polling when the startup hook throws without an unhandled rejection', async () => {
+    await assertPollingContinuesWhenLeaderHookThrows()
   })
 
   it('does not install an interval or run a check when stop() lands while the leader hook is still pending', async () => {
     const dir = makeTempDir()
-    const originalNavigator = globalThis.navigator
     try {
-      // Fall back to the synchronous leadership path so the pending-hook window is deterministic.
-      Object.defineProperty(globalThis, 'navigator', {
-        value: {},
-        configurable: true,
-      })
-
       const store = createScheduledTasksStore(dir)
       const executor = new TaskExecutor({
         // Never invoked: without a check, no task is ever enqueued or run.
@@ -1426,10 +1328,6 @@ describe('ScheduledTaskScheduler', () => {
 
       store.close()
     } finally {
-      Object.defineProperty(globalThis, 'navigator', {
-        value: originalNavigator,
-        configurable: true,
-      })
       cleanup(dir)
     }
   })

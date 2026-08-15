@@ -50,7 +50,7 @@ export type EnqueueResult =
 
 const PRUNE_SAFETY_MARGIN_MS = 5 * 60 * 1000
 const CHECK_INTERVAL_MS = 30_000
-/** How often the leader checks run-history size and prunes (age cutoff + per-task cap). */
+/** How often the scheduler checks run-history size and prunes (age cutoff + per-task cap). */
 const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000
 /** Runs started (or scheduled) more than this long ago are deleted by the periodic prune. */
 const RUNS_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
@@ -100,13 +100,7 @@ const isMissedTrigger = (task: ScheduledTask, now: number): boolean =>
   task.nextRunTime <= now - CATCH_UP_OVERDUE_THRESHOLD_MS &&
   (task.lastRunAt == null || task.lastRunAt < task.nextRunTime)
 
-/**
- * Top-level scheduler. Multi-window leader election uses the Web Locks API (`navigator.locks`)
- * where available: only the window holding the exclusive `yolo-scheduled-tasks-leader` lock runs
- * the poll loop, so two Obsidian windows against the same vault don't double-execute due tasks.
- * Environments without `navigator.locks` (older runtimes, the Jest `node` test environment) fall
- * back to running the poll loop directly, unguarded — single-window behavior identical to before.
- */
+/** Top-level scheduler owned by the plugin's singleton service. */
 export class ScheduledTaskScheduler {
   private readonly queue: TaskQueue
   private readonly runAbortControllers = new Map<string, AbortController>()
@@ -121,11 +115,6 @@ export class ScheduledTaskScheduler {
   /** Timestamp of the most recent start(): the catch-up pass is held back until
    * CATCH_UP_QUIET_WINDOW_MS after it, so a fresh startup never storms the queue. */
   private startedAt = 0
-  private releaseLeaderLock?: () => void
-  // Scoped by store.rootDir (one per vault) so two different vaults opened in the same Obsidian
-  // process/session never contend for each other's lock, while multiple windows on the *same*
-  // vault correctly compete for one.
-  private readonly leaderLockName: string
 
   constructor(
     private readonly deps: {
@@ -149,7 +138,6 @@ export class ScheduledTaskScheduler {
       onLeaderAcquired?: () => unknown
     },
   ) {
-    this.leaderLockName = `yolo-scheduled-tasks-leader:${deps.store.rootDir}`
     this.queue = new TaskQueue(deps.queuePolicy)
     this.queue.subscribe((event) => {
       if (event.type === 'task-ready') {
@@ -173,27 +161,13 @@ export class ScheduledTaskScheduler {
     if (!this.stopped) return
     this.stopped = false
     this.startedAt = Date.now() // arms the catch-up quiet window for this start
-    if (this.hasWebLocks()) {
-      // The callback (and therefore the poll loop) only runs once this window is granted the
-      // exclusive lock; the lock is held until the promise it returns resolves, which happens in
-      // stop() via releaseLeaderLock. Lock acquisition is asynchronous even with no contention,
-      // so runLeaderPollLoop() re-checks `stopped` in case stop() already ran by the time it fires.
-      void navigator.locks.request(
-        this.leaderLockName,
-        { mode: 'exclusive' },
-        () => this.runLeaderPollLoop(),
-      )
-    } else {
-      void this.runLeaderPollLoop()
-    }
+    void this.runPollLoop()
   }
 
   stop(): void {
     this.stopped = true
     if (this.checkInterval) clearInterval(this.checkInterval)
     this.checkInterval = undefined
-    this.releaseLeaderLock?.()
-    this.releaseLeaderLock = undefined
     this.queue.clear()
   }
 
@@ -254,31 +228,21 @@ export class ScheduledTaskScheduler {
     }
   }
 
-  private hasWebLocks(): boolean {
-    return typeof navigator !== 'undefined' && 'locks' in navigator
-  }
-
-  /** Runs the poll loop and returns a promise that only resolves once stop() releases it — this is what keeps a Web Lock held for as long as this window remains the leader. */
-  private async runLeaderPollLoop(): Promise<void> {
-    if (this.stopped) return Promise.resolve() // stop() already ran before this window was granted the lock
+  private async runPollLoop(): Promise<void> {
+    if (this.stopped) return
     try {
       await this.deps.onLeaderAcquired?.()
     } catch (error) {
-      // A throwing leader hook (e.g. recoverOrphanedRuns -> store.listRunningRuns) must not tear
-      // down this window's poll loop: on the Web Locks path it would reject navigator.locks.request()
-      // (unhandled rejection + the lock would be released so another window takes over), and on the
-      // fallback path it would reject runLeaderPollLoop() the same way — either way this window
-      // silently stops polling and re-runs the same due tasks. Log and keep going so the interval
-      // still gets installed.
+      // A throwing startup hook (e.g. recoverOrphanedRuns -> store.listRunningRuns) must not stop
+      // this scheduler's poll loop. Log and keep going so the interval still gets installed.
       console.error(
         '[YOLO][ScheduledTasks] leader hook failed; continuing to poll',
         error,
       )
     }
-    // stop() may have run while the leader hook was in flight (e.g. a long orphan-recovery or a
-    // plugin cleanup during lock acquisition) — don't start polling a scheduler that's shutting
-    // down, and don't install an interval that stop() already missed clearing.
-    if (this.stopped) return Promise.resolve()
+    // stop() may have run while the startup hook was in flight — don't install an interval that
+    // stop() already missed clearing.
+    if (this.stopped) return
     this.checkAndEnqueueScheduledTasks()
     // Run-history retention is deliberately NOT applied here (only on the
     // periodic tick): recovery (onLeaderAcquired) must finish first and its
@@ -289,9 +253,6 @@ export class ScheduledTaskScheduler {
       this.queue.drain() // fires retries whose exponential backoff elapsed since the last tick
       this.maybePruneRuns()
     }, CHECK_INTERVAL_MS)
-    return new Promise((resolve) => {
-      this.releaseLeaderLock = resolve
-    })
   }
 
   // ---- task CRUD ----

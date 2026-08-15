@@ -123,9 +123,7 @@ export class ScheduledTasksService implements IScheduledTasksService {
       eventBus: deps.eventBus,
       queuePolicy: deps.queuePolicy,
       getMaxAgentRunsPerTick: deps.getMaxAgentRunsPerTick,
-      // Orphan recovery runs once the scheduler actually wins the leader lock (before its first
-      // due-check), never unconditionally on every window's initialize(). Otherwise a second
-      // Obsidian window that never becomes leader would mark the leader's RUNNING runs CANCELLED.
+      // Orphan recovery runs once before the scheduler's first due-check.
       onLeaderAcquired: () => this.recoverOrphanedRuns(),
     })
   }
@@ -143,8 +141,7 @@ export class ScheduledTasksService implements IScheduledTasksService {
     if (this.initializePromise) return this.initializePromise
 
     const sharedPromise = (async () => {
-      // Orphan recovery is NOT done here — it's the scheduler's onLeaderAcquired hook, so it only
-      // fires on the window that actually wins the leader lock (see the constructor above).
+      // Orphan recovery is sequenced by the scheduler before its first due-check.
       this.scheduler.start()
       this.initialized = true
     })().then(
@@ -194,9 +191,7 @@ export class ScheduledTasksService implements IScheduledTasksService {
    * re-enqueue — restarting several stale tasks at once on every plugin load would be surprising;
    * the user can re-trigger any of them manually via "Run now".
    *
-   * Serves as the scheduler's `onLeaderAcquired` hook, so it only runs on the window that wins the
-   * leader lock, before that window's first due-check — a second window that never becomes leader
-   * can't reset the leader's still-live RUNNING runs.
+   * Serves as the scheduler's startup hook and runs before its first due-check.
    */
   private async recoverOrphanedRuns(): Promise<number> {
     const orphaned = this.store.listRunningRuns()

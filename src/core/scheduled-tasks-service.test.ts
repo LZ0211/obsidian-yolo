@@ -411,7 +411,7 @@ describe('ScheduledTasksService', () => {
     }
   })
 
-  it('initialize() recovers runs orphaned by a previous crash through the leader hook, exactly once', async () => {
+  it('initialize() recovers runs orphaned by a previous crash exactly once', async () => {
     const dir = makeTempDir()
     try {
       const store = createScheduledTasksStore(dir)
@@ -432,9 +432,7 @@ describe('ScheduledTasksService', () => {
 
       await service.initialize()
 
-      // Recovery is driven by the scheduler's onLeaderAcquired hook (fired once on leader
-      // acquisition) — never called directly by initialize(). This window IS the leader here, so it
-      // runs exactly once.
+      // Recovery is driven by the scheduler's startup hook and runs before its first due-check.
       expect(listRunningRuns).toHaveBeenCalledTimes(1)
 
       const run = store.getRun('run-orphaned')
@@ -448,54 +446,6 @@ describe('ScheduledTasksService', () => {
       await service.cleanup()
       store.close()
     } finally {
-      cleanup(dir)
-    }
-  })
-
-  it('initialize() does not touch RUNNING runs when this window is not the leader (cross-window safety)', async () => {
-    const originalNavigator = globalThis.navigator
-    const dir = makeTempDir()
-    try {
-      // Simulate a second Obsidian window whose leader lock is held by another window: the lock
-      // request callback never fires, so the poll loop (and its onLeaderAcquired recovery hook)
-      // never runs. Before the fix, initialize() recovered orphans unconditionally and would have
-      // cancelled this RUNNING run owned by the real leader window.
-      Object.defineProperty(globalThis, 'navigator', {
-        value: { locks: { request: () => new Promise<void>(() => {}) } },
-        configurable: true,
-      })
-
-      const store = createScheduledTasksStore(dir)
-      store.createTask('task-1', makeTaskConfig(), 1000)
-      store.insertRun(makeRunInsert({ id: 'run-leaders', taskId: 'task-1' }))
-      const listRunningRuns = jest.spyOn(store, 'listRunningRuns')
-
-      const executor = new TaskExecutor({
-        getAgentApi: () => {
-          throw new Error('not used in this test')
-        },
-      })
-      const service = new ScheduledTasksService({
-        store,
-        eventBus: new TaskEventBus(),
-        executor,
-      })
-
-      await service.initialize()
-
-      // initialize() must not recover orphans directly — without leadership, the leader's live run
-      // stays untouched.
-      expect(listRunningRuns).not.toHaveBeenCalled()
-      const run = store.getRun('run-leaders')
-      expect(run?.status).toBe(TaskRunStatus.RUNNING)
-
-      await service.cleanup()
-      store.close()
-    } finally {
-      Object.defineProperty(globalThis, 'navigator', {
-        value: originalNavigator,
-        configurable: true,
-      })
       cleanup(dir)
     }
   })
