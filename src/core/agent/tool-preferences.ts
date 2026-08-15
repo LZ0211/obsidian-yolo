@@ -19,11 +19,10 @@ import {
 import { McpManager } from '../mcp/mcpManager'
 import { parseToolName } from '../mcp/tool-name-utils'
 import { getMcpToolSchemaTokenCost } from '../mcp/toolCatalogTokenCache'
+import { FILE_EDIT_GROUP_TOOL_NAME } from '../tools/legacy-persistence-keys'
 import { getCapability } from '../tools/registry'
 
-import { FILE_EDIT_GROUP_TOOL_NAME } from './builtinToolUiMeta'
 import { CONSOLIDATED_TOOLS } from './consolidated-tools'
-
 export const DEFAULT_ASSISTANT_TOOL_APPROVAL_MODE: AssistantToolApprovalMode =
   'require_approval'
 export const DEFAULT_ASSISTANT_TOOL_DISCLOSURE_MODE: AssistantToolDisclosureMode =

@@ -1,34 +1,18 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { BookOpen, Copy, Cpu, Folder, Plus, Trash2, Wrench } from 'lucide-react'
-import { App, Platform, SuggestModal } from 'obsidian'
+import { BookOpen, Copy, Cpu, Plus, Trash2, Wrench } from 'lucide-react'
+import { App, Platform } from 'obsidian'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { useLanguage } from '../../../contexts/language-context'
 import { usePlugin } from '../../../contexts/plugin-context'
 import { useSettings } from '../../../contexts/settings-context'
 import { getAssistantModelDisplayLabel } from '../../../core/agent/assistant-model'
-import {
-  CONTEXT_MANAGE_LEGACY_SPLIT_TOOL_NAMES,
-  FILE_EDIT_GROUP_TOOL_NAME,
-  WEB_OPS_GROUP_TOOL_NAME,
-  WEB_OPS_SPLIT_ACTION_TOOL_NAMES,
-  getBuiltinToolUiMeta,
-  isConsolidatedGroupEnabled,
-} from '../../../core/agent/builtinToolUiMeta'
-import { CONSOLIDATED_TOOL_ACTIONS } from '../../../core/agent/consolidated-tools'
 import { isDefaultAssistantId } from '../../../core/agent/default-assistant'
 import { getEnabledAssistantToolNames } from '../../../core/agent/tool-preferences'
-import { isInjectedBridgeToolName } from '../../../core/mcp/injectionBridge'
-import {
-  LOCAL_FS_EDIT_TOOL_NAMES,
-  USER_FACING_LOCAL_TOOL_SHORT_NAMES,
-} from '../../../core/mcp/localFileToolNames'
-import { getLocalFileTools } from '../../../core/mcp/localFileTools'
 import { McpManager } from '../../../core/mcp/mcpManager'
 import { humanizeSkillName } from '../../../core/skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../../../core/skills/skillPolicy'
 import { useLiteSkillEntries } from '../../../hooks/useLiteSkillEntries'
-import { WorkspaceAgent } from '../../../settings/schema/setting.types'
 import { Assistant } from '../../../types/assistant.types'
 import { McpServerState, McpServerStatus } from '../../../types/mcp.types'
 import { renderAssistantIcon } from '../../../utils/assistant-icon'
@@ -44,51 +28,11 @@ import { AgentAutoContextCompactionSection } from './AgentAutoContextCompactionS
 import { AgentCliPathSection } from './AgentCliPathSection'
 import { AgentImageReadingSection } from './AgentImageReadingSection'
 import { AgentMcpServerSection } from './AgentMcpServerSection'
-import { computeMcpStatusCounts } from './mcpStatusCounts'
+import { buildBuiltinCapabilityRows } from './builtinCapabilityRows'
 import { NotificationSettingsSection } from './NotificationSettingsSection'
 
 type AgentSectionProps = {
   app: App
-}
-
-const EDIT_FS_TOOL_NAME_SET = new Set<string>(LOCAL_FS_EDIT_TOOL_NAMES)
-const SPLIT_WEB_TOOL_NAME_SET = new Set<string>(WEB_OPS_SPLIT_ACTION_TOOL_NAMES)
-const SPLIT_CONTEXT_TOOL_NAME_SET = new Set<string>(
-  CONTEXT_MANAGE_LEGACY_SPLIT_TOOL_NAMES,
-)
-
-class TemplatePickerModal extends SuggestModal<Assistant> {
-  constructor(
-    app: App,
-    private assistants: Assistant[],
-    private onPick: (id: string) => void,
-  ) {
-    super(app)
-    this.setPlaceholder('Select a template…')
-  }
-
-  getSuggestions(query: string): Assistant[] {
-    const q = query.toLowerCase()
-    return this.assistants.filter(
-      (a) =>
-        a.name.toLowerCase().includes(q) ||
-        (a.description ?? '').toLowerCase().includes(q),
-    )
-  }
-
-  renderSuggestion(assistant: Assistant, el: HTMLElement) {
-    el.createEl('div', { text: assistant.name })
-    if (assistant.description) {
-      el.createEl('small', {
-        text: assistant.description,
-        cls: 'yolo-settings-desc',
-      })
-    }
-  }
-
-  onChooseSuggestion(assistant: Assistant) {
-    this.onPick(assistant.id)
-  }
 }
 
 export function AgentSection({ app }: AgentSectionProps) {
@@ -96,7 +40,6 @@ export function AgentSection({ app }: AgentSectionProps) {
   const { t } = useLanguage()
   const plugin = usePlugin()
   const assistants = settings.assistants || []
-  const workspaceAgents = settings.workspaceAgents || []
   const [mcpManager, setMcpManager] = useState<McpManager | null>(null)
   const [mcpServers, setMcpServers] = useState<McpServerState[]>([])
   const [mcpManagerLoading, setMcpManagerLoading] = useState(true)
@@ -218,68 +161,6 @@ export function AgentSection({ app }: AgentSectionProps) {
     modal.open()
   }
 
-  const handleOpenWorkspaceAgentModal = (workspaceAgentId?: string) => {
-    const modal = new AssistantsModal(app, plugin, undefined, false, {
-      workspaceAgentId,
-    })
-    modal.open()
-  }
-
-  const handleNewWorkspaceAgent = () => {
-    if (assistants.length === 0) {
-      handleOpenAssistantsModal(undefined, true)
-      return
-    }
-    if (assistants.length === 1) {
-      const modal = new AssistantsModal(app, plugin, undefined, false, {
-        workspaceAgentTemplateId: assistants[0].id,
-      })
-      modal.open()
-      return
-    }
-    new TemplatePickerModal(app, assistants, (templateId) => {
-      const modal = new AssistantsModal(app, plugin, undefined, false, {
-        workspaceAgentTemplateId: templateId,
-      })
-      modal.open()
-    }).open()
-  }
-
-  const handleDeleteWorkspaceAgent = (agent: WorkspaceAgent) => {
-    let confirmed = false
-
-    const modal = new ConfirmModal(app, {
-      title: t(
-        'settings.agent.deleteWorkspaceAgentTitle',
-        'Confirm delete workspace agent',
-      ),
-      message: `${t('settings.agent.deleteWorkspaceAgentMessagePrefix', 'Are you sure you want to delete workspace agent')} "${agent.name}"${t('settings.agent.deleteWorkspaceAgentMessageSuffix', '? This action cannot be undone.')}`,
-      ctaText: t('common.delete'),
-      onConfirm: () => {
-        confirmed = true
-      },
-    })
-
-    modal.onClose = () => {
-      if (!confirmed) return
-      void (async () => {
-        const updatedAgents = workspaceAgents.filter((a) => a.id !== agent.id)
-        await setSettings({
-          ...settings,
-          workspaceAgents: updatedAgents,
-          currentWorkspaceAgentId:
-            settings.currentWorkspaceAgentId === agent.id
-              ? updatedAgents[0]?.id
-              : settings.currentWorkspaceAgentId,
-        })
-      })().catch((error: unknown) => {
-        console.error('Failed to delete workspace agent', error)
-      })
-    }
-
-    modal.open()
-  }
-
   const handleOpenToolsModal = () => {
     const modal = new AgentToolsModal(app, plugin)
     modal.open()
@@ -320,77 +201,13 @@ export function AgentSection({ app }: AgentSectionProps) {
   )
 
   const builtinTools = useMemo(() => {
-    const toolOptions = settings.mcp.builtinToolOptions
-    const tools = getLocalFileTools()
-      .filter(
-        (tool) =>
-          !EDIT_FS_TOOL_NAME_SET.has(tool.name) &&
-          !SPLIT_WEB_TOOL_NAME_SET.has(tool.name) &&
-          !SPLIT_CONTEXT_TOOL_NAME_SET.has(tool.name) &&
-          (USER_FACING_LOCAL_TOOL_SHORT_NAMES.includes(tool.name) ||
-            isInjectedBridgeToolName(tool.name)),
-      )
-      .map((tool) => {
-        const meta = getBuiltinToolUiMeta(tool.name)
-        const groupActions = (
-          CONSOLIDATED_TOOL_ACTIONS as Record<
-            string,
-            readonly string[] | undefined
-          >
-        )[tool.name]
-        return {
-          id: tool.name,
-          label: meta ? t(meta.labelKey, meta.labelFallback) : tool.name,
-          enabled: groupActions
-            ? isConsolidatedGroupEnabled(toolOptions, tool.name, groupActions)
-            : !(toolOptions[tool.name]?.disabled ?? false),
-        }
-      })
-
-    const editSplitToolEnabled = LOCAL_FS_EDIT_TOOL_NAMES.every(
-      (toolName) =>
-        !(toolOptions[toolName]?.disabled ?? false) &&
-        !(toolOptions[FILE_EDIT_GROUP_TOOL_NAME]?.disabled ?? false),
-    )
-    const fileEditMeta = getBuiltinToolUiMeta(FILE_EDIT_GROUP_TOOL_NAME)
-    if (!fileEditMeta) {
-      throw new Error('Missing built-in tool UI metadata for fs_edit_ops')
-    }
-    const fileEditTool = {
-      id: FILE_EDIT_GROUP_TOOL_NAME,
-      label: t(fileEditMeta.labelKey, fileEditMeta.labelFallback),
-      enabled: editSplitToolEnabled,
-    }
-
-    // Synthetic groups mirror the Manage tools modal. `fs_file_ops` is a
-    // retired group (path operations moved to the bash tool), and memory
-    // mutations are internal-only; neither belongs in global settings.
-
-    const webSplitToolEnabled = WEB_OPS_SPLIT_ACTION_TOOL_NAMES.every(
-      (toolName) =>
-        !(toolOptions[toolName]?.disabled ?? false) &&
-        !(toolOptions[WEB_OPS_GROUP_TOOL_NAME]?.disabled ?? false),
-    )
-    const webOpsMeta = getBuiltinToolUiMeta(WEB_OPS_GROUP_TOOL_NAME)
-    if (!webOpsMeta) {
-      throw new Error('Missing built-in tool UI metadata for web_ops')
-    }
-    const webOpsTool = {
-      id: WEB_OPS_GROUP_TOOL_NAME,
-      label: t(webOpsMeta.labelKey, webOpsMeta.labelFallback),
-      enabled: webSplitToolEnabled,
-    }
-
-    const fsReadIndex = tools.findIndex((tool) => tool.id === 'fs_read')
-    if (fsReadIndex >= 0) {
-      tools.splice(fsReadIndex, 0, fileEditTool)
-      tools.splice(fsReadIndex + 1, 0, webOpsTool)
-    } else {
-      tools.push(fileEditTool)
-      tools.push(webOpsTool)
-    }
-
-    return tools
+    // Lists every registered capability unconditionally, for the same reason
+    // as `AgentToolsModal.tsx`'s `builtinToolGroups` — see that useMemo. This
+    // flat overview and the modal it launches must stay in visible sync.
+    return buildBuiltinCapabilityRows({
+      toolOptions: settings.mcp.builtinToolOptions,
+      t,
+    }).map((row) => ({ id: row.id, label: row.label, enabled: row.enabled }))
   }, [settings.mcp.builtinToolOptions, t])
 
   const allSkillEntries = useLiteSkillEntries(app, { settings })
@@ -425,13 +242,14 @@ export function AgentSection({ app }: AgentSectionProps) {
   const enabledConfiguredMcpServerCount = settings.mcp.servers.filter(
     (server) => server.enabled,
   ).length
-  const mcpStatusCounts = computeMcpStatusCounts({
-    servers: mcpServers,
-    loading: mcpManagerLoading,
-    enabledConfiguredCount: enabledConfiguredMcpServerCount,
-  })
-  const mcpLoadingCount = mcpStatusCounts.loading
-  const mcpErrorCount = mcpStatusCounts.error
+  const mcpLoadingCount = mcpManagerLoading
+    ? enabledConfiguredMcpServerCount
+    : mcpServers.filter(
+        (server) => server.status === McpServerStatus.Connecting,
+      ).length
+  const mcpErrorCount = mcpServers.filter(
+    (server) => server.status === McpServerStatus.Error,
+  ).length
   const mcpToolStatusLabels = [
     mcpLoadingCount > 0
       ? t('settings.agent.mcpLoadingStatus', 'Loading {count} MCP...').replace(
@@ -450,7 +268,7 @@ export function AgentSection({ app }: AgentSectionProps) {
   const mcpCountLabel = t(
     'settings.agent.mcpServerCount',
     '{count} MCP servers connected',
-  ).replace('{count}', String(mcpStatusCounts.labelCount))
+  ).replace('{count}', String(settings.mcp.servers.length))
 
   const toolTags = [
     ...builtinTools.map((tool) => ({
@@ -748,195 +566,6 @@ export function AgentSection({ app }: AgentSectionProps) {
             </div>
           </article>
         </div>
-      </section>
-
-      <section className="yolo-agent-block">
-        <div className="yolo-agent-block-head">
-          <div className="yolo-agent-block-head-title-row">
-            <div className="yolo-settings-sub-header">
-              {t('settings.agent.workspaceAgents', 'Workspace Agents')}
-            </div>
-            <ObsidianButton
-              text={t(
-                'settings.agent.newWorkspaceAgent',
-                'New workspace agent',
-              )}
-              onClick={() => handleNewWorkspaceAgent()}
-              cta
-            />
-          </div>
-          <div className="yolo-settings-desc">
-            {t(
-              'settings.agent.workspaceAgentsDesc',
-              'Agent instances bound to working directories. Each derives from a template and limits its file access to a workspace root.',
-            )}
-          </div>
-        </div>
-
-        {workspaceAgents.length > 0 ? (
-          <div className="yolo-agent-grid">
-            {workspaceAgents.map((agent) => {
-              const template = assistants.find(
-                (tpl) => tpl.id === agent.templateId,
-              )
-              return (
-                <article
-                  key={agent.id}
-                  className="yolo-agent-card yolo-agent-card--clickable"
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => handleOpenWorkspaceAgentModal(agent.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault()
-                      handleOpenWorkspaceAgentModal(agent.id)
-                    }
-                  }}
-                >
-                  <div className="yolo-agent-card-top">
-                    <div className="yolo-agent-card-top-main">
-                      <div className="yolo-agent-avatar">
-                        {renderAssistantIcon(template?.icon, 16)}
-                      </div>
-                      <div className="yolo-agent-main">
-                        <div className="yolo-agent-name-row">
-                          <div className="yolo-agent-name">{agent.name}</div>
-                          {agent.disabled && (
-                            <span className="yolo-agent-card-badge yolo-agent-card-badge--disabled">
-                              {t('settings.agent.disabledBadge', 'disabled')}
-                            </span>
-                          )}
-                        </div>
-                        <div className="yolo-agent-desc">
-                          <span className="yolo-agent-card-badge yolo-agent-card-badge--template">
-                            {t('settings.agent.templateBadge', 'Template')}
-                          </span>
-                          <span className="yolo-agent-template-name">
-                            {template?.name ?? agent.templateId}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                    <DropdownMenu.Root>
-                      <DropdownMenu.Trigger
-                        className="yolo-agent-card-menu-trigger"
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <span
-                          className="yolo-agent-card-menu-trigger-dots"
-                          aria-hidden="true"
-                        >
-                          ...
-                        </span>
-                      </DropdownMenu.Trigger>
-                      <DropdownMenu.Portal container={portalContainer}>
-                        <DropdownMenu.Content
-                          className="yolo-agent-card-menu-popover"
-                          align="end"
-                          sideOffset={8}
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          <ul className="yolo-agent-card-menu-list">
-                            <DropdownMenu.Item
-                              asChild
-                              onSelect={() => handleDeleteWorkspaceAgent(agent)}
-                            >
-                              <li className="yolo-agent-card-menu-item yolo-agent-card-menu-danger">
-                                <span className="yolo-agent-card-menu-icon">
-                                  <Trash2 size={16} />
-                                </span>
-                                {t('common.delete')}
-                              </li>
-                            </DropdownMenu.Item>
-                          </ul>
-                        </DropdownMenu.Content>
-                      </DropdownMenu.Portal>
-                    </DropdownMenu.Root>
-                  </div>
-                  <div className="yolo-agent-meta-row">
-                    {template ? (
-                      <>
-                        <span className="yolo-agent-meta-item">
-                          <Cpu size={12} />
-                          {getAssistantModelDisplayLabel(
-                            template.modelId,
-                            t(
-                              'settings.agent.followDefaultModel',
-                              'Follow default model',
-                            ),
-                          )}
-                        </span>
-                        <span className="yolo-agent-meta-item">
-                          <Wrench size={12} />
-                          {template.enableTools
-                            ? `${getEnabledAssistantToolNames(template).length} tools`
-                            : '0 tools'}
-                        </span>
-                        <span className="yolo-agent-meta-item">
-                          <BookOpen size={12} />
-                          {`${
-                            allSkillEntries.filter((skill) =>
-                              isSkillEnabledForAssistant({
-                                assistant: template,
-                                skillName: skill.name,
-                                disabledSkillNames: disabledSkillIds,
-                              }),
-                            ).length
-                          } skills`}
-                        </span>
-                      </>
-                    ) : null}
-                    <span className="yolo-agent-meta-item">
-                      <Folder size={12} />
-                      {agent.workspacePolicy.workspaceRoot}
-                    </span>
-                  </div>
-                </article>
-              )
-            })}
-            <article
-              className="yolo-agent-create-card"
-              role="button"
-              tabIndex={0}
-              onClick={() => handleNewWorkspaceAgent()}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault()
-                  handleNewWorkspaceAgent()
-                }
-              }}
-            >
-              <div className="yolo-agent-create-card-icon">
-                <Plus size={28} />
-              </div>
-              <div className="yolo-agent-create-card-text">
-                {t('settings.agent.newWorkspaceAgent', 'New workspace agent')}
-              </div>
-            </article>
-          </div>
-        ) : (
-          <div className="yolo-agent-grid">
-            <article
-              className="yolo-agent-create-card"
-              role="button"
-              tabIndex={0}
-              onClick={() => handleNewWorkspaceAgent()}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault()
-                  handleNewWorkspaceAgent()
-                }
-              }}
-            >
-              <div className="yolo-agent-create-card-icon">
-                <Plus size={28} />
-              </div>
-              <div className="yolo-agent-create-card-text">
-                {t('settings.agent.newWorkspaceAgent', 'New workspace agent')}
-              </div>
-            </article>
-          </div>
-        )}
       </section>
 
       <section className="yolo-agent-block">

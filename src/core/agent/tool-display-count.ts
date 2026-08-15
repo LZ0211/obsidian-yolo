@@ -6,8 +6,8 @@ import {
 } from '../mcp/localFileToolNames'
 import { LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES } from '../mcp/localFileTools'
 import { parseToolName } from '../mcp/tool-name-utils'
+import { WEB_OPS_SPLIT_ACTION_TOOL_NAMES } from '../tools/legacy-persistence-keys'
 
-import { WEB_OPS_SPLIT_ACTION_TOOL_NAMES } from './builtinToolUiMeta'
 import { getEnabledAssistantToolNames } from './tool-preferences'
 
 const BUILTIN_TOOL_GROUPS: ReadonlyArray<ReadonlySet<string>> = [
