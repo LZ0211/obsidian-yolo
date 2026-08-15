@@ -150,6 +150,29 @@
         white-space: nowrap;
       }
 
+      .yolo-web-center-topbar-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-shrink: 0;
+      }
+
+      .yolo-web-center-topbar-actions select {
+        min-width: 120px;
+        padding: 2px 6px;
+        border: 1px solid var(--background-modifier-border);
+        border-radius: var(--radius-s, 4px);
+        background: var(--background-secondary);
+        color: var(--text-normal);
+        font-size: var(--font-ui-smaller);
+        cursor: default;
+        opacity: 1;
+      }
+
+      .yolo-web-center-topbar-actions select:disabled {
+        pointer-events: none;
+      }
+
       .tree-item,
       .tree-item-self,
       .nav-folder-title-content,

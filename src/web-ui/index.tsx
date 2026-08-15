@@ -16,6 +16,7 @@ import { renderLightweightModalView } from './webAuthModal'
 import { createChatTabManager } from './webChatTabs'
 import { renderHistoryPane } from './webHistoryPane'
 import { createMockTransport } from './webMockTransport'
+import { createWebAgentSelector } from './webAgentSelector'
 import type {
   HistoryClient,
   LeftPaneMode,
@@ -662,6 +663,7 @@ function App(): void {
 
     function renderCenterTopBar(next: ReadyShellState): void {
       shell.centerTopBarTitleEl.empty()
+      shell.centerTopBarActionsEl.empty()
 
       const activeAgent = next.allowedAgents.find(
         (agent) => agent.id === next.agentId,
@@ -670,6 +672,15 @@ function App(): void {
       title.className = 'yolo-web-center-topbar-title-text'
       title.textContent = activeAgent?.name ?? next.agentId
       shell.centerTopBarTitleEl.append(title)
+
+      // 当前智能体名称（禁用下拉，仅展示）：web 会话的 agent 由登录
+      // token 绑定，不提供切换入口。
+      shell.centerTopBarActionsEl.append(
+        createWebAgentSelector({
+          agents: next.allowedAgents,
+          activeAgentId: next.agentId,
+        }),
+      )
     }
 
     function renderLeftRibbonLogout(): void {

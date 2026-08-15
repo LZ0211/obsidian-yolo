@@ -48,6 +48,7 @@ export type ObsidianWebShell = {
   centerNewTabButtonEl: HTMLElement
   centerTabListButtonEl: HTMLElement
   centerTopBarTitleEl: HTMLElement
+  centerTopBarActionsEl: HTMLElement
   setLeftVisible: (visible: boolean) => void
   setRightVisible: (visible: boolean) => void
   /** Non-null only when Platform.isMobile — hosts file tree / preview /
@@ -1394,8 +1395,8 @@ export function createObsidianWebShell(
   const rightRibbon = createWorkspaceRibbonLikeObsidian(workspaceEl, 'right')
   rightRibbon.ribbonEl.addClass('is-hidden')
 
-  // Visible center topbar anchor lives inside the (always-visible) center tab
-  // header container so the agent title has a stable, on-screen mount point
+  // Visible center topbar anchors live inside the (always-visible) center tab
+  // header container so agent controls have a stable, on-screen mount point
   // even though the center view-header itself is hidden (yolo-chat hideHeader).
   const centerTopBarMetaEl = createDiv(
     rootSplit.tabHeaderContainerEl,
@@ -1404,6 +1405,10 @@ export function createObsidianWebShell(
   const centerTopBarTitleEl = createDiv(
     centerTopBarMetaEl,
     'yolo-web-center-topbar-title',
+  )
+  const centerTopBarActionsEl = createDiv(
+    centerTopBarMetaEl,
+    'yolo-web-center-topbar-actions',
   )
 
   const leftRibbonFilesButton = createRibbonActionButtonLikeObsidian(
@@ -1690,6 +1695,7 @@ export function createObsidianWebShell(
     centerNewTabButtonEl: rootSplit.newTabButtonEl,
     centerTabListButtonEl: rootSplit.tabListButtonEl,
     centerTopBarTitleEl,
+    centerTopBarActionsEl,
     setLeftVisible,
     setRightVisible,
     mobileDrawer,
