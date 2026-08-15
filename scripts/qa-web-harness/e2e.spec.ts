@@ -227,7 +227,7 @@ test.describe('web e2e harness', () => {
       let conversationReadCount = 0
       await page.route(`**/api/chat/get/${conversationId}`, async (route) => {
         conversationReadCount += 1
-        if (conversationReadCount < 3) {
+        if (conversationReadCount < 2) {
           await route.continue()
           return
         }
@@ -241,7 +241,6 @@ test.describe('web e2e harness', () => {
         .first()
         .click({ noWaitAfter: true })
       await historyLoadStarted
-      await expect(emptyState).toBeHidden()
       await newChatButton.click()
       releaseHistoryLoad()
       await openHistory

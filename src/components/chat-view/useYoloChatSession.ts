@@ -255,6 +255,10 @@ export type UseYoloChatSessionParams = {
   ) => CliConversationController | null
 }
 
+type LoadedConversation = NonNullable<
+  Awaited<ReturnType<UseYoloChatSessionParams['getConversationById']>>
+>
+
 /**
  * Yolo 会话领域：消息状态维护、持久化、加载（Yolo / CLI 会话入口）、用户与
  * assistant 消息的编辑/删除/分支、run summaries 与排队消息订阅。
@@ -652,14 +656,14 @@ export function useYoloChatSession({
   )
 
   const loadYoloConversation = useCallback(
-    async (conversationId: string, isCurrent: () => boolean = () => true) => {
+    async (
+      conversationId: string,
+      conversation: LoadedConversation,
+      isCurrent: () => boolean = () => true,
+    ) => {
       setIsLoadingConversation(true)
       try {
-        const conversation = await getConversationById(conversationId)
         if (!isCurrent()) return
-        if (!conversation) {
-          throw new Error('Conversation not found')
-        }
         activeRuntimeIdRef.current = 'yolo'
         setRequestedRuntimeId('yolo')
         persistChatRuntimePreference('yolo')
@@ -824,7 +828,6 @@ export function useYoloChatSession({
       }
     },
     [
-      getConversationById,
       chatList,
       createOrUpdateConversationImmediately,
       plugin,
@@ -1016,13 +1019,21 @@ export function useYoloChatSession({
         return
       }
       if (activeRuntimeIdRef.current === 'yolo') {
-        await loadYoloConversation(conversationId, isLatestNavigation)
+        await loadYoloConversation(
+          conversationId,
+          conversation,
+          isLatestNavigation,
+        )
         return
       }
       await transitionCliSession(async (isCurrent) => {
         const isCurrentNavigation = () => isCurrent() && isLatestNavigation()
         if (!isCurrentNavigation()) return
-        await loadYoloConversation(conversationId, isCurrentNavigation)
+        await loadYoloConversation(
+          conversationId,
+          conversation,
+          isCurrentNavigation,
+        )
       })
     },
     [
