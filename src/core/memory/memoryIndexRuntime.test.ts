@@ -1153,6 +1153,61 @@ describe('vector recall path write-through', () => {
       fs.rmSync(root, { recursive: true, force: true })
     }
   })
+
+  it('drops all vectors when a memory partition is deleted', async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'memory-vector-partition-delete-'),
+    )
+    const partition = buildMemoryPartition({
+      scope: 'assistant',
+      assistantId: 'assistant-removed',
+    })
+    const entry = makeEntry('Memory_old', 'old memory', partition)
+    const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
+    const store = await openMemoryIndexStore({
+      app,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot: async () => ({
+        partition,
+        sourcePath: 'assistant.md',
+        sourceFileFingerprint: 'file-v1',
+        parserVersion: 'p',
+        entries: [entry],
+        valid: true,
+      }),
+      embedContent: async () => [1, 0, 0, 0],
+    })
+
+    try {
+      await store.reconcilePartition({
+        partition,
+        sourcePath: 'assistant.md',
+        sourceFileFingerprint: 'file-v1',
+        parserVersion: 'p',
+        entries: [entry],
+      })
+      const runtime = await store.getRuntime()
+      expect(
+        runtime.query<{ memory_key: string }>(
+          'select memory_key from memory_embeddings where partition_key = ?',
+          [partition.partitionKey],
+        ),
+      ).toHaveLength(1)
+
+      await store.deletePartition(partition)
+
+      expect(
+        runtime.query<{ memory_key: string }>(
+          'select memory_key from memory_embeddings where partition_key = ?',
+          [partition.partitionKey],
+        ),
+      ).toHaveLength(0)
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('recall reinforce wiring', () => {

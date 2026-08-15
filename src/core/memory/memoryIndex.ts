@@ -1335,6 +1335,7 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
   async deletePartition(partition: MemoryPartition): Promise<void> {
     return this.enqueue(async () => {
       const runtime = await this.getRuntime()
+      new MemoryEmbeddingStore(runtime).clearPartition(partition.partitionKey)
       runtime.exec(
         'delete from memory_partition_state where partition_key = ?',
         [partition.partitionKey],
