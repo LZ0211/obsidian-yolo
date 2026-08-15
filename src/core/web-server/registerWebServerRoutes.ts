@@ -274,6 +274,39 @@ export function registerWebServerRoutes(
     })
   }
 
+  const canUseOrRepairWebConversation = async (
+    conversationId: string,
+    binding: { activeAgentId: string; rootHash: string },
+    repairOptions: { allowMissing?: boolean } = {},
+  ): Promise<boolean> => {
+    const conversation = await getChat(conversationId)
+    if (!conversation) return repairOptions.allowMissing === true
+    if (canUseWebConversation(conversation, binding)) return true
+    if (!canRepairWebConversation(conversation, binding)) return false
+
+    return ChatManager.withConversationLock(conversationId, async () => {
+      const latest = await getChat(conversationId)
+      if (canUseWebConversation(latest, binding)) return true
+      // Conversations created by the web gateway before webBinding was added
+      // are recoverable only when their stored agent ownership still matches.
+      if (!canRepairWebConversation(latest, binding)) return false
+      const repaired = (await options.chatManager.updateChat(
+        conversationId,
+        {
+          webBinding: {
+            initialAgentId: binding.activeAgentId,
+            activeAgentId: binding.activeAgentId,
+            rootHash: binding.rootHash,
+            accessState: 'active',
+            updatedAt: Date.now(),
+          },
+        } as unknown as ChatManagerUpdatePatch,
+        { touchUpdatedAt: false },
+      )) as WebChatConversation | null
+      return canUseWebConversation(repaired, binding)
+    })
+  }
+
   const registerChatRoutesContext: Parameters<typeof registerChatRoutes>[1] = {
     // ChatManager.listChats() 的 metadata 不带 webBinding（toMetadata 剥离），
     // 而 /api/chat/list 的 canAccessConversation 又必须按 webBinding 过滤——
@@ -742,15 +775,12 @@ export function registerWebServerRoutes(
       }
     },
     canAccessConversation: async (conversationId, binding) => {
-      const conversation = await getChat(conversationId)
-      return canUseWebConversation(conversation, binding)
+      return canUseOrRepairWebConversation(conversationId, binding)
     },
     canStartConversation: async (conversationId, binding) => {
-      const conversation = await getChat(conversationId)
-      if (!conversation) {
-        return true
-      }
-      return canUseWebConversation(conversation, binding)
+      return canUseOrRepairWebConversation(conversationId, binding, {
+        allowMissing: true,
+      })
     },
     canAccessRun: async (runId, binding) => {
       const scheduled = runScheduler.getRun(runId)
@@ -758,8 +788,7 @@ export function registerWebServerRoutes(
       if (!run) {
         return false
       }
-      const conversation = await getChat(run.conversationId)
-      return canUseWebConversation(conversation, binding)
+      return canUseOrRepairWebConversation(run.conversationId, binding)
     },
   })
 
@@ -908,6 +937,17 @@ function canUseWebConversation(
     conversation?.webBinding?.rootHash === binding.rootHash &&
     conversation.webBinding.accessState !== 'orphaned' &&
     conversation.webBinding.activeAgentId === binding.activeAgentId
+  )
+}
+
+function canRepairWebConversation(
+  conversation: WebChatConversation | null | undefined,
+  binding: { activeAgentId: string },
+): boolean {
+  return (
+    conversation?.origin === 'external-agent' &&
+    conversation.agentInstanceId === binding.activeAgentId &&
+    (conversation.webBinding === undefined || conversation.webBinding === null)
   )
 }
 
