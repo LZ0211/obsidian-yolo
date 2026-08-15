@@ -15,11 +15,13 @@ import type { McpManager } from '../../mcp/mcpManager'
 import { deriveMcpSharingCapability } from '../../mcp/sharing/mcpSharingCapability'
 import type {
   ChatRuntime,
-  ChatRuntimeCapabilities,
   ChatSlashCommand,
 } from '../contract'
 
-import { CliChatRuntimeAdapter } from './CliChatRuntimeAdapter'
+import {
+  CliChatRuntimeAdapter,
+  deriveCliCapabilities,
+} from './CliChatRuntimeAdapter'
 import type {
   CliBackend,
   CliBackendEvent,
@@ -33,49 +35,7 @@ import type {
  * 未来两个 provider 若结构性分叉（提交语义、会话模型、事件流），拆 adapter 的
  * 改动面就是这个函数 + 工厂返回分支；契约 `ChatRuntime` 与 UI 不受影响。
  */
-export function deriveCliCapabilities(
-  runtimeId: CliRuntimeId,
-): ChatRuntimeCapabilities {
-  return {
-    transport: 'local',
-    hostHistory: { supported: true, info: { source: 'gateway' } },
-    providerSessions: { supported: true, info: { scope: 'provider-native' } },
-    agentPlanMode: { supported: true },
-    approvalFlow: { supported: true },
-    subagents: { supported: true },
-    skills: { supported: true },
-    modelConfig: { supported: true },
-    reasoningEffort: { supported: true },
-    compaction: { supported: true },
-    contextUsage: { supported: true },
-    rewrite: { supported: true },
-    sessionPin: { supported: true },
-    // compact 按实例派生：仅 claude_code 声明支持（provider CLI 能力差异）。
-    compact: {
-      supported: runtimeId === 'claude-code',
-      reason:
-        runtimeId === 'claude-code'
-          ? undefined
-          : 'codex CLI does not expose compaction in this version',
-    },
-    // mcpSharing 按实例派生（MCP 共享实例 plan Task 5）：claude SDK 透传 /
-    // codex 注入已接线（coordinator getMcpSharing → 进程选项），工厂在
-    // createCliChatRuntime 中按 McpManager 注册表派生后覆盖此字段。
-    mcpSharing: {
-      supported: false,
-      reason: 'no shared MCP servers configured',
-    },
-    // CLI 运行时自己处理 prompt 命令；MoA 聚合 v1 仅 native。
-    moa: {
-      supported: false,
-      reason:
-        'MoA aggregation is native-only in v1; CLI runs its own prompt commands',
-    },
-    // 斜杠命令注册表：CLI 命令为 provider 原生，列表后续经 CliRuntime.listSlashCommands 填充。
-    commands: { supported: true, info: { commands: [] } },
-    cliSurface: { supported: true },
-  }
-}
+export { deriveCliCapabilities }
 
 function toBackendRef(ref: CliSessionRef): CliBackendSessionRef {
   return ref

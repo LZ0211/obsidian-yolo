@@ -57,38 +57,42 @@ function eventToContract(event: CliBackendEvent): ChatRuntimeEvent['type'] {
   }
 }
 
-const CLI_CAPABILITIES: ChatRuntimeCapabilities = {
-  transport: 'local',
-  hostHistory: { supported: true, info: { source: 'gateway' } },
-  providerSessions: { supported: true, info: { scope: 'provider-native' } },
-  agentPlanMode: { supported: true },
-  approvalFlow: { supported: true },
-  subagents: { supported: true },
-  skills: { supported: true },
-  modelConfig: { supported: true },
-  reasoningEffort: { supported: true },
-  compaction: { supported: true },
-  contextUsage: { supported: true },
-  rewrite: { supported: true },
-  sessionPin: { supported: true },
-  compact: {
-    supported: false,
-    reason: 'depends on provider CLI support (claude-only in v1)',
-  },
-  // mcpSharing 由 MCP 共享实例 plan（工具服务层 v1）的 Task 1 按实例派生；此处先按未实现声明。
-  mcpSharing: {
-    supported: false,
-    reason: 'lands with the MCP shared-instance plan',
-  },
-  // CLI 运行时自己处理 prompt 命令；MoA 聚合 v1 仅 native。
-  moa: {
-    supported: false,
-    reason:
-      'MoA aggregation is native-only in v1; CLI runs its own prompt commands',
-  },
-  // 斜杠命令注册表：CLI 命令为 provider 原生，列表后续经 CliRuntime.listSlashCommands 填充。
-  commands: { supported: true, info: { commands: [] } },
-  cliSurface: { supported: true },
+export function deriveCliCapabilities(
+  runtimeId: CliRuntimeId,
+): ChatRuntimeCapabilities {
+  return {
+    transport: 'local',
+    hostHistory: { supported: true, info: { source: 'gateway' } },
+    providerSessions: { supported: true, info: { scope: 'provider-native' } },
+    agentPlanMode: { supported: true },
+    approvalFlow: { supported: true },
+    subagents: { supported: true },
+    skills: { supported: true },
+    modelConfig: { supported: true },
+    reasoningEffort: { supported: true },
+    compaction: { supported: true },
+    contextUsage: { supported: true },
+    rewrite: { supported: true },
+    sessionPin: { supported: true },
+    compact: {
+      supported: runtimeId === 'claude-code',
+      reason:
+        runtimeId === 'claude-code'
+          ? undefined
+          : 'CLI runtime does not expose compaction in this version',
+    },
+    mcpSharing: {
+      supported: false,
+      reason: 'no shared MCP servers configured',
+    },
+    moa: {
+      supported: false,
+      reason:
+        'MoA aggregation is native-only in v1; CLI runs its own prompt commands',
+    },
+    commands: { supported: true, info: { commands: [] } },
+    cliSurface: { supported: true },
+  }
 }
 
 export class CliChatRuntimeAdapter implements ChatRuntime {
@@ -121,7 +125,7 @@ export class CliChatRuntimeAdapter implements ChatRuntime {
   ) {
     const snapshot = backend.getSnapshot()
     this.runtimeId = runtimeId
-    this.capabilities = capabilities ?? CLI_CAPABILITIES
+    this.capabilities = capabilities ?? deriveCliCapabilities(runtimeId)
     this.sessionRef = snapshot.sessionRef
     this.lastEpoch = snapshot.conversationEpoch
     this.sequencer = this.createSequencer(snapshot.conversationEpoch)

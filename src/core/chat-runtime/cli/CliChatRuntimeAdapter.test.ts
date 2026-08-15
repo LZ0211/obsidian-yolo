@@ -166,6 +166,19 @@ describe('cli adapter contract behavior', () => {
     adapter.dispose()
   })
 
+  it('derives provider-specific defaults when capabilities are omitted', () => {
+    const { backend: codexBackend } = createFakeCliBackend()
+    const codex = new CliChatRuntimeAdapter(codexBackend, 'codex')
+    expect(codex.capabilities.compact.supported).toBe(false)
+
+    const { backend: claudeBackend } = createFakeCliBackend()
+    const claude = new CliChatRuntimeAdapter(claudeBackend, 'claude-code')
+    expect(claude.capabilities.compact.supported).toBe(true)
+
+    codex.dispose()
+    claude.dispose()
+  })
+
   it('snapshot surfaces the backend messages and run state', () => {
     const message = { role: 'assistant', id: 'a1', content: 'hi' }
     const { backend, setSnapshot } = createFakeCliBackend()
