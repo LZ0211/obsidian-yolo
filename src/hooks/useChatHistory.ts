@@ -14,6 +14,7 @@ import { batchLookupImageCache } from '../database/json/chat/imageCacheStore'
 import { compactConversationMessagesForStorage } from '../database/json/chat/promptSnapshotStore'
 import { ChatConversationMetadata } from '../database/json/chat/types'
 import type { ChatConversationCliSession } from '../database/json/chat/types'
+import { useOptionalYoloRuntime } from '../runtime/YoloRuntimeProvider'
 import {
   ChatConversationCompactionLike,
   ChatConversationCompactionState,
@@ -111,6 +112,7 @@ export function useChatHistory(): UseChatHistory {
   const { settings, setSettings } = useSettings()
   const { language } = useLanguage()
   const chatManager = useChatManager()
+  const yoloRuntime = useOptionalYoloRuntime()
   const [chatList, setChatList] = useState<ChatConversationMetadata[]>([])
   const titleGenerationInFlightRef = useRef<Set<string>>(new Set())
   const titleGenerationCooldownUntilRef = useRef<Map<string, number>>(new Map())
@@ -426,13 +428,17 @@ export function useChatHistory(): UseChatHistory {
     async (id: string): Promise<void> => {
       const generation = conversationMutationQueue.invalidate(id)
       await conversationMutationQueue.enqueue(id, generation, async () => {
-        await chatManager.deleteChat(id)
-        plugin.getAgentService().dropConversation(id)
+        if (yoloRuntime?.mode === 'web') {
+          await yoloRuntime.chat.delete(id)
+        } else {
+          await chatManager.deleteChat(id)
+          plugin.getAgentService().dropConversation(id)
+        }
       })
       emitChatHistoryUpdated()
       await fetchChatList()
     },
-    [chatManager, plugin, emitChatHistoryUpdated, fetchChatList],
+    [chatManager, plugin, yoloRuntime, emitChatHistoryUpdated, fetchChatList],
   )
 
   const getChatMessagesById = useCallback(
