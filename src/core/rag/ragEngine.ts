@@ -74,10 +74,6 @@ export class RAGEngine {
   private readonly traceStore: RetrievalTraceStoreLike | null
   private pendingTraceWrites = new Set<Promise<void>>()
   private readonly queryEmbeddingCache = new QueryEmbeddingMemoryCache()
-  private readonly pendingQueryEmbeddings = new Map<
-    string,
-    Promise<{ embedding: number[]; diagnostic: RetrievalTraceDiagnostic }>
-  >()
   private readonly t: (key: string, fallback?: string) => string
 
   constructor(
@@ -390,18 +386,10 @@ export class RAGEngine {
     embedding: number[]
     diagnostic: RetrievalTraceDiagnostic
   }> {
-    const modelId = this.embeddingModel?.id ?? ''
-    const dimension = this.embeddingModel?.dimension ?? 0
-    const key = `${modelId}\u0000${dimension}\u0000${query}`
-    const pending = this.pendingQueryEmbeddings.get(key)
-    if (pending) return await this.awaitWithAbort(pending, signal)
-    const request = this.getQueryEmbeddingUncached(query, signal).finally(
-      () => {
-        this.pendingQueryEmbeddings.delete(key)
-      },
+    return await this.awaitWithAbort(
+      this.getQueryEmbeddingUncached(query, signal),
+      signal,
     )
-    this.pendingQueryEmbeddings.set(key, request)
-    return await this.awaitWithAbort(request, signal)
   }
 
   private async getQueryEmbeddingUncached(

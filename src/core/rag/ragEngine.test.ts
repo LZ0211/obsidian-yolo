@@ -226,7 +226,7 @@ describe('RAGEngine', () => {
     expect(vectorManager.performSimilaritySearch).not.toHaveBeenCalled()
   })
 
-  it('deduplicates concurrent identical query embedding requests', async () => {
+  it('keeps cancellation independent for concurrent identical queries', async () => {
     const vectorManager = {
       reconcile: jest.fn(),
       performSimilaritySearch: jest.fn().mockResolvedValue([]),
@@ -237,7 +237,23 @@ describe('RAGEngine', () => {
       vectorManager as never,
       (_key, fallback) => fallback ?? '',
     )
-    const embedding = jest.fn().mockResolvedValue([0.1, 0.2, 0.3])
+    const embedding = jest
+      .fn()
+      .mockImplementationOnce(
+        (_query: string, options?: { signal?: AbortSignal }) =>
+          new Promise<number[]>((_resolve, reject) => {
+            options?.signal?.addEventListener(
+              'abort',
+              () => {
+                const error = new Error('aborted')
+                error.name = 'AbortError'
+                reject(error)
+              },
+              { once: true },
+            )
+          }),
+      )
+      .mockResolvedValueOnce([0.1, 0.2, 0.3])
     ;(
       engine as unknown as {
         embeddingModel: {
@@ -252,12 +268,23 @@ describe('RAGEngine', () => {
       getEmbedding: embedding,
     }
 
-    await Promise.all([
-      engine.processQuery({ query: 'same query' }),
-      engine.processQuery({ query: 'same query' }),
-    ])
+    const firstController = new AbortController()
+    const secondController = new AbortController()
+    const first = engine.processQuery({
+      query: 'same query',
+      signal: firstController.signal,
+    })
+    await waitForNextTick()
+    const second = engine.processQuery({
+      query: 'same query',
+      signal: secondController.signal,
+    })
 
-    expect(embedding).toHaveBeenCalledTimes(1)
+    firstController.abort()
+
+    await expect(first).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(second).resolves.toEqual([])
+    expect(embedding).toHaveBeenCalledTimes(2)
   })
 
   it('serializes updateVaultIndex calls across shared engine entrypoints', async () => {
