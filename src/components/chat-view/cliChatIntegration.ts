@@ -441,11 +441,13 @@ export const shouldClearAcceptedCliDraft = ({
 export const openCliSession = async ({
   scope,
   ref,
+  conversationId,
   workingDirectory,
   isCurrent = () => true,
 }: {
   scope: CliRuntimeScope
   ref: CliSessionRef
+  conversationId: string
   workingDirectory: string
   isCurrent?: () => boolean
 }): Promise<{
@@ -454,6 +456,7 @@ export const openCliSession = async ({
   overlayError: Error | null
 }> => {
   const controller = scope.selectConversationSession(ref, { workingDirectory })
+  controller.bindConversation(conversationId)
   const existingSnapshot = controller.getSnapshot()
   const alreadyHydrated =
     existingSnapshot.sessionRef?.runtimeId === ref.runtimeId &&

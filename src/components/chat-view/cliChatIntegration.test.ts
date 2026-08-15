@@ -440,10 +440,13 @@ describe('CLI chat integration', () => {
       messages: [],
       compactionBoundaries: [],
     }
+    const bindConversation = jest.fn()
     const hydrateSession = jest.fn(async () => hydration)
+    const getSnapshot = jest.fn(() => cliSnapshot())
     const controller = {
+      bindConversation,
       hydrateSession,
-      getSnapshot: () => cliSnapshot(),
+      getSnapshot,
     } as unknown as CliConversationController
     const selectConversationSession = jest.fn(() => controller)
     const recordOpenedSession = jest.fn(async () => undefined)
@@ -462,11 +465,19 @@ describe('CLI chat integration', () => {
       scope,
       ref: indexedRef,
       workingDirectory: '/Projects/foo',
+      conversationId: 'conversation-b',
     })
 
     expect(selectConversationSession).toHaveBeenLastCalledWith(indexedRef, {
       workingDirectory: '/Projects/foo',
     })
+    expect(bindConversation).toHaveBeenCalledWith('conversation-b')
+    expect(bindConversation.mock.invocationCallOrder[0]).toBeLessThan(
+      getSnapshot.mock.invocationCallOrder[0],
+    )
+    expect(getSnapshot.mock.invocationCallOrder[0]).toBeLessThan(
+      hydrateSession.mock.invocationCallOrder[0],
+    )
     expect(hydrateSession).toHaveBeenCalledTimes(1)
     expect(hydrateSession).toHaveBeenCalledWith(
       indexedRef,
@@ -511,6 +522,7 @@ describe('CLI chat integration', () => {
       }
       const hydration = deferred<CliSessionHydration | null>()
       const controller = {
+        bindConversation: jest.fn(),
         hydrateSession: jest.fn(() => hydration.promise),
         getSnapshot: () => cliSnapshot(),
       } as unknown as CliConversationController
@@ -535,6 +547,7 @@ describe('CLI chat integration', () => {
         const result = await openCliSessionForNavigation({
           scope,
           ref,
+          conversationId: 'stale-host-conversation',
           workingDirectory: '/',
           isCurrent: isCurrentOpen,
         })
@@ -745,6 +758,7 @@ describe('CLI chat integration', () => {
     }
     const hydration = { ref, messages: [] }
     const controller = {
+      bindConversation: jest.fn(),
       hydrateSession: jest.fn(async () => hydration),
       getSnapshot: () => cliSnapshot(),
     } as unknown as CliConversationController
@@ -763,6 +777,7 @@ describe('CLI chat integration', () => {
     const result = await openCliSession({
       scope,
       ref,
+      conversationId: 'external-host-conversation',
       workingDirectory: '/',
     })
 

@@ -886,6 +886,7 @@ export function useYoloChatSession({
         const result = await openCliSessionForNavigation({
           scope: cliRuntimeScope,
           ref,
+          conversationId,
           workingDirectory,
           isCurrent: isCurrentNavigation,
         })

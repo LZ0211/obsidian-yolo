@@ -438,6 +438,7 @@ export function useCliRuntimeOrchestration({
     if (!shouldHydrateSeededCliSession(seededRef, controllerSnapshot)) return
 
     const generation = ++cliSessionRestoreGenerationRef.current
+    const restoredConversationId = seededCliConversationId ?? uuidv4()
     void cliOperationCoordinator
       .transition(cliConversationController, async (isCurrent) => {
         const isCurrentRestore = () =>
@@ -447,6 +448,7 @@ export function useCliRuntimeOrchestration({
         const result = await openCliSession({
           scope: cliRuntimeScope,
           ref: seededRef,
+          conversationId: restoredConversationId,
           workingDirectory,
           isCurrent: isCurrentRestore,
         })
@@ -463,7 +465,7 @@ export function useCliRuntimeOrchestration({
         })
         if (!isCurrentRestore()) return
         setCliConversationController(result.controller)
-        setCliConversationId(seededCliConversationId ?? uuidv4())
+        setCliConversationId(restoredConversationId)
         lastCliRuntimeIdRef.current = seededRef.runtimeId
         setRequestedRuntimeId(seededRef.runtimeId)
         activeRuntimeIdRef.current = seededRef.runtimeId
