@@ -326,7 +326,7 @@ export class AcpSessionAggregator {
    * the same value, which would otherwise upsert into the previous turn.
    */
   private scopeLiveMessageId(
-    messageId: string | undefined,
+    messageId: string | null | undefined,
     kind: string,
   ): string {
     const explicit = messageId?.trim()
@@ -335,7 +335,7 @@ export class AcpSessionAggregator {
     return `${explicit}@${this.turnSequence}`
   }
 
-  private scopeAssistantTextId(messageId: string | undefined): string {
+  private scopeAssistantTextId(messageId: string | null | undefined): string {
     if (this.splitNextAssistantText) {
       this.textSegment += 1
       this.splitNextAssistantText = false
