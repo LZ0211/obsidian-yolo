@@ -237,6 +237,34 @@ export function normalizeWorkspacePolicy(
   return undefined
 }
 
+/**
+ * Adapts the local access policy for the vault-shell runtime, whose virtual
+ * filesystem still consumes the upstream scope shape.
+ */
+export const workspacePolicyToUpstreamScope = (
+  policy: WorkspaceAccessPolicy | undefined,
+): AssistantWorkspaceScope | undefined => {
+  if (!policy) return undefined
+  const protectedExcludes = (policy.protectedPaths ?? []).map((rule) =>
+    rule.kind === 'namePrefix'
+      ? `${rule.dir}/${rule.name}`.replace(/\/+$/, '')
+      : rule.path,
+  )
+  if (!policy.enabled && protectedExcludes.length === 0) return undefined
+  return {
+    enabled: true,
+    include: policy.enabled
+      ? [policy.workspaceRoot, ...policy.readExtraIncludes].filter(
+          (entry) => entry !== '',
+        )
+      : [],
+    exclude: [
+      ...(policy.enabled ? policy.readExcludes : []),
+      ...protectedExcludes,
+    ],
+  }
+}
+
 // Top-level arg keys that may carry a vault path for a given fs_* tool.
 // Value can be a string (single path) or an array of strings (e.g. fs_read.paths).
 const TOOL_TOP_LEVEL_PATH_KEYS: Record<string, readonly string[]> = {
