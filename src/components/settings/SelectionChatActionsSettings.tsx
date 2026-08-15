@@ -19,6 +19,7 @@ import React, { useMemo, useState } from 'react'
 import { useLanguage } from '../../contexts/language-context'
 import { usePlugin } from '../../contexts/plugin-context'
 import { useSettings } from '../../contexts/settings-context'
+import { getUnifiedAgentList } from '../../core/agent/workspaceAgentResolver'
 import {
   ALL_SELECTION_ACTION_CONFIGS,
   FIXED_SELECTION_ACTION_CONFIGS,
@@ -230,11 +231,11 @@ export function SelectionChatActionsSettingsContent() {
     const options: Record<string, string> = {
       [FOLLOW_CURRENT_ASSISTANT_VALUE]: followCurrentLabel,
     }
-    for (const assistant of settings.assistants ?? []) {
+    for (const assistant of getUnifiedAgentList(settings)) {
       options[assistant.id] = assistant.name || assistant.id
     }
     return options
-  }, [settings.assistants, t])
+  }, [settings.assistants, settings.workspaceAgents, t])
   const resolveAssistantDropdownValue = (value?: string) =>
     value && assistantOptions[value] ? value : FOLLOW_CURRENT_ASSISTANT_VALUE
   const normalizeAssistantDropdownValue = (value: string) =>

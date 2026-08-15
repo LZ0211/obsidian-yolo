@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { useLanguage } from '../../contexts/language-context'
 import { DEFAULT_ASSISTANT_ID } from '../../core/agent/default-assistant'
+import { getUnifiedAgentList } from '../../core/agent/workspaceAgentResolver'
 import {
   describeCronSchedule,
   describeIntervalSchedule,
@@ -354,7 +355,7 @@ function TaskEditorModalComponent({
       'Follow current default assistant',
     ),
     ...Object.fromEntries(
-      plugin.settings.assistants.map((assistant) => [
+      getUnifiedAgentList(plugin.settings).map((assistant) => [
         assistant.id,
         assistant.id === DEFAULT_ASSISTANT_ID
           ? t('settings.bots.defaultAssistant', 'Default')
