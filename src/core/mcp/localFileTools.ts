@@ -151,6 +151,7 @@ import {
   searchFilesByMetadataDsl,
 } from '../search/metadataSearch'
 import { getLiteSkillDocumentByPath } from '../skills/liteSkills'
+import { enforceBuiltinToolSecurityBoundary } from '../tools/security-boundary'
 import {
   WEB_SCRAPE_TOOL_NAME,
   WEB_SEARCH_TOOL_NAME,
@@ -2761,52 +2762,16 @@ export async function callLocalFileTool({
   }
 
   try {
-    // Final defense: reject any fs_* call whose path args fall outside the
-    // agent's workspace access policy (home directory + read/write rules).
-    // The gateway performs the same check up front for UI Rejected status,
-    // but we re-validate here so manual-approval / direct-call code paths
-    // cannot bypass the constraint.
-    if (workspaceAccessPolicy && toolName !== 'fs_read') {
-      const exemptPaths = allowedSkillPaths
-        ? buildAllowedSkillPathSet(allowedSkillPaths)
-        : undefined
-      const isWriteTool = isLocalFsWriteToolName(toolName)
-      const offendingPath = findWorkspacePolicyViolation({
-        toolName,
-        args,
-        policy: workspaceAccessPolicy,
-        exemptPaths,
-        isWriteTool,
-      })
-      if (offendingPath !== null) {
-        throw new Error(
-          `Path "${offendingPath}" is outside this agent's workspace access policy.`,
-        )
-      }
-    }
-
-    // The YOLO user-data root (`<baseDir>/data`: chat history, module
-    // settings/intent — see `ensureUserDataRootDir` in
-    // `core/paths/yoloManagedData.ts`) must stay invisible to agent tools,
-    // unconditionally and regardless of workspace scope. Before that data
-    // moved out of the hidden `.yolo_json_db` directory, it could never be
-    // reached this way at all — dot directories are never indexed into the
-    // `TFile` tree fs_* tools resolve paths against. This reproduces that
-    // same invisibility now that the root is a normal, visible folder.
-    // Reported as a plain not-found, matching a genuine miss, so nothing
-    // about "this path is specially hidden" leaks to the model.
-    // fs_read is exempt here — its raw `paths` entries may be wikilinks,
-    // and per-resolved-file enforcement lives in the read loop below.
-    if (toolName !== 'fs_read') {
-      const offendingUserDataPath = findPathWithinExcludedRoot(
-        toolName,
-        args,
-        (path) => isWithinYoloUserDataRoot(path, settings),
-      )
-      if (offendingUserDataPath !== null) {
-        throw new Error(`File not found: ${offendingUserDataPath}`)
-      }
-    }
+    // Two safety-critical checks (workspace scope, YOLO user-data-root
+    // isolation) that must run unconditionally ahead of every tool body,
+    // including manual-approval / direct-call paths. Shared verbatim with
+    // `src/core/tools/dispatcher.ts` — see that module's doc comment for why
+    // this is a single implementation rather than two that could drift.
+    enforceBuiltinToolSecurityBoundary(toolName, args, {
+      settings,
+      workspaceScope,
+      allowedSkillPaths,
+    })
 
     const name = toolName as LocalFileToolName
     switch (name) {
