@@ -107,6 +107,7 @@ import {
   RAGSection,
   formatProgressPercent,
   getProgressPercent,
+  isRagMaintenanceActionDisabled,
   isRagLogRibbonVisible,
   mergeRagSettingsPatch,
   rebuildRequiredLabel,
@@ -135,6 +136,23 @@ describe('getProgressPercent', () => {
   it('always renders progress with two decimal places', () => {
     expect(formatProgressPercent(99.9)).toBe('99.90')
     expect(formatProgressPercent(100)).toBe('100.00')
+  })
+
+  it('disables index actions while a vacuum job is running', () => {
+    expect(
+      isRagMaintenanceActionDisabled({
+        isIndexing: false,
+        isVacuuming: true,
+        canRun: true,
+      }),
+    ).toBe(true)
+    expect(
+      isRagMaintenanceActionDisabled({
+        isIndexing: false,
+        isVacuuming: false,
+        canRun: true,
+      }),
+    ).toBe(false)
   })
 })
 

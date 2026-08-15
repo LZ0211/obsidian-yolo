@@ -125,6 +125,12 @@ export const getProgressPercent = (progress: IndexProgress | null): number => {
 export const formatProgressPercent = (percent: number): string =>
   Math.max(0, Math.min(100, percent)).toFixed(2)
 
+export const isRagMaintenanceActionDisabled = (input: {
+  isIndexing: boolean
+  isVacuuming: boolean
+  canRun: boolean
+}): boolean => input.isIndexing || input.isVacuuming || !input.canRun
+
 /**
  * Ring label for the rebuild-required state. The persisted scope-change flag
  * (`ragBackendSettings.rebuildRequired`) means the configured index scope no
@@ -488,6 +494,9 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
       }
       return `${formatProgressPercent(ringPercent)}% ${t('settings.rag.indexing', 'Indexing...')}`
     }
+    if (isVacuumingRagBackend) {
+      return t('settings.rag.vacuuming', 'Vacuuming index...')
+    }
     if (ragBackendStatus?.rebuildRequired) {
       // The persisted flag means scope options changed since the last run; a
       // store-derived rebuildRequired means the index is empty/missing.
@@ -536,6 +545,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
     indexRunSnapshot.failureMessage,
     indexRunSnapshot.status,
     isIndexing,
+    isVacuumingRagBackend,
     ragBackendStatus?.rebuildRequired,
     settings.ragBackendSettings.rebuildRequired,
     displayedCurrentFile,
@@ -557,6 +567,9 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
       }
       return 'indexing'
     }
+    if (isVacuumingRagBackend) {
+      return 'vacuuming'
+    }
     if (ragBackendStatus?.rebuildRequired) {
       return 'rebuild-required'
     }
@@ -567,6 +580,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
   }, [
     indexRunSnapshot.status,
     isIndexing,
+    isVacuumingRagBackend,
     ragBackendStatus?.rebuildRequired,
     displayedCurrentFile,
     progressSource,
@@ -623,6 +637,11 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
     ragBackendStatus === null || ragBackendStatus.readiness === 'ready'
   const canManageEmbeddingDatabase =
     Platform.isDesktop && canRunIndexMaintenance
+  const maintenanceActionDisabled = isRagMaintenanceActionDisabled({
+    isIndexing,
+    isVacuuming: isVacuumingRagBackend,
+    canRun: canRunIndexMaintenance,
+  })
 
   const ensureBackendChecked = useCallback(async (): Promise<boolean> => {
     if (ragBackendStatus !== null) return ragBackendStatus.readiness === 'ready'
@@ -1065,7 +1084,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                 <div className="yolo-flex-row-gap-8 yolo-rag-maintenance-actions">
                   <ObsidianButton
                     text={t('settings.rag.updateIndex', '更新索引')}
-                    disabled={isIndexing || !canRunIndexMaintenance}
+                    disabled={maintenanceActionDisabled}
                     onClick={() => {
                       void ensureBackendChecked().then((canRun) => {
                         if (!canRun) return
@@ -1085,7 +1104,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                   />
                   <ObsidianButton
                     text={t('settings.rag.rebuildIndex', '重建索引')}
-                    disabled={isIndexing || !canRunIndexMaintenance}
+                    disabled={maintenanceActionDisabled}
                     onClick={() => {
                       void ensureBackendChecked().then((canRun) => {
                         if (!canRun) return
@@ -1105,11 +1124,7 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                   />
                   <ObsidianButton
                     text={t('settings.rag.vacuumIndex', 'Vacuum 索引')}
-                    disabled={
-                      isIndexing ||
-                      !canRunIndexMaintenance ||
-                      isVacuumingRagBackend
-                    }
+                    disabled={maintenanceActionDisabled}
                     onClick={() => {
                       void ensureBackendChecked().then((canRun) => {
                         if (canRun) runRagVacuum()
