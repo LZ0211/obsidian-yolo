@@ -111,6 +111,65 @@ describe('vaultRoutes workspace scope', () => {
     })
   })
 
+  it('treats create-folder with overwrite=true on an existing folder as idempotent success', async () => {
+    const router = new WebRouter()
+    const context = createScopedContext('/Allowed', [
+      makeFolder('Allowed/chats'),
+    ])
+    // Obsidian 的 adapter.mkdir 对已存在目录抛错（覆盖 overwrite 参数语义），
+    // 模拟真实插件里的行为。
+    context.vault.adapter.mkdir = jest.fn(async () => {
+      throw new Error('Folder already exists.')
+    })
+    registerVaultRoutes(router, context)
+
+    const res = await dispatch(
+      router,
+      'POST',
+      '/api/vault/create-folder',
+      {
+        path: 'chats',
+        overwrite: true,
+      },
+      {
+        [WEB_SESSION_HEADER]: 'session-allowed',
+      },
+    )
+
+    expect(res.statusCode).toBe(200)
+    expect(res.jsonBody).toEqual({ ok: true })
+    expect(context.vault.adapter.mkdir).not.toHaveBeenCalled()
+  })
+
+  it('rejects create-folder with overwrite=true when the path is an existing file', async () => {
+    const router = new WebRouter()
+    const context = createScopedContext('/Allowed')
+    context.vault.adapter.mkdir = jest.fn(async () => undefined)
+    registerVaultRoutes(router, context)
+
+    const res = await dispatch(
+      router,
+      'POST',
+      '/api/vault/create-folder',
+      {
+        path: 'a.md',
+        overwrite: true,
+      },
+      {
+        [WEB_SESSION_HEADER]: 'session-allowed',
+      },
+    )
+
+    expect(res.statusCode).toBe(409)
+    expect(res.jsonBody).toEqual({
+      error: {
+        code: 'conflict',
+        message: 'Path already exists',
+      },
+    })
+    expect(context.vault.adapter.mkdir).not.toHaveBeenCalled()
+  })
+
   it('serves html and svg binary reads as attachment only', async () => {
     const router = new WebRouter()
     const context = createScopedContext('/Allowed', [

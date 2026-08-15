@@ -454,8 +454,16 @@ export function registerVaultRoutes(
       'create',
     )
     if (resolved == null) return
-    if (context.vault.getAbstractFileByPath(resolved) && !overwrite) {
+    const existing = context.vault.getAbstractFileByPath(resolved)
+    if (existing && !(overwrite && existing instanceof TFolder)) {
       writeJson(res, 409, apiError('conflict', 'Path already exists'))
+      return
+    }
+    if (existing) {
+      // overwrite=true 且路径已是目录：幂等成功。Obsidian 的 createFolder/
+      // adapter.mkdir 对已存在目录会抛 "Folder already exists."，不能依赖它们
+      // 的覆盖语义。
+      writeJson(res, 200, { ok: true })
       return
     }
     if (context.vault.createFolder) {
