@@ -400,6 +400,33 @@ describe('RAG log settings entry points', () => {
     )
   })
 
+  it('does not start maintenance when the lazy backend check is not ready', async () => {
+    const startJob = jest.fn().mockResolvedValue({ status: 'completed' })
+    const maintenancePlugin = {
+      ...plugin,
+      getVectorBackendStatus: jest.fn().mockResolvedValue({
+        backend: 'sqlite',
+        readiness: 'open_failed',
+        rebuildRequired: false,
+      }),
+      getDatabaseMaintenanceController: jest.fn(() => ({ startJob })),
+    }
+
+    renderToStaticMarkup(
+      <RAGSection app={{} as never} plugin={maintenancePlugin as never} />,
+    )
+
+    const updateButton = mockObsidianButton.mock.calls
+      .map(([props]) => props as { text?: string; onClick?: () => void })
+      .find((props) => props.text === '更新索引')
+    updateButton?.onClick?.()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    expect(maintenancePlugin.getDatabaseMaintenanceController).not.toHaveBeenCalled()
+    expect(startJob).not.toHaveBeenCalled()
+  })
+
   it('does not render legacy retrieval strategy toggles', () => {
     const markup = renderToStaticMarkup(
       <RAGSection app={{} as never} plugin={plugin as never} />,

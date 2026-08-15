@@ -302,13 +302,15 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
     [setSettings],
   )
 
-  const refreshRagBackendStatus = useCallback(async () => {
+  const refreshRagBackendStatus = useCallback(
+    async (): Promise<VectorBackendStatus> => {
     try {
       const result = await plugin.getVectorBackendStatus()
       setRagBackendStatus(result)
+      return result
     } catch (error: unknown) {
       console.error('Failed to inspect RAG backend', error)
-      setRagBackendStatus({
+      const unavailable: VectorBackendStatus = {
         backend: 'sqlite',
         readiness: 'open_failed',
         rebuildRequired: settings.ragBackendSettings.rebuildRequired,
@@ -316,7 +318,9 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
         executionMode: 'unsupported',
         persistenceMode: 'unsupported',
         recoveryAction: 'inspect_runtime_log',
-      })
+      }
+      setRagBackendStatus(unavailable)
+      return unavailable
     }
   }, [plugin, settings.ragBackendSettings.rebuildRequired])
 
@@ -622,11 +626,8 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
 
   const ensureBackendChecked = useCallback(async (): Promise<boolean> => {
     if (ragBackendStatus !== null) return ragBackendStatus.readiness === 'ready'
-    await refreshRagBackendStatus()
-    // After refresh, ragBackendStatus is updated via setState, but the closure
-    // captures the old value. Return a best-effort signal; the re-render will
-    // gate subsequent clicks.
-    return true
+    const status = await refreshRagBackendStatus()
+    return status.readiness === 'ready'
   }, [ragBackendStatus, refreshRagBackendStatus])
 
   const runRagVacuum = useCallback(() => {
@@ -1066,8 +1067,9 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                     text={t('settings.rag.updateIndex', '更新索引')}
                     disabled={isIndexing || !canRunIndexMaintenance}
                     onClick={() => {
-                      void ensureBackendChecked().then(() =>
-                        runIndexJob({
+                      void ensureBackendChecked().then((canRun) => {
+                        if (!canRun) return
+                        return runIndexJob({
                           mode: 'sync',
                           successNotice: t(
                             'notices.continueComplete',
@@ -1077,16 +1079,17 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                             'notices.indexUpdateFailed',
                             '更新索引失败',
                           ),
-                        }),
-                      )
+                        })
+                      })
                     }}
                   />
                   <ObsidianButton
                     text={t('settings.rag.rebuildIndex', '重建索引')}
                     disabled={isIndexing || !canRunIndexMaintenance}
                     onClick={() => {
-                      void ensureBackendChecked().then(() =>
-                        runIndexJob({
+                      void ensureBackendChecked().then((canRun) => {
+                        if (!canRun) return
+                        return runIndexJob({
                           mode: 'rebuild',
                           successNotice: t(
                             'notices.rebuildComplete',
@@ -1096,8 +1099,8 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                             'notices.rebuildFailed',
                             '重建索引失败',
                           ),
-                        }),
-                      )
+                        })
+                      })
                     }}
                   />
                   <ObsidianButton
@@ -1108,7 +1111,9 @@ export function RAGSection({ app, plugin }: RAGSectionProps) {
                       isVacuumingRagBackend
                     }
                     onClick={() => {
-                      void ensureBackendChecked().then(() => runRagVacuum())
+                      void ensureBackendChecked().then((canRun) => {
+                        if (canRun) runRagVacuum()
+                      })
                     }}
                   />
                   {isIndexing && (
