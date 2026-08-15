@@ -34,7 +34,6 @@ import type {
   CliRuntimeConfigurationUpdate,
   CliRuntimeId,
   CliRuntimeRunState,
-  CliRuntimeSkill,
   CliSessionHydration,
   CliSessionOverlay,
   CliSessionRef,
@@ -122,8 +121,6 @@ const createUnsupportedWebRuntime = (runtimeId: CliRuntimeId): CliRuntime => {
 
 /** 编排层用的 CliConversationController：契约 adapter 快照/事件/命令的薄包装。 */
 class WebCliConversationController extends CliConversationController {
-  private currentSnapshot: CliSnapshot
-  private readonly webListeners = new Set<() => void>()
   private unsubscribe: () => void
   private webConversationEpoch = 0
 
@@ -135,55 +132,39 @@ class WebCliConversationController extends CliConversationController {
     runtimeId: CliRuntimeId,
   ) {
     super(createUnsupportedWebRuntime(runtimeId))
-    this.currentSnapshot = toCliSnapshot(this.adapter.getSnapshot(), runtimeId)
+    this.publish(toCliSnapshot(this.adapter.getSnapshot(), runtimeId))
     this.unsubscribe = this.adapter.subscribe(() => {
-      this.currentSnapshot = toCliSnapshot(this.adapter.getSnapshot(), runtimeId)
-      for (const listener of [...this.webListeners]) listener()
+      this.publish(toCliSnapshot(this.adapter.getSnapshot(), runtimeId))
     })
   }
-
-  override getSnapshot = (): CliSnapshot => this.currentSnapshot
 
   override getConversationId = (): string | null =>
     this.adapter.getSnapshot().conversationId || null
 
   override getConversationEpoch = (): number => this.webConversationEpoch
 
-  override subscribe = (listener: () => void): (() => void) => {
-    this.webListeners.add(listener)
-    return () => this.webListeners.delete(listener)
-  }
-
   override bindConversation(conversationId: string): void {
     if (this.adapter.getSnapshot().conversationId === conversationId) return
+    const runtimeId = this.getSnapshot().runtimeId
     this.webConversationEpoch += 1
     this.unsubscribe()
     this.adapter = this.getAdapter(conversationId)
-    this.currentSnapshot = toCliSnapshot(
-      this.adapter.getSnapshot(),
-      this.currentSnapshot.runtimeId,
-    )
+    this.publish(toCliSnapshot(this.adapter.getSnapshot(), runtimeId))
     this.unsubscribe = this.adapter.subscribe(() => {
-      this.currentSnapshot = toCliSnapshot(
-        this.adapter.getSnapshot(),
-        this.currentSnapshot.runtimeId,
-      )
-      for (const listener of [...this.webListeners]) listener()
+      this.publish(toCliSnapshot(this.adapter.getSnapshot(), runtimeId))
     })
-    for (const listener of [...this.webListeners]) listener()
   }
 
   override resetSession(): void {
     this.webConversationEpoch += 1
-    this.currentSnapshot = {
-      ...this.currentSnapshot,
+    this.publish({
+      ...this.getSnapshot(),
       sessionRef: null,
       messages: [],
       compactionBoundaries: [],
       runState: 'idle',
       error: null,
-    }
-    for (const listener of [...this.webListeners]) listener()
+    })
   }
 
   override async hydrateSession(
@@ -214,8 +195,8 @@ class WebCliConversationController extends CliConversationController {
     const messages = Array.isArray(restored)
       ? restored
       : (restored as CliSessionOverlay).messages
-    this.currentSnapshot = {
-      ...toCliSnapshot(snapshot, this.currentSnapshot.runtimeId),
+    this.publish({
+      ...toCliSnapshot(snapshot, this.getSnapshot().runtimeId),
       messages: Object.freeze([...messages]),
       ...(!Array.isArray(restored)
         ? {
@@ -224,8 +205,7 @@ class WebCliConversationController extends CliConversationController {
             ).turnConfigurationByUserMessageId,
           }
         : {}),
-    }
-    this.notifyWebListeners()
+    })
     return {
       ref: sessionRef,
       messages: [...messages],
@@ -260,11 +240,12 @@ class WebCliConversationController extends CliConversationController {
     update: CliRuntimeConfigurationUpdate,
   ): Promise<CliRuntimeConfiguration | undefined> {
     await this.adapter.updateConfiguration(update)
-    const current = this.currentSnapshot.configuration
+    const snapshot = this.getSnapshot()
+    const current = snapshot.configuration
     if (!current) return undefined
     const configuration = { ...current, ...update }
-    this.publishWebSnapshot({
-      ...this.currentSnapshot,
+    this.publish({
+      ...snapshot,
       configuration,
       error: null,
     })
@@ -333,24 +314,21 @@ class WebCliConversationController extends CliConversationController {
     }
   }
 
-  override async listSkills(): Promise<readonly CliRuntimeSkill[]> {
-    return []
-  }
-
   override stageTurn(userMessage: ChatUserMessage): CliStagedConversationTurn {
+    const snapshot = this.getSnapshot()
     const staged = Object.freeze({
-      surfaceId: this.currentSnapshot.surfaceId,
+      surfaceId: snapshot.surfaceId,
       conversationEpoch: this.webConversationEpoch,
       userMessageId: userMessage.id,
     })
-    const index = this.currentSnapshot.messages.findIndex(
+    const index = snapshot.messages.findIndex(
       (message) => message.id === userMessage.id,
     )
-    const messages = [...this.currentSnapshot.messages]
+    const messages = [...snapshot.messages]
     if (index < 0) messages.push(userMessage)
     else messages[index] = userMessage
-    this.publishWebSnapshot({
-      ...this.currentSnapshot,
+    this.publish({
+      ...snapshot,
       messages: Object.freeze(messages),
       runState: 'running',
       error: null,
@@ -362,14 +340,15 @@ class WebCliConversationController extends CliConversationController {
     stagedTurn: CliStagedConversationTurn,
     error: unknown,
   ): void {
+    const snapshot = this.getSnapshot()
     if (
-      stagedTurn.surfaceId !== this.currentSnapshot.surfaceId ||
+      stagedTurn.surfaceId !== snapshot.surfaceId ||
       stagedTurn.conversationEpoch !== this.webConversationEpoch
     ) {
       return
     }
-    this.publishWebSnapshot({
-      ...this.currentSnapshot,
+    this.publish({
+      ...snapshot,
       runState: 'error',
       error: error instanceof Error ? error.message : String(error),
     })
@@ -378,34 +357,21 @@ class WebCliConversationController extends CliConversationController {
   override stageConfiguration(
     update: CliRuntimeConfigurationUpdate = {},
   ): CliRuntimeConfiguration | undefined {
-    const current = this.currentSnapshot.configuration
+    const snapshot = this.getSnapshot()
+    const current = snapshot.configuration
     if (!current) return undefined
     const configuration = { ...current, ...update }
-    this.publishWebSnapshot({
-      ...this.currentSnapshot,
+    this.publish({
+      ...snapshot,
       configuration,
       error: null,
     })
     return configuration
   }
 
-  close(): void {
-    this.unsubscribe()
-    this.webListeners.clear()
-  }
-
   override dispose(): void {
-    this.close()
+    this.unsubscribe()
     super.dispose()
-  }
-
-  private publishWebSnapshot(snapshot: CliSnapshot): void {
-    this.currentSnapshot = snapshot
-    this.notifyWebListeners()
-  }
-
-  private notifyWebListeners(): void {
-    for (const listener of [...this.webListeners]) listener()
   }
 }
 

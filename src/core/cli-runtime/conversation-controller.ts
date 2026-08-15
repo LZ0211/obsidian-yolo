@@ -1239,7 +1239,7 @@ export class CliConversationController {
     return `cli:${this.runtime.runtimeId}:${uuidv4()}`
   }
 
-  private publish(snapshot: CliConversationSnapshot): void {
+  protected publish(snapshot: CliConversationSnapshot): void {
     if (this.disposed) return
     this.snapshot = Object.freeze(snapshot)
     this.notify()

@@ -342,6 +342,8 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
       sessionId: 'session-1',
     })
     const controller = scope.selectConversationRuntime('codex')
+    const listener = jest.fn()
+    controller.subscribe(listener)
     expect(controller.getSnapshot().runtimeId).toBe('codex')
 
     const source = feeds[0]
@@ -363,6 +365,20 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
 
     await flushMicrotasks()
     expect(controller.getSnapshot().runState).toBe('running')
+    expect(listener).toHaveBeenCalledTimes(1)
+  })
+
+  it('publishes frozen web controller snapshots', async () => {
+    const { fetch } = createFetchMock()
+    const scope = createWebCliRuntimeScope({
+      baseUrl: 'http://localhost',
+      fetchImpl: fetch,
+      sessionId: 'session-1',
+    })
+    const controller = scope.selectConversationRuntime('codex')
+
+    expect(Object.isFrozen(controller.getSnapshot())).toBe(true)
+    await scope.dispose()
   })
 
   it('forwards approval/question/permission and rejects unsupported commands (E5)', async () => {
