@@ -61,6 +61,37 @@ describe('memory index runtime adapter', () => {
     await closeMemoryIndexRuntime(app)
   })
 
+  it('creates a live runtime when the index is re-enabled during async close', async () => {
+    const app = { vault: {} } as never
+    let enabled = true
+    const getSettings = () => ({ advancedMemoryIndexEnabled: enabled })
+    const runtime = getMemoryIndexRuntime(app, getSettings)
+    let resolveStoreClose!: () => void
+    const storeClose = new Promise<void>((resolve) => {
+      resolveStoreClose = resolve
+    })
+    const store = {
+      capability: 'sqlite' as const,
+      close: jest.fn(() => storeClose),
+    } as unknown as MemoryIndexMaintenanceStore
+    const privateRuntime = runtime as unknown as {
+      storePromise: Promise<MemoryIndexMaintenanceStore>
+    }
+    privateRuntime.storePromise = Promise.resolve(store)
+
+    enabled = false
+    const closing = closeMemoryIndexRuntime(app)
+    enabled = true
+
+    const reopened = getMemoryIndexRuntime(app, getSettings)
+
+    expect(reopened).not.toBe(runtime)
+
+    resolveStoreClose()
+    await closing
+    await closeMemoryIndexRuntime(app)
+  })
+
   it('does not return a store after close begins while the store is opening', async () => {
     let resolveStore!: (store: MemoryIndexMaintenanceStore) => void
     const storePromise = new Promise<MemoryIndexMaintenanceStore>((resolve) => {

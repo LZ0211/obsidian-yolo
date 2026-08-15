@@ -152,6 +152,7 @@ export class MemoryIndexRuntime {
   private readonly knownPartitions = new Map<string, MemoryPartition>()
   private maintenanceTimer: ReturnType<typeof setInterval> | null = null
   private closed = false
+  private readyAfter: Promise<void> | null
   private settingsGetter: () => MemoryIndexSettings | undefined
   private reflectionModelRunner:
     | ((prompt: string, signal: AbortSignal) => Promise<string>)
@@ -160,8 +161,10 @@ export class MemoryIndexRuntime {
   constructor(
     private readonly app: App,
     getSettings: () => MemoryIndexSettings | undefined,
+    readyAfter?: Promise<void>,
   ) {
     this.settingsGetter = getSettings
+    this.readyAfter = readyAfter ?? null
     this.registerVaultListeners()
   }
 
@@ -178,6 +181,10 @@ export class MemoryIndexRuntime {
     this.reflectionModelRunner = runner
   }
 
+  isClosed(): boolean {
+    return this.closed
+  }
+
   async getStore(): Promise<MemoryIndexMaintenanceStore> {
     if (
       this.closed ||
@@ -185,6 +192,18 @@ export class MemoryIndexRuntime {
     ) {
       await this.closeStoreAndQueue()
       return createUnavailableMemoryIndexStore()
+    }
+    const readyAfter = this.readyAfter
+    if (readyAfter) {
+      this.readyAfter = null
+      await readyAfter
+      if (
+        this.closed ||
+        this.settingsGetter()?.advancedMemoryIndexEnabled !== true
+      ) {
+        await this.closeStoreAndQueue()
+        return createUnavailableMemoryIndexStore()
+      }
     }
     if (!this.storePromise) {
       this.storePromise = openMemoryIndexStore({
@@ -462,14 +481,24 @@ export class MemoryIndexRuntime {
 }
 
 const runtimes = new WeakMap<App, MemoryIndexRuntime>()
+const closingRuntimes = new WeakMap<App, Promise<void>>()
 
 export function getMemoryIndexRuntime(
   app: App,
   getSettings: () => MemoryIndexSettings | undefined,
 ): MemoryIndexRuntime {
   const existing = runtimes.get(app)
-  if (existing) {
+  if (existing && !existing.isClosed()) {
     return existing
+  }
+  if (existing) {
+    const closing = closingRuntimes.get(app)
+    if (closing) {
+      const runtime = new MemoryIndexRuntime(app, getSettings, closing)
+      runtimes.set(app, runtime)
+      return runtime
+    }
+    runtimes.delete(app)
   }
   const runtime = new MemoryIndexRuntime(app, getSettings)
   runtimes.set(app, runtime)
@@ -501,8 +530,21 @@ export async function getMemoryIndexStore(
 export async function closeMemoryIndexRuntime(app: App): Promise<void> {
   const runtime = runtimes.get(app)
   if (!runtime) return
-  await runtime.close()
-  if (runtimes.get(app) === runtime) {
-    runtimes.delete(app)
+  if (runtime.isClosed()) {
+    const closing = closingRuntimes.get(app)
+    if (closing) await closing
+    return
+  }
+  const closing = runtime.close()
+  closingRuntimes.set(app, closing)
+  try {
+    await closing
+  } finally {
+    if (closingRuntimes.get(app) === closing) {
+      closingRuntimes.delete(app)
+    }
+    if (runtimes.get(app) === runtime) {
+      runtimes.delete(app)
+    }
   }
 }
