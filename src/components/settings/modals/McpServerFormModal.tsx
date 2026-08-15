@@ -20,7 +20,10 @@ import TextareaAutosize from 'react-textarea-autosize'
 import * as z from 'zod'
 
 import { useLanguage } from '../../../contexts/language-context'
-import { renameAssistantToolPreferencesServer } from '../../../core/agent/tool-preferences'
+import {
+  renameAssistantToolPreferencesServer,
+  renameWorkspaceAgentToolOverridesServer,
+} from '../../../core/agent/tool-preferences'
 import { validateServerName } from '../../../core/mcp/tool-name-utils'
 import YoloPlugin from '../../../main'
 import {
@@ -532,6 +535,17 @@ function McpServerFormComponent({
             ),
           )
         : plugin.settings.assistants
+      const nextWorkspaceAgents = isRename
+        ? plugin.settings.workspaceAgents.map((agent) => {
+            const nextOverrides = renameWorkspaceAgentToolOverridesServer(
+              agent.behaviorOverrides,
+              existingServer.id,
+              serverName,
+            )
+            if (nextOverrides === agent.behaviorOverrides) return agent
+            return { ...agent, behaviorOverrides: nextOverrides }
+          })
+        : plugin.settings.workspaceAgents
 
       const manager = await plugin.getMcpManager()
       const oauthRollbacks: Array<() => Promise<void>> = []
@@ -578,6 +592,7 @@ function McpServerFormComponent({
                 ],
           },
           assistants: nextAssistants,
+          workspaceAgents: nextWorkspaceAgents,
         })
       } catch (error) {
         await Promise.allSettled(

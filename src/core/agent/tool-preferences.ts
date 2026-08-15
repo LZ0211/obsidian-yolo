@@ -3,6 +3,7 @@ import {
   AssistantToolActionPreference,
   AssistantToolApprovalMode,
   AssistantToolDisclosureMode,
+  AssistantToolOverridePreference,
   AssistantToolPreference,
 } from '../../types/assistant.types'
 import type { McpTool } from '../../types/mcp.types'
@@ -638,6 +639,66 @@ export const renameAssistantToolPreferencesServer = <
     toolPreferences: nextPrefs,
     enabledToolNames: nextNames,
     toolServerPreferences: nextServerPrefs,
+  }
+}
+
+type WorkspaceAgentToolOverrides = {
+  disabledToolNames?: string[]
+  toolConfigOverrides?: Record<string, AssistantToolOverridePreference>
+}
+
+export const renameWorkspaceAgentToolOverridesServer = <
+  T extends WorkspaceAgentToolOverrides,
+>(
+  overrides: T | undefined,
+  oldServerName: string,
+  newServerName: string,
+): T | undefined => {
+  if (!overrides || oldServerName === newServerName) return overrides
+
+  const rewrite = (fqn: string): string => {
+    try {
+      const { serverName, toolName } = parseToolName(fqn)
+      if (serverName !== oldServerName) return fqn
+      return `${newServerName}${McpManager.TOOL_NAME_DELIMITER}${toolName}`
+    } catch {
+      return fqn
+    }
+  }
+
+  const names = overrides.disabledToolNames
+  let nextNames = names
+  if (Array.isArray(names)) {
+    const rewritten = names.map(rewrite)
+    const deduped = [...new Set(rewritten)]
+    if (
+      deduped.length !== names.length ||
+      deduped.some((name, index) => name !== names[index])
+    ) {
+      nextNames = deduped
+    }
+  }
+
+  const configOverrides = overrides.toolConfigOverrides
+  let nextConfigOverrides = configOverrides
+  if (configOverrides && typeof configOverrides === 'object') {
+    const rebuilt: Record<string, AssistantToolOverridePreference> = {}
+    let changed = false
+    for (const [fqn, value] of Object.entries(configOverrides)) {
+      const nextKey = rewrite(fqn)
+      if (nextKey !== fqn) changed = true
+      rebuilt[nextKey] = value
+    }
+    if (changed) nextConfigOverrides = rebuilt
+  }
+
+  if (nextNames === names && nextConfigOverrides === configOverrides) {
+    return overrides
+  }
+  return {
+    ...overrides,
+    disabledToolNames: nextNames,
+    toolConfigOverrides: nextConfigOverrides,
   }
 }
 

@@ -10,6 +10,7 @@ import {
   isAssistantToolEnabled,
   pruneOrphanedAssistantToolPreferences,
   renameAssistantToolPreferencesServer,
+  renameWorkspaceAgentToolOverridesServer,
 } from './tool-preferences'
 
 const JS_SANDBOX_FQN = 'yolo_local__js_eval'
@@ -565,6 +566,30 @@ describe('tool-preferences defaults', () => {
         enabledToolNames: ['x__t'],
       }
       expect(renameAssistantToolPreferencesServer(input, 'x', 'x')).toBe(input)
+    })
+  })
+
+  describe('renameWorkspaceAgentToolOverridesServer', () => {
+    it('rewrites disabled and configured tool names', () => {
+      const result = renameWorkspaceAgentToolOverridesServer(
+        {
+          disabledToolNames: ['old__a', 'old__b'],
+          toolConfigOverrides: {
+            old__a: { approvalMode: 'require_approval' as const },
+            yolo_local__fs_write: { disclosureMode: 'on_demand' as const },
+          },
+        },
+        'old',
+        'new',
+      )
+
+      expect(result).toEqual({
+        disabledToolNames: ['new__a', 'new__b'],
+        toolConfigOverrides: {
+          new__a: { approvalMode: 'require_approval' as const },
+          yolo_local__fs_write: { disclosureMode: 'on_demand' as const },
+        },
+      })
     })
   })
 })
