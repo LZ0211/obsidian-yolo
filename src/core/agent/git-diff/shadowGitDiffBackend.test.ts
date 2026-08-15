@@ -394,6 +394,45 @@ describe('ShadowGitDiffBackend', () => {
     }
   })
 
+  it('keeps namePrefix protected descendants excluded for an ancestor change', async () => {
+    const repo = await createRepo()
+    try {
+      await writeFile(join(repo.vault, 'Allowed', 'secret.md'), 'before\n')
+      await writeFile(join(repo.vault, 'Allowed', 'notes.md'), 'before\n')
+      await commitAll(repo.root, 'initial')
+      const backend = new ShadowGitDiffBackend({
+        vaultPath: repo.vault,
+        snapshotRoot: join(repo.root, 'snapshots'),
+      })
+      const baseline = await backend.begin(
+        policy({
+          workspaceRoot: '/',
+          protectedPaths: [
+            { kind: 'namePrefix', dir: 'Allowed', name: 'secret' },
+          ],
+        }),
+      )
+      expect(baseline).not.toBeNull()
+
+      await writeFile(
+        join(repo.vault, 'Allowed', 'secret.md'),
+        'before\nafter\n',
+      )
+      await writeFile(
+        join(repo.vault, 'Allowed', 'notes.md'),
+        'before\nafter\n',
+      )
+
+      await expect(
+        backend.finish(baseline!, [change('Allowed')]),
+      ).resolves.toEqual(
+        new Map([['Allowed/notes.md', { additions: 1, deletions: 0 }]]),
+      )
+    } finally {
+      await repo.cleanup()
+    }
+  })
+
   it('returns null for a vault outside Git', async () => {
     const root = await mkdtemp(join(tmpdir(), 'obsidian-yolo-no-git-'))
     try {

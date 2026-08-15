@@ -1137,10 +1137,18 @@ export class ShadowGitDiffBackend implements AgentGitDiffBackend {
           activeRun.scope.writeExcludes.some((exclude) =>
             isWithin(currentRepoPath, exclude),
           ) ||
+          isProtectedGlobMatch(
+            currentRepoPath,
+            activeRun.scope.protectedGlobs,
+          ) ||
           (oldRepoPath !== undefined &&
             (!isWithin(oldRepoPath, activeRun.scope.positiveRoot) ||
               activeRun.scope.writeExcludes.some((exclude) =>
                 isWithin(oldRepoPath, exclude),
+              ) ||
+              isProtectedGlobMatch(
+                oldRepoPath,
+                activeRun.scope.protectedGlobs,
               )))
         ) {
           continue
