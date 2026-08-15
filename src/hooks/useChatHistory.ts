@@ -195,7 +195,7 @@ export function useChatHistory(): UseChatHistory {
           ),
       )
     },
-    [app, chatManager, settings],
+    [app, chatManager, settings, yoloRuntime],
   )
 
   const persistConversationOnce = async (
@@ -305,10 +305,8 @@ export function useChatHistory(): UseChatHistory {
         // 仍未命名时由显示层按当前语言渲染本地化文案
         const defaultTitle = DEFAULT_UNTITLED_CONVERSATION_TITLE
 
-        await chatManager.createChat({
+        const initialConversation = {
           id,
-          title: defaultTitle,
-          messages: compactedMessages,
           overrides: overrides ?? null,
           conversationModelId,
           messageModelMap,
@@ -316,7 +314,22 @@ export function useChatHistory(): UseChatHistory {
           assistantGroupBoundaryMessageIds,
           reasoningLevel,
           compaction: normalizedCompaction,
-        })
+        }
+        if (yoloRuntime?.mode === 'web') {
+          await yoloRuntime.chat.save({
+            ...initialConversation,
+            messages: compactedMessages.map((message) =>
+              deserializeChatMessage(message, app),
+            ),
+            touchUpdatedAt: options?.touchUpdatedAt,
+          })
+        } else {
+          await chatManager.createChat({
+            ...initialConversation,
+            title: defaultTitle,
+            messages: compactedMessages,
+          })
+        }
       }
 
       emitChatHistoryUpdated()

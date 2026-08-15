@@ -10,13 +10,19 @@ import { useChatHistory } from './useChatHistory'
 
 const chatManager = {
   listChats: jest.fn().mockResolvedValue([]),
+  findById: jest.fn().mockResolvedValue(null),
+  createChat: jest.fn().mockResolvedValue(undefined),
   deleteChat: jest.fn().mockResolvedValue(true),
 }
 const dropConversation = jest.fn()
 const deleteRemoteConversation = jest.fn().mockResolvedValue(true)
+const saveRemoteConversation = jest.fn().mockResolvedValue(undefined)
 const runtime = {
   mode: 'web',
-  chat: { delete: deleteRemoteConversation },
+  chat: {
+    delete: deleteRemoteConversation,
+    save: saveRemoteConversation,
+  },
 } as unknown as YoloRuntime
 
 ;(
@@ -40,6 +46,11 @@ jest.mock('../contexts/plugin-context', () => ({
 jest.mock('../contexts/settings-context', () => ({
   useSettings: () => ({ settings: {}, setSettings: jest.fn() }),
 }))
+jest.mock('../database/json/chat/promptSnapshotStore', () => ({
+  compactConversationMessagesForStorage: jest.fn(
+    async ({ messages }: { messages: unknown[] }) => messages,
+  ),
+}))
 jest.mock('../runtime/YoloRuntimeProvider', () => ({
   useOptionalYoloRuntime: () => runtime,
 }))
@@ -49,7 +60,47 @@ jest.mock('../utils/chat/generateConversationTitle', () => ({
 }))
 jest.mock('./useJsonManagers', () => ({ useChatManager: () => chatManager }))
 
-describe('useChatHistory web deletion', () => {
+describe('useChatHistory web runtime', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+
+  it('creates a new conversation through the web runtime', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    let history: ReturnType<typeof useChatHistory> | null = null
+
+    function Probe() {
+      history = useChatHistory()
+      return null
+    }
+
+    await act(async () => root.render(<Probe />))
+    await act(async () =>
+      history?.createOrUpdateConversationImmediately('conversation-new', [
+        {
+          role: 'user',
+          id: 'user-1',
+          content: null,
+          promptContent: 'hello',
+          mentionables: [],
+          selectedSkills: [],
+          selectedModelIds: [],
+        },
+      ]),
+    )
+
+    expect(saveRemoteConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'conversation-new',
+        messages: [expect.objectContaining({ id: 'user-1' })],
+      }),
+    )
+    expect(chatManager.createChat).not.toHaveBeenCalled()
+
+    await act(async () => root.unmount())
+  })
+
   it('deletes through the web runtime instead of the compat vault manager', async () => {
     const host = document.createElement('div')
     const root = createRoot(host)
