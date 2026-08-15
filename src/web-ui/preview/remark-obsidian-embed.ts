@@ -16,33 +16,8 @@ type WikiEmbedNode = {
   }
 }
 
-function resolveEmbedTarget(
-  target: string,
-  sourceFilePath: string,
-): string | null {
-  // Drop alias/anchor suffixes used by Obsidian wikilink syntax.
-  const cleanTarget = target.split('|')[0].split('#')[0].trim()
-  if (!cleanTarget) return null
-
-  // Decode percent-encoding (markdown image hrefs may be URL-encoded), then
-  // walk the segments so `.`/`..` resolve like a real filesystem instead of
-  // rejecting outright. `normalizeVaultPath` throws on `..` so the previous
-  // version silently dropped any embed using relative parents — including
-  // common cases like `![alt](../assets/foo.png)`.
-  let decoded: string
-  try {
-    decoded = decodeURIComponent(cleanTarget)
-  } catch {
-    decoded = cleanTarget
-  }
-
-  const absolute = decoded.startsWith('/')
-  const relPath = absolute ? decoded.replace(/^\/+/, '') : decoded
-  const sourceDir =
-    !absolute && sourceFilePath.lastIndexOf('/') >= 0
-      ? sourceFilePath.slice(0, sourceFilePath.lastIndexOf('/'))
-      : ''
-  const segments = sourceDir ? sourceDir.split('/') : []
+function walkSegments(baseDir: string, relPath: string): string | null {
+  const segments = baseDir ? baseDir.split('/') : []
   for (const part of relPath.split('/')) {
     if (!part || part === '.') continue
     if (part === '..') {
@@ -53,6 +28,42 @@ function resolveEmbedTarget(
     segments.push(part)
   }
   return segments.length > 0 ? segments.join('/') : null
+}
+
+function decodeTarget(target: string): string {
+  try {
+    return decodeURIComponent(target)
+  } catch {
+    return target
+  }
+}
+
+/** 笔记目录相对解析（Obsidian 的首选规则）。 */
+function resolveEmbedTarget(
+  target: string,
+  sourceFilePath: string,
+): string | null {
+  // Drop alias/anchor suffixes used by Obsidian wikilink syntax.
+  const cleanTarget = target.split('|')[0].split('#')[0].trim()
+  if (!cleanTarget) return null
+
+  const decoded = decodeTarget(cleanTarget)
+  const absolute = decoded.startsWith('/')
+  const relPath = absolute ? decoded.replace(/^\/+/, '') : decoded
+  const sourceDir =
+    !absolute && sourceFilePath.lastIndexOf('/') >= 0
+      ? sourceFilePath.slice(0, sourceFilePath.lastIndexOf('/'))
+      : ''
+  return walkSegments(sourceDir, relPath)
+}
+
+/** Vault 根相对解析（Obsidian 的 fallback 规则）。 */
+function resolveVaultRootTarget(target: string): string | null {
+  const cleanTarget = target.split('|')[0].split('#')[0].trim()
+  if (!cleanTarget) return null
+  const decoded = decodeTarget(cleanTarget)
+  const relPath = decoded.startsWith('/') ? decoded.replace(/^\/+/, '') : decoded
+  return walkSegments('', relPath)
 }
 
 function getEmbedKind(target: string): 'image' | 'pdf' | null {
@@ -93,6 +104,7 @@ export function remarkObsidianEmbed({ filePath }: { filePath: string }) {
         end: number
         fullMatch: string
         target: string
+        fallbackTarget: string | null
         alt: string
         kind: 'image' | 'pdf'
       }> = []
@@ -109,11 +121,13 @@ export function remarkObsidianEmbed({ filePath }: { filePath: string }) {
           if (!resolved) continue
           const kind = getEmbedKind(resolved)
           if (!kind) continue
+          const fallback = resolveVaultRootTarget(match[1])
           matches.push({
             start: match.index,
             end: match.index + match[0].length,
             fullMatch: match[0],
             target: resolved,
+            fallbackTarget: fallback !== resolved ? fallback : null,
             alt: '',
             kind,
           })
@@ -126,11 +140,13 @@ export function remarkObsidianEmbed({ filePath }: { filePath: string }) {
           if (!resolved) continue
           const kind = getEmbedKind(resolved)
           if (!kind) continue
+          const fallback = resolveVaultRootTarget(url)
           matches.push({
             start: match.index,
             end: match.index + match[0].length,
             fullMatch: match[0],
             target: resolved,
+            fallbackTarget: fallback !== resolved ? fallback : null,
             alt: match[2] ?? '',
             kind,
           })
@@ -156,6 +172,9 @@ export function remarkObsidianEmbed({ filePath }: { filePath: string }) {
             hName: 'wiki-embed',
             hProperties: {
               'data-target': m.target,
+              ...(m.fallbackTarget
+                ? { 'data-fallback-target': m.fallbackTarget }
+                : {}),
               'data-kind': m.kind,
               'data-alt': m.alt,
             },

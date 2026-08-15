@@ -11,7 +11,7 @@ module.exports = {
   // Only the ESM-only markdown parsing chain and the ACP SDK (also ESM-only)
   // need transpiling; everything else in node_modules stays untransformed.
   transformIgnorePatterns: [
-    '/node_modules/(?!(mdast-util-from-markdown|mdast-util-to-string|micromark|micromark-[a-z-]+|character-entities|decode-named-character-reference|devlop|unist-util-stringify-position|@agentclientprotocol/sdk)/)',
+    '/node_modules/(?!(mdast-util-from-markdown|mdast-util-to-string|micromark|micromark-[a-z-]+|character-entities|decode-named-character-reference|devlop|unist-util-stringify-position|unist-util-visit|unist-util-visit-parents|unist-util-is|@agentclientprotocol/sdk)/)',
   ],
   testPathIgnorePatterns: ['<rootDir>/Reference/', '<rootDir>/.opencode/'],
   modulePathIgnorePatterns: ['<rootDir>/Reference/', '<rootDir>/.opencode/'],

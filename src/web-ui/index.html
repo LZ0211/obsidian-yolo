@@ -646,12 +646,51 @@
         padding: 12px;
       }
 
-      /* Frontmatter block — rendered before the main markdown body.
-         The .frontmatter selector is already handled by base.css
-         (border-top/bottom, transparent bg); we only add padding here. */
+      /* Frontmatter block — rendered before the main markdown body,
+         Obsidian metadata-properties 风格（属性行 + tag chip）。 */
       .yolo-web-frontmatter {
-        padding: 8px 0 10px;
-        margin-bottom: 4px;
+        padding: 8px 10px;
+        margin-bottom: 10px;
+        border: 1px solid var(--background-modifier-border);
+        border-radius: var(--radius-m, 6px);
+        background: var(--background-secondary);
+      }
+
+      .yolo-web-frontmatter-rows {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .yolo-web-frontmatter-row {
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+        flex-wrap: wrap;
+      }
+
+      .yolo-web-frontmatter-key {
+        flex-shrink: 0;
+        min-width: 72px;
+        color: var(--text-faint);
+        font-size: var(--font-ui-smaller);
+      }
+
+      .yolo-web-frontmatter-value {
+        color: var(--text-normal);
+        font-size: var(--font-ui-smaller);
+        overflow-wrap: anywhere;
+      }
+
+      .yolo-web-frontmatter-chip {
+        display: inline-flex;
+        align-items: center;
+        margin: 1px 3px 1px 0;
+        padding: 1px 8px;
+        border-radius: var(--radius-s, 4px);
+        background: var(--background-modifier-hover);
+        color: var(--text-muted);
+        font-size: var(--font-ui-smaller);
       }
 
       .yolo-web-frontmatter-yaml {

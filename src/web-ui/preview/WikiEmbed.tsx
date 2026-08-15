@@ -2,6 +2,7 @@ import { type ReactElement, useEffect, useRef, useState } from 'react'
 
 type WikiEmbedProps = {
   'data-target'?: string
+  'data-fallback-target'?: string
   'data-kind'?: string
   'data-alt'?: string
   onLoadBinary: (path: string) => Promise<Blob>
@@ -12,6 +13,23 @@ type EmbedSlots = Array<Promise<void>>
 
 const MAX_CONCURRENT = 4
 const activeSlots: EmbedSlots = []
+
+/**
+ * 嵌入资源加载：首选笔记目录相对路径，失败回退 vault 根相对路径
+ * （Obsidian 的 fallback 规则）。仅当两个候选都失败才抛错。
+ */
+export async function loadEmbedBlob(
+  target: string,
+  fallbackTarget: string | null | undefined,
+  onLoadBinary: (path: string) => Promise<Blob>,
+): Promise<Blob> {
+  try {
+    return await onLoadBinary(target)
+  } catch (primaryError) {
+    if (!fallbackTarget) throw primaryError
+    return await onLoadBinary(fallbackTarget)
+  }
+}
 
 function acquireSlot(): Promise<() => void> {
   const slot =
@@ -36,6 +54,7 @@ function acquireSlot(): Promise<() => void> {
 
 export function WikiEmbed(props: WikiEmbedProps): ReactElement {
   const target = props['data-target']
+  const fallbackTarget = props['data-fallback-target']
   const kind = props['data-kind']
   const alt = props['data-alt'] ?? ''
 
@@ -58,7 +77,11 @@ export function WikiEmbed(props: WikiEmbedProps): ReactElement {
       }
 
       try {
-        const blob = await props.onLoadBinary(target)
+        const blob = await loadEmbedBlob(
+          target,
+          fallbackTarget,
+          props.onLoadBinary,
+        )
         if (cancelled) {
           release()
           return
@@ -87,7 +110,7 @@ export function WikiEmbed(props: WikiEmbedProps): ReactElement {
         blobUrlRef.current = null
       }
     }
-  }, [target, kind])
+  }, [target, fallbackTarget, kind])
 
   if (error) {
     return <span className="yolo-web-embed-error">{target ?? 'unknown'}</span>
