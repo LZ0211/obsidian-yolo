@@ -5,24 +5,7 @@ import type {
   RerankResponse,
   RerankResult,
 } from '../../types/rerank'
-import { resolveProviderBaseUrl } from '../../utils/llm/provider-base-url'
 import { getProviderClient } from '../llm/manager'
-
-export function normalizeRerankEndpointIdentity(endpoint: string): string {
-  try {
-    const url = new URL(endpoint)
-    url.username = ''
-    url.password = ''
-    url.search = ''
-    url.hash = ''
-    return url.toString().replace(/\/$/u, '')
-  } catch {
-    return endpoint
-      .replace(/:\/\/[^/@]+@/u, '://')
-      .replace(/[?#].*$/u, '')
-      .replace(/\/$/u, '')
-  }
-}
 
 export const getRerankModelClient = ({
   settings,
@@ -63,10 +46,6 @@ export const getRerankModelClient = ({
   return {
     id: rerankModel.id,
     providerId: provider.id,
-    endpointIdentity: normalizeRerankEndpointIdentity(
-      resolveProviderBaseUrl(provider) ?? '',
-    ),
-    modelIdentity: rerankModel.model.trim(),
     maxDocuments: rerankModel.maxDocuments,
     maxInputChars: rerankModel.maxInputChars,
     rerank: async (

@@ -21,8 +21,6 @@ export type RerankRequestOptions = {
 export type RerankModelClient = {
   id: string
   providerId: string
-  endpointIdentity: string
-  modelIdentity: string
   maxDocuments?: number
   maxInputChars?: number
   ready?: boolean
