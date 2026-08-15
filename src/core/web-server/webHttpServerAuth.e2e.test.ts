@@ -78,6 +78,7 @@ describe('WebHttpServer chat-runtime token auth（BS 模式非 loopback）', () 
   beforeAll(async () => {
     const httpServer = new WebHttpServer({
       host: '0.0.0.0',
+      port: 0,
       token: 'test-token',
     })
     const router: WebRouter = httpServer.router
