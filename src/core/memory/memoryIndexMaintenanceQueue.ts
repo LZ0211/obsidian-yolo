@@ -129,6 +129,11 @@ export class MemoryIndexMaintenanceQueue {
         .catch(() => undefined)
       return
     }
+    if (
+      lane.running === 'reconcile' ||
+      lane.pending.some((task) => task.kind === 'reconcile')
+    )
+      return
     // A pending or in-flight decay already covers this partition (reconcile
     // follow-ups enqueue one after every reconcile).
     if (
