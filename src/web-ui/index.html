@@ -117,7 +117,9 @@
       .yolo-web-files-nav-container.is-hidden,
       .yolo-web-files-state.is-hidden,
       .yolo-web-history-pane.is-hidden,
-      .workspace-tab-header-tab-list.is-hidden {
+      .workspace-tab-header-tab-list.is-hidden,
+      .clickable-icon.is-hidden,
+      .sidebar-toggle-button.is-hidden {
         display: none !important;
       }
 
@@ -277,10 +279,20 @@
       }
 
       .yolo-web-history-list .yolo-chat-list-dropdown-item-actions {
+        /* 覆盖桌面弹层样式：桌面 actions 是 absolute 浮层 + pointer-events:none
+           （靠 .yolo-popover-surface 作用域恢复），web 历史面板不在该作用域内，
+           按钮会点击穿透到标题上。改为静态流式布局 + 可点击。 */
+        position: static;
+        z-index: auto;
+        pointer-events: auto;
         display: flex;
         align-items: center;
         gap: 2px;
         flex-shrink: 0;
+      }
+
+      .yolo-web-history-list .yolo-chat-list-dropdown-item-actions::before {
+        content: none;
       }
 
       .yolo-web-history-list .yolo-chat-list-dropdown-item-icon,

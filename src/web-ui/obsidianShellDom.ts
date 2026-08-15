@@ -1416,24 +1416,34 @@ export function createObsidianWebShell(
     'History',
     'history',
   )
+  // 导航与侧栏 toggle 四按钮整体隐藏：web 壳不提供历史导航，侧栏可见性
+  // 由文件/历史/预览面板入口驱动（桌面端）。保留创建以便未来恢复。
   const centerBackButton = createEl(rootSplit.navButtonsEl, 'button', {
     cls: 'clickable-icon',
     attr: { type: 'button', 'aria-label': 'Back' },
   })
+  centerBackButton.addClass('is-hidden')
+  centerBackButton.setAttribute('aria-hidden', 'true')
   appendArrowLeftRightIcon(centerBackButton, 'left')
   const centerForwardButton = createEl(rootSplit.navButtonsEl, 'button', {
     cls: 'clickable-icon',
     attr: { type: 'button', 'aria-label': 'Forward' },
   })
+  centerForwardButton.addClass('is-hidden')
+  centerForwardButton.setAttribute('aria-hidden', 'true')
   appendArrowLeftRightIcon(centerForwardButton, 'right')
   const centerLeftToggle = createDesktopSidebarToggleLikeObsidian(
     workspaceEl,
     'left',
   )
+  centerLeftToggle.addClass('is-hidden')
+  centerLeftToggle.setAttribute('aria-hidden', 'true')
   const centerRightToggle = createDesktopSidebarToggleLikeObsidian(
     workspaceEl,
     'right',
   )
+  centerRightToggle.addClass('is-hidden')
+  centerRightToggle.setAttribute('aria-hidden', 'true')
   let leftVisible = true
   let rightVisible = true
   let toolbarVisible = false
@@ -1556,8 +1566,7 @@ export function createObsidianWebShell(
     centerLeftToggle.addClass('is-hidden')
     centerRightToggle.addClass('is-hidden')
   } else {
-    centerLeftToggle.removeClass('is-hidden')
-    centerRightToggle.removeClass('is-hidden')
+    // 四按钮已整体隐藏（见创建处），桌面分支不再恢复显示。
     updateDesktopSidebarToggleLayout()
   }
 
