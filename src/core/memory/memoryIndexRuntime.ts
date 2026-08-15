@@ -195,7 +195,6 @@ export class MemoryIndexRuntime {
     }
     const readyAfter = this.readyAfter
     if (readyAfter) {
-      this.readyAfter = null
       await readyAfter
       if (
         this.closed ||
@@ -205,16 +204,7 @@ export class MemoryIndexRuntime {
         return createUnavailableMemoryIndexStore()
       }
     }
-    if (!this.storePromise) {
-      this.storePromise = openMemoryIndexStore({
-        app: this.app,
-        getSettings: () => this.settingsGetter(),
-        getSourceSnapshot: (partition) => this.getSourceSnapshot(partition),
-        embedContent: (content) => this.embedContent(content),
-      })
-    }
-    const pendingStore = this.storePromise
-    const store = await pendingStore
+    const store = await this.getOrOpenStore()
     if (
       this.closed ||
       this.settingsGetter()?.advancedMemoryIndexEnabled !== true
@@ -238,11 +228,7 @@ export class MemoryIndexRuntime {
   }
 
   onAssistantRemoved(assistantId: string): void {
-    if (
-      this.closed ||
-      this.settingsGetter()?.advancedMemoryIndexEnabled !== true
-    )
-      return
+    if (this.closed) return
     const partition = buildMemoryPartition({
       scope: 'assistant',
       assistantId,
@@ -272,9 +258,24 @@ export class MemoryIndexRuntime {
   }
 
   private async deletePartition(partition: MemoryPartition): Promise<void> {
-    const store = await this.getStore()
-    if (store.capability !== 'sqlite' || this.closed) return
+    const readyAfter = this.readyAfter
+    if (readyAfter) await readyAfter
+    if (this.closed) return
+    const store = await this.getOrOpenStore()
+    if (store.capability !== 'sqlite') return
     await store.deletePartition(partition)
+  }
+
+  private getOrOpenStore(): Promise<MemoryIndexMaintenanceStore> {
+    if (!this.storePromise) {
+      this.storePromise = openMemoryIndexStore({
+        app: this.app,
+        getSettings: () => this.settingsGetter(),
+        getSourceSnapshot: (partition) => this.getSourceSnapshot(partition),
+        embedContent: (content) => this.embedContent(content),
+      })
+    }
+    return this.storePromise
   }
 
   async close(): Promise<void> {

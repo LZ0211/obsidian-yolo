@@ -171,6 +171,34 @@ describe('memory index runtime adapter', () => {
     await runtime.close()
   })
 
+  it('deletes a removed assistant partition when disabling the index', async () => {
+    const deletePartition = jest.fn(async () => undefined)
+    const store = {
+      capability: 'sqlite' as const,
+      deletePartition,
+    } as unknown as MemoryIndexMaintenanceStore
+    let enabled = true
+    const runtime = new MemoryIndexRuntime({ vault: {} } as never, () => ({
+      advancedMemoryIndexEnabled: enabled,
+    }))
+    const privateRuntime = runtime as unknown as {
+      storePromise: Promise<MemoryIndexMaintenanceStore>
+    }
+    privateRuntime.storePromise = Promise.resolve(store)
+
+    enabled = false
+    runtime.onAssistantRemoved('assistant-removed')
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+    expect(deletePartition).toHaveBeenCalledWith(
+      buildMemoryPartition({
+        scope: 'assistant',
+        assistantId: 'assistant-removed',
+      }),
+    )
+    await runtime.close()
+  })
+
   it('never reconciles a rename into an unmanaged new path', () => {
     const indexedPartition = buildMemoryPartition({
       scope: 'assistant',
