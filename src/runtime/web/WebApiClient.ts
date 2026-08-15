@@ -100,6 +100,10 @@ export class WebApiClient {
   private static readonly SESSION_STORAGE_KEY = 'yolo-web-session-id'
   private _sessionId: string | null = null
 
+  get currentSessionId(): string | null {
+    return this._sessionId
+  }
+
   private get sessionId(): string | null { return this._sessionId }
   private set sessionId(value: string | null) {
     this._sessionId = value

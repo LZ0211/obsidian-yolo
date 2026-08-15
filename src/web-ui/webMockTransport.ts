@@ -264,6 +264,7 @@ export function createMockTransport(options?: {
   }
 
   const client: ShellClient = {
+    currentSessionId: null,
     async getBootstrap() {
       return {
         serverUrl: window.location.origin,

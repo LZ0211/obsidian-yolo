@@ -738,6 +738,7 @@ function App(): void {
         // Resolved lazily so agent switches mid-session pick up the new
         // permissions without re-creating the tab manager.
         getAgentModeAllowed: () => resolveAgentModeAllowed(state),
+        sessionId: next.client.currentSessionId,
       })
       disposeRuntime()
       disposeRuntime = () => {
@@ -769,6 +770,7 @@ function App(): void {
       dialogContainer: rootEl,
       getAssistantName: makeAssistantNameGetter(readyState.runtime),
       getAgentModeAllowed: () => resolveAgentModeAllowed(state),
+      sessionId: readyState.client.currentSessionId,
     })
     disposers.push(() => tabManager?.destroy())
 

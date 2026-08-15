@@ -14,6 +14,7 @@ export type AllowedAgent = {
 export type LeftPaneMode = 'files' | 'history'
 
 export type ShellClient = {
+  readonly currentSessionId: string | null
   getBootstrap: () => Promise<WebBootstrapPayload>
   getSettings: () => Promise<unknown>
   getAgents: () => Promise<unknown>

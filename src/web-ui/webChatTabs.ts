@@ -120,6 +120,7 @@ export function createChatTabManager(
      *  permissions without a tab remount. */
     getAgentModeAllowed?: () => boolean | null | undefined
     initialChatProps?: ChatProps
+    sessionId?: string | null
   },
 ): ChatTabManager {
   const tabs: ChatTabEntry[] = []
@@ -230,12 +231,6 @@ export function createChatTabManager(
 
     const chatRef: React.RefObject<ChatRef> = { current: null }
     let cliScope: ReturnType<typeof createWebCliRuntimeScope> | null = null
-    let sessionId: string | null = null
-    try {
-      sessionId = localStorage.getItem('yolo-web-session-id')
-    } catch {
-      sessionId = null
-    }
     // 注意：本 tab 不再跟踪 currentConversationId——yolo 主面不走契约注入，
     // 会话绑定由服务端 /api/agent/* 路由内的 conversationId 完成；tab 标题
     // 更新由下方 onConversationContextChange 的 currentConversationTitle 驱动
@@ -244,7 +239,7 @@ export function createChatTabManager(
       cliScope ??= createWebCliRuntimeScope({
         baseUrl: window.location.origin,
         fetchImpl: (...args) => fetch(...args),
-        sessionId,
+        sessionId: options?.sessionId,
       })
       return cliScope
     }

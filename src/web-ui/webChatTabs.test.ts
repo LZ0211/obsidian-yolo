@@ -6,6 +6,7 @@
 import { ReadableStream } from 'node:stream/web'
 
 import { Platform } from '../runtime/web/obsidianCompat'
+import * as WebCliRuntimeScope from '../runtime/web/WebCliRuntimeScope'
 import type { YoloRuntime } from '../runtime/yoloRuntime.types'
 
 import { createObsidianWebShell } from './obsidianShellDom'
@@ -71,6 +72,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  localStorage.clear()
+  jest.restoreAllMocks()
   Platform.isMobile = false
   Platform.isPhone = false
   Platform.isDesktop = true
@@ -79,6 +82,35 @@ afterEach(() => {
 // ── tests ─────────────────────────────────────────────────────────────────
 
 describe('createChatTabManager', () => {
+  it('uses the in-memory web session for CLI scopes', async () => {
+    localStorage.setItem('yolo-web-session-id', 'stale-session')
+    const createScope = jest
+      .spyOn(WebCliRuntimeScope, 'createWebCliRuntimeScope')
+      .mockReturnValue({
+        dispose: jest.fn().mockResolvedValue(undefined),
+      } as never)
+    const root = document.createElement('div')
+    document.body.append(root)
+    const shell = createObsidianWebShell(root)
+    const manager = createChatTabManager(shell, makeRuntime(), {
+      dialogContainer: root,
+      sessionId: 'memory-session',
+    })
+    await new Promise((resolve) => window.setTimeout(resolve, 0))
+
+    const renderOptions = mockRenderChatIntoTarget.mock.calls.at(-1)?.[3] as {
+      getCliRuntimeScope?: () => Promise<unknown>
+    }
+    await renderOptions.getCliRuntimeScope?.()
+
+    expect(createScope).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'memory-session' }),
+    )
+
+    manager.destroy()
+    shell.destroy()
+  })
+
   it('creates one default tab on construction', async () => {
     const root = document.createElement('div')
     document.body.append(root)
