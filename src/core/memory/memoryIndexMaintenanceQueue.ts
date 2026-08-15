@@ -138,7 +138,10 @@ export class MemoryIndexMaintenanceQueue {
     // follow-ups enqueue one after every reconcile).
     if (
       lane.running === 'decay' ||
-      lane.pending.some((task) => task.kind === 'decay')
+      lane.running === 'reflection' ||
+      lane.pending.some(
+        (task) => task.kind === 'decay' || task.kind === 'reflection',
+      )
     )
       return
     const tasks: MaintenanceTask[] = [{ kind: 'decay', partition }]

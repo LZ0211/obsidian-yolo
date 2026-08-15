@@ -110,6 +110,32 @@ describe('MemoryIndexMaintenanceQueue', () => {
     expect(store.applyDecay).toHaveBeenCalledTimes(1)
   })
 
+  it('does not duplicate maintenance while reflection is active', async () => {
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const reflectionStarted = deferred()
+    const releaseReflection = deferred()
+    const store = makeStore(async () => undefined)
+    store.runReflection.mockImplementation(async () => {
+      reflectionStarted.resolve()
+      await releaseReflection.promise
+    })
+    const queue = new MemoryIndexMaintenanceQueue({
+      store,
+      getSourceSnapshot: async () => makeSnapshot(partition, 'one'),
+      isReflectionEnabled: () => true,
+      runReflectionModel: async () => '{}',
+    })
+
+    queue.enqueueMaintenance(partition)
+    await reflectionStarted.promise
+    queue.enqueueMaintenance(partition)
+    releaseReflection.resolve()
+    await queue.drain()
+
+    expect(store.applyDecay).toHaveBeenCalledTimes(1)
+    expect(store.runReflection).toHaveBeenCalledTimes(1)
+  })
+
   it('does not duplicate maintenance queued while reconciliation is active', async () => {
     const partition = buildMemoryPartition({ scope: 'global' })
     const reconcileStarted = deferred()
