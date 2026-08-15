@@ -123,6 +123,18 @@ export function createVaultBashFileSystem(
       )
     }
   }
+  const assertNoExcludedDescendants = (vaultPath: string): void => {
+    if (!scope?.enabled) return
+    const normalizedPath = stripSlashes(vaultPath)
+    const descendantPrefix = normalizedPath ? `${normalizedPath}/` : ''
+    const excludedDescendant = scope.exclude.find((rule) => {
+      const normalizedRule = stripSlashes(rule)
+      return normalizedRule.startsWith(descendantPrefix)
+    })
+    if (excludedDescendant !== undefined) {
+      throw new Error(`Path contains an excluded path: ${excludedDescendant}`)
+    }
+  }
   const getFileOrThrow = (vaultPath: string): TFile => {
     const abstractFile = app.vault.getAbstractFileByPath(vaultPath)
     if (!abstractFile) {
@@ -242,6 +254,7 @@ export function createVaultBashFileSystem(
     async rm(vaultPath, options): Promise<BashFsRmResult> {
       assertNotHiddenUserDataPath(vaultPath, 'unlink')
       assertPathInScope(vaultPath, scope)
+      assertNoExcludedDescendants(vaultPath)
       return trashVaultPath(app, vaultPath, options)
     },
 
@@ -250,6 +263,7 @@ export function createVaultBashFileSystem(
       assertNotHiddenUserDataPath(newVaultPath, 'rename')
       assertPathInScope(oldVaultPath, scope)
       assertPathInScope(newVaultPath, scope)
+      assertNoExcludedDescendants(oldVaultPath)
       await moveVaultPath(app, oldVaultPath, newVaultPath)
     },
 

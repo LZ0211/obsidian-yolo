@@ -494,20 +494,26 @@ describe('createVaultBashFileSystem', () => {
         exclude: [
           'YOLO/sessions.sqlite',
           'YOLO/private',
-          'YOLO/.yolo_vector_db',
+          'YOLO/.yolo_vector_db.tar.gz',
         ],
       }
       const dbFile = makeFile('YOLO/sessions.sqlite')
       const privateFile = makeFile('YOLO/private/config.json')
-      const vectorIndex = makeFile('YOLO/.yolo_vector_db/index')
+      const vectorArchive = makeFile('YOLO/.yolo_vector_db.tar.gz')
       const notes = makeFile('YOLO/notes.md')
       const yoloFolder = makeFolder('YOLO', [
         dbFile,
         privateFile,
-        vectorIndex,
+        vectorArchive,
         notes,
       ])
-      const { app } = makeApp([yoloFolder, dbFile, privateFile, vectorIndex, notes])
+      const { app } = makeApp([
+        yoloFolder,
+        dbFile,
+        privateFile,
+        vectorArchive,
+        notes,
+      ])
       const fs = createVaultBashFileSystem(app, protectedScope)
 
       await expect(fs.readFile('YOLO/sessions.sqlite')).rejects.toThrow(
@@ -516,7 +522,7 @@ describe('createVaultBashFileSystem', () => {
       await expect(fs.readFile('YOLO/private/config.json')).rejects.toThrow(
         /EACCES/,
       )
-      await expect(fs.readFile('YOLO/.yolo_vector_db/index')).rejects.toThrow(
+      await expect(fs.readFile('YOLO/.yolo_vector_db.tar.gz')).rejects.toThrow(
         /EACCES/,
       )
       // Unprotected content in the same folder stays readable.
@@ -527,6 +533,26 @@ describe('createVaultBashFileSystem', () => {
       // folder itself remains visible as the traversal ancestor).
       await expect(fs.exists('YOLO/sessions.sqlite')).resolves.toBe(false)
       expect(fs.getAllPaths()).toEqual(['YOLO', 'YOLO/notes.md'])
+      await expect(fs.rm('YOLO', { recursive: true })).rejects.toThrow(
+        /excluded path/,
+      )
+      await expect(fs.mv('YOLO', 'Archive')).rejects.toThrow(/excluded path/)
+    })
+
+    it('denies removing an ancestor of an unindexed excluded path', async () => {
+      const notes = makeFile('YOLO/notes.md')
+      const yoloFolder = makeFolder('YOLO', [notes])
+      const { app, trashFile } = makeApp([yoloFolder, notes])
+      const fs = createVaultBashFileSystem(app, {
+        enabled: true,
+        include: [],
+        exclude: ['YOLO/.yolo_json_db'],
+      })
+
+      await expect(fs.rm('YOLO', { recursive: true })).rejects.toThrow(
+        /excluded path/,
+      )
+      expect(trashFile).not.toHaveBeenCalled()
     })
   })
 })
