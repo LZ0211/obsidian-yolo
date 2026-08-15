@@ -31,7 +31,14 @@ jest.mock('framer-motion', () => ({
 
 jest.mock('../../contexts/language-context', () => ({
   useLanguage: () => ({
-    t: (_key: string, fallback?: string) => fallback ?? _key,
+    t: (key: string, fallback?: string) =>
+      ({
+        'sidebar.runtimeSelector.claudeCodeLabel': 'Claude Code',
+        'sidebar.runtimeSelector.claudeCodeShortLabel': 'CC',
+        'sidebar.runtimeSelector.codexLabel': 'Codex',
+      })[key] ??
+      fallback ??
+      key,
   }),
 }))
 
