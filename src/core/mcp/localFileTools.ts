@@ -2535,14 +2535,22 @@ async function maybeWithInternalWrite<T>(
 export const workspacePolicyToUpstreamScope = (
   policy: WorkspaceAccessPolicy | undefined,
 ): AssistantWorkspaceScope | undefined => {
-  if (!policy?.enabled) return undefined
+  if (!policy) return undefined
+  const protectedExcludes = (policy.protectedPaths ?? []).map((rule) =>
+    rule.kind === 'namePrefix'
+      ? `${rule.dir}/${rule.name}`.replace(/\/+$/, '')
+      : rule.path,
+  )
+  if (!policy.enabled && protectedExcludes.length === 0) return undefined
   return {
     enabled: true,
-    include: [policy.workspaceRoot, ...policy.readExtraIncludes].filter(
-      (entry) => entry !== '',
-    ),
+    include: policy.enabled
+      ? [policy.workspaceRoot, ...policy.readExtraIncludes].filter(
+          (entry) => entry !== '',
+        )
+      : [],
     exclude: [
-      ...policy.readExcludes,
+      ...(policy.enabled ? policy.readExcludes : []),
       // Fold the host-managed protected paths into the upstream scope so the
       // bash virtual FS (which only knows AssistantWorkspaceScope) denies
       // plugin-private data even for a whole-vault workspaceRoot. Without
@@ -2553,11 +2561,7 @@ export const workspacePolicyToUpstreamScope = (
       // prefix semantics covers for name-prefixed children (siblings that
       // only share the prefix without a path boundary are not covered — the
       // fixed-name exact rules for the SQLite files still hold).
-      ...(policy.protectedPaths ?? []).map((rule) =>
-        rule.kind === 'namePrefix'
-          ? `${rule.dir}/${rule.name}`.replace(/\/+$/, '')
-          : rule.path,
-      ),
+      ...protectedExcludes,
     ],
   }
 }
@@ -2744,7 +2748,7 @@ export async function callLocalFileTool({
     // The gateway performs the same check up front for UI Rejected status,
     // but we re-validate here so manual-approval / direct-call code paths
     // cannot bypass the constraint.
-    if (workspaceAccessPolicy?.enabled && toolName !== 'fs_read') {
+    if (workspaceAccessPolicy && toolName !== 'fs_read') {
       const exemptPaths = allowedSkillPaths
         ? buildAllowedSkillPathSet(allowedSkillPaths)
         : undefined
@@ -3182,7 +3186,7 @@ export async function callLocalFileTool({
           // Files inside an allowed skill package keep the same exemption
           // they had under the workspace policy's exemptPaths option.
           if (
-            workspaceAccessPolicy?.enabled &&
+            workspaceAccessPolicy &&
             !isReadablePath(file.path, workspaceAccessPolicy) &&
             !(
               allowedSkillPathSet &&

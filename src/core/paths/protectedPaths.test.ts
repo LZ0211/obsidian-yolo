@@ -27,11 +27,6 @@ describe('getProtectedVaultPathRules', () => {
           rule.kind === 'exact',
       )
       .map((rule) => rule.path)
-    const namePrefixRules = rules.filter(
-      (rule): rule is { kind: 'namePrefix'; dir: string; name: string } =>
-        rule.kind === 'namePrefix',
-    )
-
     expect(prefixPaths).toEqual(
       expect.arrayContaining(['YOLO/.yolo_json_db', 'YOLO/memory', 'Projects']),
     )
@@ -41,12 +36,8 @@ describe('getProtectedVaultPathRules', () => {
         'YOLO/sessions.sqlite',
         'YOLO/conversation.sqlite',
         'YOLO/scheduled-tasks.sqlite',
+        'YOLO/.yolo_vector_db.tar.gz',
         '.yolo_sync',
-      ]),
-    )
-    expect(namePrefixRules).toEqual(
-      expect.arrayContaining([
-        { kind: 'namePrefix', dir: 'YOLO', name: '.yolo_vector_db' },
       ]),
     )
   })
@@ -198,9 +189,16 @@ describe('augmentWorkspacePolicyWithProtectedPaths', () => {
     })
   })
 
-  it('returns undefined for a nullish policy', () => {
+  it('creates a protection-only policy when no workspace policy exists', () => {
     expect(
       augmentWorkspacePolicyWithProtectedPaths(undefined, defaultSettings),
-    ).toBeUndefined()
+    ).toEqual({
+      enabled: false,
+      workspaceRoot: '',
+      readExtraIncludes: [],
+      readExcludes: [],
+      writeExcludes: [],
+      protectedPaths: getProtectedVaultPathRules(defaultSettings),
+    })
   })
 })

@@ -160,7 +160,7 @@ describe('workspacePolicyToUpstreamScope', () => {
       protectedPaths: [
         { kind: 'exact', path: 'YOLO/sessions.sqlite' },
         { kind: 'prefix', path: 'YOLO/data' },
-        { kind: 'namePrefix', dir: 'YOLO', name: '.yolo_vector_db' },
+        { kind: 'exact', path: 'YOLO/.yolo_vector_db.tar.gz' },
       ],
     })
 
@@ -173,12 +173,12 @@ describe('workspacePolicyToUpstreamScope', () => {
         'private/excluded.md',
         'YOLO/sessions.sqlite',
         'YOLO/data',
-        'YOLO/.yolo_vector_db',
+        'YOLO/.yolo_vector_db.tar.gz',
       ],
     })
   })
 
-  it('returns undefined for a disabled policy', () => {
+  it('keeps protection excludes for a disabled workspace policy', () => {
     expect(
       workspacePolicyToUpstreamScope({
         enabled: false,
@@ -186,8 +186,15 @@ describe('workspacePolicyToUpstreamScope', () => {
         readExtraIncludes: [],
         readExcludes: [],
         writeExcludes: [],
+        protectedPaths: [
+          { kind: 'exact', path: 'YOLO/sessions.sqlite' },
+        ],
       }),
-    ).toBeUndefined()
+    ).toEqual({
+      enabled: true,
+      include: [],
+      exclude: ['YOLO/sessions.sqlite'],
+    })
   })
 })
 
@@ -2232,6 +2239,31 @@ describe('local fs tool action helpers', () => {
         },
       })
       expect(result.status).toBe(ToolCallResponseStatus.Success)
+    })
+
+    it('still rejects protected paths when workspace scoping is disabled', async () => {
+      const result = await callLocalFileTool({
+        app: {
+          vault: { getAbstractFileByPath: jest.fn() },
+        } as unknown as App,
+        toolName: 'fs_edit',
+        args: {
+          path: 'YOLO/sessions.sqlite',
+          oldText: 'x',
+          newText: 'y',
+        },
+        workspaceAccessPolicy: {
+          enabled: false,
+          workspaceRoot: '',
+          readExtraIncludes: [],
+          readExcludes: [],
+          writeExcludes: [],
+          protectedPaths: [
+            { kind: 'exact', path: 'YOLO/sessions.sqlite' },
+          ],
+        },
+      })
+      expect(result.status).toBe(ToolCallResponseStatus.Error)
     })
   })
 })

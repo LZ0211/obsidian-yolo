@@ -7,6 +7,7 @@ import {
   SESSION_JOURNAL_SQLITE_FILE_NAME,
   YOLO_MEMORY_SUBDIR,
   YOLO_SYNC_POINTER_FILE_NAME,
+  YOLO_VECTOR_DB_FILE_NAME,
   getYoloBaseDir,
   getYoloDataJsonPath,
   getYoloJsonDbRootDir,
@@ -50,7 +51,7 @@ export const getProtectedVaultPathRules = (
       path: `${baseDir}/${SCHEDULED_TASKS_SQLITE_FILE_NAME}`,
     },
     { kind: 'prefix', path: `${baseDir}/${YOLO_MEMORY_SUBDIR}` },
-    { kind: 'namePrefix', dir: baseDir, name: '.yolo_vector_db' },
+    { kind: 'exact', path: `${baseDir}/${YOLO_VECTOR_DB_FILE_NAME}` },
     // Fixed-name pointer file at the vault root.
     { kind: 'exact', path: YOLO_SYNC_POINTER_FILE_NAME },
     // The whole host-managed project zone.
@@ -64,14 +65,23 @@ const normalizeProtectedPath = (value: string): string =>
 
 /**
  * Copies a workspace policy and attaches the current host-managed deny rules.
- * A nullish policy is returned as undefined.
+ * Runs without workspace scoping receive a disabled policy that still carries
+ * the host protection rules.
  */
 export const augmentWorkspacePolicyWithProtectedPaths = (
   policy: WorkspaceAccessPolicy | undefined,
   settings?: YoloSettingsLike | null,
 ): WorkspaceAccessPolicy | undefined => {
-  if (!policy) return undefined
-  return { ...policy, protectedPaths: getProtectedVaultPathRules(settings) }
+  return {
+    ...(policy ?? {
+      enabled: false,
+      workspaceRoot: '',
+      readExtraIncludes: [],
+      readExcludes: [],
+      writeExcludes: [],
+    }),
+    protectedPaths: getProtectedVaultPathRules(settings),
+  }
 }
 
 export const isProtectedVaultPath = (

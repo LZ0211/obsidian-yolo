@@ -1327,6 +1327,47 @@ describe('AgentToolGateway', () => {
     })
   })
 
+  it('rejects protected paths even when workspace scoping is disabled', () => {
+    const mcpManager = {
+      isToolExecutionAllowed: jest.fn(),
+      getJsSandboxSettings: jest.fn().mockReturnValue({}),
+    } as unknown as McpManager
+    const gateway = new AgentToolGateway(mcpManager, {
+      allowedToolNames: ['yolo_local__fs_edit'],
+      workspaceAccessPolicy: {
+        enabled: false,
+        workspaceRoot: '',
+        readExtraIncludes: [],
+        readExcludes: [],
+        writeExcludes: [],
+        protectedPaths: [
+          { kind: 'exact', path: 'YOLO/sessions.sqlite' },
+        ],
+      },
+    })
+
+    const message = gateway.createToolMessage({
+      toolCallRequests: [
+        {
+          id: 'tool-protected',
+          name: 'yolo_local__fs_edit',
+          arguments: createCompleteToolCallArguments({
+            value: {
+              path: 'YOLO/sessions.sqlite',
+              oldText: 'x',
+              newText: 'y',
+            },
+          }),
+        },
+      ],
+      conversationId: 'conv-protected',
+    })
+
+    expect(message.toolCalls[0]?.response.status).toBe(
+      ToolCallResponseStatus.Rejected,
+    )
+  })
+
   // fs_read is intentionally absent from workspaceScope's PATH_ARGS table
   // (its `paths` entries may be Obsidian wikilinks, not literal vault
   // paths — see workspaceScope.ts). This gateway-level pre-check is

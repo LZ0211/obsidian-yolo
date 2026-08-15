@@ -580,7 +580,12 @@ export class AgentToolGateway {
   }
 
   private findRequestPathOutsideScope(request: ToolCallRequest): string | null {
-    if (!this.workspaceAccessPolicy?.enabled) return null
+    if (
+      !this.workspaceAccessPolicy?.enabled &&
+      !this.workspaceAccessPolicy?.protectedPaths?.length
+    ) {
+      return null
+    }
     try {
       const parsed = parseToolName(request.name)
       if (parsed.serverName !== getLocalFileToolServerName()) return null
@@ -752,11 +757,15 @@ export class AgentToolGateway {
    * approval recovery paths (`AgentService.approveToolCall` and the chat UI's
    * pending-tool-call recovery) execute tool calls directly and can't read
    * this gateway's live policy, so a call approved after the user switched
-   * agents must still run under the boundary it was emitted with. A no-op for
-   * runs without an enabled policy (plain templates, ask mode).
+   * agents must still run under the boundary it was emitted with.
    */
   private attachPolicySnapshot(request: ToolCallRequest): ToolCallRequest {
-    if (!this.workspaceAccessPolicy?.enabled) return request
+    if (
+      !this.workspaceAccessPolicy?.enabled &&
+      !this.workspaceAccessPolicy?.protectedPaths?.length
+    ) {
+      return request
+    }
     return {
       ...request,
       metadata: {
