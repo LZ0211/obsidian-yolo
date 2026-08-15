@@ -18,14 +18,9 @@ import { BaseLLMProvider } from '../llm/base'
 import type { ResponseDeliveryMode } from '../llm/responseDeliveryMode'
 import { McpManager } from '../mcp/mcpManager'
 
-import type { CitationRegistry } from './citationRegistry'
 import type { AutoContextCompactionChatOptions } from './compaction'
 import type { AgentLoopPolicy } from './loop-policy'
 import type { ToolCapabilityMode } from './tool-capability-prompt'
-
-export type AgentRunContext = {
-  citationRegistry: CitationRegistry
-}
 
 export type AgentRuntimeSnapshot = {
   messages: ChatMessage[]
@@ -154,12 +149,6 @@ export type AgentRuntimeRunInput = {
    * Not invoked by the single-turn fast path (single LLM call, no boundary).
    */
   drainPendingUserMessages?: () => AgentPendingUserMessageDrain | null
-  /**
-   * Per-run side-channel for state that flows down to tool execution but isn't
-   * part of the LLM-visible message stream (e.g. the citation registry that
-   * collects fs_search hits across multiple tool calls).
-   */
-  runContext?: AgentRunContext
   /** Isolated subagent runs: replace the normal system prompt assembly. */
   systemPromptOverride?: string
   /** Conversation whose approval state should be used for tool auto-execution. */
