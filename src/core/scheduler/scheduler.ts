@@ -203,8 +203,8 @@ export class ScheduledTaskScheduler {
 
   /**
    * Waits (bounded) for every in-flight run to settle — used by the service's
-   * `cleanup()` so a settings-toggle stop matches its documented contract
-   * ("wait for in-flight runs to settle then stop polling"). Runs are bounded
+   * `cleanup()` after a settings-toggle has stopped polling and dropped queued
+   * work. Runs are bounded
    * by their `timeoutSeconds`, but a run can outlive that (e.g. an abort that
    * is slow to honor), so the wait is capped at `timeoutMs` and returns
    * regardless; any still-running run settles later on its own without

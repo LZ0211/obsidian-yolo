@@ -26,7 +26,7 @@ import {
 export type QueueStatus = ReturnType<ScheduledTaskScheduler['getQueueStatus']>
 
 /**
- * How long `cleanup()` waits for in-flight runs to settle before stopping the
+ * How long `cleanup()` waits for in-flight runs to settle after stopping the
  * poll loop (see the cleanup() doc comment). Runs are individually bounded by
  * their `timeoutSeconds`; this cap only guards against an abort that is slow
  * to honor, so a settings-toggle stop never blocks on a hung run.
@@ -162,17 +162,17 @@ export class ScheduledTasksService implements IScheduledTasksService {
   }
 
   /**
-   * Settings-toggle stop (enabled → disabled): waits for in-flight runs to
-   * settle (bounded at CLEANUP_SETTLE_TIMEOUT_MS — every run is bounded by its
+   * Settings-toggle stop (enabled → disabled): stops polling and drops pending
+   * work, then waits for already in-flight runs to settle (bounded at
+   * CLEANUP_SETTLE_TIMEOUT_MS — every run is bounded by its
    * own timeoutSeconds, but an abort that is slow to honor can outlive the
    * cap, in which case the run settles on its own afterwards; the store stays
-   * open on this path so its completion writes remain safe) and then stops
-   * the poll loop. Pending queue work is dropped — it is reconsidered the
-   * next time the scheduler starts.
+   * open on this path so its completion writes remain safe). Pending queue
+   * work is reconsidered the next time the scheduler starts.
    */
   async cleanup(): Promise<void> {
-    await this.scheduler.settleInFlightRuns(CLEANUP_SETTLE_TIMEOUT_MS)
     this.scheduler.stop()
+    await this.scheduler.settleInFlightRuns(CLEANUP_SETTLE_TIMEOUT_MS)
     this.initialized = false
   }
 

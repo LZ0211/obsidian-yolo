@@ -5451,7 +5451,7 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
       if (this.settings.scheduledTasks.enabled) {
         await service.initialize()
       } else {
-        // 停：cleanup 等待在飞任务落定后停止轮询（shutdown 仅用于 onunload）。
+        // 停：cleanup 先停止轮询，再等待在飞任务落定（shutdown 仅用于 onunload）。
         await service.cleanup()
       }
     } catch (error) {

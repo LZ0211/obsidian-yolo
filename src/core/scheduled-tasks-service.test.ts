@@ -509,7 +509,7 @@ describe('ScheduledTasksService', () => {
     }
   })
 
-  it('cleanup() waits for an in-flight run to settle before stopping the poll loop', async () => {
+  it('cleanup() waits for an in-flight run after stopping the poll loop', async () => {
     const dir = makeTempDir()
     try {
       const store = createScheduledTasksStore(dir)
@@ -542,6 +542,54 @@ describe('ScheduledTasksService', () => {
 
       const run = store.getRun(result.runId)
       expect(run?.status).toBe(TaskRunStatus.COMPLETED)
+
+      store.close()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  it('cleanup() stops queued work before waiting for the active run', async () => {
+    const dir = makeTempDir()
+    try {
+      const store = createScheduledTasksStore(dir)
+      let resolveFirst!: (result: YoloAgentRunResult) => void
+      const run = jest
+        .fn<Promise<YoloAgentRunResult>, [YoloAgentRunRequest]>()
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveFirst = resolve
+            }),
+        )
+        .mockResolvedValue({
+          conversationId: 'second',
+          text: 'done',
+          status: 'completed',
+        })
+      const service = new ScheduledTasksService({
+        store,
+        eventBus: new TaskEventBus(),
+        executor: new TaskExecutor({ getAgentApi: () => makeAgentApi(run) }),
+      })
+      const a = await service.createTask(makeTaskConfig({ name: 'A' }))
+      const b = await service.createTask(makeTaskConfig({ name: 'B' }))
+      await service.initialize()
+
+      expect((await service.executeTaskNow(a.id)).outcome).toBe('started')
+      expect((await service.executeTaskNow(b.id)).outcome).toBe('queued')
+
+      const cleanupPromise = service.cleanup()
+      resolveFirst({
+        conversationId: 'first',
+        text: 'done',
+        status: 'completed',
+      })
+      await cleanupPromise
+      await flushPromises()
+
+      expect(run).toHaveBeenCalledTimes(1)
+      expect(service.getPendingTasks()).toHaveLength(0)
 
       store.close()
     } finally {
