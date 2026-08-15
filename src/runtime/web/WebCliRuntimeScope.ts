@@ -513,7 +513,10 @@ export function createWebCliRuntimeScope(
     recordUserDisplay: async () => undefined,
     getRememberedConfiguration: async () => ({}),
     renameSession: async (ref: CliSessionRef, title: string) => {
-      await getAdapter(ref.runtimeId).renameSession(ref, title)
+      const result = await getAdapter(ref.runtimeId).renameSession(ref, title)
+      if (!result.ok) {
+        throw new Error(getSessionCommandErrorMessage(result.error))
+      }
     },
     recordTurnEditSummary: async () => undefined,
     rebindOverlay: async () => undefined,
@@ -531,11 +534,17 @@ export function createWebCliRuntimeScope(
       turnConfigurationByUserMessageId: {},
     }),
     setPinned: async (ref: CliSessionRef, pinned: boolean) => {
-      await getAdapter(ref.runtimeId).setSessionPinned(ref, pinned)
+      const result = await getAdapter(ref.runtimeId).setSessionPinned(ref, pinned)
+      if (!result.ok) {
+        throw new Error(getSessionCommandErrorMessage(result.error))
+      }
     },
     removeOverlay: async (ref: CliSessionRef) => {
       const result = await getAdapter(ref.runtimeId).deleteSession(ref)
-      return result.ok
+      if (!result.ok) {
+        throw new Error(getSessionCommandErrorMessage(result.error))
+      }
+      return true
     },
   } as unknown as CliSessionService
 

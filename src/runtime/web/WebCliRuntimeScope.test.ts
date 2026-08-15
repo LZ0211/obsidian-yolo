@@ -307,6 +307,33 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
     })
   })
 
+  it('rejects failed remote session commands', async () => {
+    const fetch = jest.fn(async () =>
+      jsonResponse({
+        ok: false,
+        error: { kind: 'rejected', reason: 'command denied' },
+      }),
+    )
+    const scope = createWebCliRuntimeScope({
+      baseUrl: 'http://localhost',
+      fetchImpl: fetch,
+      sessionId: 'session-1',
+    })
+    const ref = { runtimeId: 'codex' as const, nativeSessionId: 'thread-1' }
+    const sessionService =
+      scope.sessionService as unknown as WebScopeSessionService
+
+    await expect(sessionService.setPinned(ref, true)).rejects.toThrow(
+      'command denied',
+    )
+    await expect(sessionService.renameSession(ref, 'New')).rejects.toThrow(
+      'command denied',
+    )
+    await expect(scope.sessionService.removeOverlay(ref)).rejects.toThrow(
+      'command denied',
+    )
+  })
+
   it('selects a conversation runtime whose snapshot follows adapter SSE events', async () => {
     const { fetch, feeds } = createFetchMock()
     const scope = createWebCliRuntimeScope({
