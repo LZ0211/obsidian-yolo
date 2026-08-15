@@ -121,6 +121,34 @@ describe('registerWebServerRoutes CLI runtime binding', () => {
     }
   })
 
+  it('creates a bound conversation when chat save targets a new id', async () => {
+    const harness = createHarness([], {} as CliRuntimeScope, [])
+
+    try {
+      const response = await dispatchPost(harness.router, '/api/chat/save', {
+        id: 'new-web-conversation',
+        messages: [],
+      })
+
+      expect(response.statusCode).toBe(200)
+      expect(harness.createChat).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'new-web-conversation',
+          messages: [],
+          origin: 'external-agent',
+          webBinding: {
+            initialAgentId: 'agent-current',
+            activeAgentId: 'agent-current',
+            rootHash: 'root-current',
+          },
+        }),
+      )
+      expect(harness.updateChat).not.toHaveBeenCalled()
+    } finally {
+      await harness.dispose()
+    }
+  })
+
   it.each([
     {
       label: 'missing web binding',
@@ -454,10 +482,20 @@ function createHarness(
   const findById = jest.fn(async (id: string) => {
     return conversations.get(id) ?? null
   })
+  const createChat = jest.fn(
+    async (initial: Partial<WebChatConversation>) => {
+      const created = makeConversation({
+        ...initial,
+        id: initial.id ?? 'generated-conversation',
+      })
+      conversations.set(created.id, created)
+      return created
+    },
+  )
   const chatManager = {
     findById,
     listChats: jest.fn(async () => []),
-    createChat: jest.fn(),
+    createChat,
     updateChat,
     deleteChat,
   } as unknown as ChatManager
@@ -506,7 +544,13 @@ function createHarness(
     getMcpManager: jest.fn(async () => ({}) as never),
     getCliRuntimeScope: async () => scope,
   })
-  return { router, updateChat, deleteChat, dispose: registered.dispose }
+  return {
+    router,
+    createChat,
+    updateChat,
+    deleteChat,
+    dispose: registered.dispose,
+  }
 }
 
 async function dispatchGet(

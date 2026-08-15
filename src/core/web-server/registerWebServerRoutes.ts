@@ -360,6 +360,9 @@ export function registerWebServerRoutes(
     },
     saveChat: async (request) => {
       const current = await getChat(request.id)
+      if (!current) {
+        return registerChatRoutesContext.createChat(request)
+      }
       const patch: Record<string, unknown> = {
         messages: request.messages,
         overrides: request.overrides,
