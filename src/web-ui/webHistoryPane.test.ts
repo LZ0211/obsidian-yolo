@@ -27,7 +27,6 @@ describe('renderHistoryPane', () => {
       listChats: async () => [
         { id: 'conv-1', title: 'A', updatedAt: 1, schemaVersion: 1 },
       ],
-      deleteChat: async () => {},
       togglePinnedChat: async () => {},
       updateChatTitle: async () => {},
       retryChatTitle: async () => {},
@@ -39,6 +38,7 @@ describe('renderHistoryPane', () => {
       openConversation,
       () => {},
       () => true,
+      async () => {},
     )
 
     const row = parent.querySelector<HTMLElement>(
@@ -49,5 +49,32 @@ describe('renderHistoryPane', () => {
     row!.click()
 
     expect(openConversation).toHaveBeenCalledWith('conv-1')
+  })
+
+  it('deletes through the shared chat cleanup', async () => {
+    const parent = document.createElement('div')
+    const deleteConversation = jest.fn().mockResolvedValue(undefined)
+    const historyClient = {
+      listChats: async () => [
+        { id: 'conv-1', title: 'A', updatedAt: 1, schemaVersion: 1 },
+      ],
+      togglePinnedChat: async () => {},
+      updateChatTitle: async () => {},
+      retryChatTitle: async () => {},
+    }
+
+    await renderHistoryPane(
+      parent,
+      historyClient,
+      async () => {},
+      () => {},
+      () => true,
+      deleteConversation,
+    )
+
+    parent.querySelector<HTMLButtonElement>('[aria-label="Delete"]')?.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 0))
+
+    expect(deleteConversation).toHaveBeenCalledWith('conv-1')
   })
 })

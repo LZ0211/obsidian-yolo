@@ -47,7 +47,6 @@ export type ShellClient = {
 
 export type HistoryClient = {
   listChats: () => Promise<ChatConversationMetadata[]>
-  deleteChat: (id: string) => Promise<void>
   togglePinnedChat: (id: string) => Promise<void>
   updateChatTitle: (id: string, title: string) => Promise<void>
   retryChatTitle: (id: string) => Promise<void>

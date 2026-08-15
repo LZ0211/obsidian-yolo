@@ -45,18 +45,13 @@ function makeAssistantNameGetter(runtime: YoloRuntime): () => string {
 }
 
 /** Build a HistoryClient backed by runtime.chat.* and emit a window event after
- * each mutation so the chat header's ChatListDropdown (which listens for
- * yolo:chat-history-updated via useChatHistory) stays in sync with the sidebar
- * history pane. Both surfaces share the same backend this way. */
+ * each metadata mutation so the chat header's ChatListDropdown stays in sync
+ * with the sidebar history pane. */
 function buildHistoryClient(runtime: YoloRuntime): HistoryClient {
   const emitUpdated = () =>
     window.dispatchEvent(new CustomEvent('yolo:chat-history-updated'))
   return {
     listChats: () => runtime.chat.list(),
-    deleteChat: async (id) => {
-      await runtime.chat.delete(id)
-      emitUpdated()
-    },
     togglePinnedChat: async (id) => {
       await runtime.chat.togglePinned(id)
       emitUpdated()
@@ -547,6 +542,10 @@ function App(): void {
           },
           () =>
             requestToken === historyRefreshToken && leftPaneMode === 'history',
+          async (conversationId) => {
+            const chatRef = await tabManager?.whenActiveChatReady()
+            await chatRef?.deleteConversationWithCleanup(conversationId)
+          },
         )
       } finally {
         historyRendering = false

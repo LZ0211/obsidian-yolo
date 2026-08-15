@@ -670,10 +670,6 @@ export function createMockTransport(options?: {
           })
           .map((chat) => ({ ...chat }))
       },
-      async deleteChat(id) {
-        const index = chats.findIndex((chat) => chat.id === id)
-        if (index >= 0) chats.splice(index, 1)
-      },
       async togglePinnedChat(id) {
         const chat = chats.find((c) => c.id === id)
         if (!chat) return

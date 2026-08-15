@@ -240,6 +240,7 @@ export async function renderHistoryPane(
   openConversation: (conversationId: string) => Promise<void>,
   onNewConversation: () => void,
   isCurrentRequest: () => boolean,
+  deleteConversation: (conversationId: string) => Promise<void>,
 ): Promise<void> {
   const paneEl = createDiv(parentEl, 'yolo-web-history-pane')
 
@@ -425,8 +426,7 @@ export async function renderHistoryPane(
       ICONS.trash,
       () => {
         if (moreMenuOpenId === chat.id) moreMenuOpenId = null
-        void historyClient
-          .deleteChat(chat.id)
+        void deleteConversation(chat.id)
           .then(refresh)
           .catch((err) => console.error('Failed to delete conversation', err))
       },

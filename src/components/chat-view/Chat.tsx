@@ -249,6 +249,7 @@ export type ChatRef = {
    * No-ops when there is no active persisted conversation.
    */
   toggleCurrentConversationPinned: () => Promise<void>
+  deleteConversationWithCleanup: (conversationId: string) => Promise<void>
   /**
    * issue #567 Step 2. Deletes the active conversation, including CLI
    * overlay cleanup and post-delete conversation switching — the same
@@ -1968,6 +1969,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       }
       await toggleConversationPinned(activeHistoryConversationId)
     },
+    deleteConversationWithCleanup,
     deleteCurrentConversation: async () => {
       if (!activeHistoryConversationId || !currentConversationPersisted) {
         return
