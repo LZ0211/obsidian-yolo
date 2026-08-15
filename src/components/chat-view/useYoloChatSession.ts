@@ -1051,6 +1051,7 @@ export function useYoloChatSession({
         runtimeNavigationGenerationRef,
         () => chatMountedRef.current,
       )
+      setIsLoadingConversation(false)
       if (activeRuntimeId !== 'yolo') {
         void transitionCliSession((isCurrent) => {
           if (!isCurrent() || !isLatestNavigation()) return
@@ -1154,6 +1155,7 @@ export function useYoloChatSession({
       cliModeRequestGenerationRef,
       runtimeNavigationGenerationRef,
       chatMountedRef,
+      setIsLoadingConversation,
     ],
   )
 

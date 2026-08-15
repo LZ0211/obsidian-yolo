@@ -188,6 +188,75 @@ test.describe('web e2e harness', () => {
     }
   })
 
+  test('new chat clears an interrupted history load', async ({ page }) => {
+    const { child, ready } = startHarness()
+    const info = await ready
+    let releaseHistoryLoad: () => void = () => undefined
+    try {
+      await loginAndWaitReady(page, info)
+      await sendMessage(page, 'hello harness')
+      await expect(
+        page.locator('.yolo-chat-messages-assistant').first(),
+      ).toContainText('Hello from the mock LLM!', { timeout: 30_000 })
+      const webSessionId = await page.evaluate(() =>
+        localStorage.getItem('yolo-web-session-id'),
+      )
+      const chats = (await fetchJson(
+        info.port,
+        '/api/chat/list',
+        webSessionId ?? undefined,
+      )) as Array<{ id: string }>
+      const conversationId = chats[0]?.id
+      if (!conversationId)
+        throw new Error('created conversation was not listed')
+
+      const newChatButton = page
+        .locator('.yolo-chat-header-buttons button')
+        .first()
+      const emptyState = page.locator('.yolo-chat-empty-state-overlay')
+      await newChatButton.click()
+      await expect(emptyState).toBeVisible()
+
+      const historyLoadGate = new Promise<void>((resolve) => {
+        releaseHistoryLoad = resolve
+      })
+      let markHistoryLoadStarted: () => void = () => undefined
+      const historyLoadStarted = new Promise<void>((resolve) => {
+        markHistoryLoadStarted = resolve
+      })
+      let conversationReadCount = 0
+      await page.route('**/api/vault/read?*', async (route) => {
+        if (!route.request().url().includes(conversationId)) {
+          await route.continue()
+          return
+        }
+        conversationReadCount += 1
+        if (conversationReadCount === 1) {
+          await route.continue()
+          return
+        }
+        markHistoryLoadStarted()
+        await historyLoadGate
+        await route.continue()
+      })
+
+      const openHistory = page
+        .locator('.yolo-web-history-pane li.yolo-chat-list-dropdown-item')
+        .first()
+        .click({ noWaitAfter: true })
+      await historyLoadStarted
+      await expect(emptyState).toBeHidden()
+      await newChatButton.click()
+      releaseHistoryLoad()
+      await openHistory
+
+      await expect(emptyState).toBeVisible({ timeout: 5_000 })
+    } finally {
+      releaseHistoryLoad()
+      await stopHarness(child)
+    }
+  })
+
   test('d: 重启 harness → 会话仍在（JSON 落盘）', async () => {
     const tmpdir =
       process.env.E2E_HARNESS_TMPDIR ??
