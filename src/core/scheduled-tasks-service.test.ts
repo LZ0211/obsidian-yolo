@@ -188,7 +188,7 @@ describe('ScheduledTasksService', () => {
     const dir = makeTempDir()
     try {
       const store = createScheduledTasksStore(dir)
-      const { agentApi } = makeDeferredAgentApi() // holds the first run in flight
+      const { agentApi, resolveRun } = makeDeferredAgentApi()
       const executor = new TaskExecutor({ getAgentApi: () => agentApi })
       const service = new ScheduledTasksService({
         store,
@@ -224,6 +224,8 @@ describe('ScheduledTasksService', () => {
       expect(runs[0]?.taskId).toBe(a.id)
 
       service.shutdown()
+      resolveRun({ conversationId: 'c', text: 'done', status: 'completed' })
+      await flushPromises()
       store.close()
     } finally {
       cleanup(dir)
