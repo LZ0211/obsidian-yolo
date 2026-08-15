@@ -124,11 +124,11 @@ import {
   JS_SANDBOX_BROWSER_READ_DEFAULT_MAX_KB,
   JS_SANDBOX_DB_QUERY_DEFAULT_MAX_LIMIT,
   JS_SANDBOX_VAULT_LIST_MAX_ENTRIES,
+  buildJsSandboxProxyHandlers,
   formatJsSandboxToolText,
 } from './jsSandboxTool'
 import { USER_FACING_LOCAL_TOOL_SHORT_NAMES } from './localFileToolNames'
 import {
-  buildJsSandboxProxyHandlers,
   callLocalFileTool,
   getLocalFileTools,
   isLocalFsWriteToolName,

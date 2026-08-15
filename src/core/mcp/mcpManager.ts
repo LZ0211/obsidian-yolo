@@ -34,13 +34,9 @@ import type { PromptSourceWatcher } from '../agent/promptSourceWatcher'
 import type { AgentRunContext } from '../agent/types'
 import type { RAGEngine } from '../rag/ragEngine'
 import { executeBuiltinTool } from '../tools/dispatcher'
-import { isBuiltinToolName } from '../tools/registry'
+import { getToolDefinition, isBuiltinToolName } from '../tools/registry'
 import type { ToolContext } from '../tools/types'
-import {
-  WEB_SCRAPE_TOOL_NAME,
-  WEB_SEARCH_TOOL_NAME,
-  isWebSearchToolReady,
-} from '../web-search'
+import { WEB_SCRAPE_TOOL_NAME, WEB_SEARCH_TOOL_NAME } from '../web-search'
 
 import { InvalidToolNameException, McpNotAvailableException } from './exception'
 import type { InProcessToolServer } from './inProcessToolServer'
@@ -174,6 +170,27 @@ export class McpManager {
     toolName: string,
     args?: Record<string, unknown>,
   ): boolean {
+    if (!this.isLocalToolPersistedEnabled(toolName, args)) {
+      return false
+    }
+
+    if (isBuiltinToolName(toolName)) {
+      const definition = getToolDefinition(toolName)
+      if (
+        definition?.isAvailable &&
+        !definition.isAvailable({ settings: this.settings })
+      ) {
+        return false
+      }
+    }
+
+    return true
+  }
+
+  private isLocalToolPersistedEnabled(
+    toolName: string,
+    args?: Record<string, unknown>,
+  ): boolean {
     if (CONSOLIDATED_TOOL_NAME_SET.has(toolName)) {
       const option = this.settings.mcp.builtinToolOptions[toolName]
       if (option?.disabled) return false
@@ -194,9 +211,8 @@ export class McpManager {
         (action) => !option?.actionOptions?.[action]?.disabled,
       )
     }
-    // Web tools share a single `web_ops` group switch. `web_search` needs a
-    // configured provider, while `web_scrape` can fall back to the generic
-    // static-HTML scraper when no provider is configured.
+    // Web tools share one persisted `web_ops` switch. Runtime readiness is
+    // evaluated generically by isLocalToolEnabled above.
     if (
       toolName === WEB_SEARCH_TOOL_NAME ||
       toolName === WEB_SCRAPE_TOOL_NAME
@@ -206,14 +222,7 @@ export class McpManager {
           ?.disabled ?? false
       const splitToolDisabled =
         this.settings.mcp.builtinToolOptions[toolName]?.disabled ?? false
-      if (groupDisabled || splitToolDisabled) return false
-      if (
-        toolName === WEB_SEARCH_TOOL_NAME &&
-        !isWebSearchToolReady(this.settings.webSearch)
-      ) {
-        return false
-      }
-      return true
+      return !(groupDisabled || splitToolDisabled)
     }
     if (LOCAL_FS_EDIT_TOOL_NAME_SET.has(toolName)) {
       const splitToolDisabled =
