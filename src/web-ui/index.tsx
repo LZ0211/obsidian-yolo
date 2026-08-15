@@ -405,6 +405,7 @@ function App(): void {
     let filesPaneInitialized = false
     let historyRefreshToken = 0
     let historyRendering = false
+    let switchingAgent = false
 
     // On mobile, files/preview/history each get their own persistent drawer
     // slot instead of sharing shell.leftLeafContentEl/rightContentEl — see
@@ -673,14 +674,68 @@ function App(): void {
       title.textContent = activeAgent?.name ?? next.agentId
       shell.centerTopBarTitleEl.append(title)
 
-      // 当前智能体名称（禁用下拉，仅展示）：web 会话的 agent 由登录
-      // token 绑定，不提供切换入口。
       shell.centerTopBarActionsEl.append(
         createWebAgentSelector({
           agents: next.allowedAgents,
           activeAgentId: next.agentId,
+          onChange:
+            next.allowedAgents.length > 1 ? handleAgentSwitch : undefined,
         }),
       )
+    }
+
+    async function handleAgentSwitch(agentId: string): Promise<void> {
+      const current = state
+      const controller = currentReadyController
+      if (
+        current.status !== 'ready' ||
+        !controller ||
+        current.agentId === agentId ||
+        switchingAgent
+      ) {
+        return
+      }
+
+      switchingAgent = true
+      try {
+        const auth = await current.client.switchAgent(agentId)
+        const bootstrap = await current.client.getBootstrap()
+        const runtime = await createRuntime(
+          current.client as WebApiClient,
+          bootstrap,
+        )
+        if (state !== current || currentReadyController !== controller) {
+          ;(
+            runtime as unknown as { __yoloDispose?: () => void }
+          ).__yoloDispose?.()
+          return
+        }
+
+        await controller.replaceRuntime({
+          status: 'ready',
+          client: current.client,
+          historyClient: buildHistoryClient(runtime),
+          runtime,
+          allowedAgents: auth.allowedAgents ?? bootstrap.allowedAgents ?? [],
+          agentId: auth.session.agentId,
+          mock: current.mock || isMockBootstrap(bootstrap),
+          workspaceRoot: resolveWorkspaceRoot(
+            bootstrap,
+            current.mock || isMockBootstrap(bootstrap),
+          ),
+        })
+      } catch (error) {
+        window.dispatchEvent(
+          new CustomEvent('yolo:web-show-error', {
+            detail: {
+              message: error instanceof Error ? error.message : String(error),
+            },
+          }),
+        )
+        throw error
+      } finally {
+        switchingAgent = false
+      }
     }
 
     function renderLeftRibbonLogout(): void {

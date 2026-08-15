@@ -427,6 +427,16 @@ export function createMockTransport(options?: {
         allowedAgents: MOCK_ALLOWED_AGENTS,
       }
     },
+    async switchAgent(agentId: string) {
+      if (!agents.some((agent) => agent.id === agentId && !agent.unavailable)) {
+        throw new Error('Agent is unavailable.')
+      }
+      activeAgentId = agentId
+      return {
+        session: { agentId: activeAgentId },
+        allowedAgents: MOCK_ALLOWED_AGENTS,
+      }
+    },
     async logout() {
       authenticated = false
     },

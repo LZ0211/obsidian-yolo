@@ -23,6 +23,7 @@ export type ShellClient = {
     session: { agentId: string }
     allowedAgents: AllowedAgent[]
   } | null>
+  switchAgent: WebApiClient['switchAgent']
   loginWithShareToken: (
     token: string,
   ) => Promise<{ session: { agentId: string }; allowedAgents: AllowedAgent[] }>

@@ -1,20 +1,17 @@
 import type { AllowedAgent } from './webShellTypes'
 
-/**
- * 当前智能体名称展示控件：以禁用 select 呈现（显示当前值、无法展开下拉）。
- * web 会话的 agent 由登录 token 绑定，切换入口不提供（与 OB 桌面一致）。
- */
+/** 当前智能体选择控件。 */
 export function createWebAgentSelector(options: {
   agents: AllowedAgent[]
   activeAgentId: string
+  onChange?: (agentId: string) => Promise<void> | void
 }): HTMLSelectElement {
   const selector = document.createElement('select')
   selector.className = 'yolo-web-agent-selector'
   selector.setAttribute('aria-label', '当前智能体')
-  selector.disabled = true
 
-  for (const agent of options.agents) {
-    if (agent.unavailable) continue
+  const availableAgents = options.agents.filter((agent) => !agent.unavailable)
+  for (const agent of availableAgents) {
     const option = document.createElement('option')
     option.value = agent.id
     option.textContent = agent.name ?? agent.id
@@ -22,5 +19,25 @@ export function createWebAgentSelector(options: {
   }
 
   selector.value = options.activeAgentId
+  selector.disabled = !options.onChange || availableAgents.length < 2
+
+  if (options.onChange && availableAgents.length >= 2) {
+    let lastValue = selector.value
+    selector.addEventListener('change', () => {
+      const nextValue = selector.value
+      selector.disabled = true
+      void (async () => {
+        try {
+          await options.onChange?.(nextValue)
+          lastValue = nextValue
+        } catch {
+          selector.value = lastValue
+        } finally {
+          if (selector.isConnected) selector.disabled = false
+        }
+      })()
+    })
+  }
+
   return selector
 }
