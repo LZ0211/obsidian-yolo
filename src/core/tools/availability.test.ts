@@ -32,7 +32,7 @@ describe('built-in tool availability gates (isAvailable)', () => {
     // No providers configured → unavailable.
     expect(
       search?.isAvailable?.({
-        settings: { webSearch: { providers: [] } },
+        settings: { webSearch: { providers: [] } } as never,
       }),
     ).toBe(false)
     // A configured provider → available.
@@ -42,7 +42,7 @@ describe('built-in tool availability gates (isAvailable)', () => {
           webSearch: {
             providers: [{ id: 'tavily', type: 'tavily', apiKey: 'k' }],
           },
-        },
+        } as never,
       }),
     ).toBe(true)
 

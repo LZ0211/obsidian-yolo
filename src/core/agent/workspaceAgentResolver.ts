@@ -47,16 +47,24 @@ export const APPROVAL_MODE_RANK: Record<AssistantToolApprovalMode, number> = {
  * plain template, no workspace agent) keeps every option.
  */
 export function filterApprovalOptionsForWorkspaceAgent<
-  T extends { value: AssistantToolApprovalMode },
+  T extends { value: string },
 >(
   options: readonly T[],
   templateTier: AssistantToolApprovalMode | undefined,
 ): T[] {
   if (!templateTier) return [...options]
   const templateRank = APPROVAL_MODE_RANK[templateTier]
-  return options.filter(
-    (option) => APPROVAL_MODE_RANK[option.value] >= templateRank,
-  )
+  return options.filter((option) => {
+    const value = option.value
+    if (
+      value !== 'full_access' &&
+      value !== 'dangerous_only' &&
+      value !== 'require_approval'
+    ) {
+      return false
+    }
+    return APPROVAL_MODE_RANK[value] >= templateRank
+  })
 }
 
 const DISCLOSURE_MODE_RANK: Record<AssistantToolDisclosureMode, number> = {

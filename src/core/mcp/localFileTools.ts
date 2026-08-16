@@ -130,7 +130,7 @@ if (
     (name) => !expectedNames.has(name),
   )
   const missing = [...expectedNames].filter(
-    (name) => !LOCAL_FILE_TOOL_SHORT_NAMES.includes(name),
+    (name) => !(LOCAL_FILE_TOOL_SHORT_NAMES as readonly string[]).includes(name),
   )
   if (extra.length > 0 || missing.length > 0) {
     throw new Error(

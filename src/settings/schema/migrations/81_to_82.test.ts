@@ -17,6 +17,10 @@ type MigratedData = {
     builtinToolOptions?: unknown
   }
   assistants?: MigratedAssistant[]
+  subagentResultMaxChars?: number
+  forkContextTurns?: number
+  mineru?: { enabled: boolean; baseUrl: string; apiKey: string }
+  chatOptions?: { moa?: { enabled: boolean; timeoutMs: number; maxOutputTokens: number } }
 }
 
 const runMigration = (data: Record<string, unknown>): MigratedData =>
