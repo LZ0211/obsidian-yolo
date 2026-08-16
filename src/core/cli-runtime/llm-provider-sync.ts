@@ -275,6 +275,8 @@ export function createLlmProviderSync(input: {
           codexPath,
           generateCodexConfig(provider.name ?? provider.id, baseUrl, modelName),
         )
+      } else {
+        await restoreFromBackup(codexPath)
       }
 
       // opencode：Anthropic 兼容走 @ai-sdk/anthropic，其余 @ai-sdk/openai-compatible。

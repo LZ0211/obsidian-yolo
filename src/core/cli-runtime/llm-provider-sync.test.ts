@@ -1,5 +1,5 @@
 /* eslint-disable import/no-nodejs-modules -- test uses a temporary config directory */
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 
@@ -87,6 +87,45 @@ describe('createLlmProviderSync', () => {
     expect(storage.get('yolo-cli-llm-injection-last-applied')).not.toContain(
       'key-two',
     )
+  })
+
+  it('restores Codex config when the selected provider stops supporting Responses', async () => {
+    const originalCodexConfig = 'model = "user-model"\n'
+    await writeFile(path.join(configDir, 'config.toml'), originalCodexConfig)
+    const settings = makeProviderSettings() as {
+      providers: Array<Record<string, string>>
+      chatModels: Array<Record<string, string>>
+    }
+    settings.providers[0].apiType = 'openai-responses'
+    const storage = new Map<string, unknown>()
+    const sync = createLlmProviderSync({
+      app: {
+        loadLocalStorage: (key) => storage.get(key),
+        saveLocalStorage: (key, value) => storage.set(key, value),
+      },
+      getSettings: () => settings as never,
+      injection: () => ({
+        enabled: true,
+        providerId: 'provider-1',
+        modelId: 'model-1',
+      }),
+      configDirOverride: configDir,
+    })
+
+    await expect(sync.apply()).resolves.toBe(true)
+    expect(
+      await readFile(path.join(configDir, 'config.toml'), 'utf8'),
+    ).toContain('model_provider = "yolo"')
+
+    settings.providers[0].apiType = 'anthropic'
+
+    await expect(sync.apply()).resolves.toBe(true)
+    await expect(
+      readFile(path.join(configDir, 'config.toml'), 'utf8'),
+    ).resolves.toBe(originalCodexConfig)
+    await expect(
+      readFile(path.join(configDir, 'config.toml.yolo-backup'), 'utf8'),
+    ).rejects.toThrow()
   })
 })
 
