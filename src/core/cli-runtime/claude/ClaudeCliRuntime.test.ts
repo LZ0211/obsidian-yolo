@@ -1051,7 +1051,7 @@ describe('ClaudeCliRuntime', () => {
     })
 
     expect(getSessionInjection).toHaveBeenCalledTimes(1)
-    expect(queryInputs[0].options.env).toMatchObject({
+    expect(queryInputs[0]?.options?.env).toMatchObject({
       ANTHROPIC_AUTH_TOKEN: 'session-token',
     })
   })

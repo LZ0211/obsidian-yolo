@@ -1,4 +1,5 @@
 import type {
+  McpServer,
   PermissionOption,
   RequestPermissionRequest,
   RequestPermissionResponse,
@@ -21,6 +22,7 @@ import type {
   CliSessionRef,
   CliTurnInput,
 } from '../types'
+import type { CliSessionInjection } from '../llm-injection'
 
 import { AcpHost, type AcpHostOptions, type AcpHostResolver } from './host'
 import {
@@ -39,6 +41,7 @@ export type AcpCliRuntimeOptions = Readonly<{
   args?: string[]
   cwd: string
   env?: Record<string, string>
+  getSessionInjection?: () => CliSessionInjection
   clientName?: string
   resolveHost?: AcpHostResolver
   createProcess?: AcpHostOptions['createProcess']
@@ -110,7 +113,7 @@ export class AcpCliRuntime implements CliRuntime {
         connection.loadSession({
           sessionId: ref.nativeSessionId,
           cwd: this.options.cwd,
-          mcpServers: [],
+          mcpServers: this.resolveMcpServers(),
         }),
       )
       this.captureModelState(response)
@@ -134,7 +137,10 @@ export class AcpCliRuntime implements CliRuntime {
 
     if (!input.sessionRef) {
       const response = await host.call((connection) =>
-        connection.newSession({ cwd: this.options.cwd, mcpServers: [] }),
+        connection.newSession({
+          cwd: this.options.cwd,
+          mcpServers: this.resolveMcpServers(),
+        }),
       )
       this.captureModelState(response)
       this.bindSession(host, {
@@ -152,7 +158,7 @@ export class AcpCliRuntime implements CliRuntime {
         connection.loadSession({
           sessionId: input.sessionRef!.nativeSessionId,
           cwd: this.options.cwd,
-          mcpServers: [],
+          mcpServers: this.resolveMcpServers(),
         }),
       )
       this.captureModelState(response)
@@ -191,6 +197,17 @@ export class AcpCliRuntime implements CliRuntime {
     if (!state) return
     this.models = state.models
     this.modelId = state.currentModelId ?? this.modelId
+  }
+
+  private resolveMcpServers(): McpServer[] {
+    const mcp = this.options.getSessionInjection?.().mcp
+    if (!mcp) return []
+    return [{
+      name: 'yolo',
+      type: 'http',
+      url: mcp.url,
+      headers: [{ name: 'Authorization', value: `Bearer ${mcp.token}` }],
+    }]
   }
 
   async sendTurn(input: CliTurnInput): Promise<void> {

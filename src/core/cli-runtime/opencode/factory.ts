@@ -1,6 +1,6 @@
 import { getCliPathOverride } from '../cli-path-override'
 import { loadLoginShellEnvironment } from '../login-shell-env'
-import { resolveRuntimeLlmEnv } from '../llm-injection'
+import { resolveCliSessionInjection } from '../llm-injection'
 import type { CliRuntimeFactory, CliRuntimeFactoryDeps } from '../types'
 import { resolveCliRuntimeWorkingPath } from '../working-directory'
 
@@ -21,10 +21,10 @@ export const createOpenCodeRuntimeFactory = async (
   const resolveProcessOptions = async () => {
     const env = {
       ...((await loadLoginShellEnvironment()) as NodeJS.ProcessEnv),
-      ...(resolveRuntimeLlmEnv(
+      ...(resolveCliSessionInjection(
         () => deps.getSettings?.() ?? null,
         'opencode',
-      ) ?? {}),
+      ).llmEnv ?? {}),
     }
     const cliPathOverride = getCliPathOverride(deps.app, 'opencode')
     const resolved = await openCodeAgentProfile.resolveCommand(
@@ -53,6 +53,11 @@ export const createOpenCodeRuntimeFactory = async (
           createDeps.workingDirectory,
         ),
         resolveHost: hostPool.acquire,
+        getSessionInjection: () =>
+          resolveCliSessionInjection(
+            () => deps.getSettings?.() ?? null,
+            'opencode',
+          ),
       }),
     warm: () => hostPool.warm(),
     dispose: () => hostPool.dispose(),
