@@ -12,14 +12,9 @@ import type {
 /**
  * YOLO 原生注入桥。
  *
- * 背景:此前其他插件把工具注册进 MCP Bridge(window.__mcpBridge__),YOLO 再
- * 通过 HTTP MCP 服务拉取,中间隔了一层网络中转。现在 YOLO 自己成为注入目标:
+ * 背景:此前其他插件通过网络中转注入工具。现在 YOLO 自己成为注入目标:
  * 其他插件在 onload 里探测 window.__yoloBridge__ 并 registerTool,工具立即
  * 通过 `yolo_bridge__<name>` in-process server 进入统一 MCP 工具链。
- *
- * 为兼容已按 MCP Bridge 合约编写的插件,当 window.__mcpBridge__ 尚未被
- * 占用时,YOLO 会以相同接口挂载一个别名;安装了原版 MCP Bridge 时则跳过,
- * 避免互相覆盖。
  */
 
 const BRIDGE_VERSION = '1.0.0'
@@ -78,6 +73,12 @@ class InjectedToolRegistry {
     groupName?: string,
     requiresApproval?: boolean,
   ): void {
+    const existing = this.tools.get(tool.name)
+    if (existing && existing.source !== source) {
+      throw new Error(
+        `Injected tool "${tool.name}" is already registered by source "${existing.source}".`,
+      )
+    }
     this.tools.set(tool.name, {
       tool,
       handler,
@@ -250,11 +251,9 @@ function toMcpTool(descriptor: InjectedToolDescriptor): McpTool {
 }
 
 let installedBridge: YoloInjectionBridge | null = null
-let legacyAliasInstalled = false
 
 type BridgeWindow = {
   __yoloBridge__?: unknown
-  __mcpBridge__?: unknown
 }
 
 /**
@@ -295,13 +294,6 @@ export function installYoloInjectionBridge(options?: {
   const win = getBridgeTarget()
   win.__yoloBridge__ = bridge
 
-  // Drop-in 兼容:MCP Bridge 未安装时以同名全局提供相同合约,
-  // 已按 __mcpBridge__ 编写的第三方插件无需改动即可直连 YOLO。
-  legacyAliasInstalled = win.__mcpBridge__ === undefined
-  if (legacyAliasInstalled) {
-    win.__mcpBridge__ = bridge
-  }
-
   let unsubscribe: (() => void) | null = null
   if (options?.onToolsChanged) {
     unsubscribe = registry.subscribe(options.onToolsChanged)
@@ -319,13 +311,9 @@ export function uninstallYoloInjectionBridge(): void {
     if (win.__yoloBridge__ === installedBridge) {
       delete win.__yoloBridge__
     }
-    if (legacyAliasInstalled && win.__mcpBridge__ === installedBridge) {
-      delete win.__mcpBridge__
-    }
   }
   injectedToolRegistry.clear()
   installedBridge = null
-  legacyAliasInstalled = false
 }
 
 /** 当前注入工具的描述符列表,供 getLocalFileTools() 附加。 */

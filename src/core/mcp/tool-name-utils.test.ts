@@ -1,4 +1,5 @@
 import {
+  RESERVED_HOST_SERVER_NAMES,
   RESERVED_MODULE_MODE_SERVER_PREFIX,
   validateServerName,
 } from './tool-name-utils'
@@ -49,4 +50,20 @@ describe('validateServerName', () => {
       validateServerName(`prefixed-${RESERVED_MODULE_MODE_SERVER_PREFIX}x`),
     ).not.toThrow()
   })
+
+  it.each(RESERVED_HOST_SERVER_NAMES)(
+    'rejects the host-owned server name %s in user configuration',
+    (name) => {
+      expect(() => validateServerName(name)).toThrow(/reserved/)
+    },
+  )
+
+  it.each(RESERVED_HOST_SERVER_NAMES)(
+    'allows the host-owned server name %s for in-process registration',
+    (name) => {
+      expect(() =>
+        validateServerName(name, { allowReservedPrefix: true }),
+      ).not.toThrow()
+    },
+  )
 })

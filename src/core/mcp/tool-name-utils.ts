@@ -10,6 +10,10 @@ const DEFAULT_DELIMITER = '__'
  * shadowed or spoofed by hand-written or imported server config.
  */
 export const RESERVED_MODULE_MODE_SERVER_PREFIX = 'module-mode-'
+export const RESERVED_HOST_SERVER_NAMES = [
+  'yolo_local',
+  'yolo_bridge',
+] as const
 
 /**
  * Validates that a server name follows the required format and doesn't contain the delimiter
@@ -45,6 +49,12 @@ export function validateServerName(
     throw new Error(
       `MCP server name ${name} uses the reserved "${RESERVED_MODULE_MODE_SERVER_PREFIX}" prefix.`,
     )
+  }
+  if (
+    !options.allowReservedPrefix &&
+    (RESERVED_HOST_SERVER_NAMES as readonly string[]).includes(name)
+  ) {
+    throw new Error(`MCP server name ${name} is reserved by the host.`)
   }
 }
 

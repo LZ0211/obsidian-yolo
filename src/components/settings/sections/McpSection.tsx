@@ -14,6 +14,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useLanguage } from '../../../contexts/language-context'
 import { useSettings } from '../../../contexts/settings-context'
 import { pruneOrphanedAssistantToolPreferences } from '../../../core/agent/tool-preferences'
+import { YOLO_BRIDGE_TOOL_SERVER_NAME } from '../../../core/mcp/injectionBridge'
 import { getLocalFileToolServerName } from '../../../core/mcp/localFileToolNames'
 import { McpManager } from '../../../core/mcp/mcpManager'
 import YoloPlugin from '../../../main'
@@ -158,6 +159,7 @@ function McpServerComponent({
         )
         const knownServerNames = new Set<string>([
           getLocalFileToolServerName(),
+          YOLO_BRIDGE_TOOL_SERVER_NAME,
           ...nextServers.map((s) => s.id),
         ])
         const nextAssistants = settings.assistants.map((assistant) =>

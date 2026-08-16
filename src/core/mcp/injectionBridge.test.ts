@@ -17,11 +17,11 @@ describe('YOLO injection bridge', () => {
     bridge?.unregisterBySource(TEST_SOURCE)
   })
 
-  it('installs __yoloBridge__ and the __mcpBridge__ compatibility alias', () => {
+  it('installs only the __yoloBridge__ global', () => {
     const uninstall = installYoloInjectionBridge()
     const win = globalThis as unknown as Record<string, unknown>
     expect(win['__yoloBridge__']).toBeDefined()
-    expect(win['__mcpBridge__']).toBe(win['__yoloBridge__'])
+    expect(win['__mcpBridge__']).toBeUndefined()
     expect(getInstalledInjectionBridge()).toBe(win['__yoloBridge__'])
     uninstall()
     expect(win['__yoloBridge__']).toBeUndefined()
@@ -81,6 +81,51 @@ describe('YOLO injection bridge', () => {
     bridge?.unregisterTool('test_echo')
     expect(isInjectedBridgeToolName('test_echo')).toBe(false)
     uninstall()
+  })
+
+  it('rejects a tool name already owned by another source', async () => {
+    installYoloInjectionBridge()
+    const bridge = getInstalledInjectionBridge()
+    bridge?.registerTool(
+      {
+        name: 'shared_name',
+        description: 'First source',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      async () => 'first',
+      'first-plugin',
+    )
+
+    expect(() =>
+      bridge?.registerTool(
+        {
+          name: 'shared_name',
+          description: 'Second source',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        async () => 'second',
+        'second-plugin',
+      ),
+    ).toThrow(/already registered by source "inject\/first-plugin"/)
+    await expect(callInjectedBridgeTool('shared_name', {})).resolves.toBe(
+      'first',
+    )
+  })
+
+  it('allows the owning source to refresh its tool registration', async () => {
+    installYoloInjectionBridge()
+    const bridge = getInstalledInjectionBridge()
+    const descriptor = {
+      name: 'refreshable',
+      description: 'Refreshable',
+      inputSchema: { type: 'object' as const, properties: {} },
+    }
+    bridge?.registerTool(descriptor, async () => 'first', 'same-plugin')
+    bridge?.registerTool(descriptor, async () => 'second', 'same-plugin')
+
+    await expect(callInjectedBridgeTool('refreshable', {})).resolves.toBe(
+      'second',
+    )
   })
 
   it('clears injected tools when the bridge is uninstalled', () => {
