@@ -14,7 +14,10 @@ describe('migrateFrom79To80', () => {
     )
     expect(step?.toVersion).toBe(80)
     expect(step?.migrate).toBe(migrateFrom79To80)
-    expect(SETTINGS_SCHEMA_VERSION).toBe(85)
+    expect(SETTINGS_SCHEMA_VERSION).toBe(81)
+    expect(
+      SETTING_MIGRATIONS.some((migration) => migration.toVersion > 81),
+    ).toBe(false)
   })
 
   it('advances the schema version without changing unrelated fields', () => {
@@ -24,6 +27,18 @@ describe('migrateFrom79To80', () => {
         chatModelId: 'chat-1',
       }),
     )
+  })
+
+  it('defaults the upstream update notice without overwriting an explicit choice', () => {
+    expect(migrateFrom79To80({ version: 79 }).pluginUpdateNoticeEnabled).toBe(
+      true,
+    )
+    expect(
+      migrateFrom79To80({
+        version: 79,
+        pluginUpdateNoticeEnabled: false,
+      }).pluginUpdateNoticeEnabled,
+    ).toBe(false)
   })
 
   it('no longer normalizes the removed conversation-history search setting', () => {
@@ -180,6 +195,56 @@ describe('migrateFrom79To80', () => {
       'yolo_local__memory_ops',
       'yolo_local__context_manage',
     ])
+  })
+
+  it('preserves every historical split-tool action when consolidating preferences', () => {
+    const legacyToolNames = [
+      'context_compact',
+      'context_prune_tool_results',
+      'fs_delete',
+      'fs_create_dir',
+      'fs_move',
+      'memory_add',
+      'memory_update',
+      'memory_delete',
+      'scheduled_task_create',
+      'scheduled_task_update',
+      'scheduled_task_delete',
+      'scheduled_task_list',
+      'scheduled_task_get',
+      'scheduled_task_run_now',
+    ]
+    const result = migrateFrom79To80({
+      version: 79,
+      assistants: [
+        {
+          id: 'a1',
+          toolPreferences: Object.fromEntries(
+            legacyToolNames.map((name) => [
+              `yolo_local__${name}`,
+              { enabled: true },
+            ]),
+          ),
+        },
+      ],
+    })
+    const preferences = firstAssistant(result).toolPreferences as Record<
+      string,
+      { actions?: Record<string, unknown> }
+    >
+
+    expect(
+      Object.keys(preferences.yolo_local__context_manage.actions ?? {}),
+    ).toEqual(['compact', 'prune'])
+    expect(
+      Object.keys(preferences.yolo_local__fs_file_ops.actions ?? {}),
+    ).toEqual(['delete', 'create_dir', 'move'])
+    expect(
+      Object.keys(preferences.yolo_local__memory_ops.actions ?? {}),
+    ).toEqual(['add', 'update', 'delete'])
+    expect(
+      Object.keys(preferences.yolo_local__scheduled_task_ops.actions ?? {}),
+    ).toEqual(['create', 'update', 'delete', 'list', 'get', 'run_now'])
   })
 
   it('remaps legacy builtinToolOptions into actionOptions', () => {

@@ -397,7 +397,11 @@ export type AgentShareTokenRecord = z.infer<typeof agentShareTokenRecordSchema>
 export const protectedPathRuleSchema = z.union([
   z.object({ kind: z.literal('prefix'), path: z.string() }),
   z.object({ kind: z.literal('exact'), path: z.string() }),
-  z.object({ kind: z.literal('namePrefix'), dir: z.string(), name: z.string() }),
+  z.object({
+    kind: z.literal('namePrefix'),
+    dir: z.string(),
+    name: z.string(),
+  }),
   z.object({ kind: z.literal('except'), path: z.string() }),
 ])
 
@@ -423,6 +427,10 @@ export const workspaceAgentBehaviorOverridesSchema = z.object({
   systemPromptOverride: z.string().optional(),
   disabledToolNames: z.array(z.string()).optional(),
   toolConfigOverrides: z
+    .record(z.string(), assistantToolOverridePreferenceSchema)
+    .optional(),
+  disabledBuiltinCapabilityIds: z.array(z.string()).optional(),
+  builtinCapabilityConfigOverrides: z
     .record(z.string(), assistantToolOverridePreferenceSchema)
     .optional(),
   disabledSkillIds: z.array(z.string()).optional(),

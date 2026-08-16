@@ -4,6 +4,8 @@ import type {
 } from '../../settings/schema/setting.types'
 import type {
   Assistant,
+  AssistantToolApprovalMode,
+  AssistantToolDisclosureMode,
   AssistantSkillOverridePreference,
   AssistantSkillPreference,
   AssistantToolOverridePreference,
@@ -12,6 +14,10 @@ import type {
 } from '../../types/assistant.types'
 
 import { DEFAULT_ASSISTANT_ID, isDefaultAssistantId } from './default-assistant'
+import {
+  buildDefaultBuiltinCapabilityPreferences,
+  getAssistantToolPreferences,
+} from './tool-preferences'
 
 /**
  * Workspace agent resolution (migrated from the local fork, simplified): a
@@ -24,15 +30,73 @@ function unique<T>(items: T[]): T[] {
   return [...new Set(items)]
 }
 
-function getTemplateEnabledToolNames(template: Assistant): string[] {
-  const prefs = template.toolPreferences ?? {}
-  const includeBuiltinTools = template.includeBuiltinTools !== false
+const APPROVAL_MODE_RANK: Record<AssistantToolApprovalMode, number> = {
+  full_access: 0,
+  dangerous_only: 1,
+  require_approval: 2,
+}
+
+const DISCLOSURE_MODE_RANK: Record<AssistantToolDisclosureMode, number> = {
+  always: 0,
+  on_demand: 1,
+}
+
+function narrowerValue<T extends string>(
+  templateValue: T | undefined,
+  overrideValue: T | undefined,
+  rank: Record<T, number>,
+): T | undefined {
+  if (!templateValue) return overrideValue
+  if (!overrideValue) return templateValue
+  return rank[overrideValue] > rank[templateValue]
+    ? overrideValue
+    : templateValue
+}
+
+export function mergeBuiltinCapabilityPreferences(
+  template: Pick<Assistant, 'builtinCapabilityPreferences'>,
+  disabledCapabilityIds: readonly string[],
+  configOverrides?: Record<string, AssistantToolOverridePreference>,
+): Record<string, AssistantToolPreference> {
+  const disabledSet = new Set(disabledCapabilityIds)
+  const preferences = {
+    ...buildDefaultBuiltinCapabilityPreferences(),
+    ...(template.builtinCapabilityPreferences ?? {}),
+  }
+
+  return Object.fromEntries(
+    Object.entries(preferences).map(([capabilityId, preference]) => {
+      const override = configOverrides?.[capabilityId]
+      return [
+        capabilityId,
+        {
+          ...preference,
+          enabled:
+            (preference.enabled ?? false) && !disabledSet.has(capabilityId),
+          approvalMode: narrowerValue(
+            preference.approvalMode,
+            override?.approvalMode,
+            APPROVAL_MODE_RANK,
+          ),
+          disclosureMode: narrowerValue(
+            preference.disclosureMode,
+            override?.disclosureMode,
+            DISCLOSURE_MODE_RANK,
+          ),
+        },
+      ]
+    }),
+  )
+}
+
+export function getTemplateEnabledRemoteToolNames(
+  template: Assistant,
+): string[] {
+  const prefs = getAssistantToolPreferences(template)
   return Object.entries(prefs)
     .filter(([, preference]) => preference.enabled)
     .map(([toolName]) => toolName)
-    .filter(
-      (toolName) => includeBuiltinTools || !toolName.startsWith('yolo_local__'),
-    )
+    .filter((toolName) => !toolName.startsWith('yolo_local__'))
 }
 
 function clampToolPreferenceOverride(
@@ -113,7 +177,7 @@ export function resolveWorkspaceAgentAssistant(
   const overrides = agent.behaviorOverrides ?? {}
   const agentModeAllowed = overrides.agentModeAllowed ?? true
 
-  const templateEnabledToolNames = getTemplateEnabledToolNames(template)
+  const templateEnabledToolNames = getTemplateEnabledRemoteToolNames(template)
   const templateToolSet = new Set(templateEnabledToolNames)
   const disabledSet = new Set(overrides.disabledToolNames ?? [])
   const enabledToolNames = templateEnabledToolNames.filter(
@@ -151,6 +215,17 @@ export function resolveWorkspaceAgentAssistant(
     skillPreferences[skillName] = { enabled: false }
   }
 
+  const builtinCapabilityPreferences = mergeBuiltinCapabilityPreferences(
+    template,
+    overrides.disabledBuiltinCapabilityIds ?? [],
+    overrides.builtinCapabilityConfigOverrides,
+  )
+  const hasEnabledBuiltinCapability =
+    template.includeBuiltinTools !== false &&
+    Object.values(builtinCapabilityPreferences).some(
+      (preference) => preference.enabled,
+    )
+
   return {
     ...template,
     id: agent.id,
@@ -161,9 +236,12 @@ export function resolveWorkspaceAgentAssistant(
       overrides.promptOverride ??
       template.systemPrompt ??
       '',
-    enableTools: (template.enableTools ?? true) && enabledToolNames.length > 0,
+    enableTools:
+      (template.enableTools ?? true) &&
+      (enabledToolNames.length > 0 || hasEnabledBuiltinCapability),
     enabledToolNames,
     toolPreferences,
+    builtinCapabilityPreferences,
     enabledSkills,
     skillPreferences,
     workspaceAccessPolicy: toWorkspaceAccessPolicy(agent),

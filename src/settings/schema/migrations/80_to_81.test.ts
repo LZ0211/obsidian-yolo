@@ -1,4 +1,6 @@
 import { migrateFrom80To81 } from './80_to_81'
+import { SUBAGENT_FORK_CONTEXT_TURNS_DEFAULT } from '../../../core/agent/subagent/constants'
+import { SUBAGENT_RESULT_MAX_CHARS } from '../../../core/agent/subagent/result-limit'
 
 type MigratedAssistant = {
   toolPreferences: Record<string, { enabled?: boolean; approvalMode?: string }>
@@ -134,12 +136,47 @@ describe('migrateFrom80To81', () => {
   })
 
   it('stamps the version when there are no assistants', () => {
-    expect(runMigration({ version: 80 })).toEqual({
-      version: 81,
-      mcp: expect.objectContaining({
-        builtinCapabilityOptions: expect.any(Object),
+    expect(runMigration({ version: 80 })).toEqual(
+      expect.objectContaining({
+        version: 81,
+        mcp: expect.objectContaining({
+          builtinCapabilityOptions: expect.any(Object),
+        }),
+        subagentResultMaxChars: SUBAGENT_RESULT_MAX_CHARS,
+        forkContextTurns: SUBAGENT_FORK_CONTEXT_TURNS_DEFAULT,
+        mineru: { enabled: false, baseUrl: '', apiKey: '' },
       }),
-    })
+    )
+  })
+
+  it('preserves existing local feature settings while folding them into schema 81', () => {
+    const result = runMigration({
+      version: 80,
+      subagentResultMaxChars: 12_000,
+      forkContextTurns: 20,
+      mineru: {
+        enabled: true,
+        baseUrl: 'http://localhost:7860',
+        apiKey: 'Bearer test',
+      },
+    }) as MigratedData & {
+      subagentResultMaxChars: number
+      forkContextTurns: number
+      mineru: { enabled: boolean; baseUrl: string; apiKey: string }
+    }
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        version: 81,
+        subagentResultMaxChars: 12_000,
+        forkContextTurns: 20,
+        mineru: {
+          enabled: true,
+          baseUrl: 'http://localhost:7860',
+          apiKey: 'Bearer test',
+        },
+      }),
+    )
   })
 
   it('a disabled legacy File Editing agent entry produces file_editing.enabled === false', () => {
@@ -374,6 +411,52 @@ describe('migrateFrom80To81', () => {
         .toolServerPreferences,
     ).toEqual({
       server: { approvalMode: 'require_approval', disclosureMode: 'always' },
+    })
+  })
+
+  it('moves Workspace Agent built-in overrides to capability keys while preserving remote tools', () => {
+    const result = runMigration({
+      version: 80,
+      workspaceAgents: [
+        {
+          id: 'workspace-1',
+          behaviorOverrides: {
+            disabledToolNames: [
+              'yolo_local__fs_write',
+              'remote_server__search',
+            ],
+            toolConfigOverrides: {
+              yolo_local__fs_edit: { approvalMode: 'full_access' },
+              yolo_local__fs_write: {
+                approvalMode: 'require_approval',
+              },
+              remote_server__search: {
+                approvalMode: 'require_approval',
+              },
+            },
+          },
+        },
+      ],
+    }) as MigratedData & {
+      workspaceAgents: Array<{
+        behaviorOverrides: {
+          disabledToolNames?: string[]
+          disabledBuiltinCapabilityIds?: string[]
+          toolConfigOverrides?: Record<string, unknown>
+          builtinCapabilityConfigOverrides?: Record<string, unknown>
+        }
+      }>
+    }
+
+    expect(result.workspaceAgents[0].behaviorOverrides).toEqual({
+      disabledBuiltinCapabilityIds: ['file_editing'],
+      builtinCapabilityConfigOverrides: {
+        file_editing: { approvalMode: 'require_approval' },
+      },
+      disabledToolNames: ['remote_server__search'],
+      toolConfigOverrides: {
+        remote_server__search: { approvalMode: 'require_approval' },
+      },
     })
   })
 

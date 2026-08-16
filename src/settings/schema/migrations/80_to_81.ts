@@ -1,4 +1,6 @@
 import type { AssistantToolApprovalMode } from '../../../types/assistant.types'
+import { SUBAGENT_FORK_CONTEXT_TURNS_DEFAULT } from '../../../core/agent/subagent/constants'
+import { SUBAGENT_RESULT_MAX_CHARS } from '../../../core/agent/subagent/result-limit'
 import { DEFAULT_PARENT_SUBAGENT_TIMEOUT_CONFIG } from '../../../core/agent/subagent/subagent-timeout-config'
 import type { SettingMigration } from '../setting.types'
 
@@ -383,6 +385,101 @@ const migrateAssistantBuiltinCapabilities = (
   return next
 }
 
+const migrateWorkspaceAgentBuiltinCapabilities = (
+  agent: Record<string, unknown>,
+): Record<string, unknown> => {
+  if (!isRecord(agent.behaviorOverrides)) return agent
+
+  const overrides = agent.behaviorOverrides
+  const disabledToolNames = Array.isArray(overrides.disabledToolNames)
+    ? overrides.disabledToolNames.filter(
+        (name): name is string => typeof name === 'string',
+      )
+    : []
+  const toolConfigOverrides = isRecord(overrides.toolConfigOverrides)
+    ? overrides.toolConfigOverrides
+    : {}
+  const hasLegacyBuiltinOverrides =
+    disabledToolNames.some(isLocalFqn) ||
+    Object.keys(toolConfigOverrides).some(isLocalFqn)
+
+  if (!hasLegacyBuiltinOverrides) return agent
+
+  const disabledBuiltinCapabilityIds = new Set(
+    Array.isArray(overrides.disabledBuiltinCapabilityIds)
+      ? overrides.disabledBuiltinCapabilityIds.filter(
+          (id): id is string => typeof id === 'string',
+        )
+      : [],
+  )
+  const builtinCapabilityConfigOverrides = isRecord(
+    overrides.builtinCapabilityConfigOverrides,
+  )
+    ? { ...overrides.builtinCapabilityConfigOverrides }
+    : {}
+
+  for (const capability of V81_CAPABILITIES) {
+    const memberFqns = capability.toolNames.map(
+      (toolName) => `${LEGACY_BUILTIN_FQN_PREFIX}${toolName}`,
+    )
+    if (memberFqns.some((name) => disabledToolNames.includes(name))) {
+      disabledBuiltinCapabilityIds.add(capability.id)
+    }
+
+    const approvalModes = memberFqns
+      .map((name) => toolConfigOverrides[name])
+      .filter(isRecord)
+      .map((entry) => entry.approvalMode)
+      .filter(isApprovalMode)
+    if (approvalModes.length === 0) continue
+
+    const existing = builtinCapabilityConfigOverrides[capability.id]
+    const existingApprovalMode = isRecord(existing)
+      ? existing.approvalMode
+      : undefined
+    const mergedModes = isApprovalMode(existingApprovalMode)
+      ? [existingApprovalMode, ...approvalModes]
+      : approvalModes
+    builtinCapabilityConfigOverrides[capability.id] = {
+      ...(isRecord(existing) ? existing : {}),
+      approvalMode: mostStrictApprovalMode(mergedModes),
+    }
+  }
+
+  const nextDisabledToolNames = disabledToolNames.filter(
+    (name) => !isLocalFqn(name),
+  )
+  const nextToolConfigOverrides = Object.fromEntries(
+    Object.entries(toolConfigOverrides).filter(([name]) => !isLocalFqn(name)),
+  )
+  const {
+    disabledToolNames: _disabledToolNames,
+    toolConfigOverrides: _toolConfigOverrides,
+    ...restOverrides
+  } = overrides
+
+  return {
+    ...agent,
+    behaviorOverrides: {
+      ...restOverrides,
+      ...(disabledBuiltinCapabilityIds.size > 0
+        ? {
+            disabledBuiltinCapabilityIds: [...disabledBuiltinCapabilityIds],
+          }
+        : {}),
+      ...(Object.keys(builtinCapabilityConfigOverrides).length > 0
+        ? { builtinCapabilityConfigOverrides }
+        : {}),
+      ...(nextDisabledToolNames.length > 0
+        ? { disabledToolNames: nextDisabledToolNames }
+        : {}),
+      ...(Object.keys(nextToolConfigOverrides).length > 0
+        ? { toolConfigOverrides: nextToolConfigOverrides }
+        : {}),
+    },
+  }
+}
+
 /**
  * v80->v81: collapse the pre-capability persistence shape (short tool/group
  * names) into the capability-keyed shape everywhere built-in tool
@@ -410,6 +507,20 @@ export const migrateFrom80To81: SettingMigration['migrate'] = (data) => {
     )
   }
 
+  if (Array.isArray(next.workspaceAgents)) {
+    next.workspaceAgents = next.workspaceAgents.map((agent) =>
+      isRecord(agent) ? migrateWorkspaceAgentBuiltinCapabilities(agent) : agent,
+    )
+  }
+
+  if (typeof next.subagentResultMaxChars !== 'number') {
+    next.subagentResultMaxChars = SUBAGENT_RESULT_MAX_CHARS
+  }
+  if (typeof next.forkContextTurns !== 'number') {
+    next.forkContextTurns = SUBAGENT_FORK_CONTEXT_TURNS_DEFAULT
+  }
+  next.mineru ??= { enabled: false, baseUrl: '', apiKey: '' }
+
   const chatOptions = isRecord(next.chatOptions) ? next.chatOptions : {}
   next.chatOptions = {
     ...chatOptions,
@@ -427,7 +538,8 @@ export const migrateFrom80To81: SettingMigration['migrate'] = (data) => {
       port: Number(next.webRuntime.port) || 18900,
       host: String(next.webRuntime.host ?? '127.0.0.1'),
       token: String(next.webRuntime.token ?? ''),
-      maxConcurrentAgentRuns: Number(next.webRuntime.maxConcurrentAgentRuns) || 12,
+      maxConcurrentAgentRuns:
+        Number(next.webRuntime.maxConcurrentAgentRuns) || 12,
     }
   }
   if (isRecord(next.scheduledTasks)) {

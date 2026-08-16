@@ -1,7 +1,3 @@
-import {
-  CONSOLIDATED_TOOLS,
-  LEGACY_TOOL_TO_CAPABILITY,
-} from '../../../core/agent/consolidated-tools'
 import type { SettingMigration } from '../setting.types'
 
 /**
@@ -53,6 +49,33 @@ const preserveBooleanOrFalse = (value: unknown): boolean =>
 
 const FQN_PREFIX = 'yolo_local__'
 
+// Frozen v79 catalog. This historical migration must not depend on the live
+// runtime registry or on a separate compatibility module.
+const CONSOLIDATED_TOOL_NAMES = new Set([
+  'context_manage',
+  'fs_file_ops',
+  'memory_ops',
+  'scheduled_task_ops',
+  'project_ops',
+])
+
+const LEGACY_TOOL_TO_CAPABILITY: Readonly<Record<string, string>> = {
+  context_compact: 'context_manage:compact',
+  context_prune_tool_results: 'context_manage:prune',
+  fs_delete: 'fs_file_ops:delete',
+  fs_create_dir: 'fs_file_ops:create_dir',
+  fs_move: 'fs_file_ops:move',
+  memory_add: 'memory_ops:add',
+  memory_update: 'memory_ops:update',
+  memory_delete: 'memory_ops:delete',
+  scheduled_task_create: 'scheduled_task_ops:create',
+  scheduled_task_update: 'scheduled_task_ops:update',
+  scheduled_task_delete: 'scheduled_task_ops:delete',
+  scheduled_task_list: 'scheduled_task_ops:list',
+  scheduled_task_get: 'scheduled_task_ops:get',
+  scheduled_task_run_now: 'scheduled_task_ops:run_now',
+}
+
 /** Split a key into its optional FQN prefix and the bare tool short name. */
 const splitKey = (key: string): { prefix: string; shortName: string } => {
   if (key.startsWith(FQN_PREFIX)) {
@@ -62,7 +85,7 @@ const splitKey = (key: string): { prefix: string; shortName: string } => {
 }
 
 const isConsolidatedShortName = (shortName: string): boolean =>
-  (CONSOLIDATED_TOOLS as readonly string[]).includes(shortName)
+  CONSOLIDATED_TOOL_NAMES.has(shortName)
 
 /** Resolve a legacy tool short name to its consolidated `toolName:action`. */
 const resolveLegacyCapability = (
@@ -460,6 +483,8 @@ const remapBuiltinToolOptions = (
 
 export const migrateFrom79To80: SettingMigration['migrate'] = (data) => {
   const next: Record<string, unknown> = { ...data, version: 80 }
+
+  next.pluginUpdateNoticeEnabled ??= true
 
   // TTS/STT/image model defaults (folded from the former v80→v81 migration).
   next.ttsModels = Array.isArray(data.ttsModels) ? data.ttsModels : []

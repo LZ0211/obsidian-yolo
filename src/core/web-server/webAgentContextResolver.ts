@@ -9,8 +9,11 @@ import type {
   AssistantToolOverridePreference,
   AssistantToolPreference,
 } from '../../types/assistant.types'
-import { getEnabledAssistantToolNames } from '../agent/tool-preferences'
-import { getUnifiedAgentList } from '../agent/workspaceAgentResolver'
+import {
+  getTemplateEnabledRemoteToolNames,
+  getUnifiedAgentList,
+  mergeBuiltinCapabilityPreferences,
+} from '../agent/workspaceAgentResolver'
 
 import { hashWorkspaceRoot, normalizeVaultRootPath } from './shareTokenCrypto'
 import type {
@@ -114,6 +117,7 @@ const clampSkillPreferenceOverride = (
 const buildToolPreferences = (
   template: Assistant,
   disabledToolNames: string[],
+  hasEnabledBuiltinCapability: boolean,
   toolConfigOverrides?: Record<string, AssistantToolOverridePreference>,
 ): {
   enableTools: boolean
@@ -122,7 +126,7 @@ const buildToolPreferences = (
   toolPreferences: Record<string, AssistantToolPreference>
   toolServerPreferences: Assistant['toolServerPreferences']
 } => {
-  const templateEnabledToolNames = getEnabledAssistantToolNames(template)
+  const templateEnabledToolNames = getTemplateEnabledRemoteToolNames(template)
   const templateToolSet = new Set(templateEnabledToolNames)
   const disabledSet = new Set(disabledToolNames)
   const enabledToolNames = templateEnabledToolNames.filter(
@@ -148,7 +152,9 @@ const buildToolPreferences = (
   }
 
   return {
-    enableTools: (template.enableTools ?? true) && enabledToolNames.length > 0,
+    enableTools:
+      (template.enableTools ?? true) &&
+      (enabledToolNames.length > 0 || hasEnabledBuiltinCapability),
     includeBuiltinTools: template.includeBuiltinTools ?? true,
     enabledToolNames,
     toolPreferences,
@@ -268,9 +274,21 @@ export function resolveEffectiveAgent(
   const behaviorOverrides = agent.behaviorOverrides ?? {}
   const agentModeAllowed = behaviorOverrides.agentModeAllowed ?? true
 
+  const builtinCapabilityPreferences = mergeBuiltinCapabilityPreferences(
+    template,
+    behaviorOverrides.disabledBuiltinCapabilityIds ?? [],
+    behaviorOverrides.builtinCapabilityConfigOverrides,
+  )
+  const hasEnabledBuiltinCapability =
+    template.includeBuiltinTools !== false &&
+    Object.values(builtinCapabilityPreferences).some(
+      (preference) => preference.enabled,
+    )
+
   const toolState = buildToolPreferences(
     template,
     behaviorOverrides.disabledToolNames ?? [],
+    hasEnabledBuiltinCapability,
     behaviorOverrides.toolConfigOverrides,
   )
   const skillState = buildSkillPreferences(
@@ -296,6 +314,7 @@ export function resolveEffectiveAgent(
       includeCurrentFileContent: template.includeCurrentFileContent,
       timeContextEnabled: template.timeContextEnabled,
       ...toolState,
+      builtinCapabilityPreferences,
       ...skillState,
       agentModeAllowed,
     },

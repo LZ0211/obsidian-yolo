@@ -50,6 +50,7 @@ export type EffectiveWorkspaceAgent = WorkspaceAgent &
     | 'includeBuiltinTools'
     | 'enabledToolNames'
     | 'toolPreferences'
+    | 'builtinCapabilityPreferences'
     | 'toolServerPreferences'
     | 'enabledSkills'
     | 'skillPreferences'

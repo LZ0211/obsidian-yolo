@@ -80,6 +80,53 @@ describe('workspaceAgentResolver', () => {
     expect(resolved!.skillPreferences?.['skill-2']).toEqual({ enabled: false })
   })
 
+  it('only narrows template built-in capability permissions', () => {
+    const withCapabilities: Assistant = {
+      ...template,
+      builtinCapabilityPreferences: {
+        file_editing: { enabled: true, approvalMode: 'full_access' },
+        vault_shell: { enabled: true, approvalMode: 'dangerous_only' },
+      },
+    }
+    const withOverrides = {
+      ...agent,
+      behaviorOverrides: {
+        disabledBuiltinCapabilityIds: ['file_editing'],
+        builtinCapabilityConfigOverrides: {
+          file_editing: { approvalMode: 'full_access' },
+          vault_shell: { approvalMode: 'require_approval' },
+        },
+      },
+    } as WorkspaceAgent
+
+    const resolved = resolveWorkspaceAgentAssistant(withOverrides, [
+      withCapabilities,
+    ])
+
+    expect(resolved?.builtinCapabilityPreferences).toMatchObject({
+      file_editing: { enabled: false, approvalMode: 'full_access' },
+      vault_shell: { enabled: true, approvalMode: 'require_approval' },
+    })
+  })
+
+  it('keeps tools enabled when the template only enables built-in capabilities', () => {
+    const builtinOnlyTemplate: Assistant = {
+      ...template,
+      enabledToolNames: [],
+      toolPreferences: {},
+      includeBuiltinTools: true,
+      builtinCapabilityPreferences: {
+        file_reading: { enabled: true, approvalMode: 'full_access' },
+      },
+    }
+
+    const resolved = resolveWorkspaceAgentAssistant(agent, [
+      builtinOnlyTemplate,
+    ])
+
+    expect(resolved?.enableTools).toBe(true)
+  })
+
   it('returns null when the template is missing or the agent is disabled', () => {
     expect(resolveWorkspaceAgentAssistant(agent, [])).toBeNull()
     expect(

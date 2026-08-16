@@ -23,7 +23,7 @@ const template: Assistant = {
   name: 'Template',
   systemPrompt: 'template prompt',
   enableTools: true,
-  includeBuiltinTools: true,
+  includeBuiltinTools: false,
   enabledToolNames: ['read_file'],
   toolPreferences: {
     read_file: {
@@ -222,6 +222,57 @@ const makeSession = (overrides: Partial<WebSession> = {}): WebSession => ({
 })
 
 describe('resolveEffectiveAgent', () => {
+  it('propagates narrowed built-in capabilities into the web runtime agent', () => {
+    const result = resolveEffectiveAgent(
+      makeAgent({
+        behaviorOverrides: {
+          disabledBuiltinCapabilityIds: ['file_editing'],
+          builtinCapabilityConfigOverrides: {
+            vault_shell: { approvalMode: 'require_approval' },
+          },
+        },
+      }),
+      {
+        ...template,
+        builtinCapabilityPreferences: {
+          file_editing: { enabled: true, approvalMode: 'full_access' },
+          vault_shell: { enabled: true, approvalMode: 'full_access' },
+        },
+      },
+    )
+
+    expect(result).toMatchObject({
+      ok: true,
+      agent: {
+        builtinCapabilityPreferences: {
+          file_editing: { enabled: false, approvalMode: 'full_access' },
+          vault_shell: { enabled: true, approvalMode: 'require_approval' },
+        },
+      },
+    })
+  })
+
+  it('keeps tools enabled when the template only enables built-in capabilities', () => {
+    const result = resolveEffectiveAgent(makeAgent(), {
+      ...template,
+      includeBuiltinTools: true,
+      enabledToolNames: [],
+      toolPreferences: {},
+      builtinCapabilityPreferences: {
+        file_reading: { enabled: true, approvalMode: 'full_access' },
+      },
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      agent: {
+        enableTools: true,
+        enabledToolNames: [],
+        toolPreferences: {},
+      },
+    })
+  })
+
   it('clamps stale tool and skill overrides to the current template ceiling', () => {
     const result = resolveEffectiveAgent(
       makeAgent({
