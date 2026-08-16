@@ -1,5 +1,5 @@
 import { getCliPathOverride } from '../cli-path-override'
-import { resolveRuntimeLlmEnv } from '../llm-injection'
+import { resolveCliSessionInjection } from '../llm-injection'
 import type { CliRuntimeFactory, CliRuntimeFactoryDeps } from '../types'
 import { resolveCliRuntimeWorkingPath } from '../working-directory'
 
@@ -28,14 +28,17 @@ export const createClaudeRuntimeFactory = async (
       getConfiguredCliPath: () => getCliPathOverride(deps.app, 'claude-code'),
     }))
 
-  const resolveLlmEnv = () =>
-    resolveRuntimeLlmEnv(() => deps.getSettings?.() ?? null, 'claude-code')
+  const getSessionInjection = () =>
+    resolveCliSessionInjection(
+      () => deps.getSettings?.() ?? null,
+      'claude-code',
+    )
 
   return {
     create: (createDeps) =>
       new ClaudeCliRuntime({
         ...getClaudeRuntimeOptions(),
-        llmEnv: resolveLlmEnv() ?? undefined,
+        getSessionInjection,
         vaultPath: resolveCliRuntimeWorkingPath(
           createDeps.vaultPath,
           createDeps.workingDirectory,

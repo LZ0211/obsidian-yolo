@@ -27,6 +27,7 @@ import {
 } from '../context-usage'
 import { assertCliRuntimeAvailable } from '../desktop'
 import { includeActiveCliModel } from '../model-catalog'
+import type { CliSessionInjection } from '../llm-injection'
 import {
   type CliChatMode,
   resolveClaudePermissionMode,
@@ -115,6 +116,8 @@ export type ClaudeCliRuntimeOptions = {
   yoloEnabled?: boolean
   /** CLI LLM 注入 env（cc-switch 式）；缺省时 SDK 用自身配置。 */
   llmEnv?: Record<string, string>
+  /** Read once as the native Claude session is opened. */
+  getSessionInjection?: () => CliSessionInjection
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -294,6 +297,7 @@ export class ClaudeCliRuntime implements CliRuntime {
   private cliChatMode: CliChatMode
   private yoloEnabled: boolean
   private readonly llmEnv: Record<string, string>
+  private readonly getSessionInjection?: () => CliSessionInjection
   private activeAssistant?: ChatAssistantMessage
   private activeAssistantKey?: string
   private reasoningTracker?: ReasoningPhaseTracker
@@ -315,6 +319,7 @@ export class ClaudeCliRuntime implements CliRuntime {
     this.cliChatMode = options.cliChatMode ?? 'agent'
     this.yoloEnabled = options.yoloEnabled ?? false
     this.llmEnv = options.llmEnv ?? {}
+    this.getSessionInjection = options.getSessionInjection
   }
 
   async listSessions(): Promise<CliSessionMetadata[]> {
@@ -421,6 +426,7 @@ export class ClaudeCliRuntime implements CliRuntime {
     forkSession?: boolean
     readyKey: string
   }): Promise<void> {
+    const sessionInjection = this.getSessionInjection?.()
     await this.resetQuery()
     this.currentSessionRef = sessionRef
     this.publishedSessionRef = undefined
@@ -453,7 +459,11 @@ export class ClaudeCliRuntime implements CliRuntime {
           abortController: nativeAbortController,
           cwd: this.vaultPath,
           pathToClaudeCodeExecutable: processSupport.cliPath,
-          env: { ...processSupport.env, ...this.llmEnv },
+          env: {
+            ...processSupport.env,
+            ...this.llmEnv,
+            ...(sessionInjection?.llmEnv ?? {}),
+          },
           spawnClaudeCodeProcess: processSupport.spawnClaudeCodeProcess,
           includePartialMessages: true,
           enableFileCheckpointing: true,

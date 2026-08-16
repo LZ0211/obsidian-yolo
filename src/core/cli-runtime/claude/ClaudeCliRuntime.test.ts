@@ -1033,6 +1033,29 @@ describe('ClaudeCliRuntime', () => {
     })
   })
 
+  it('reads injected provider settings when a session starts', async () => {
+    const { sdk, queryInputs } = createSdk()
+    const getSessionInjection = jest.fn(() => ({
+      llmEnv: { ANTHROPIC_AUTH_TOKEN: 'session-token' },
+      mcp: null,
+    }))
+    const runtime = new ClaudeCliRuntime({
+      vaultPath: '/vault',
+      loadSdk: async () => sdk,
+      resolveProcessSupport: async () => processSupport,
+      getSessionInjection,
+    })
+
+    await runtime.ensureReady({
+      sessionRef: { runtimeId: 'claude-code', nativeSessionId: 'session-1' },
+    })
+
+    expect(getSessionInjection).toHaveBeenCalledTimes(1)
+    expect(queryInputs[0].options.env).toMatchObject({
+      ANTHROPIC_AUTH_TOKEN: 'session-token',
+    })
+  })
+
   it('lists native skills and routes manual compaction through Claude Code', async () => {
     const { sdk, queryInputs, queryInstance } = createSdk()
     queryInstance.reloadSkills.mockResolvedValue({

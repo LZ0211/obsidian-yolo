@@ -61,10 +61,13 @@ describe('createClaudeRuntimeFactory', () => {
     factory.create({ app, vaultPath: '/vault/current' })
 
     expect(getClaudeRuntimeOptions).toHaveBeenCalledTimes(1)
-    expect(ClaudeCliRuntimeMock).toHaveBeenCalledWith({
-      getConfiguredCliPath,
-      vaultPath: '/vault/current',
-    })
+    expect(ClaudeCliRuntimeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        getConfiguredCliPath,
+        getSessionInjection: expect.any(Function),
+        vaultPath: '/vault/current',
+      }),
+    )
     expect(mockedGetCliPathOverride).not.toHaveBeenCalled()
   })
 
