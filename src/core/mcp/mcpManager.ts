@@ -35,7 +35,10 @@ import {
 import type { ScheduledTaskServiceLike, ToolContext } from '../tools/types'
 
 import { InvalidToolNameException, McpNotAvailableException } from './exception'
-import type { InProcessToolServer } from './inProcessToolServer'
+import type {
+  InProcessToolApprovalPolicy,
+  InProcessToolServer,
+} from './inProcessToolServer'
 import {
   type JsSandboxSettings,
   getJsSandboxSettings,
@@ -109,6 +112,7 @@ export class McpManager {
   > = new Map()
   private allowedToolsByConversation: Map<string, Set<string>> = new Map()
   private subscribers = new Set<(servers: McpServerState[]) => void>()
+  private toolCatalogSubscribers = new Set<() => void>()
 
   private availableToolsCache: Map<string, McpTool[]> = new Map()
 
@@ -275,6 +279,7 @@ export class McpManager {
     this.remoteTransportFactory = null
     this.remoteTransportModulePromise = null
     this.subscribers.clear()
+    this.toolCatalogSubscribers.clear()
     this.activeToolCalls.clear()
     this.reconnectAttempts.clear()
     this.oauthController.close()
@@ -586,7 +591,7 @@ export class McpManager {
     }
 
     this.servers = nextServers
-    this.availableToolsCache.clear() // Invalidate available tools cache
+    this.invalidateToolCatalog()
     this.notifySubscribers() // Should call after invalidating the cache
   }
 
@@ -957,7 +962,7 @@ export class McpManager {
     }
 
     this.inProcessServers.set(serverName, server)
-    this.availableToolsCache.clear()
+    this.invalidateToolCatalog()
 
     let disposed = false
     return () => {
@@ -968,8 +973,24 @@ export class McpManager {
       // of the same name after a prior, already-completed dispose.
       if (this.inProcessServers.get(serverName) === server) {
         this.inProcessServers.delete(serverName)
-        this.availableToolsCache.clear()
+        this.invalidateToolCatalog()
       }
+    }
+  }
+
+  public getInProcessToolApprovalPolicy(
+    requestToolName: string,
+  ): InProcessToolApprovalPolicy | undefined {
+    try {
+      const { serverName, toolName } = parseToolName(requestToolName)
+      return this.inProcessServers
+        .get(serverName)
+        ?.getToolApprovalPolicy?.(toolName)
+    } catch (error) {
+      if (error instanceof InvalidToolNameException) {
+        return undefined
+      }
+      throw error
     }
   }
 
@@ -1046,6 +1067,16 @@ export class McpManager {
 
   public invalidateToolCatalog(): void {
     this.availableToolsCache.clear()
+    for (const listener of this.toolCatalogSubscribers) {
+      listener()
+    }
+  }
+
+  public subscribeToolCatalog(listener: () => void): () => void {
+    this.toolCatalogSubscribers.add(listener)
+    return () => {
+      this.toolCatalogSubscribers.delete(listener)
+    }
   }
 
   public allowToolForConversation(

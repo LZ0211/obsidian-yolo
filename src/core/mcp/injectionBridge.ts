@@ -4,7 +4,10 @@ import {
   type ToolCallResponse,
 } from '../../types/tool-call.types'
 
-import type { InProcessToolServer } from './inProcessToolServer'
+import type {
+  InProcessToolApprovalPolicy,
+  InProcessToolServer,
+} from './inProcessToolServer'
 
 /**
  * YOLO 原生注入桥。
@@ -32,9 +35,9 @@ export type InjectedToolDescriptor = {
     properties: Record<string, unknown>
     required?: string[]
   }
-  annotations?: {
-    capabilities?: string[]
-  }
+  annotations?: McpTool['annotations']
+  /** YOLO policy extension; this is intentionally separate from MCP hints. */
+  requiresApproval?: boolean
 }
 
 export type InjectedToolHandler = (args: Record<string, unknown>) => unknown
@@ -72,13 +75,26 @@ class InjectedToolRegistry {
     handler: InjectedToolHandler,
     source: string,
     groupName?: string,
+    requiresApproval?: boolean,
   ): void {
-    this.tools.set(tool.name, { tool, handler, source, groupName })
+    this.tools.set(tool.name, {
+      tool,
+      handler,
+      source,
+      groupName,
+      requiresApproval,
+    })
     this.notify()
   }
 
   getGroupName(name: string): string | undefined {
     return this.tools.get(name)?.groupName
+  }
+
+  getApprovalPolicy(name: string): InProcessToolApprovalPolicy | undefined {
+    return this.tools.get(name)?.requiresApproval === true
+      ? 'always-require-user'
+      : undefined
   }
 
   delete(name: string): boolean {
@@ -156,6 +172,7 @@ type InjectedToolRegistryEntry = {
   source: string
   /** 注入方自定义的插件能力分组名（如 "浏览器自动化插件能力"）。 */
   groupName?: string
+  requiresApproval?: boolean
 }
 
 const injectedToolRegistry = new InjectedToolRegistry()
@@ -177,7 +194,13 @@ class YoloInjectionBridgeImpl implements YoloInjectionBridge {
     groupName?: string,
   ): void {
     const source = normalizeSource(sourceId)
-    this.registry.set(toMcpTool(descriptor), handler, source, groupName)
+    this.registry.set(
+      toMcpTool(descriptor),
+      handler,
+      source,
+      groupName,
+      descriptor.requiresApproval,
+    )
   }
 
   registerTools(
@@ -192,6 +215,7 @@ class YoloInjectionBridgeImpl implements YoloInjectionBridge {
         tool.handler,
         source,
         groupName,
+        tool.descriptor.requiresApproval,
       )
     }
   }
@@ -220,10 +244,8 @@ function toMcpTool(descriptor: InjectedToolDescriptor): McpTool {
     name: descriptor.name,
     description: descriptor.description,
     inputSchema: descriptor.inputSchema as McpTool['inputSchema'],
-    // `annotations` in the MCP SDK is a fixed hint shape, not the free-form
-    // `capabilities` metadata mcp-bridge plugins may attach; keep the schema
-    // surface minimal and ignore it.
-  } as McpTool
+    ...(descriptor.annotations ? { annotations: descriptor.annotations } : {}),
+  }
 }
 
 let installedBridge: YoloInjectionBridge | null = null
@@ -333,6 +355,8 @@ export function subscribeInjectedBridgeTools(listener: () => void): () => void {
 export function createInjectionBridgeToolServer(): InProcessToolServer {
   return {
     listTools: () => getInjectedBridgeTools(),
+    getToolApprovalPolicy: (toolName) =>
+      injectedToolRegistry.getApprovalPolicy(toolName),
     async callTool({ toolName, args, signal }): Promise<ToolCallResponse> {
       if (signal.aborted) {
         return { status: ToolCallResponseStatus.Aborted }

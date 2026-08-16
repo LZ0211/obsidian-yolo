@@ -114,6 +114,41 @@ describe('McpManager in-process tool server registry', () => {
     ])
   })
 
+  it('resolves approval policy through the registered in-process server', () => {
+    const manager = createManager()
+    const { server } = createEchoServer({
+      getToolApprovalPolicy: (toolName) =>
+        toolName === 'echo' ? 'always-require-user' : undefined,
+    })
+    manager.registerInProcessServer('demo_module', server)
+
+    expect(manager.getInProcessToolApprovalPolicy('demo_module__echo')).toBe(
+      'always-require-user',
+    )
+    expect(
+      manager.getInProcessToolApprovalPolicy('demo_module__unknown'),
+    ).toBeUndefined()
+    expect(
+      manager.getInProcessToolApprovalPolicy('remote__echo'),
+    ).toBeUndefined()
+  })
+
+  it('notifies tool catalog subscribers on registration, invalidation, and disposal', () => {
+    const manager = createManager()
+    const listener = jest.fn()
+    const unsubscribe = manager.subscribeToolCatalog(listener)
+    const { server } = createEchoServer()
+
+    const dispose = manager.registerInProcessServer('demo_module', server)
+    manager.invalidateToolCatalog()
+    dispose()
+
+    expect(listener).toHaveBeenCalledTimes(3)
+    unsubscribe()
+    manager.invalidateToolCatalog()
+    expect(listener).toHaveBeenCalledTimes(3)
+  })
+
   it('routes callTool to the registered handler', async () => {
     const manager = createManager()
     const { server, calls } = createEchoServer()

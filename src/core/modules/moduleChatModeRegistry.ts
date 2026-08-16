@@ -295,5 +295,7 @@ function snapshotChatModeTool(
 export function createModuleChatModeToolServer(
   tools: readonly YoloModuleChatModeToolV1[],
 ): InProcessToolServer {
-  return createModuleToolInProcessServer(tools)
+  return createModuleToolInProcessServer(tools, {
+    defaultApprovalPolicy: 'auto',
+  })
 }

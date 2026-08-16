@@ -332,6 +332,30 @@ describe('MAX_MODULE_CHAT_MODES_PER_MODULE', () => {
 })
 
 describe('createModuleChatModeToolServer', () => {
+  it('exposes hard approval and defaults other declared mode tools to auto', () => {
+    const server = createModuleChatModeToolServer([
+      {
+        name: 'confirm',
+        description: 'Confirm an operation.',
+        inputSchema: { type: 'object', properties: {} },
+        handler: () => ({ content: 'ok' }),
+        requiresApproval: true,
+      },
+      {
+        name: 'status',
+        description: 'Read operation status.',
+        inputSchema: { type: 'object', properties: {} },
+        handler: () => ({ content: 'ok' }),
+      },
+    ])
+
+    expect(server.getToolApprovalPolicy?.('confirm')).toBe(
+      'always-require-user',
+    )
+    expect(server.getToolApprovalPolicy?.('status')).toBe('auto')
+    expect(server.getToolApprovalPolicy?.('unknown')).toBeUndefined()
+  })
+
   it('builds an in-process server that dispatches to the declared tool handlers', async () => {
     const handler = jest.fn(async (input: Record<string, unknown>) => ({
       content: JSON.stringify(input),

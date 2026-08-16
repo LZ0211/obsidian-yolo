@@ -100,19 +100,6 @@ export type ChatModeRuntime = {
    */
   moduleChatModeId?: string
   contextPolicy: ChatContextPolicy
-  /**
-   * For module chat modes: full tool name (`<serverName>__<toolName>`, see
-   * `getToolName`) → the mode's declared `requiresApproval` for every tool
-   * on the mode's own server (present with `false` when omitted/unset, so
-   * the gateway can distinguish "not a mode tool" from "mode tool, auto
-   * approve"). `AgentToolGateway` reads this once per tool call, at creation
-   * time, to fix the persisted `approvalPolicy` snapshot — see
-   * `ToolCallRequest.metadata`. Always an (possibly empty) object for module
-   * chat modes and `undefined` for built-in modes; its mere presence is how
-   * the gateway knows a run is a module chat mode run at all (also gating
-   * whether bash calls get a persisted `executionConstraints.bashReadOnly`).
-   */
-  moduleToolApprovalPolicies?: ReadonlyMap<string, boolean>
 }
 
 export type ChatModeRuntimeInput = {
@@ -203,12 +190,6 @@ function resolveModuleChatModeRuntime(
   const moduleToolNames = moduleTools.map((tool) =>
     getToolName(registered.serverName, tool.name),
   )
-  const moduleToolApprovalPolicies = new Map<string, boolean>(
-    moduleTools.map((tool) => [
-      getToolName(registered.serverName, tool.name),
-      tool.requiresApproval === true,
-    ]),
-  )
   return {
     loopConfig: {
       enableTools: true,
@@ -229,6 +210,5 @@ function resolveModuleChatModeRuntime(
     modePersonaModuleId: registered.moduleId,
     moduleChatModeId: registered.fullModeId,
     contextPolicy: MODULE_CONTEXT_POLICY,
-    moduleToolApprovalPolicies,
   }
 }

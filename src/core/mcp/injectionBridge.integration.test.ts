@@ -5,6 +5,7 @@ import { getToolName } from './tool-name-utils'
 import {
   callInjectedBridgeTool,
   createInjectionBridgeToolServer,
+  getInstalledInjectionBridge,
   getInjectedBridgeTools,
   installYoloInjectionBridge,
   uninstallYoloInjectionBridge,
@@ -49,6 +50,83 @@ describe('injection bridge integration', () => {
       expect(JSON.parse(result.data.text)).toEqual({ sum: 42 })
     }
     expect(handler).toHaveBeenCalledWith({ a: 1 })
+
+    uninstall()
+  })
+
+  it('preserves MCP annotations and exposes an explicit hard-approval policy', () => {
+    const uninstall = installYoloInjectionBridge()
+    const bridge = (globalThis as Record<string, unknown>).__yoloBridge__ as {
+      registerTool: (
+        descriptor: {
+          name: string
+          description: string
+          inputSchema: object
+          annotations: {
+            title: string
+            readOnlyHint: boolean
+            destructiveHint: boolean
+            idempotentHint: boolean
+            openWorldHint: boolean
+          }
+          requiresApproval: boolean
+        },
+        handler: (args: Record<string, unknown>) => unknown,
+      ) => void
+    }
+    bridge.registerTool(
+      {
+        name: 'plugin_delete',
+        description: 'Delete a remote item',
+        inputSchema: { type: 'object', properties: {} },
+        annotations: {
+          title: 'Delete item',
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+        requiresApproval: true,
+      },
+      () => 'deleted',
+    )
+
+    const server = createInjectionBridgeToolServer()
+    expect(server.listTools()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'plugin_delete',
+          annotations: {
+            title: 'Delete item',
+            readOnlyHint: false,
+            destructiveHint: true,
+            idempotentHint: true,
+            openWorldHint: true,
+          },
+        }),
+      ]),
+    )
+    expect(server.getToolApprovalPolicy?.('plugin_delete')).toBe(
+      'always-require-user',
+    )
+
+    uninstall()
+  })
+
+  it('leaves approval policy unspecified when the injector does not require hard approval', () => {
+    const uninstall = installYoloInjectionBridge()
+    getInstalledInjectionBridge()?.registerTool(
+      {
+        name: 'plugin_read',
+        description: 'Read a local item',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      () => 'value',
+    )
+
+    expect(
+      createInjectionBridgeToolServer().getToolApprovalPolicy?.('plugin_read'),
+    ).toBeUndefined()
 
     uninstall()
   })

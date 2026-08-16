@@ -11,7 +11,10 @@ import type {
   YoloAgentEvent,
   YoloAgentRunRequest,
 } from '../agent/agent-api'
-import type { InProcessToolServer } from '../mcp/inProcessToolServer'
+import type {
+  InProcessToolApprovalPolicy,
+  InProcessToolServer,
+} from '../mcp/inProcessToolServer'
 import { getToolName } from '../mcp/tool-name-utils'
 
 import type { ModuleLifecycleScope } from './lifecycleScope'
@@ -27,6 +30,7 @@ import type {
   YoloModuleAgentRequestV1,
   YoloModuleAgentToolV1,
   YoloModuleAgentV1,
+  YoloModuleChatModeToolV1,
 } from './types'
 
 export type ModuleAgentCapabilityActivationV1 = Readonly<{
@@ -583,7 +587,10 @@ function buildModuleToolRuntimeContext(
  * the serial dispatch chain.
  */
 export function createModuleToolInProcessServer(
-  tools: readonly YoloModuleAgentToolV1[],
+  tools: readonly (YoloModuleAgentToolV1 | YoloModuleChatModeToolV1)[],
+  options?: Readonly<{
+    defaultApprovalPolicy?: InProcessToolApprovalPolicy
+  }>,
 ): InProcessToolServer {
   const byName = new Map(tools.map((tool) => [tool.name, tool]))
   // The agent loop dispatches a turn's tool calls concurrently, but module
@@ -599,6 +606,14 @@ export function createModuleToolInProcessServer(
         description: tool.description,
         inputSchema: tool.inputSchema as McpTool['inputSchema'],
       })),
+    getToolApprovalPolicy: (toolName) => {
+      const tool = byName.get(toolName)
+      if (!tool) return undefined
+      if ('requiresApproval' in tool && tool.requiresApproval === true) {
+        return 'always-require-user'
+      }
+      return options?.defaultApprovalPolicy
+    },
     callTool: async ({ toolName, args }): Promise<ToolCallResponse> => {
       const tool = byName.get(toolName)
       if (!tool) {

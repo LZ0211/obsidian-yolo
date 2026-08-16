@@ -792,8 +792,6 @@ export function useChatStreamManager({
               ),
           allowedSkillPaths,
           bashReadOnly: chatModeRuntime.bashReadOnly,
-          moduleToolApprovalPolicies:
-            chatModeRuntime.moduleToolApprovalPolicies,
           modePersonaPrompt: chatModeRuntime.modePersonaPrompt,
           modePersonaModuleId: chatModeRuntime.modePersonaModuleId,
           moduleChatModeId: chatModeRuntime.moduleChatModeId,

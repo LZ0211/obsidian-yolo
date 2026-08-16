@@ -1,6 +1,8 @@
 import type { McpTool } from '../../types/mcp.types'
 import type { ToolCallResponse } from '../../types/tool-call.types'
 
+export type InProcessToolApprovalPolicy = 'auto' | 'always-require-user'
+
 /**
  * An in-process tool "server" registered directly with `McpManager`, without
  * a transport connection. Its tools are addressed the same way remote MCP
@@ -16,11 +18,9 @@ import type { ToolCallResponse } from '../../types/tool-call.types'
  * Local file tools (bash/fs_edit/fs_read/...) are NOT implemented through
  * this registry. Their call surface needs manager-owned context (settings,
  * openApplyReview, the RAG engine, workspace scope, conversation history,
- * ...) that this deliberately minimal contract does not carry, and unifying
- * them would mean leaking that internal context through a contract meant to
- * stay simple for external registrants. They keep their existing special
- * case in `mcpManager.ts`; this registry is a second, parallel source of
- * in-process tools.
+ * ...) that this deliberately minimal contract does not carry. They keep
+ * their existing manager-owned execution path while sharing the same catalog,
+ * naming, permission, and dispatch gateway.
  */
 export type InProcessToolServer = {
   /**
@@ -30,6 +30,11 @@ export type InProcessToolServer = {
    * `isToolExecutionAllowed` invocation.
    */
   listTools(): McpTool[]
+
+  /** Approval policy for a declared tool, captured with the server contract. */
+  getToolApprovalPolicy?(
+    toolName: string,
+  ): InProcessToolApprovalPolicy | undefined
 
   /**
    * Invoke one tool by its short (unprefixed) name. Implementations should

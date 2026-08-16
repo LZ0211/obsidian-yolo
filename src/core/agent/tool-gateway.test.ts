@@ -48,16 +48,12 @@ describe('AgentToolGateway', () => {
     })
   })
 
-  it('gates consolidated mutating actions by the action-level approval default (M1 regression: full_access)', () => {
+  it('uses the built-in capability approval mode for consolidated tools', () => {
     const mcpManager = {
       isToolExecutionAllowed: jest.fn().mockReturnValue(false),
       getJsSandboxSettings: jest.fn().mockReturnValue({}),
     } as unknown as McpManager
 
-    // Tool-level default for `scheduled_task_ops` is full_access; the
-    // `create` action must still resolve through the capability default to
-    // require_approval (RED before M1: requireAutoExecution was true and the
-    // call auto-ran).
     const gateway = new AgentToolGateway(mcpManager, {
       allowedToolNames: ['yolo_local__scheduled_task_ops'],
       toolPreferences: {
@@ -93,19 +89,16 @@ describe('AgentToolGateway', () => {
       requestToolName: 'yolo_local__scheduled_task_ops',
       conversationId: 'conv-1',
       requestArgs: expect.objectContaining({ action: 'create' }),
-      requireAutoExecution: false,
+      requireAutoExecution: true,
     })
   })
 
-  it('honors a migrated actions[action].approvalMode child over the tool-level mode', () => {
+  it('ignores retired action-level preferences for built-in capabilities', () => {
     const mcpManager = {
       isToolExecutionAllowed: jest.fn().mockReturnValue(false),
       getJsSandboxSettings: jest.fn().mockReturnValue({}),
     } as unknown as McpManager
 
-    // The 79→80 migration writes the legacy `scheduled_task_create` approval
-    // into `actions.create`; the gateway must read it (RED before M1: only
-    // the tool-level mode was consulted).
     const gateway = new AgentToolGateway(mcpManager, {
       allowedToolNames: ['yolo_local__scheduled_task_ops'],
       toolPreferences: {
@@ -141,7 +134,7 @@ describe('AgentToolGateway', () => {
       requestToolName: 'yolo_local__scheduled_task_ops',
       conversationId: 'conv-1',
       requestArgs: expect.objectContaining({ action: 'create' }),
-      requireAutoExecution: false,
+      requireAutoExecution: true,
     })
   })
 
@@ -1384,9 +1377,7 @@ describe('AgentToolGateway', () => {
         readExtraIncludes: [],
         readExcludes: [],
         writeExcludes: [],
-        protectedPaths: [
-          { kind: 'exact', path: 'YOLO/sessions.sqlite' },
-        ],
+        protectedPaths: [{ kind: 'exact', path: 'YOLO/sessions.sqlite' }],
       },
     })
 
@@ -1744,18 +1735,46 @@ describe('AgentToolGateway', () => {
   })
 
   describe('module chat mode tool call snapshot', () => {
-    // Mirrors resolveModuleChatModeRuntime's moduleToolApprovalPolicies: full
-    // tool name -> the mode's declared requiresApproval (present with
-    // `false` when omitted, absent entirely for non-mode tools).
-    const moduleToolApprovalPolicies = new Map<string, boolean>([
-      ['module-mode-learning-chat__start_course_generation', true],
-      ['module-mode-learning-chat__get_generation_status', false],
-    ])
+    it('snapshots an in-process hard approval policy before YOLO or conversation allowances are considered', () => {
+      const mcpManager = {
+        getInProcessToolApprovalPolicy: jest
+          .fn()
+          .mockReturnValue('always-require-user'),
+        isToolExecutionAllowed: jest.fn().mockReturnValue(true),
+        getJsSandboxSettings: jest.fn().mockReturnValue({}),
+      } as unknown as McpManager
+
+      const gateway = new AgentToolGateway(mcpManager, {
+        bypassToolApproval: true,
+        allowedToolNames: ['yolo_bridge__plugin_delete'],
+      })
+      const message = gateway.createToolMessage({
+        toolCallRequests: [
+          {
+            id: 'tool-bridge',
+            name: 'yolo_bridge__plugin_delete',
+            arguments: emptyArgs,
+          },
+        ],
+        conversationId: 'conv-1',
+      })
+
+      expect(message.toolCalls[0]?.request.metadata?.approvalPolicy).toBe(
+        'always-require-user',
+      )
+      expect(message.toolCalls[0]?.response.status).toBe(
+        ToolCallResponseStatus.PendingApproval,
+      )
+      expect(mcpManager.isToolExecutionAllowed).not.toHaveBeenCalled()
+    })
 
     it('fixes approvalPolicy "always-require-user" and stays PendingApproval, ignoring bypassToolApproval and the conversation allow-list', () => {
       const mcpManager = {
         // Both would normally auto-execute the call; the persisted policy
         // must override them entirely.
+        getInProcessToolApprovalPolicy: jest
+          .fn()
+          .mockReturnValue('always-require-user'),
         isToolExecutionAllowed: jest.fn().mockReturnValue(true),
         getJsSandboxSettings: jest.fn().mockReturnValue({}),
       } as unknown as McpManager
@@ -1765,7 +1784,6 @@ describe('AgentToolGateway', () => {
         allowedToolNames: [
           'module-mode-learning-chat__start_course_generation',
         ],
-        moduleToolApprovalPolicies,
       })
 
       const message = gateway.createToolMessage({
@@ -1792,13 +1810,13 @@ describe('AgentToolGateway', () => {
 
     it('fixes approvalPolicy "auto" and runs immediately for a mode tool without requiresApproval', () => {
       const mcpManager = {
+        getInProcessToolApprovalPolicy: jest.fn().mockReturnValue('auto'),
         isToolExecutionAllowed: jest.fn().mockReturnValue(false),
         getJsSandboxSettings: jest.fn().mockReturnValue({}),
       } as unknown as McpManager
 
       const gateway = new AgentToolGateway(mcpManager, {
         allowedToolNames: ['module-mode-learning-chat__get_generation_status'],
-        moduleToolApprovalPolicies,
       })
 
       const message = gateway.createToolMessage({
@@ -1825,6 +1843,7 @@ describe('AgentToolGateway', () => {
 
     it('does not write approvalPolicy for a host tool granted by the mode capability tier (not in the map)', () => {
       const mcpManager = {
+        getInProcessToolApprovalPolicy: jest.fn().mockReturnValue(undefined),
         isToolExecutionAllowed: jest.fn().mockReturnValue(true),
         getJsSandboxSettings: jest.fn().mockReturnValue({}),
       } as unknown as McpManager
@@ -1832,7 +1851,6 @@ describe('AgentToolGateway', () => {
       const gateway = new AgentToolGateway(mcpManager, {
         allowedToolNames: ['yolo_local__bash'],
         bashReadOnly: true,
-        moduleToolApprovalPolicies,
       })
 
       const message = gateway.createToolMessage({
@@ -1899,6 +1917,7 @@ describe('AgentToolGateway', () => {
 
     it('does not write executionConstraints for a non-bash tool in module mode', () => {
       const mcpManager = {
+        getInProcessToolApprovalPolicy: jest.fn().mockReturnValue(undefined),
         isToolExecutionAllowed: jest.fn().mockReturnValue(false),
         getJsSandboxSettings: jest.fn().mockReturnValue({}),
       } as unknown as McpManager
@@ -1906,7 +1925,6 @@ describe('AgentToolGateway', () => {
       const gateway = new AgentToolGateway(mcpManager, {
         allowedToolNames: ['module-mode-learning-chat__get_generation_status'],
         bashReadOnly: true,
-        moduleToolApprovalPolicies,
       })
 
       const message = gateway.createToolMessage({
@@ -1931,8 +1949,6 @@ describe('AgentToolGateway', () => {
         getJsSandboxSettings: jest.fn().mockReturnValue({}),
       } as unknown as McpManager
 
-      // No `moduleToolApprovalPolicies` passed — matches every existing
-      // (non-module) chat mode and assistant run.
       const gateway = new AgentToolGateway(mcpManager, {
         allowedToolNames: ['yolo_local__bash'],
         builtinCapabilityPreferences: {

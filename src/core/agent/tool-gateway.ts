@@ -281,7 +281,6 @@ export class AgentToolGateway {
   private readonly blockedCommandPrefixes: readonly string[] | null
   private readonly bypassToolApproval: boolean
   private readonly bashReadOnly: boolean
-  private readonly moduleToolApprovalPolicies?: ReadonlyMap<string, boolean>
   private readonly ajv: AjvInstance
   private readonly schemaValidatorCache = new Map<
     string,
@@ -310,7 +309,6 @@ export class AgentToolGateway {
       blockedCommandPrefixes?: string[]
       bypassToolApproval?: boolean
       bashReadOnly?: boolean
-      moduleToolApprovalPolicies?: ReadonlyMap<string, boolean>
     },
   ) {
     this.toolsEnabled = options?.toolsEnabled ?? true
@@ -333,7 +331,6 @@ export class AgentToolGateway {
     this.blockedCommandPrefixes = options?.blockedCommandPrefixes ?? null
     this.bypassToolApproval = options?.bypassToolApproval ?? false
     this.bashReadOnly = options?.bashReadOnly ?? false
-    this.moduleToolApprovalPolicies = options?.moduleToolApprovalPolicies
     // `strict: false` keeps ajv tolerant of MCP tool schemas that include
     // vendor-specific keywords or non-canonical types. `allErrors` lists every
     // violation in the error message so the model has enough signal to retry;
@@ -591,7 +588,7 @@ export class AgentToolGateway {
       const args = getToolCallArgumentsObject(request.arguments)
       return findWorkspacePolicyViolation({
         toolName: parsed.toolName,
-        args,
+        args: args ?? {},
         policy: this.workspaceAccessPolicy,
         exemptPaths: this.allowedSkillPaths
           ? buildAllowedSkillPathSet(this.allowedSkillPaths)
@@ -734,44 +731,24 @@ export class AgentToolGateway {
   }
 
   /**
-   * Fixes the module chat mode approval/execution snapshot onto a tool call
-   * request at creation time — see `ToolCallRequest.metadata.approvalPolicy`
-   * / `.executionConstraints`. A no-op (returns `request` unchanged) for
-   * every non-module-chat-mode run, since `moduleToolApprovalPolicies` is
-   * only ever set by `resolveModuleChatModeRuntime`.
-   *
-   * `approvalPolicy` is written only for tools the mode itself declared
-   * (i.e. present as a key in `moduleToolApprovalPolicies`) — host tools
-   * granted via the mode's capability tier (bash, fs_edit, ...) are not in
-   * that map and keep following the normal approval resolution.
-   * `executionConstraints.bashReadOnly` is written for every bash-identity
-   * call in a module chat mode run, regardless of whether it's a mode tool.
+   * Snapshots an in-process server's hard approval declaration onto the tool
+   * call. The server contract is the single source of truth for injected and
+   * module tools, so conversation allowances and YOLO cannot override it.
    */
-  private attachModuleChatModeSnapshot(
+  private attachInProcessToolApprovalSnapshot(
     request: ToolCallRequest,
   ): ToolCallRequest {
-    if (!this.moduleToolApprovalPolicies) {
-      return request
-    }
-    const requiresApproval = this.moduleToolApprovalPolicies.get(request.name)
-    const approvalPolicy: 'auto' | 'always-require-user' | undefined =
-      requiresApproval === undefined
-        ? undefined
-        : requiresApproval
-          ? 'always-require-user'
-          : 'auto'
-    const executionConstraints = this.isBashToolCall(request.name)
-      ? { bashReadOnly: this.bashReadOnly }
-      : undefined
-    if (approvalPolicy === undefined && executionConstraints === undefined) {
+    const approvalPolicy = this.mcpManager.getInProcessToolApprovalPolicy?.(
+      request.name,
+    )
+    if (approvalPolicy === undefined) {
       return request
     }
     return {
       ...request,
       metadata: {
         ...request.metadata,
-        ...(approvalPolicy !== undefined ? { approvalPolicy } : {}),
-        ...(executionConstraints !== undefined ? { executionConstraints } : {}),
+        approvalPolicy,
       },
     }
   }
@@ -836,7 +813,7 @@ export class AgentToolGateway {
       this.prepareFinalToolCallRequest(
         this.attachPolicySnapshot(
           this.attachExecutionSnapshot(
-            this.attachModuleChatModeSnapshot(request),
+            this.attachInProcessToolApprovalSnapshot(request),
           ),
         ),
       ),
@@ -961,9 +938,9 @@ export class AgentToolGateway {
       return { status: ToolCallResponseStatus.AwaitingUserInput }
     }
 
-    // Module chat mode tools carry a persisted approval policy fixed at
-    // creation time (see `attachModuleChatModeSnapshot`). It fully replaces
-    // the normal approval resolution below — in particular it is NOT
+    // In-process tools can carry a persisted approval policy fixed at
+    // creation time (see `attachInProcessToolApprovalSnapshot`). It fully
+    // replaces the normal approval resolution below — in particular it is NOT
     // affected by `bypassToolApproval` (YOLO) or the mcpManager "always
     // allow this conversation" list, which only `shouldAutoExecuteTool`
     // consults. This is what makes `requiresApproval: true` an unconditional
