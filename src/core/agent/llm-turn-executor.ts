@@ -43,7 +43,10 @@ import {
 } from '../llm/debugCapture'
 import { ProviderRequestError } from '../llm/providerErrors'
 import type { ResponseDeliveryMode } from '../llm/responseDeliveryMode'
-import { isInjectedBridgeToolName } from '../mcp/injectionBridge'
+import {
+  YOLO_BRIDGE_TOOL_SERVER_NAME,
+  isInjectedBridgeToolName,
+} from '../mcp/injectionBridge'
 import {
   LOCAL_FILE_TOOL_SHORT_NAMES,
   getLocalFileToolServerName,
@@ -580,10 +583,10 @@ export class AgentLlmTurnExecutor {
     if (toolName.includes(McpManager.TOOL_NAME_DELIMITER)) {
       return toolName
     }
-    if (
-      !AgentLlmTurnExecutor.LOCAL_TOOL_NAMES.has(toolName) &&
-      !isInjectedBridgeToolName(toolName)
-    ) {
+    if (isInjectedBridgeToolName(toolName)) {
+      return `${YOLO_BRIDGE_TOOL_SERVER_NAME}${McpManager.TOOL_NAME_DELIMITER}${toolName}`
+    }
+    if (!AgentLlmTurnExecutor.LOCAL_TOOL_NAMES.has(toolName)) {
       return toolName
     }
     return this.qualifyLocalToolName(toolName)

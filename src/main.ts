@@ -2313,7 +2313,7 @@ export default class YoloPlugin extends Plugin {
     // exists — getAvailableTools rebuilds from getLocalFileTools() anyway.
     this.injectionBridgeUninstall = installYoloInjectionBridge({
       onToolsChanged: () => {
-        this.mcpManager?.invalidateAvailableToolsCache()
+        this.mcpManager?.invalidateToolCatalog()
       },
     })
     // Warm the memory index runtime so vault mutations start reconciling the

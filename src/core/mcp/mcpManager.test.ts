@@ -7,6 +7,11 @@ import { McpServerStatus } from '../../types/mcp.types'
 import { ToolCallResponseStatus } from '../../types/tool-call.types'
 
 import { McpNotAvailableException } from './exception'
+import {
+  getInstalledInjectionBridge,
+  installYoloInjectionBridge,
+  uninstallYoloInjectionBridge,
+} from './injectionBridge'
 import { McpManager } from './mcpManager'
 
 const OBSIDIAN_CONFIG_DIR = ['.', 'obsidian'].join('')
@@ -78,6 +83,61 @@ describe('McpManager mobile built-in tool behavior', () => {
     await expect(
       manager.listAvailableTools({ includeBuiltinTools: false }),
     ).resolves.toEqual([])
+  })
+
+  it('clears conversation-scoped tool allowances', () => {
+    const manager = createManager()
+    const toolName = 'yolo_local__fs_read'
+
+    manager.allowToolForConversation(toolName, 'conversation-1')
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: toolName,
+        conversationId: 'conversation-1',
+      }),
+    ).toBe(true)
+
+    manager.clearConversationToolAllowances('conversation-1')
+
+    expect(
+      manager.isToolExecutionAllowed({
+        requestToolName: toolName,
+        conversationId: 'conversation-1',
+      }),
+    ).toBe(false)
+  })
+
+  it('refreshes the cached tool catalog after bridge injection changes', async () => {
+    uninstallYoloInjectionBridge()
+    const manager = createManager()
+    await manager.listAvailableTools({ includeBuiltinTools: true })
+    const uninstall = installYoloInjectionBridge()
+
+    try {
+      getInstalledInjectionBridge()?.registerTool(
+        {
+          name: 'injected_after_cache',
+          description: 'Injected after the initial catalog was cached',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        () => 'ok',
+        'test',
+      )
+
+      manager.invalidateToolCatalog()
+
+      await expect(
+        manager.listAvailableTools({ includeBuiltinTools: true }),
+      ).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'yolo_bridge__injected_after_cache',
+          }),
+        ]),
+      )
+    } finally {
+      uninstall()
+    }
   })
 
   it('lists web_scrape without a configured web search provider', async () => {

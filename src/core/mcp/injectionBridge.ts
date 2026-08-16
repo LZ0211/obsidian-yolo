@@ -1,4 +1,10 @@
 import { McpTool } from '../../types/mcp.types'
+import {
+  ToolCallResponseStatus,
+  type ToolCallResponse,
+} from '../../types/tool-call.types'
+
+import type { InProcessToolServer } from './inProcessToolServer'
 
 /**
  * YOLO 原生注入桥。
@@ -6,7 +12,7 @@ import { McpTool } from '../../types/mcp.types'
  * 背景:此前其他插件把工具注册进 MCP Bridge(window.__mcpBridge__),YOLO 再
  * 通过 HTTP MCP 服务拉取,中间隔了一层网络中转。现在 YOLO 自己成为注入目标:
  * 其他插件在 onload 里探测 window.__yoloBridge__ 并 registerTool,工具立即
- * 以 `yolo_local__<name>` 形式出现在 Agent 工具列表里,进程内直接调用。
+ * 通过 `yolo_bridge__<name>` in-process server 进入统一 MCP 工具链。
  *
  * 为兼容已按 MCP Bridge 合约编写的插件,当 window.__mcpBridge__ 尚未被
  * 占用时,YOLO 会以相同接口挂载一个别名;安装了原版 MCP Bridge 时则跳过,
@@ -15,6 +21,7 @@ import { McpTool } from '../../types/mcp.types'
 
 const BRIDGE_VERSION = '1.0.0'
 const INJECT_SOURCE_PREFIX = 'inject/'
+export const YOLO_BRIDGE_TOOL_SERVER_NAME = 'yolo_bridge'
 
 /** 与 MCP Bridge 的 McpToolDescriptor 兼容的注入描述符。 */
 export type InjectedToolDescriptor = {
@@ -321,4 +328,26 @@ export function callInjectedBridgeTool(
 
 export function subscribeInjectedBridgeTools(listener: () => void): () => void {
   return injectedToolRegistry.subscribe(listener)
+}
+
+export function createInjectionBridgeToolServer(): InProcessToolServer {
+  return {
+    listTools: () => getInjectedBridgeTools(),
+    async callTool({ toolName, args, signal }): Promise<ToolCallResponse> {
+      if (signal.aborted) {
+        return { status: ToolCallResponseStatus.Aborted }
+      }
+      const result = await callInjectedBridgeTool(toolName, args)
+      return {
+        status: ToolCallResponseStatus.Success,
+        data: {
+          type: 'text',
+          text:
+            typeof result === 'string'
+              ? result
+              : (JSON.stringify(result, null, 2) ?? String(result)),
+        },
+      }
+    },
+  }
 }

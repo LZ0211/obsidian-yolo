@@ -406,12 +406,9 @@ export function registerWebServerRoutes(
       await options.chatManager.deleteChat(conversationId)
       try {
         const mcpManager = await options.getMcpManager()
-        mcpManager.removeAllowedTools(conversationId)
+        mcpManager.clearConversationToolAllowances(conversationId)
       } catch (error) {
-        console.error(
-          '[YOLO Web] Failed to revoke MCP tool allowances:',
-          error,
-        )
+        console.error('[YOLO Web] Failed to revoke MCP tool allowances:', error)
       }
       await invalidateChatRuntimeConversation(conversationId)
       return true

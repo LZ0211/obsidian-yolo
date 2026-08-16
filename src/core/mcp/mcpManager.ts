@@ -40,6 +40,10 @@ import {
 } from './jsSandboxSettings'
 import { disposeJsSandbox } from './jsSandboxTool'
 import {
+  YOLO_BRIDGE_TOOL_SERVER_NAME,
+  createInjectionBridgeToolServer,
+} from './injectionBridge'
+import {
   getLocalFileToolServerName,
   getLocalFileTools,
   parseLocalFsActionFromToolArgs,
@@ -209,6 +213,10 @@ export class McpManager {
     this.getRagEngine = getRagEngine
     this.promptSourceWatcher = promptSourceWatcher
     this.settings = settings
+    this.inProcessServers.set(
+      YOLO_BRIDGE_TOOL_SERVER_NAME,
+      createInjectionBridgeToolServer(),
+    )
     this.unsubscribeFromSettings = registerSettingsListener((newSettings) => {
       void this.handleSettingsUpdate(newSettings).catch((error) => {
         console.error('[YOLO] Failed to handle MCP settings update:', error)
@@ -1030,6 +1038,10 @@ export class McpManager {
     return nextTools
   }
 
+  public invalidateToolCatalog(): void {
+    this.availableToolsCache.clear()
+  }
+
   public allowToolForConversation(
     requestToolName: string,
     conversationId: string,
@@ -1046,6 +1058,10 @@ export class McpManager {
     })
     allowedTools.add(allowanceKey)
     allowedTools.add(requestToolName)
+  }
+
+  public clearConversationToolAllowances(conversationId: string): void {
+    this.allowedToolsByConversation.delete(conversationId)
   }
 
   public isToolExecutionAllowed({

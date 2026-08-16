@@ -258,9 +258,7 @@ describe('registerWebServerRoutes chat write boundary', () => {
         {
           id: conversation.id,
           baseCount: 0,
-          newMessages: [
-            { id: 'message-1', role: 'user', content: 'append' },
-          ],
+          newMessages: [{ id: 'message-1', role: 'user', content: 'append' }],
         },
       )
       const saveResponse = await dispatchChat(
@@ -268,9 +266,7 @@ describe('registerWebServerRoutes chat write boundary', () => {
         '/api/chat/save',
         {
           id: conversation.id,
-          messages: [
-            { id: 'message-2', role: 'user', content: 'save' },
-          ],
+          messages: [{ id: 'message-2', role: 'user', content: 'save' }],
         },
       )
 
@@ -303,7 +299,9 @@ describe('registerWebServerRoutes chat write boundary', () => {
       })
 
       expect(response.statusCode).toBe(200)
-      expect(harness.removeAllowedTools).toHaveBeenCalledWith(conversation.id)
+      expect(harness.clearConversationToolAllowances).toHaveBeenCalledWith(
+        conversation.id,
+      )
     } finally {
       await harness.dispose()
     }
@@ -347,8 +345,10 @@ function createHarness(seed: WebChatConversation[]) {
     createChat: jest.fn(),
     deleteChat: jest.fn(),
   } as unknown as ChatManager
-  const removeAllowedTools = jest.fn()
-  const getMcpManager = jest.fn(async () => ({ removeAllowedTools }) as never)
+  const clearConversationToolAllowances = jest.fn()
+  const getMcpManager = jest.fn(
+    async () => ({ clearConversationToolAllowances }) as never,
+  )
   const getState = jest.fn((conversationId: string) => ({
     conversationId,
     status: 'idle',
@@ -412,7 +412,7 @@ function createHarness(seed: WebChatConversation[]) {
     getState,
     getConversation: (conversationId: string) =>
       conversations.get(conversationId),
-    removeAllowedTools,
+    clearConversationToolAllowances,
     dispose: registered.dispose,
   }
 }

@@ -52,7 +52,8 @@ export function createWebMcpManager({
       )
       return response.aborted
     },
-    removeAllowedTools: (_conversationId: string): void => undefined,
+    clearConversationToolAllowances: (_conversationId: string): void =>
+      undefined,
     /**
      * js_eval 在 web 端没有本地执行路径：调用经 /api/mcp/call-tool 代理到
      * 宿主的 localFileTools（宿主侧的 getJsSandboxSettings 才是执行时权威）。

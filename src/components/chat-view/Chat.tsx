@@ -1697,11 +1697,13 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
         await deleteConversation(conversationId)
         // Per-conversation MCP tool allowances ("always allow in this chat")
         // die with the conversation — a later conversationId reuse must not
-        // inherit the deleted chat's permission grants. removeAllowedTools is
-        // idempotent, so deleting twice or deleting an unknown id is safe.
+        // inherit the deleted chat's permission grants. Cleanup is idempotent,
+        // so deleting twice or deleting an unknown id is safe.
         void plugin
           .getMcpManager()
-          .then((mcpManager) => mcpManager.removeAllowedTools(conversationId))
+          .then((mcpManager) =>
+            mcpManager.clearConversationToolAllowances(conversationId),
+          )
           .catch((error: unknown) => {
             console.error(
               'Failed to revoke MCP tool allowances for deleted conversation',
