@@ -1,8 +1,8 @@
 import type { App } from 'obsidian'
 
-import { DEFAULT_UNTITLED_CONVERSATION_TITLE } from '../../constants'
 import type { ChatMode } from '../../components/chat-view/chat-input/ChatModeSelect'
 import { resolveChatModeRuntime } from '../../components/chat-view/chat-runtime-profiles'
+import { DEFAULT_UNTITLED_CONVERSATION_TITLE } from '../../constants'
 import type { ChatManager } from '../../database/json/chat/ChatManager'
 import type { ChatConversation } from '../../database/json/chat/types'
 import type {
@@ -46,10 +46,7 @@ import { selectAllowedTools } from '../agent/tool-selection'
 import type { AgentRuntimeRunInput } from '../agent/types'
 import { LLMModelNotFoundException } from '../llm/exception'
 import { getChatModelClient } from '../llm/manager'
-import {
-  TERMINAL_COMMAND_TOOL_NAME,
-  getLocalFileToolServerName,
-} from '../mcp/localFileToolNames'
+import { getLocalFileToolServerName } from '../mcp/localFileToolNames'
 import { McpManager } from '../mcp/mcpManager'
 import { getToolName } from '../mcp/tool-name-utils'
 import { getMemoryIndexRuntimeHandle } from '../memory/memoryIndexRuntime'
@@ -591,12 +588,14 @@ export class WebChatRuntimeAdapter {
       allowedToolNames: chatModeRuntime.allowedToolNames,
       enableToolDisclosure: settings.mcp.enableToolDisclosure,
       toolPreferences: chatModeRuntime.toolPreferences,
+      builtinCapabilityPreferences:
+        chatModeRuntime.builtinCapabilityPreferences,
       toolServerPreferences: chatModeRuntime.toolServerPreferences,
       toolCapabilityMode: chatModeRuntime.toolCapabilityMode,
       bypassToolApproval: chatModeRuntime.bypassToolApproval,
-      blockedCommandPrefixes: settings.mcp.builtinToolOptions[
-        TERMINAL_COMMAND_TOOL_NAME
-      ]?.blockedPrefixes ?? [...DEFAULT_BLOCKED_PREFIXES],
+      blockedCommandPrefixes:
+        settings.mcp.builtinCapabilityOptions.terminal?.blockedPrefixes ??
+        [...DEFAULT_BLOCKED_PREFIXES],
       workspaceAccessPolicy: fileScope.workspaceAccessPolicy,
       allowedSkillPaths: resolved.allowedSkillPaths,
       requestParams,

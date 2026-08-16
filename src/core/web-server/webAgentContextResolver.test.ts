@@ -118,7 +118,7 @@ const makeSettings = (overrides: Partial<YoloSettings> = {}): YoloSettings => {
     },
     mcp: {
       servers: [],
-      builtinToolOptions: {},
+      builtinCapabilityOptions: {},
       enableToolDisclosure: false,
       localServer: { enabled: false, port: 27124, token: '' },
     },

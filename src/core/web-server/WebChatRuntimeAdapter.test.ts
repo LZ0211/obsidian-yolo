@@ -77,12 +77,12 @@ import type { WorkspaceAccessPolicy } from '../../types/assistant.types'
 import type { ChatConversation } from '../../types/chat'
 import type { ChatMessage } from '../../types/chat'
 import { RequestContextBuilder } from '../../utils/chat/requestContextBuilder'
-import { getProtectedVaultPathRules } from '../paths/protectedPaths'
 import { estimateContextBreakdown } from '../agent/contextBreakdown'
 import { estimateContinuationRequestContextTokens } from '../agent/requestContextEstimate'
 import type { AgentService } from '../agent/service'
 import { getChatModelClient } from '../llm/manager'
 import type { McpManager } from '../mcp/mcpManager'
+import { getProtectedVaultPathRules } from '../paths/protectedPaths'
 
 import type { EffectiveWorkspaceAgent } from './webAgentTypes'
 import {
@@ -143,7 +143,7 @@ function makeSettings(overrides: Partial<YoloSettings> = {}): YoloSettings {
     providers: [{ id: 'mock-provider', apiType: 'openai-compatible' }],
     assistants: [],
     workspaceAgents: [],
-    mcp: { enableToolDisclosure: false, builtinToolOptions: {} },
+    mcp: { enableToolDisclosure: false, builtinCapabilityOptions: {} },
     chatOptions: {},
     continuationOptions: {
       primaryRequestTimeoutMs: 30000,
@@ -194,6 +194,11 @@ type RunCallArgs = {
     sourceUserMessageId?: string
     branchLabel?: string
     workspaceAccessPolicy?: WorkspaceAccessPolicy
+    builtinCapabilityPreferences?: Record<
+      string,
+      { enabled?: boolean; approvalMode?: string }
+    >
+    blockedCommandPrefixes?: string[]
     model?: { id?: string }
   }
 }
@@ -528,6 +533,73 @@ describe('WebChatRuntimeAdapter.prepareRun', () => {
 
     expect(runCalls).toHaveLength(1)
     expect(runCalls[0].input.toolCapabilityMode).toBe('agent')
+  })
+
+  it('forwards the resolved built-in capability preferences to the runtime', async () => {
+    resolveChatModeRuntimeMock.mockReturnValueOnce({
+      loopConfig: {
+        enableTools: true,
+        includeBuiltinTools: true,
+        maxAutoIterations: 100,
+      },
+      allowedToolNames: ['yolo_local__fs_write'],
+      toolPreferences: undefined,
+      builtinCapabilityPreferences: {
+        file_editing: { enabled: false, approvalMode: 'require_approval' },
+      },
+      toolServerPreferences: undefined,
+      toolCapabilityMode: 'agent',
+      bypassToolApproval: false,
+    })
+    const { agentService, runCalls } = makeAgentService()
+    const adapter = makeAdapter({ agentService })
+
+    const prepared = await adapter.prepareRun(
+      {
+        conversationId: 'conv-1',
+        messages: [makeMessage('user-1', 'user', 'hi')],
+      },
+      makeActiveAgent(),
+    )
+    await prepared.execute({
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    })
+
+    expect(runCalls[0].input.builtinCapabilityPreferences).toEqual({
+      file_editing: { enabled: false, approvalMode: 'require_approval' },
+    })
+  })
+
+  it('reads blocked terminal prefixes from the terminal capability settings', async () => {
+    const { agentService, runCalls } = makeAgentService()
+    const adapter = makeAdapter({
+      agentService,
+      settings: makeSettings({
+        mcp: {
+          servers: [],
+          enableToolDisclosure: false,
+          builtinCapabilityOptions: {
+            terminal: { blockedPrefixes: ['format'] },
+          },
+          localServer: { enabled: false, port: 27124, token: '' },
+        },
+      }),
+    })
+
+    const prepared = await adapter.prepareRun(
+      {
+        conversationId: 'conv-1',
+        messages: [makeMessage('user-1', 'user', 'hi')],
+      },
+      makeActiveAgent(),
+    )
+    await prepared.execute({
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    })
+
+    expect(runCalls[0].input.blockedCommandPrefixes).toEqual(['format'])
   })
 
   it('forwards runtime approval flags without forcing background rejection', async () => {
