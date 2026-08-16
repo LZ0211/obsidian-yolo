@@ -11,61 +11,40 @@ export type HermesRuntimeFactoryDeps = CliRuntimeFactoryDeps
 const NOT_FOUND_MESSAGE =
   'Hermes CLI was not found on this device. Install Hermes (https://github.com/NousResearch/hermes-agent), or set a custom CLI path in Settings → Agent, then retry.'
 
-/**
- * Builds the Hermes runtime factory: one shared ACP host (subprocess +
- * connection) backs every Hermes `CliRuntime` this factory creates, mirroring
- * Codex's pooled app-server host. Command resolution re-runs on every host
- * respawn, so an install or path override picked up after startup takes
- * effect on the next attempt without restarting Obsidian.
- */
+/** Builds session-owned Hermes ACP runtimes. */
 export const createHermesRuntimeFactory = async (
   deps: HermesRuntimeFactoryDeps,
 ): Promise<CliRuntimeFactory> => {
   const { AcpCliRuntime } = await import('../acp/AcpCliRuntime')
-  const { AcpHostPool } = await import('../acp/host')
-
-  const resolveProcessOptions = async () => {
-    const env = {
-      ...((await loadLoginShellEnvironment()) as NodeJS.ProcessEnv),
-      ...(resolveCliSessionInjection(
-        () => deps.getSettings?.() ?? null,
-        'hermes',
-      ).llmEnv ?? {}),
-    }
-    const cliPathOverride = getCliPathOverride(deps.app, 'hermes')
-    const resolved = await hermesAgentProfile.resolveCommand(
-      env,
-      cliPathOverride,
-    )
-    if (!resolved) throw new Error(NOT_FOUND_MESSAGE)
-    return {
-      command: resolved.command,
-      args: resolved.args,
-      cwd: deps.vaultPath,
-    }
-  }
-
-  const hostPool = new AcpHostPool({
-    runtimeId: 'hermes',
-    clientName: 'obsidian-yolo',
-    resolveProcessOptions,
-  })
-
   return {
-    create: (createDeps) =>
-      new AcpCliRuntime('hermes', {
-        cwd: resolveCliRuntimeWorkingPath(
+    create: (createDeps) => {
+      const cwd = resolveCliRuntimeWorkingPath(
           createDeps.vaultPath,
           createDeps.workingDirectory,
-        ),
-        resolveHost: hostPool.acquire,
-        getSessionInjection: () =>
-          resolveCliSessionInjection(
-            () => deps.getSettings?.() ?? null,
-            'hermes',
-          ),
-      }),
-    warm: () => hostPool.warm(),
-    dispose: () => hostPool.dispose(),
+        )
+      const getSessionInjection = () =>
+        resolveCliSessionInjection(
+          () => deps.getSettings?.() ?? null,
+          'hermes',
+        )
+      return new AcpCliRuntime('hermes', {
+        cwd,
+        getSessionInjection,
+        resolveProcessOptions: async () => {
+          const env = Object.fromEntries(
+            Object.entries({
+              ...((await loadLoginShellEnvironment()) as NodeJS.ProcessEnv),
+              ...(getSessionInjection().llmEnv ?? {}),
+            }).filter((entry): entry is [string, string] => entry[1] !== undefined),
+          )
+          const resolved = await hermesAgentProfile.resolveCommand(
+            env,
+            getCliPathOverride(deps.app, 'hermes'),
+          )
+          if (!resolved) throw new Error(NOT_FOUND_MESSAGE)
+          return { command: resolved.command, args: resolved.args, cwd, env }
+        },
+      })
+    },
   }
 }
