@@ -216,7 +216,9 @@ describe('YoloPlugin RAG maintenance runJob', () => {
 })
 
 describe('YoloPlugin RAG backend status', () => {
-  it('queries the namespace for the configured provider and endpoint', async () => {
+  // Namespaces key by model + dimension only (3e569b89c) — provider and
+  // endpoint are deliberately not part of the namespace identity.
+  it('queries the namespace keyed by model and dimension', async () => {
     const getStatus = jest.fn(async (_namespace: unknown) => ({
       backend: 'sqlite' as const,
       readiness: 'ready' as const,
@@ -247,12 +249,12 @@ describe('YoloPlugin RAG backend status', () => {
 
     await plugin.getVectorBackendStatus()
 
-    expect(getStatus).toHaveBeenCalledWith(
-      expect.objectContaining({
-        providerIdentity: 'provider-1',
-        endpointIdentity: 'https://embedding.example/v1/',
-      }),
-    )
+    expect(getStatus).toHaveBeenCalledWith({
+      provider: 'embedding',
+      model: 'text-embedding-3-small',
+      dimension: 1536,
+      distanceMetric: 'cosine',
+    })
     expect(getStats).toHaveBeenCalledWith(getStatus.mock.calls[0][0])
   })
 })

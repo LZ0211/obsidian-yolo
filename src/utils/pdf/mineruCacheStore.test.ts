@@ -165,24 +165,24 @@ const expectedHash16 = async (): Promise<string> =>
   (await sha256Hex(arrayBufferToBase64(PDF_BYTES.buffer))).slice(0, 16)
 
 describe('getMineruCacheDir', () => {
-  it('resolves under the default Projects dir', () => {
+  it('resolves under the default Projects dir inside the default baseDir', () => {
     expect(getMineruCacheDir('abc123def4567890')).toBe(
-      'Projects/mineru-cache/abc123def4567890',
+      'YOLO/Projects/mineru-cache/abc123def4567890',
     )
   })
 
-  it('honors a configured projectsDir', () => {
+  it('follows a configured baseDir', () => {
     expect(
       getMineruCacheDir('abc123def4567890', {
-        yolo: { projectsDir: 'My Projects' },
+        yolo: { baseDir: 'My Root' },
       }),
-    ).toBe('My Projects/mineru-cache/abc123def4567890')
+    ).toBe('My Root/Projects/mineru-cache/abc123def4567890')
   })
 })
 
 describe('convertPdfViaMinerU', () => {
   const expectedCacheDir = async (): Promise<string> =>
-    `Projects/mineru-cache/${await expectedHash16()}-${endpointHashFor(
+    `YOLO/Projects/mineru-cache/${await expectedHash16()}-${endpointHashFor(
       OPTIONS.baseUrl,
     )}`
 
@@ -257,7 +257,7 @@ describe('convertPdfViaMinerU', () => {
       baseUrl: 'http://mineru-other.test',
       apiKey: 'Bearer other',
     }
-    const otherDir = `Projects/mineru-cache/${await expectedHash16()}-${endpointHashFor(
+    const otherDir = `YOLO/Projects/mineru-cache/${await expectedHash16()}-${endpointHashFor(
       otherOptions.baseUrl,
     )}`
 
