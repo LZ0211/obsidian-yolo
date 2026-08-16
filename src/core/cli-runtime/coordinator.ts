@@ -787,6 +787,7 @@ export const createDesktopCliRuntimeCoordinator = async (
   )({
     app: options.app,
     vaultPath,
+    getSettings: options.getSettings,
     getClaudeRuntimeOptions: options.getClaudeRuntimeOptions,
     getCodexRuntimeOptions: options.getCodexRuntimeOptions,
   })

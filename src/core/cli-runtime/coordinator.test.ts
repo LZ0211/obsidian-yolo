@@ -196,15 +196,17 @@ describe('CLI runtime coordinator', () => {
     expect(loadRuntimeFactories).not.toHaveBeenCalled()
   })
 
-  it('passes the vault path and configured option getters to the runtime factories loader', async () => {
+  it('passes the vault path, settings, and configured option getters to the runtime factories loader', async () => {
     const harness = runtimeHarness()
     const app = createApp(new TestFileSystemAdapter('/vault/loader'))
     const getClaudeRuntimeOptions = () => ({})
     const getCodexRuntimeOptions = () => ({})
+    const getSettings = () => null
     const loadRuntimeFactories = jest.fn(() => harness.factories)
 
     await createDesktopCliRuntimeCoordinator({
       app,
+      getSettings,
       getClaudeRuntimeOptions,
       getCodexRuntimeOptions,
       loadRuntimeFactories,
@@ -214,6 +216,7 @@ describe('CLI runtime coordinator', () => {
     expect(loadRuntimeFactories).toHaveBeenCalledWith({
       app,
       vaultPath: '/vault/loader',
+      getSettings,
       getClaudeRuntimeOptions,
       getCodexRuntimeOptions,
     })
