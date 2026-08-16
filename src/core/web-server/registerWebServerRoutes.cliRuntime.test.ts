@@ -256,6 +256,7 @@ describe('registerWebServerRoutes CLI runtime binding', () => {
         'claude-code': false,
         codex: false,
         hermes: false,
+        opencode: false,
         pi: false,
       })
     } finally {

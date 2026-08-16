@@ -575,6 +575,7 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
         'claude-code': true,
         codex: false,
         hermes: true,
+        opencode: false,
         pi: true,
       }),
     )
@@ -588,6 +589,7 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
       'claude-code': true,
       codex: false,
       hermes: true,
+      opencode: false,
       pi: true,
     })
     expect(availabilityFetch).toHaveBeenCalledWith(
@@ -610,6 +612,7 @@ describe('createWebCliRuntimeScope（契约 adapter 背书，Phase B Step 4）',
       'claude-code': false,
       codex: false,
       hermes: false,
+      opencode: false,
       pi: false,
     })
   })
