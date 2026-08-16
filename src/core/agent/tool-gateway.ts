@@ -9,7 +9,7 @@ import {
   AssistantToolApprovalMode,
   AssistantToolPreference,
   AssistantToolServerPreference,
-  AssistantWorkspaceScope,
+  WorkspaceAccessPolicy,
 } from '../../types/assistant.types'
 import {
   ChatConversationCompactionLike,
@@ -67,7 +67,7 @@ import { isLoadToolSchemasToolName } from './tool-selection'
 import { GEMINI_STUB_ARGS_JSON_FIELD, isGeminiStubApiType } from './tool-stub'
 import {
   buildAllowedSkillPathSet,
-  findPathOutsideScope,
+  findWorkspacePolicyViolation,
 } from './workspaceScope'
 
 type McpToolCallParams = Parameters<McpManager['callTool']>[0]
@@ -272,7 +272,7 @@ export class AgentToolGateway {
     AssistantToolServerPreference
   >
   private readonly enableToolDisclosure: boolean
-  private readonly workspaceScope?: AssistantWorkspaceScope
+  private readonly workspaceAccessPolicy?: WorkspaceAccessPolicy
   private readonly allowedSkillPaths?: readonly string[]
   private readonly apiType?: LLMProviderApiType | null
   private readonly subagentParentContext?: SubagentParentContext
@@ -301,7 +301,7 @@ export class AgentToolGateway {
       builtinCapabilityPreferences?: Record<string, AssistantToolPreference>
       toolServerPreferences?: Record<string, AssistantToolServerPreference>
       enableToolDisclosure?: boolean
-      workspaceScope?: AssistantWorkspaceScope
+      workspaceAccessPolicy?: WorkspaceAccessPolicy
       allowedSkillPaths?: string[]
       apiType?: LLMProviderApiType | null
       subagentParentContext?: SubagentParentContext
@@ -324,7 +324,7 @@ export class AgentToolGateway {
     this.builtinCapabilityPreferences = options?.builtinCapabilityPreferences
     this.toolServerPreferences = options?.toolServerPreferences
     this.enableToolDisclosure = options?.enableToolDisclosure ?? true
-    this.workspaceScope = options?.workspaceScope
+    this.workspaceAccessPolicy = options?.workspaceAccessPolicy
     this.allowedSkillPaths = options?.allowedSkillPaths
     this.apiType = options?.apiType
     this.subagentParentContext = options?.subagentParentContext
@@ -579,12 +579,20 @@ export class AgentToolGateway {
   }
 
   private findRequestPathOutsideScope(request: ToolCallRequest): string | null {
-    if (!this.workspaceScope?.enabled) return null
+    if (
+      !this.workspaceAccessPolicy?.enabled &&
+      !this.workspaceAccessPolicy?.protectedPaths?.length
+    ) {
+      return null
+    }
     try {
       const parsed = parseToolName(request.name)
       if (parsed.serverName !== getLocalFileToolServerName()) return null
       const args = getToolCallArgumentsObject(request.arguments)
-      return findPathOutsideScope(parsed.toolName, args, this.workspaceScope, {
+      return findWorkspacePolicyViolation({
+        toolName: parsed.toolName,
+        args,
+        policy: this.workspaceAccessPolicy,
         exemptPaths: this.allowedSkillPaths
           ? buildAllowedSkillPathSet(this.allowedSkillPaths)
           : undefined,
@@ -768,6 +776,47 @@ export class AgentToolGateway {
     }
   }
 
+  private attachExecutionSnapshot(request: ToolCallRequest): ToolCallRequest {
+    const isBash = this.isBashToolCall(request.name)
+    const hasSkillPaths =
+      this.allowedSkillPaths != null && this.allowedSkillPaths.length > 0
+    if (!isBash && !hasSkillPaths) {
+      return request
+    }
+    return {
+      ...request,
+      metadata: {
+        ...request.metadata,
+        executionConstraints: {
+          ...request.metadata?.executionConstraints,
+          ...(isBash ? { bashReadOnly: this.bashReadOnly } : {}),
+          ...(isBash
+            ? { bashApprovalMode: this.resolveApprovalMode(request.name) }
+            : {}),
+          ...(hasSkillPaths && this.allowedSkillPaths
+            ? { allowedSkillPaths: [...this.allowedSkillPaths] }
+            : {}),
+        },
+      },
+    }
+  }
+
+  private attachPolicySnapshot(request: ToolCallRequest): ToolCallRequest {
+    if (
+      !this.workspaceAccessPolicy?.enabled &&
+      !this.workspaceAccessPolicy?.protectedPaths?.length
+    ) {
+      return request
+    }
+    return {
+      ...request,
+      metadata: {
+        ...request.metadata,
+        workspaceAccessPolicy: this.workspaceAccessPolicy,
+      },
+    }
+  }
+
   createToolMessage({
     toolCallRequests,
     conversationId,
@@ -785,7 +834,11 @@ export class AgentToolGateway {
   }): ChatToolMessage {
     const preparedRequests = toolCallRequests.map((request) =>
       this.prepareFinalToolCallRequest(
-        this.attachModuleChatModeSnapshot(request),
+        this.attachPolicySnapshot(
+          this.attachExecutionSnapshot(
+            this.attachModuleChatModeSnapshot(request),
+          ),
+        ),
       ),
     )
     const normalizedToolCallRequests = preparedRequests.map(
@@ -1063,7 +1116,7 @@ export class AgentToolGateway {
           signal,
           chatModelId,
           debugTraceId,
-          workspaceScope: this.workspaceScope,
+          workspaceAccessPolicy: this.workspaceAccessPolicy,
           allowedSkillPaths: this.allowedSkillPaths,
           subagentParentContext: this.subagentParentContext,
           bashApprovalMode: this.isBashToolCall(entry.toolCall.request.name)
@@ -1107,7 +1160,7 @@ export class AgentToolGateway {
             signal,
             chatModelId,
             debugTraceId,
-            workspaceScope: this.workspaceScope,
+            workspaceAccessPolicy: this.workspaceAccessPolicy,
             allowedSkillPaths: this.allowedSkillPaths,
             subagentParentContext: this.subagentParentContext,
           }).then((response) => ({ entries: [entry], responses: [response] })),
@@ -1137,7 +1190,7 @@ export class AgentToolGateway {
           signal,
           chatModelId,
           debugTraceId,
-          workspaceScope: this.workspaceScope,
+          workspaceAccessPolicy: this.workspaceAccessPolicy,
           allowedSkillPaths: this.allowedSkillPaths,
           subagentParentContext: this.subagentParentContext,
         }).then((response) => ({
@@ -1260,7 +1313,7 @@ export class AgentToolGateway {
             signal,
             chatModelId,
             debugTraceId,
-            workspaceScope: this.workspaceScope,
+            workspaceAccessPolicy: this.workspaceAccessPolicy,
             allowedSkillPaths: this.allowedSkillPaths,
             subagentParentContext: this.subagentParentContext,
           }),

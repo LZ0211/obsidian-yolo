@@ -421,6 +421,7 @@ export function findWorkspacePolicyViolation({
     args,
     isWorkspaceWriteToolName(toolName),
   )) {
+    if (path.startsWith(BROWSER_READ_PATH_PREFIX)) continue
     if (exemptPaths?.has(path)) continue
     try {
       if (mode === 'write') {

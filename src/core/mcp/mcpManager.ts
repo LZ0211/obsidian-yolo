@@ -5,7 +5,7 @@ import { YoloSettings } from '../../settings/schema/setting.types'
 import type { ApplyViewState } from '../../types/apply-view.types'
 import type {
   AssistantToolApprovalMode,
-  AssistantWorkspaceScope,
+  WorkspaceAccessPolicy,
 } from '../../types/assistant.types'
 import type { ChatMessage } from '../../types/chat'
 import type { ChatModelModality } from '../../types/chat-model.types'
@@ -1122,7 +1122,7 @@ export class McpManager {
     signal,
     requireReview = false,
     chatModelId,
-    workspaceScope,
+    workspaceAccessPolicy,
     allowedSkillPaths,
     subagentParentContext,
     bashApprovalMode,
@@ -1137,7 +1137,7 @@ export class McpManager {
     signal?: AbortSignal
     requireReview?: boolean
     chatModelId?: string
-    workspaceScope?: AssistantWorkspaceScope
+    workspaceAccessPolicy?: WorkspaceAccessPolicy
     allowedSkillPaths?: readonly string[]
     subagentParentContext?: SubagentParentContext
     /** Effective approval tier for the bash tool; see tool-gateway.ts. */
@@ -1197,7 +1197,7 @@ export class McpManager {
             requireReview,
             signal: compositeSignal,
             chatModelId,
-            workspaceScope,
+            workspaceAccessPolicy,
             allowedSkillPaths,
             // No `runContext`: `ToolContext` doesn't carry it (see that
             // type's doc comment in `core/tools/types.ts` for why it was

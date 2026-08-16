@@ -14,8 +14,10 @@ import {
 import type { ToolCatalogContext } from '../tools/types'
 import { WEB_SCRAPE_TOOL_NAME, WEB_SEARCH_TOOL_NAME } from '../web-search'
 
-import { JS_SANDBOX_TOOL_NAME } from './jsSandboxTool'
-import { LOCAL_FILE_TOOL_SERVER } from './localFileToolNames'
+import {
+  JS_SANDBOX_TOOL_NAME,
+  LOCAL_FILE_TOOL_SERVER,
+} from './localFileToolNames'
 import { parseToolName } from './tool-name-utils'
 
 export { getLocalFileToolServerName } from './localFileToolNames'

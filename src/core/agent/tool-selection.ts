@@ -8,7 +8,8 @@ import type { McpTool } from '../../types/mcp.types'
 import type { LLMProviderApiType } from '../../types/provider.types'
 import { estimateJsonTokens } from '../../utils/llm/contextTokenEstimate'
 import { type JsSandboxSettings } from '../mcp/jsSandboxSettings'
-import { JS_SANDBOX_TOOL_NAME, getJsSandboxTool } from '../mcp/jsSandboxTool'
+import { getJsSandboxTool } from '../mcp/jsSandboxTool'
+import { JS_SANDBOX_TOOL_NAME } from '../mcp/localFileToolNames'
 import {
   LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME,
   getLoadToolSchemasTool,
