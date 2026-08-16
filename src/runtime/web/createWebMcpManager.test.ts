@@ -37,6 +37,19 @@ describe('createWebMcpManager', () => {
     })
   })
 
+  it('does not let the browser grant conversation tool allowances', () => {
+    const api = { postJson: jest.fn() }
+    const manager = createManager(api)
+
+    manager.allowToolForConversation(
+      'builtin__fs_write',
+      'conversation-1',
+      { path: 'A.md' },
+    )
+
+    expect(api.postJson).not.toHaveBeenCalled()
+  })
+
   it('delegates abortToolCall to the server and returns the backend result', async () => {
     const api = {
       postJson: jest.fn().mockResolvedValue({ aborted: true }),

@@ -59,6 +59,7 @@ export class McpCoordinator {
 
   private mcpManager: McpManager | null = null
   private mcpManagerInitPromise: Promise<McpManager> | null = null
+  private lifecycleGeneration = 0
 
   // Module chat mode replay state. `registeredChatModeServers` tracks the
   // dispose function for every mode currently registered on `mcpManager`, so
@@ -86,6 +87,7 @@ export class McpCoordinator {
     }
 
     if (!this.mcpManagerInitPromise) {
+      const generation = this.lifecycleGeneration
       this.mcpManagerInitPromise = (async () => {
         try {
           const manager = new McpManager({
@@ -99,12 +101,18 @@ export class McpCoordinator {
             promptSourceWatcher: this.promptSourceWatcher,
           })
           await manager.initialize()
+          if (generation !== this.lifecycleGeneration) {
+            manager.cleanup()
+            throw new Error('MCP manager initialization was superseded')
+          }
           this.mcpManager = manager
           this.setupChatModeReplay(manager)
           return manager
         } catch (error) {
-          this.mcpManager = null
-          this.mcpManagerInitPromise = null
+          if (generation === this.lifecycleGeneration) {
+            this.mcpManager = null
+            this.mcpManagerInitPromise = null
+          }
           throw error
         }
       })()
@@ -114,6 +122,7 @@ export class McpCoordinator {
   }
 
   cleanup() {
+    this.lifecycleGeneration += 1
     this.chatModeUnsubscribe?.()
     this.chatModeUnsubscribe = null
     // The manager instance itself is being discarded, so there's nothing to

@@ -9,7 +9,7 @@ import {
 import type { YoloModuleChatModeV1 } from '../modules/types'
 
 import { McpCoordinator } from './mcpCoordinator'
-import type { McpManager } from './mcpManager'
+import { McpManager } from './mcpManager'
 
 const OBSIDIAN_CONFIG_DIR = ['.', 'obsidian'].join('')
 
@@ -197,6 +197,35 @@ describe('McpCoordinator module chat mode replay', () => {
     await expect(toolNames(secondManager)).resolves.toContain(
       'module-mode-learning-chat__get_generation_status',
     )
+  })
+
+  it('discards an initialization that finishes after cleanup without disturbing a rebuild', async () => {
+    let finishFirstInitialization: (() => void) | undefined
+    const firstInitialization = new Promise<void>((resolve) => {
+      finishFirstInitialization = resolve
+    })
+    const initializeSpy = jest
+      .spyOn(McpManager.prototype, 'initialize')
+      .mockImplementationOnce(() => firstInitialization)
+      .mockResolvedValueOnce(undefined)
+    const cleanupSpy = jest.spyOn(McpManager.prototype, 'cleanup')
+    const coordinator = createCoordinator()
+
+    const staleManagerPromise = coordinator.getMcpManager()
+    coordinator.cleanup()
+    const currentManagerPromise = coordinator.getMcpManager()
+    const currentManager = await currentManagerPromise
+
+    finishFirstInitialization?.()
+
+    await expect(staleManagerPromise).rejects.toThrow(
+      'MCP manager initialization was superseded',
+    )
+    await expect(coordinator.getMcpManager()).resolves.toBe(currentManager)
+    expect(cleanupSpy).toHaveBeenCalledTimes(1)
+
+    initializeSpy.mockRestore()
+    cleanupSpy.mockRestore()
   })
 
   it('does nothing when no registry is supplied', async () => {

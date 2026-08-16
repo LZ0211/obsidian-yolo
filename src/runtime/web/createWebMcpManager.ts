@@ -33,16 +33,14 @@ export function createWebMcpManager({
       includeBuiltinTools?: boolean
       chatModelModalities?: unknown[]
     }) => api.postJson('/api/mcp/list-tools', options),
+    // Conversation allowances are granted only by AgentService after it
+    // validates a real pending tool call. Keep the shared manager method as a
+    // no-op so the browser cannot create authorization through a side route.
     allowToolForConversation: (
-      requestToolName: string,
-      conversationId: string,
-      requestArgs?: Record<string, unknown>,
-    ) =>
-      api.postJson('/api/mcp/allow-tool-for-conversation', {
-        requestToolName,
-        conversationId,
-        requestArgs,
-      }),
+      _requestToolName: string,
+      _conversationId: string,
+      _requestArgs?: Record<string, unknown>,
+    ): void => undefined,
     callTool: (input: Record<string, unknown>) =>
       api.postJson('/api/mcp/call-tool', input),
     abortToolCall: async (id: string, conversationId?: string) => {

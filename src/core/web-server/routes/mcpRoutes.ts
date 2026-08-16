@@ -4,6 +4,7 @@ import { deserializeChatMessage } from '../../../hooks/useChatHistory'
 import type { YoloSettings } from '../../../settings/schema/setting.types'
 import type { Assistant } from '../../../types/assistant.types'
 import { ToolCallResponseStatus } from '../../../types/tool-call.types'
+import { isAssistantToolEnabled } from '../../agent/tool-preferences'
 import type { McpManager } from '../../mcp/mcpManager'
 import { listLiteSkillEntries } from '../../skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../../skills/skillPolicy'
@@ -61,40 +62,6 @@ export function registerMcpRoutes(
     )
   })
 
-  router.post('/api/mcp/allow-tool-for-conversation', async (req, res) => {
-    const access = context.resolveMcpAccess(getSessionId(req.headers))
-    if (!access.ok) {
-      writeJson(res, access.statusCode, access.body)
-      return
-    }
-    const body = await readJsonBody(req)
-    if (!body.ok) {
-      writeJson(res, body.statusCode, body.body)
-      return
-    }
-    const parsed = parseAllowToolRequest(body.value)
-    if (!parsed.ok) {
-      writeJson(res, 400, apiError('invalid_request', parsed.message))
-      return
-    }
-    if (
-      !(await context.canAccessConversation(
-        parsed.value.conversationId,
-        access.context,
-      ))
-    ) {
-      writeJson(res, 404, apiError('not_found', 'Not found'))
-      return
-    }
-    const manager = await context.getMcpManager()
-    manager.allowToolForConversation(
-      parsed.value.requestToolName,
-      parsed.value.conversationId,
-      parsed.value.requestArgs,
-    )
-    writeJson(res, 200, { ok: true })
-  })
-
   router.post('/api/mcp/call-tool', async (req, res) => {
     const access = context.resolveMcpAccess(getSessionId(req.headers))
     if (!access.ok) {
@@ -122,13 +89,27 @@ export function registerMcpRoutes(
     }
     const manager = await context.getMcpManager()
 
+    if (
+      access.context.activeAgent.enableTools === false ||
+      !isAssistantToolEnabled(
+        access.context.activeAgent,
+        parsed.value.name,
+      )
+    ) {
+      writeJson(res, 200, {
+        status: ToolCallResponseStatus.Rejected,
+        reason: `Tool "${parsed.value.name}" is not enabled for the active agent.`,
+      })
+      return
+    }
+
     // The route must not trust the client's self-reported "approved" state.
     // Re-verify the conversation-level allowance with the same gate the
     // AgentToolGateway consults before dispatch (see
     // `AgentToolGateway.shouldAutoExecuteTool` → `McpManager.isToolExecutionAllowed`).
-    // This endpoint is the manual approval/execution path, so auto-execution
-    // is never implied: an explicit per-conversation allowance (via
-    // /api/mcp/allow-tool-for-conversation) is required.
+    // This endpoint is only a persisted-call recovery path, so auto-execution
+    // is never implied. The allowance must have been granted by the real
+    // AgentService approval flow; browsers cannot create one directly.
     const allowed = manager.isToolExecutionAllowed({
       requestToolName: parsed.value.name,
       conversationId: parsed.value.conversationId,
@@ -201,46 +182,6 @@ export function registerMcpRoutes(
     const manager = await context.getMcpManager()
     writeJson(res, 200, { aborted: manager.abortToolCall(id) })
   })
-}
-
-function parseAllowToolRequest(value: Record<string, unknown>):
-  | {
-      ok: true
-      value: {
-        requestToolName: string
-        conversationId: string
-        requestArgs?: Record<string, unknown>
-      }
-    }
-  | { ok: false; message: string } {
-  if (
-    typeof value.requestToolName !== 'string' ||
-    value.requestToolName.length === 0
-  ) {
-    return { ok: false, message: 'requestToolName is required' }
-  }
-  if (
-    typeof value.conversationId !== 'string' ||
-    value.conversationId.length === 0
-  ) {
-    return { ok: false, message: 'conversationId is required' }
-  }
-  if (
-    value.requestArgs !== undefined &&
-    (!value.requestArgs ||
-      typeof value.requestArgs !== 'object' ||
-      Array.isArray(value.requestArgs))
-  ) {
-    return { ok: false, message: 'requestArgs must be an object' }
-  }
-  return {
-    ok: true,
-    value: {
-      requestToolName: value.requestToolName,
-      conversationId: value.conversationId,
-      requestArgs: value.requestArgs as Record<string, unknown> | undefined,
-    },
-  }
 }
 
 type WebMcpCallToolInput = Omit<

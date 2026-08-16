@@ -7,6 +7,8 @@ import { TFile } from 'obsidian'
 import { parseYoloSettings } from '../../../settings/schema/settings'
 import { ToolCallResponseStatus } from '../../../types/tool-call.types'
 import type { McpManager } from '../../mcp/mcpManager'
+import { getLocalFileToolServerName } from '../../mcp/localFileToolNames'
+import { getToolName } from '../../mcp/tool-name-utils'
 import { getProtectedVaultPathRules } from '../../paths/protectedPaths'
 import type { ResolvedWebAgentContext } from '../webAgentTypes'
 import { WebRouter } from '../WebRouter'
@@ -48,13 +50,16 @@ jest.mock('../../../hooks/useChatHistory', () => {
   }
 })
 
+const LOCAL_FS_READ = getToolName(getLocalFileToolServerName(), 'fs_read')
+const LOCAL_FS_WRITE = getToolName(getLocalFileToolServerName(), 'fs_write')
+
 describe('mcpRoutes', () => {
   it('forwards tool listing to the backend MCP manager', async () => {
     const router = new WebRouter()
     const listAvailableTools = jest
       .fn()
       .mockResolvedValue([
-        { name: 'builtin__fs_read', description: 'Read file', inputSchema: {} },
+        { name: LOCAL_FS_READ, description: 'Read file', inputSchema: {} },
       ])
     registerMcpRoutes(router, {
       app: createMockApp(),
@@ -86,48 +91,23 @@ describe('mcpRoutes', () => {
     })
     expect(res.statusCode).toBe(200)
     expect(res.jsonBody).toEqual([
-      { name: 'builtin__fs_read', description: 'Read file', inputSchema: {} },
+      { name: LOCAL_FS_READ, description: 'Read file', inputSchema: {} },
     ])
   })
 
-  it('forwards tool allowance to the backend MCP manager', async () => {
+  it('does not expose a client-controlled tool allowance route', () => {
     const router = new WebRouter()
-    const allowToolForConversation = jest.fn()
     registerMcpRoutes(router, {
       app: createMockApp(),
       getSettings: () => parseYoloSettings({}),
-      getMcpManager: async () =>
-        ({
-          allowToolForConversation,
-        }) as never,
+      getMcpManager: async () => ({}) as never,
       resolveMcpAccess: createAuthorizedResolve(),
       canAccessConversation: () => true,
     })
 
-    const resolved = router.resolve(
-      'POST',
-      '/api/mcp/allow-tool-for-conversation',
-    )
-    const req = createRequest({
-      method: 'POST',
-      url: '/api/mcp/allow-tool-for-conversation',
-      body: {
-        requestToolName: 'builtin__fs_read',
-        conversationId: 'chat-1',
-        requestArgs: { path: 'A.md' },
-      },
-    })
-    const res = createResponse()
-
-    await resolved?.handler(req as never, res as never, {})
-
-    expect(allowToolForConversation).toHaveBeenCalledWith(
-      'builtin__fs_read',
-      'chat-1',
-      { path: 'A.md' },
-    )
-    expect(res.statusCode).toBe(200)
-    expect(res.jsonBody).toEqual({ ok: true })
+    expect(
+      router.resolve('POST', '/api/mcp/allow-tool-for-conversation'),
+    ).toBeNull()
   })
 
   it('forwards tool calls with hydrated conversation messages', async () => {
@@ -160,7 +140,7 @@ describe('mcpRoutes', () => {
       method: 'POST',
       url: '/api/mcp/call-tool',
       body: {
-        name: 'builtin__fs_read',
+        name: LOCAL_FS_READ,
         args: { path: 'A.md' },
         id: 'tool-1',
         conversationId: 'chat-1',
@@ -180,7 +160,7 @@ describe('mcpRoutes', () => {
 
     expect(callTool).toHaveBeenCalledWith(
       expect.objectContaining({
-        name: 'builtin__fs_read',
+        name: LOCAL_FS_READ,
         args: { path: 'A.md' },
         id: 'tool-1',
         conversationId: 'chat-1',
@@ -223,7 +203,7 @@ describe('mcpRoutes', () => {
       method: 'POST',
       url: '/api/mcp/call-tool',
       body: {
-        name: 'builtin__fs_write',
+        name: LOCAL_FS_WRITE,
         args: { path: 'A.md', content: 'x' },
         id: 'tool-1',
         conversationId: 'chat-1',
@@ -236,7 +216,7 @@ describe('mcpRoutes', () => {
     // The route re-verifies the conversation-level allowance server-side —
     // a client that never approved the tool must not reach execution.
     expect(isToolExecutionAllowed).toHaveBeenCalledWith({
-      requestToolName: 'builtin__fs_write',
+      requestToolName: LOCAL_FS_WRITE,
       conversationId: 'chat-1',
       requestArgs: { path: 'A.md', content: 'x' },
       requireAutoExecution: false,
@@ -245,8 +225,36 @@ describe('mcpRoutes', () => {
     expect(res.statusCode).toBe(200)
     expect(res.jsonBody).toEqual({
       status: ToolCallResponseStatus.Rejected,
+      reason: `Tool "${LOCAL_FS_WRITE}" has not been approved for this conversation. Approve it in the chat first.`,
+    })
+  })
+
+  it('rejects allowed tool calls when the active agent has the tool disabled', async () => {
+    const router = new WebRouter()
+    const callTool = jest.fn()
+    registerMcpRoutes(router, {
+      app: createMockApp(),
+      getSettings: () => parseYoloSettings({}),
+      getMcpManager: async () =>
+        ({
+          callTool,
+          isToolExecutionAllowed: jest.fn().mockReturnValue(true),
+        }) as never,
+      resolveMcpAccess: createAuthorizedResolve(),
+      canAccessConversation: () => true,
+    })
+
+    const res = await dispatch(router, 'POST', '/api/mcp/call-tool', {
+      name: 'third-party__disabled-tool',
+      conversationId: 'chat-1',
+    })
+
+    expect(callTool).not.toHaveBeenCalled()
+    expect(res.statusCode).toBe(200)
+    expect(res.jsonBody).toEqual({
+      status: ToolCallResponseStatus.Rejected,
       reason:
-        'Tool "builtin__fs_write" has not been approved for this conversation. Approve it in the chat first.',
+        'Tool "third-party__disabled-tool" is not enabled for the active agent.',
     })
   })
 
@@ -294,25 +302,10 @@ describe('mcpRoutes', () => {
     })
   })
 
-  it('rejects unauthenticated allow-tool-for-conversation', async () => {
-    const { router } = createHarness({ denied: true })
-    const res = await dispatch(
-      router,
-      'POST',
-      '/api/mcp/allow-tool-for-conversation',
-      {
-        requestToolName: 'builtin__fs_read',
-        conversationId: 'chat-1',
-      },
-    )
-
-    expect(res.statusCode).toBe(401)
-  })
-
   it('rejects unauthenticated call-tool', async () => {
     const { router } = createHarness({ denied: true })
     const res = await dispatch(router, 'POST', '/api/mcp/call-tool', {
-      name: 'builtin__fs_read',
+      name: LOCAL_FS_READ,
       args: { path: 'A.md' },
     })
 
@@ -330,13 +323,11 @@ describe('mcpRoutes', () => {
   })
 
   it('rejects MCP actions for conversations outside the active web session', async () => {
-    const allowToolForConversation = jest.fn()
     const callTool = jest.fn()
     const abortToolCall = jest.fn()
     const { router } = createHarness({
       getMcpManager: async () =>
         ({
-          allowToolForConversation,
           callTool,
           abortToolCall,
           isToolExecutionAllowed: jest.fn().mockReturnValue(true),
@@ -344,14 +335,8 @@ describe('mcpRoutes', () => {
       canAccessConversation: () => false,
     })
 
-    const allowResponse = await dispatch(
-      router,
-      'POST',
-      '/api/mcp/allow-tool-for-conversation',
-      { requestToolName: 'builtin__fs_read', conversationId: 'other-chat' },
-    )
     const callResponse = await dispatch(router, 'POST', '/api/mcp/call-tool', {
-      name: 'builtin__fs_read',
+      name: LOCAL_FS_READ,
       conversationId: 'other-chat',
     })
     const abortResponse = await dispatch(
@@ -361,10 +346,8 @@ describe('mcpRoutes', () => {
       { id: 'tool-1', conversationId: 'other-chat' },
     )
 
-    expect(allowResponse.statusCode).toBe(404)
     expect(callResponse.statusCode).toBe(404)
     expect(abortResponse.statusCode).toBe(404)
-    expect(allowToolForConversation).not.toHaveBeenCalled()
     expect(callTool).not.toHaveBeenCalled()
     expect(abortToolCall).not.toHaveBeenCalled()
   })
@@ -395,7 +378,7 @@ describe('mcpRoutes', () => {
       method: 'POST',
       url: '/api/mcp/call-tool',
       body: {
-        name: 'builtin__fs_read',
+        name: LOCAL_FS_READ,
         args: { path: 'A.md' },
         conversationId: 'chat-1',
         // Client-supplied values must be ignored in favor of the session's
@@ -416,7 +399,7 @@ describe('mcpRoutes', () => {
 
     expect(callTool).toHaveBeenCalledWith(
       expect.objectContaining({
-        name: 'builtin__fs_read',
+        name: LOCAL_FS_READ,
         workspaceAccessPolicy: {
           enabled: true,
           workspaceRoot: '/vault',
@@ -492,6 +475,10 @@ const AUTHORIZED_CONTEXT: ResolvedWebAgentContext = {
     persona: 'balanced',
     enableTools: true,
     includeBuiltinTools: true,
+    builtinCapabilityPreferences: {
+      file_reading: { enabled: true, approvalMode: 'full_access' },
+      file_editing: { enabled: true, approvalMode: 'require_approval' },
+    },
     enabledToolNames: [],
     toolPreferences: {},
     toolServerPreferences: {},
