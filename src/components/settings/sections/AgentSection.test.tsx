@@ -120,7 +120,7 @@ beforeEach(() => {
       assistants: [],
       workspaceAgents: [],
       mcp: {
-        builtinToolOptions: {},
+        builtinCapabilityOptions: {},
         servers: [],
         enableToolDisclosure: false,
       },

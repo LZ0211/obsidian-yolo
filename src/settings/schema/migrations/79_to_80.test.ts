@@ -14,9 +14,9 @@ describe('migrateFrom79To80', () => {
     )
     expect(step?.toVersion).toBe(80)
     expect(step?.migrate).toBe(migrateFrom79To80)
-    expect(SETTINGS_SCHEMA_VERSION).toBe(81)
+    expect(SETTINGS_SCHEMA_VERSION).toBe(82)
     expect(
-      SETTING_MIGRATIONS.some((migration) => migration.toVersion > 81),
+      SETTING_MIGRATIONS.some((migration) => migration.toVersion > 82),
     ).toBe(false)
   })
 

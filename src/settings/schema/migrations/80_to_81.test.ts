@@ -371,6 +371,205 @@ describe('migrateFrom80To81', () => {
     ).toEqual({ enabled: true, approvalMode: 'full_access' })
   })
 
+  // The v79->v80 migration (released 2026-08-11) folded the split memory and
+  // context tools into *group* FQNs carrying per-action children
+  // (`yolo_local__memory_ops.actions.add`), so real v80 vaults — including
+  // this plugin's own (verified in its backed-up data.json) — grant memory /
+  // context through those group entries, NOT through member FQNs. A
+  // migration that only read member FQNs would silently disable memory and
+  // context for every such user. These fixtures are the real v80 shape.
+  it('reads a memory_ops group FQN (actions add/update/delete) as the memory capability grant', () => {
+    const result = runMigration({
+      version: 80,
+      assistants: [
+        {
+          id: 'agent-1',
+          toolPreferences: {
+            yolo_local__memory_ops: {
+              enabled: true,
+              actions: {
+                add: { enabled: true, approvalMode: 'full_access' },
+                update: { enabled: true, approvalMode: 'full_access' },
+                delete: { enabled: true, approvalMode: 'full_access' },
+              },
+            },
+          },
+        },
+      ],
+    })
+
+    expect(result.assistants?.[0]?.builtinCapabilityPreferences.memory).toEqual(
+      { enabled: true, approvalMode: 'full_access' },
+    )
+    expect(result.assistants?.[0]?.toolPreferences).toEqual({})
+  })
+
+  it('a disabled action inside a memory_ops group disables the memory capability', () => {
+    const result = runMigration({
+      version: 80,
+      assistants: [
+        {
+          id: 'agent-1',
+          toolPreferences: {
+            yolo_local__memory_ops: {
+              enabled: true,
+              actions: {
+                add: { enabled: true, approvalMode: 'full_access' },
+                update: { enabled: true, approvalMode: 'full_access' },
+                delete: { enabled: false, approvalMode: 'full_access' },
+              },
+            },
+          },
+        },
+      ],
+    })
+
+    expect(result.assistants?.[0]?.builtinCapabilityPreferences.memory).toEqual(
+      { enabled: false, approvalMode: 'full_access' },
+    )
+  })
+
+  it('a whole-group disable inside a memory_ops entry wins over enabled action children', () => {
+    const result = runMigration({
+      version: 80,
+      assistants: [
+        {
+          id: 'agent-1',
+          toolPreferences: {
+            yolo_local__memory_ops: {
+              enabled: false,
+              actions: {
+                add: { enabled: true, approvalMode: 'full_access' },
+                update: { enabled: true, approvalMode: 'full_access' },
+                delete: { enabled: true, approvalMode: 'full_access' },
+              },
+            },
+          },
+        },
+      ],
+    })
+
+    expect(result.assistants?.[0]?.builtinCapabilityPreferences.memory).toEqual(
+      { enabled: false, approvalMode: 'full_access' },
+    )
+  })
+
+  it('merges a member FQN entry and a group action entry most-restrictively', () => {
+    const result = runMigration({
+      version: 80,
+      assistants: [
+        {
+          id: 'agent-1',
+          toolPreferences: {
+            yolo_local__memory_add: {
+              enabled: true,
+              approvalMode: 'full_access',
+            },
+            yolo_local__memory_ops: {
+              enabled: true,
+              actions: {
+                add: { enabled: true, approvalMode: 'require_approval' },
+                update: { enabled: true, approvalMode: 'full_access' },
+                delete: { enabled: true, approvalMode: 'full_access' },
+              },
+            },
+          },
+        },
+      ],
+    })
+
+    expect(result.assistants?.[0]?.builtinCapabilityPreferences.memory).toEqual(
+      { enabled: true, approvalMode: 'require_approval' },
+    )
+  })
+
+  // The v79->v80 collapse wrote context grants as one `context_manage` group
+  // with `compact` / `prune` action children; each capability reads its own
+  // action (real data: 专利助手 has prune explicitly disabled).
+  it('splits a context_manage group into context_compaction and context_pruning by action', () => {
+    const result = runMigration({
+      version: 80,
+      assistants: [
+        {
+          id: 'agent-1',
+          toolPreferences: {
+            yolo_local__context_manage: {
+              enabled: true,
+              actions: {
+                compact: { enabled: true, approvalMode: 'full_access' },
+                prune: { enabled: false, approvalMode: 'require_approval' },
+              },
+            },
+          },
+        },
+      ],
+    })
+
+    const prefs = result.assistants?.[0]?.builtinCapabilityPreferences
+    expect(prefs?.context_compaction).toEqual({
+      enabled: true,
+      approvalMode: 'full_access',
+    })
+    expect(prefs?.context_pruning).toEqual({
+      enabled: false,
+      approvalMode: 'require_approval',
+    })
+  })
+
+  it('an absent action inside a context_manage group means that member was never granted', () => {
+    const result = runMigration({
+      version: 80,
+      assistants: [
+        {
+          id: 'agent-1',
+          toolPreferences: {
+            yolo_local__context_manage: {
+              enabled: true,
+              actions: {
+                compact: { enabled: true, approvalMode: 'full_access' },
+              },
+            },
+          },
+        },
+      ],
+    })
+
+    const prefs = result.assistants?.[0]?.builtinCapabilityPreferences
+    expect(prefs?.context_compaction).toEqual({
+      enabled: true,
+      approvalMode: 'full_access',
+    })
+    expect(prefs?.context_pruning).toEqual({
+      enabled: false,
+      approvalMode: 'full_access',
+    })
+  })
+
+  it('a group action approval carries require_approval onto the capability', () => {
+    const result = runMigration({
+      version: 80,
+      assistants: [
+        {
+          id: 'agent-1',
+          toolPreferences: {
+            yolo_local__memory_ops: {
+              enabled: true,
+              actions: {
+                add: { enabled: true, approvalMode: 'require_approval' },
+                update: { enabled: true, approvalMode: 'require_approval' },
+                delete: { enabled: true, approvalMode: 'require_approval' },
+              },
+            },
+          },
+        },
+      ],
+    })
+
+    expect(result.assistants?.[0]?.builtinCapabilityPreferences.memory).toEqual(
+      { enabled: true, approvalMode: 'require_approval' },
+    )
+  })
+
   it('leaves remote MCP toolPreferences, toolServerPreferences, and enabledToolNames entries completely untouched', () => {
     const result = runMigration({
       version: 80,

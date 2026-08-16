@@ -95,6 +95,16 @@ export const HOST_SETTINGS_CLASSIFICATIONS = [
     'device-local listener configuration and access token',
   ),
   excludedHostSetting(
+    'cliLlmInjection',
+    'config',
+    'device-local CLI runtime provider injection (cc-switch style)',
+  ),
+  excludedHostSetting(
+    'cliMcpSharing',
+    'config',
+    'device-local CLI runtime MCP sharing configuration',
+  ),
+  excludedHostSetting(
     'timeContextEnabled',
     'config',
     'legacy global fallback; active behavior is stored per assistant',
