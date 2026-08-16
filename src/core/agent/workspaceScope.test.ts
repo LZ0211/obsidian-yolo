@@ -86,10 +86,10 @@ describe('collectToolCallPaths', () => {
   })
 
   it('extracts single path from top-level string args', () => {
-    expect(collectToolCallPaths('fs_list', { path: 'a/b' })).toEqual(['a/b'])
     expect(collectToolCallPaths('fs_edit', { path: 'a/b.md' })).toEqual([
       'a/b.md',
     ])
+    expect(collectToolCallPaths('fs_write', { path: 'a/b' })).toEqual(['a/b'])
   })
 
   it('extracts array path from fs_read.paths', () => {
@@ -98,58 +98,32 @@ describe('collectToolCallPaths', () => {
     ).toEqual(['a.md', 'b.md'])
   })
 
-  it('extracts oldPath + newPath for fs_move top-level', () => {
+  it('extracts inputPath + outputDir for mineru_convert', () => {
     expect(
-      collectToolCallPaths('fs_move', {
-        oldPath: 'a.md',
-        newPath: 'b.md',
+      collectToolCallPaths('mineru_convert', {
+        inputPath: 'a.pdf',
+        outputDir: 'b',
       }),
-    ).toEqual(['a.md', 'b.md'])
-  })
-
-  it('extracts path for fs_write', () => {
-    expect(
-      collectToolCallPaths('fs_write', { path: 'a.md', content: '' }),
-    ).toEqual(['a.md'])
-  })
-
-  it('extracts path for fs_delete', () => {
-    expect(
-      collectToolCallPaths('fs_delete', { path: 'a.md', recursive: true }),
-    ).toEqual(['a.md'])
+    ).toEqual(['a.pdf', 'b'])
   })
 
   it('ignores empty strings and non-string values', () => {
-    expect(collectToolCallPaths('fs_list', { path: '  ' })).toEqual([])
+    expect(collectToolCallPaths('fs_edit', { path: '  ' })).toEqual([])
     expect(
       collectToolCallPaths('fs_read', { paths: ['a.md', 42, null] }),
     ).toEqual(['a.md'])
   })
 
-  it('extracts both oldPath and newPath for fs_file_ops:move', () => {
+  it('returns empty for retired built-in tool names (no live tool owns them)', () => {
+    expect(collectToolCallPaths('fs_delete', { path: 'a.md' })).toEqual([])
     expect(
       collectToolCallPaths('fs_file_ops', {
         action: 'move',
         oldPath: 'a.md',
         newPath: 'b.md',
       }),
-    ).toEqual(['a.md', 'b.md'])
-  })
-
-  it('extracts only path for fs_file_ops:delete and fs_file_ops:create_dir', () => {
-    expect(
-      collectToolCallPaths('fs_file_ops', {
-        action: 'delete',
-        path: 'a.md',
-        recursive: true,
-      }),
-    ).toEqual(['a.md'])
-    expect(
-      collectToolCallPaths('fs_file_ops', {
-        action: 'create_dir',
-        path: 'a/b',
-      }),
-    ).toEqual(['a/b'])
+    ).toEqual([])
+    expect(collectToolCallPaths('fs_list', { path: 'a/b' })).toEqual([])
   })
 })
 
@@ -233,21 +207,11 @@ describe('findPathOutsideScope', () => {
     ).toBe('secret/b.md')
   })
 
-  it('catches out-of-scope oldPath in fs_move', () => {
+  it('returns the first offending path for fs_write', () => {
     expect(
       findPathOutsideScope(
-        'fs_move',
-        { oldPath: 'allowed/a.md', newPath: 'secret/a.md' },
-        scope({ include: ['allowed'] }),
-      ),
-    ).toBe('secret/a.md')
-  })
-
-  it('catches out-of-scope path for fs_delete', () => {
-    expect(
-      findPathOutsideScope(
-        'fs_delete',
-        { path: 'secret/b.md' },
+        'fs_write',
+        { path: 'secret/b.md', content: 'x' },
         scope({ include: ['allowed'] }),
       ),
     ).toBe('secret/b.md')
@@ -256,51 +220,21 @@ describe('findPathOutsideScope', () => {
   it('returns null when all paths are allowed', () => {
     expect(
       findPathOutsideScope(
-        'fs_move',
-        { oldPath: 'allowed/a.md', newPath: 'allowed/b.md' },
+        'fs_edit',
+        { path: 'allowed/a.md', newText: 'x' },
         scope({ include: ['allowed'] }),
       ),
     ).toBeNull()
   })
 
-  it('catches an out-of-scope newPath in fs_file_ops:move', () => {
+  it('returns null for retired built-in tool names (no path keys are collected)', () => {
     expect(
       findPathOutsideScope(
         'fs_file_ops',
-        { action: 'move', oldPath: 'allowed/a.md', newPath: 'secret/a.md' },
-        scope({ include: ['allowed'] }),
-      ),
-    ).toBe('secret/a.md')
-  })
-
-  it('catches an out-of-scope oldPath in fs_file_ops:move', () => {
-    expect(
-      findPathOutsideScope(
-        'fs_file_ops',
-        { action: 'move', oldPath: 'secret/a.md', newPath: 'allowed/b.md' },
-        scope({ include: ['allowed'] }),
-      ),
-    ).toBe('secret/a.md')
-  })
-
-  it('returns null when both fs_file_ops:move paths are in scope', () => {
-    expect(
-      findPathOutsideScope(
-        'fs_file_ops',
-        { action: 'move', oldPath: 'allowed/a.md', newPath: 'allowed/b.md' },
+        { action: 'move', oldPath: 'secret/a.md', newPath: 'secret/b.md' },
         scope({ include: ['allowed'] }),
       ),
     ).toBeNull()
-  })
-
-  it('catches an out-of-scope path in fs_file_ops:delete', () => {
-    expect(
-      findPathOutsideScope(
-        'fs_file_ops',
-        { action: 'delete', path: 'secret/b.md' },
-        scope({ include: ['allowed'] }),
-      ),
-    ).toBe('secret/b.md')
   })
 
   it('exempts listed skill paths from workspace scope', () => {

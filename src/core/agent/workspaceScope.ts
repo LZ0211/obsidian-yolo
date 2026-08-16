@@ -267,16 +267,14 @@ export const workspacePolicyToUpstreamScope = (
 
 // Top-level arg keys that may carry a vault path for a given fs_* tool.
 // Value can be a string (single path) or an array of strings (e.g. fs_read.paths).
+// Only live built-in tools are listed — the retired names (fs_list, fs_search,
+// fs_delete, fs_create_dir, fs_move, fs_file_ops) were dropped with their
+// tools; a registry tool not listed here simply contributes no path
+// constraints.
 const TOOL_TOP_LEVEL_PATH_KEYS: Record<string, readonly string[]> = {
-  fs_list: ['path'],
   fs_read: ['paths'],
-  fs_search: ['path'],
   fs_edit: ['path'],
   fs_write: ['path'],
-  fs_delete: ['path'],
-  fs_create_dir: ['path'],
-  fs_move: ['oldPath', 'newPath'],
-  fs_file_ops: ['path'],
   // mineru_convert reads the input PDF and writes converted markdown/images to
   // outputDir — both are subject to the workspace scope (see
   // TOOL_TOP_LEVEL_READ_PATH_KEYS for the read-side exception).
@@ -294,18 +292,6 @@ const TOOL_TOP_LEVEL_PATH_KEYS: Record<string, readonly string[]> = {
  */
 const TOOL_TOP_LEVEL_READ_PATH_KEYS: Record<string, readonly string[]> = {
   mineru_convert: ['inputPath'],
-}
-
-// The consolidated fs_file_ops tool carries a top-level `action` discriminator.
-// The path keys inspected depend on the resolved action: move touches BOTH
-// oldPath and newPath; delete/create_dir touch only path.
-const CONSOLIDATED_FS_FILE_OPS_ACTION_PATH_KEYS: Record<
-  string,
-  readonly string[]
-> = {
-  move: ['oldPath', 'newPath'],
-  delete: ['path'],
-  create_dir: ['path'],
 }
 
 function extractStringsFrom(value: unknown): string[] {
@@ -346,22 +332,6 @@ export function collectToolCallPathsWithModes(
       if (trimmed !== '') paths.push({ path: trimmed, mode })
     }
   }
-  // The consolidated fs_file_ops tool is action-discriminated: resolve the
-  // path keys from the action so a move inspects both oldPath and newPath and
-  // delete/create_dir inspect path. Unknown/missing actions contribute nothing
-  // (they are rejected by the runtime validator before any path check runs).
-  if (toolName === 'fs_file_ops') {
-    const actionKeys =
-      CONSOLIDATED_FS_FILE_OPS_ACTION_PATH_KEYS[
-        typeof args.action === 'string' ? args.action : ''
-      ]
-    if (actionKeys) {
-      for (const key of actionKeys) {
-        push(key)
-      }
-    }
-    return paths
-  }
   const topKeys = TOOL_TOP_LEVEL_PATH_KEYS[toolName]
   if (topKeys) {
     for (const key of topKeys) {
@@ -390,10 +360,6 @@ export function collectToolCallPaths(
 const WORKSPACE_WRITE_TOOL_NAMES = new Set([
   'fs_edit',
   'fs_write',
-  'fs_delete',
-  'fs_create_dir',
-  'fs_move',
-  'fs_file_ops',
   'mineru_convert',
 ])
 

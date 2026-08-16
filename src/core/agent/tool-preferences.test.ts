@@ -575,6 +575,40 @@ describe('tool-preferences defaults', () => {
       ).toBe('full_access')
     })
 
+    it('clamps an out-of-allowedModes persisted tier to the capability default (runtime invariant)', () => {
+      // `file_editing` only allows full_access / require_approval; a
+      // hand-edited `dangerous_only` must not be honored at runtime.
+      expect(
+        getAssistantToolApprovalMode(
+          {
+            builtinCapabilityPreferences: {
+              file_editing: {
+                enabled: true,
+                approvalMode: 'dangerous_only',
+              },
+            },
+          },
+          'yolo_local__fs_edit',
+        ),
+      ).toBe('require_approval')
+    })
+
+    it('keeps vault_shell dangerous_only since it is inside that capability allowedModes', () => {
+      expect(
+        getAssistantToolApprovalMode(
+          {
+            builtinCapabilityPreferences: {
+              vault_shell: {
+                enabled: true,
+                approvalMode: 'dangerous_only',
+              },
+            },
+          },
+          'yolo_local__bash',
+        ),
+      ).toBe('dangerous_only')
+    })
+
     it('uses server-level approval for third-party MCP tools', () => {
       expect(
         getAssistantToolApprovalMode(

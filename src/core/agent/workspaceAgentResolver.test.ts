@@ -3,6 +3,7 @@ import type { Assistant } from '../../types/assistant.types'
 
 import {
   buildWorkspaceAgentBehaviorOverrides,
+  filterApprovalOptionsForWorkspaceAgent,
   getUnifiedAgentList,
   resolveActiveAssistant,
   resolveWorkspaceAgentAssistant,
@@ -40,6 +41,38 @@ const agent: WorkspaceAgent = {
   createdAt: 1,
   updatedAt: 1,
 }
+
+describe('filterApprovalOptionsForWorkspaceAgent', () => {
+  const options = [
+    { value: 'require_approval' as const },
+    { value: 'dangerous_only' as const },
+    { value: 'full_access' as const },
+  ]
+
+  it('keeps every option when editing a plain template (no template tier)', () => {
+    expect(filterApprovalOptionsForWorkspaceAgent(options, undefined)).toEqual(
+      options,
+    )
+  })
+
+  it('filters out tiers looser than the template tier', () => {
+    expect(
+      filterApprovalOptionsForWorkspaceAgent(options, 'dangerous_only'),
+    ).toEqual([{ value: 'require_approval' }, { value: 'dangerous_only' }])
+  })
+
+  it('keeps only the template tier itself when it is the strictest', () => {
+    expect(
+      filterApprovalOptionsForWorkspaceAgent(options, 'require_approval'),
+    ).toEqual([{ value: 'require_approval' }])
+  })
+
+  it('keeps every option when the template tier is the loosest', () => {
+    expect(filterApprovalOptionsForWorkspaceAgent(options, 'full_access')).toEqual(
+      options,
+    )
+  })
+})
 
 describe('workspaceAgentResolver', () => {
   it('inherits template fields and injects the workspace access policy', () => {

@@ -50,6 +50,7 @@ import {
 import { applyDynamicToolDescriptions } from '../../../core/agent/tool-selection'
 import {
   buildWorkspaceAgentBehaviorOverrides,
+  filterApprovalOptionsForWorkspaceAgent,
   resolveWorkspaceAgentAssistant,
 } from '../../../core/agent/workspaceAgentResolver'
 import { getJsSandboxSettings } from '../../../core/mcp/jsSandboxSettings'
@@ -2391,6 +2392,23 @@ export function AgentsSectionContent({
                             const allowsDangerousOnly = approvalOptions.some(
                               (option) => option.value === 'dangerous_only',
                             )
+                            // A workspace agent can only tighten its
+                            // template's tier (buildWorkspaceAgentBehaviorOverrides
+                            // drops looser picks on save); show only tiers at
+                            // or above the template's so the dropdown cannot
+                            // silently revert. Editing a plain template keeps
+                            // every tier.
+                            const templateTier = workspaceAgentDraft
+                              ? getAssistantToolApprovalMode(
+                                  workspaceAgentDraft.template,
+                                  tool.toggleTargets[0] ?? '',
+                                )
+                              : undefined
+                            const selectableApprovalOptions =
+                              filterApprovalOptionsForWorkspaceAgent(
+                                approvalOptions,
+                                templateTier,
+                              )
                             const approvalMode = !group.isBuiltin
                               ? 'require_approval'
                               : tool.toggleTargets.every(
@@ -2430,7 +2448,7 @@ export function AgentsSectionContent({
                                       <div className="yolo-agent-tool-select">
                                         <SimpleSelect
                                           value={approvalMode}
-                                          options={approvalOptions}
+                                          options={selectableApprovalOptions}
                                           onChange={(value) =>
                                             setToolApprovalMode(
                                               [tool],

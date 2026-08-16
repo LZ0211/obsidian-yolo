@@ -3,7 +3,10 @@ import { createCompleteToolCallArguments } from '../../../types/tool-call.types'
 import { buildSubagentApprovalSummary } from './subagentApprovalSummary'
 
 describe('buildSubagentApprovalSummary', () => {
-  it('summarizes fs_search with scope and query', () => {
+  it('falls back to the generic branch for the retired fs_search tool', () => {
+    // fs_search retired (master.md decision 10): its dedicated summarization
+    // is gone, so the approval block shows the first string arg, like any
+    // other unknown/retired tool name.
     const summary = buildSubagentApprovalSummary({
       id: '1',
       name: 'yolo_local__fs_search',
@@ -17,7 +20,7 @@ describe('buildSubagentApprovalSummary', () => {
 
     expect(summary).toEqual({
       label: 'fs_search',
-      detail: 'folder | architecture decision record',
+      detail: 'folder',
     })
   })
 

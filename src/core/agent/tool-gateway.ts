@@ -144,14 +144,6 @@ const validateLocalWriteArgs = ({
       }
       break
     }
-    case 'fs_delete':
-    case 'fs_create_dir':
-      requireStringField({ args, field: 'path', errors })
-      break
-    case 'fs_move':
-      requireStringField({ args, field: 'oldPath', errors })
-      requireStringField({ args, field: 'newPath', errors })
-      break
   }
 
   return errors
@@ -163,11 +155,6 @@ const getRequiredLocalWriteArgumentNames = (toolName: string): string[] => {
       return ['path', 'content']
     case 'fs_edit':
       return ['path', 'newText']
-    case 'fs_delete':
-    case 'fs_create_dir':
-      return ['path']
-    case 'fs_move':
-      return ['oldPath', 'newPath']
     default:
       return []
   }

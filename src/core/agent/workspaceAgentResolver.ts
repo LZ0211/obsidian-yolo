@@ -31,10 +31,32 @@ function unique<T>(items: T[]): T[] {
   return [...new Set(items)]
 }
 
-const APPROVAL_MODE_RANK: Record<AssistantToolApprovalMode, number> = {
+export const APPROVAL_MODE_RANK: Record<AssistantToolApprovalMode, number> = {
   full_access: 0,
   dangerous_only: 1,
   require_approval: 2,
+}
+
+/**
+ * The approval tiers a workspace agent may actually pick for a tool:
+ * options at or *stricter* than the template's effective tier. Anything
+ * looser would be silently dropped by `buildWorkspaceAgentBehaviorOverrides`
+ * on save (workspace agents may only tighten their template), so showing it
+ * in the dropdown is a silent-revert trap. `templateTier` is the template
+ * assistant's effective tier for the tool/capability; `undefined` (editing a
+ * plain template, no workspace agent) keeps every option.
+ */
+export function filterApprovalOptionsForWorkspaceAgent<
+  T extends { value: AssistantToolApprovalMode },
+>(
+  options: readonly T[],
+  templateTier: AssistantToolApprovalMode | undefined,
+): T[] {
+  if (!templateTier) return [...options]
+  const templateRank = APPROVAL_MODE_RANK[templateTier]
+  return options.filter(
+    (option) => APPROVAL_MODE_RANK[option.value] >= templateRank,
+  )
 }
 
 const DISCLOSURE_MODE_RANK: Record<AssistantToolDisclosureMode, number> = {

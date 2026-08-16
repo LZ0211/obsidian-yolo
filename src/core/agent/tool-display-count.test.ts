@@ -43,9 +43,8 @@ describe('countEnabledVisibleAssistantTools', () => {
     const enabledToolNames = [
       'yolo_local__fs_edit',
       'yolo_local__fs_write',
-      'yolo_local__memory_add',
-      'yolo_local__memory_update',
-      'yolo_local__memory_delete',
+      'yolo_local__web_search',
+      'yolo_local__web_scrape',
       'yolo_local__fs_read',
     ]
 
@@ -55,6 +54,24 @@ describe('countEnabledVisibleAssistantTools', () => {
         enabledToolNames.map(tool),
       ),
     ).toBe(3)
+  })
+
+  it('never counts the internal memory tools as visible', () => {
+    // Memory mutation is host-driven (hidden from the agent editor), so even
+    // a fully granted memory capability contributes nothing to the visible
+    // count.
+    const enabledToolNames = [
+      'yolo_local__memory_add',
+      'yolo_local__memory_update',
+      'yolo_local__memory_delete',
+    ]
+
+    expect(
+      countEnabledVisibleAssistantTools(
+        assistantWithTools(enabledToolNames),
+        enabledToolNames.map(tool),
+      ),
+    ).toBe(0)
   })
 
   // D9 (docs/plans/2026-08-15-tool-registry/phase2-migration.md D9): a

@@ -6,12 +6,18 @@ import {
   AssistantToolPreference,
 } from '../../types/assistant.types'
 import type { McpTool } from '../../types/mcp.types'
-import { isUserFacingLocalToolShortName } from '../mcp/localFileToolNames'
+// All three names live on the leaf module `localFileToolNames.ts`; importing
+// them through `localFileTools` creates a load-order cycle
+// (tool-preferences -> localFileTools -> registry -> capabilities ->
+// tool-preferences) that breaks whichever module the cycle enters first
+// (master.md §3.5: compat exports may only forward a per-tool module's own
+// constant, never round-trip through the registry).
 import {
   LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME,
   USER_FACING_LOCAL_TOOL_SHORT_NAMES,
   getLocalFileToolServerName,
-} from '../mcp/localFileTools'
+  isUserFacingLocalToolShortName,
+} from '../mcp/localFileToolNames'
 import { McpManager } from '../mcp/mcpManager'
 import { parseToolName } from '../mcp/tool-name-utils'
 import { getMcpToolSchemaTokenCost } from '../mcp/toolCatalogTokenCache'
@@ -287,12 +293,24 @@ const resolveBuiltinCapabilityPreference = (
 ): { enabled: boolean; approvalMode: AssistantToolApprovalMode } => {
   const capability = getCapability(capabilityId)
   const explicit = assistant?.builtinCapabilityPreferences?.[capabilityId]
+  const approvalMode =
+    explicit?.approvalMode ??
+    capability?.approval.defaultMode ??
+    DEFAULT_ASSISTANT_TOOL_APPROVAL_MODE
   return {
     enabled: explicit?.enabled ?? capability?.defaultEnabled ?? false,
+    // The settings migration clamps to `allowedModes` on its way in, but
+    // hand-edited settings or a stale persisted entry could still carry an
+    // out-of-range tier; clamp here so the runtime never honors one. The UI
+    // can't produce this (dropdowns filter to `allowedModes`), so this is a
+    // defensive invariant, not a user-facing path.
     approvalMode:
-      explicit?.approvalMode ??
-      capability?.approval.defaultMode ??
-      DEFAULT_ASSISTANT_TOOL_APPROVAL_MODE,
+      capability &&
+      !(capability.approval.allowedModes as readonly string[]).includes(
+        approvalMode,
+      )
+        ? capability.approval.defaultMode
+        : approvalMode,
   }
 }
 
