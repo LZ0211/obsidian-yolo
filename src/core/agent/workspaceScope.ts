@@ -359,6 +359,54 @@ export function collectToolCallPaths(
   )
 }
 
+const WORKSPACE_WRITE_TOOL_NAMES = new Set([
+  'fs_edit',
+  'fs_write',
+  'fs_delete',
+  'fs_create_dir',
+  'fs_move',
+  'fs_file_ops',
+  'mineru_convert',
+])
+
+export function isWorkspaceWriteToolName(toolName: string): boolean {
+  return WORKSPACE_WRITE_TOOL_NAMES.has(toolName)
+}
+
+/**
+ * Returns the first literal path that violates the canonical workspace
+ * policy. fs_read is intentionally handled after its wikilinks resolve.
+ */
+export function findWorkspacePolicyViolation({
+  toolName,
+  args,
+  policy,
+  exemptPaths,
+}: {
+  toolName: string
+  args: Record<string, unknown>
+  policy: WorkspaceAccessPolicy
+  exemptPaths?: ReadonlySet<string>
+}): string | null {
+  for (const { path, mode } of collectToolCallPathsWithModes(
+    toolName,
+    args,
+    isWorkspaceWriteToolName(toolName),
+  )) {
+    if (exemptPaths?.has(path)) continue
+    try {
+      if (mode === 'write') {
+        resolveWritablePath(path, policy)
+      } else {
+        resolveReadablePath(path, policy)
+      }
+    } catch {
+      return path
+    }
+  }
+  return null
+}
+
 /**
  * Validate all paths referenced by a tool call against a workspace scope.
  * Returns the first out-of-scope path (for error messaging), or null if all

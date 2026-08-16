@@ -2446,6 +2446,27 @@ describe('callLocalFileTool: dispatcher-level boundaries (D5 parity with execute
       error: 'Unknown local file tool: not_a_real_tool',
     })
   })
+
+  it('uses the shared workspace policy boundary on the legacy tool path', async () => {
+    const result = await callLocalFileTool({
+      app: { vault: {} } as unknown as App,
+      toolName: 'fs_edit',
+      args: { path: 'secret/a.md', oldText: 'x', newText: 'y' },
+      workspaceAccessPolicy: {
+        enabled: true,
+        workspaceRoot: '',
+        readExtraIncludes: [],
+        readExcludes: [],
+        writeExcludes: ['secret'],
+      },
+    })
+
+    expect(result).toEqual({
+      status: ToolCallResponseStatus.Error,
+      error:
+        'Path "secret/a.md" is outside this agent\'s workspace access policy.',
+    })
+  })
 })
 
 describe('fs_read wikilink resolution', () => {

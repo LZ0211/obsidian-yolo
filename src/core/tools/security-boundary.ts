@@ -1,8 +1,8 @@
 import type { YoloSettings } from '../../settings/schema/setting.types'
-import type { AssistantWorkspaceScope } from '../../types/assistant.types'
+import type { WorkspaceAccessPolicy } from '../../types/assistant.types'
 import {
   buildAllowedSkillPathSet,
-  findPathOutsideScope,
+  findWorkspacePolicyViolation,
   findPathWithinExcludedRoot,
 } from '../agent/workspaceScope'
 import { isWithinYoloUserDataRoot } from '../paths/yoloPaths'
@@ -28,11 +28,11 @@ export function enforceBuiltinToolSecurityBoundary(
   args: Record<string, unknown>,
   {
     settings,
-    workspaceScope,
+    workspaceAccessPolicy,
     allowedSkillPaths,
   }: {
     settings?: YoloSettings
-    workspaceScope?: AssistantWorkspaceScope
+    workspaceAccessPolicy?: WorkspaceAccessPolicy
     allowedSkillPaths?: readonly string[]
   },
 ): void {
@@ -40,16 +40,19 @@ export function enforceBuiltinToolSecurityBoundary(
   // agent's workspace scope. The gateway performs the same check up front
   // for UI Rejected status, but we re-validate here so manual-approval /
   // direct-call code paths cannot bypass the constraint.
-  if (workspaceScope?.enabled) {
+  if (workspaceAccessPolicy && toolName !== 'fs_read') {
     const exemptPaths = allowedSkillPaths
       ? buildAllowedSkillPathSet(allowedSkillPaths)
       : undefined
-    const offendingPath = findPathOutsideScope(toolName, args, workspaceScope, {
+    const offendingPath = findWorkspacePolicyViolation({
+      toolName,
+      args,
+      policy: workspaceAccessPolicy,
       exemptPaths,
     })
     if (offendingPath !== null) {
       throw new Error(
-        `Path "${offendingPath}" is outside this agent's workspace scope.`,
+        `Path "${offendingPath}" is outside this agent's workspace access policy.`,
       )
     }
   }
@@ -64,12 +67,16 @@ export function enforceBuiltinToolSecurityBoundary(
   // same invisibility now that the root is a normal, visible folder.
   // Reported as a plain not-found, matching a genuine miss, so nothing
   // about "this path is specially hidden" leaks to the model.
-  const offendingUserDataPath = findPathWithinExcludedRoot(
-    toolName,
-    args,
-    (path) => isWithinYoloUserDataRoot(path, settings),
-  )
-  if (offendingUserDataPath !== null) {
-    throw new Error(`File not found: ${offendingUserDataPath}`)
+  // fs_read resolves literal paths and wikilinks before checking the same
+  // boundary per resolved file. Its raw paths must reach that layer.
+  if (toolName !== 'fs_read') {
+    const offendingUserDataPath = findPathWithinExcludedRoot(
+      toolName,
+      args,
+      (path) => isWithinYoloUserDataRoot(path, settings),
+    )
+    if (offendingUserDataPath !== null) {
+      throw new Error(`File not found: ${offendingUserDataPath}`)
+    }
   }
 }

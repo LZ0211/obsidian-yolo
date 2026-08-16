@@ -98,15 +98,14 @@ import {
   BUILTIN_SKILL_PATH_PREFIX,
   buildAllowedSkillPathSet,
   collectToolCallPaths,
-  collectToolCallPathsWithModes,
   findPathOutsideScope,
   findPathWithinExcludedRoot,
+  findWorkspacePolicyViolation,
   isCoveredBySkillPathExemption,
   isPathAllowedByScope,
+  isWorkspaceWriteToolName,
   isReadablePath,
   normalizeSkillPathForExemption,
-  resolveReadablePath,
-  resolveWritablePath,
 } from '../agent/workspaceScope'
 import { validateAttachmentPath } from '../bot/attachment-security'
 import {
@@ -384,18 +383,6 @@ export const LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES = [
   'memory_update',
   'memory_delete',
 ] as const
-
-const LOCAL_FS_WRITE_TOOL_NAMES = new Set<string>([
-  'fs_edit',
-  ...LOCAL_FS_SPLIT_ACTION_TOOL_NAMES,
-  // mineru_convert writes converted markdown/images into outputDir — treat it
-  // as a write tool so workspace-policy resolution (and the tool gateway's
-  // pre-call gate) covers both inputPath (read) and outputDir (write).
-  'mineru_convert',
-  'memory_add',
-  'memory_update',
-  'memory_delete',
-])
 
 // Exported additively so `src/core/tools/*` definition files can reuse these
 // generic arg-parsing / formatting helpers instead of duplicating them.
@@ -2091,7 +2078,13 @@ const normalizeLocalToolName = (toolName: string): string => {
 }
 
 export function isLocalFsWriteToolName(toolName: string): boolean {
-  return LOCAL_FS_WRITE_TOOL_NAMES.has(normalizeLocalToolName(toolName))
+  const normalizedToolName = normalizeLocalToolName(toolName)
+  return (
+    isWorkspaceWriteToolName(normalizedToolName) ||
+    LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES.includes(
+      normalizedToolName as (typeof LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES)[number],
+    )
+  )
 }
 
 export type AskUserQuestionInputType =
@@ -2585,41 +2578,6 @@ export const workspacePolicyToUpstreamScope = (
   }
 }
 
-const findWorkspacePolicyViolation = ({
-  toolName,
-  args,
-  policy,
-  exemptPaths,
-  isWriteTool,
-}: {
-  toolName: string
-  args: Record<string, unknown>
-  policy: WorkspaceAccessPolicy
-  exemptPaths?: ReadonlySet<string>
-  isWriteTool: boolean
-}): string | null => {
-  // Per-key modes: read+write hybrids (mineru_convert) resolve inputPath with
-  // the read policy (readExcludes/readIncludes) and outputDir with the write
-  // policy — see TOOL_TOP_LEVEL_READ_PATH_KEYS in workspaceScope.ts.
-  for (const { path, mode } of collectToolCallPathsWithModes(
-    toolName,
-    args,
-    isWriteTool,
-  )) {
-    if (exemptPaths?.has(path)) continue
-    try {
-      if (mode === 'write') {
-        resolveWritablePath(path, policy)
-      } else {
-        resolveReadablePath(path, policy)
-      }
-    } catch {
-      return path
-    }
-  }
-  return null
-}
-
 /** 单张 MinerU 图片（vault 路径）→ image_url content part；解析/读取失败跳过。 */
 async function buildMinerUImageParts(
   app: App,
@@ -2762,14 +2720,11 @@ export async function callLocalFileTool({
   }
 
   try {
-    // Two safety-critical checks (workspace scope, YOLO user-data-root
-    // isolation) that must run unconditionally ahead of every tool body,
-    // including manual-approval / direct-call paths. Shared verbatim with
-    // `src/core/tools/dispatcher.ts` — see that module's doc comment for why
-    // this is a single implementation rather than two that could drift.
+    // The shared boundary owns the policy and user-data-root checks for every
+    // execution path.
     enforceBuiltinToolSecurityBoundary(toolName, args, {
       settings,
-      workspaceScope,
+      workspaceAccessPolicy,
       allowedSkillPaths,
     })
 

@@ -18,7 +18,6 @@ jest.mock('obsidian')
 import { App } from 'obsidian'
 
 import type { YoloSettings } from '../../settings/schema/setting.types'
-import type { AssistantWorkspaceScope } from '../../types/assistant.types'
 import { ToolCallResponseStatus } from '../../types/tool-call.types'
 
 import { executeBuiltinTool } from './dispatcher'
@@ -50,22 +49,25 @@ describe('executeBuiltinTool: abort short-circuit', () => {
 })
 
 describe('executeBuiltinTool: workspace-scope second line of defense', () => {
-  const allowNotes: AssistantWorkspaceScope = {
+  const allowNotes = {
     enabled: true,
-    include: ['Notes'],
-    exclude: [],
+    workspaceRoot: '',
+    readExtraIncludes: [],
+    readExcludes: ['secret'],
+    writeExcludes: ['secret'],
   }
 
   it('rejects an out-of-scope path with the same message callLocalFileTool used to throw, before the tool is even looked up', async () => {
     const result = await executeBuiltinTool(
       'fs_edit',
       { path: 'secret/a.md', oldText: 'x', newText: 'y' },
-      makeCtx({ workspaceScope: allowNotes }),
+      makeCtx({ workspaceAccessPolicy: allowNotes }),
     )
 
     expect(result).toEqual({
       status: ToolCallResponseStatus.Error,
-      error: 'Path "secret/a.md" is outside this agent\'s workspace scope.',
+      error:
+        'Path "secret/a.md" is outside this agent\'s workspace access policy.',
     })
   })
 
@@ -73,7 +75,7 @@ describe('executeBuiltinTool: workspace-scope second line of defense', () => {
     const result = await executeBuiltinTool(
       'fs_write',
       { path: 'secret/new.md', content: 'leak' },
-      makeCtx({ workspaceScope: allowNotes }),
+      makeCtx({ workspaceAccessPolicy: allowNotes }),
     )
 
     expect(result.status).toBe(ToolCallResponseStatus.Error)
@@ -86,7 +88,7 @@ describe('executeBuiltinTool: workspace-scope second line of defense', () => {
     const result = await executeBuiltinTool(
       'fs_write',
       { path: 'Notes/a.md', content: 'ok' },
-      makeCtx({ workspaceScope: allowNotes }),
+      makeCtx({ workspaceAccessPolicy: allowNotes }),
     )
 
     // fs_write is not registered yet (D6) — reaching the unknown-tool error
@@ -102,7 +104,13 @@ describe('executeBuiltinTool: workspace-scope second line of defense', () => {
       'fs_write',
       { path: 'secret/a.md', content: 'ok' },
       makeCtx({
-        workspaceScope: { enabled: false, include: ['Notes'], exclude: [] },
+        workspaceAccessPolicy: {
+          enabled: false,
+          workspaceRoot: '',
+          readExtraIncludes: [],
+          readExcludes: [],
+          writeExcludes: [],
+        },
       }),
     )
 
@@ -143,7 +151,13 @@ describe('executeBuiltinTool: YOLO user-data-root isolation', () => {
       },
       makeCtx({
         settings,
-        workspaceScope: { enabled: false, include: [], exclude: [] },
+        workspaceAccessPolicy: {
+          enabled: false,
+          workspaceRoot: '',
+          readExtraIncludes: [],
+          readExcludes: [],
+          writeExcludes: [],
+        },
       }),
     )
 
@@ -163,7 +177,13 @@ describe('executeBuiltinTool: YOLO user-data-root isolation', () => {
       },
       makeCtx({
         settings,
-        workspaceScope: { enabled: true, include: ['YOLO'], exclude: [] },
+        workspaceAccessPolicy: {
+          enabled: true,
+          workspaceRoot: '',
+          readExtraIncludes: [],
+          readExcludes: [],
+          writeExcludes: [],
+        },
       }),
     )
 

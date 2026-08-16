@@ -4,7 +4,7 @@ import type { YoloSettings } from '../../settings/schema/setting.types'
 import type { ApplyViewState } from '../../types/apply-view.types'
 import type {
   AssistantToolApprovalMode,
-  AssistantWorkspaceScope,
+  WorkspaceAccessPolicy,
 } from '../../types/assistant.types'
 import type { ChatMessage } from '../../types/chat'
 import type { ChatModelModality } from '../../types/chat-model.types'
@@ -67,7 +67,7 @@ export type ToolContext = {
   requireReview?: boolean
   signal?: AbortSignal
   chatModelId?: string
-  workspaceScope?: AssistantWorkspaceScope
+  workspaceAccessPolicy?: WorkspaceAccessPolicy
   allowedSkillPaths?: readonly string[]
   // Unused in this file now that fs_search (citation annotation) — its only
   // consumer — is gone. Kept in the accepted options shape because callers
