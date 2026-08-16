@@ -42,6 +42,10 @@ import {
   resolveDefaultDisclosureModeForServer,
 } from '../../../core/agent/tool-preferences'
 import { applyDynamicToolDescriptions } from '../../../core/agent/tool-selection'
+import {
+  buildWorkspaceAgentBehaviorOverrides,
+  resolveWorkspaceAgentAssistant,
+} from '../../../core/agent/workspaceAgentResolver'
 import { getJsSandboxSettings } from '../../../core/mcp/jsSandboxSettings'
 import { getLocalFileToolServerName } from '../../../core/mcp/localFileTools'
 import { getToolName, parseToolName } from '../../../core/mcp/tool-name-utils'
@@ -64,7 +68,10 @@ import {
   listCapabilities,
 } from '../../../core/tools/registry'
 import { useLiteSkillEntries } from '../../../hooks/useLiteSkillEntries'
-import { YoloSettings } from '../../../settings/schema/setting.types'
+import {
+  type WorkspaceAgent,
+  YoloSettings,
+} from '../../../settings/schema/setting.types'
 import {
   AgentPersona,
   Assistant,
@@ -95,12 +102,24 @@ import {
 } from './agentToolPersistence'
 import { AgentWorkspaceScopeEditor } from './AgentWorkspaceScopeEditor'
 import { buildBuiltinCapabilityRows } from './builtinCapabilityRows'
+import { AgentWorkspaceScopeEditor as TemplateWorkspaceScopeEditor } from './TemplateWorkspaceScopeEditor'
 
 type AgentsSectionContentProps = {
   app: App
   onClose: () => void
   initialAssistantId?: string
   initialCreate?: boolean
+  workspaceAgentId?: string
+  workspaceAgentTemplateId?: string
+  workspaceAgentName?: string
+  workspaceRoot?: string
+}
+
+type WorkspaceAgentDraft = {
+  agent: WorkspaceAgent
+  template: Assistant
+  effective: Assistant
+  agentModeAllowed: boolean
 }
 
 type AgentEditorTab = 'profile' | 'tools' | 'skills' | 'workspace'
@@ -328,6 +347,91 @@ function toDraftAgent(assistant: Assistant): Assistant {
   }
 }
 
+function toWorkspaceAgentDraft(
+  agent: WorkspaceAgent,
+  template: Assistant,
+): WorkspaceAgentDraft | null {
+  const effective = resolveWorkspaceAgentAssistant(agent, [template])
+  if (!effective) return null
+  return {
+    agent,
+    template,
+    effective: toDraftAgent(effective),
+    agentModeAllowed: agent.behaviorOverrides?.agentModeAllowed ?? true,
+  }
+}
+
+function createWorkspaceAgentDraft(
+  template: Assistant,
+  name?: string,
+  workspaceRoot?: string,
+): WorkspaceAgentDraft {
+  const now = Date.now()
+  const agent: WorkspaceAgent = {
+    id: crypto.randomUUID(),
+    name: name?.trim() || `${template.name} Workspace Agent`,
+    templateId: template.id,
+    behaviorOverrides: {},
+    workspacePolicy: {
+      workspaceRoot: workspaceRoot?.trim() || '/',
+      readAllowlist: [],
+      readDenylist: [],
+      writeDenylist: [],
+    },
+    shareTokens: [],
+    createdAt: now,
+    updatedAt: now,
+  }
+  return toWorkspaceAgentDraft(agent, template)!
+}
+
+function buildInitialWorkspaceAgentDraft(input: {
+  workspaceAgentId?: string
+  workspaceAgentTemplateId?: string
+  workspaceAgentName?: string
+  workspaceRoot?: string
+  workspaceAgents: WorkspaceAgent[]
+  assistants: Assistant[]
+}): WorkspaceAgentDraft | null {
+  if (input.workspaceAgentId) {
+    const agent = input.workspaceAgents.find(
+      (candidate) => candidate.id === input.workspaceAgentId,
+    )
+    const template = agent
+      ? input.assistants.find((candidate) => candidate.id === agent.templateId)
+      : undefined
+    return agent && template ? toWorkspaceAgentDraft(agent, template) : null
+  }
+  if (!input.workspaceAgentTemplateId) return null
+  const template = input.assistants.find(
+    (candidate) => candidate.id === input.workspaceAgentTemplateId,
+  )
+  return template
+    ? createWorkspaceAgentDraft(
+        template,
+        input.workspaceAgentName,
+        input.workspaceRoot,
+      )
+    : null
+}
+
+function isToolWithinWorkspaceAgentTemplate(
+  toolName: string,
+  template: Assistant | null | undefined,
+): boolean {
+  return !template || isAssistantToolEnabled(template, toolName)
+}
+
+function isSkillWithinWorkspaceAgentTemplate(
+  skillName: string,
+  template: Assistant | null | undefined,
+): boolean {
+  return (
+    !template ||
+    resolveAssistantSkillPolicy({ assistant: template, skillName }).enabled
+  )
+}
+
 // Remote MCP tools only, post-D9: built-in tool state no longer lives in
 // `toolPreferences` at all (see `updateDraftBuiltinCapabilityPreferences`
 // below for the built-in counterpart).
@@ -381,17 +485,40 @@ export function AgentsSectionContent({
   onClose,
   initialAssistantId,
   initialCreate,
+  workspaceAgentId,
+  workspaceAgentTemplateId,
+  workspaceAgentName,
+  workspaceRoot,
 }: AgentsSectionContentProps) {
   const plugin = usePlugin()
   const { settings, setSettings } = useSettings()
   const { t } = useLanguage()
 
   const assistants = settings.assistants || []
+  const workspaceAgents = settings.workspaceAgents || []
   const enableToolDisclosure = settings.mcp.enableToolDisclosure
   const isDirectEditEntry = Boolean(initialAssistantId)
   const isDirectCreateEntry = Boolean(initialCreate)
-  const isDirectEntry = isDirectEditEntry || isDirectCreateEntry
+  const isWorkspaceAgentEntry = Boolean(
+    workspaceAgentId || workspaceAgentTemplateId,
+  )
+  const isDirectEntry =
+    isDirectEditEntry || isDirectCreateEntry || isWorkspaceAgentEntry
+  const [workspaceAgentDraft, setWorkspaceAgentDraft] =
+    useState<WorkspaceAgentDraft | null>(() =>
+      buildInitialWorkspaceAgentDraft({
+        workspaceAgentId,
+        workspaceAgentTemplateId,
+        workspaceAgentName,
+        workspaceRoot,
+        workspaceAgents,
+        assistants,
+      }),
+    )
   const [draftAgent, setDraftAgent] = useState<Assistant | null>(() => {
+    if (workspaceAgentDraft) {
+      return workspaceAgentDraft.effective
+    }
     if (initialCreate) {
       const draft = createNewAgent()
       draft.name = t('settings.agent.editorDefaultName', 'New agent')
@@ -432,6 +559,14 @@ export function AgentsSectionContent({
     setSystemPromptOverlayTarget(target)
   }, [isSystemPromptExpanded])
   const [availableTools, setAvailableTools] = useState<McpTool[]>([])
+  const templateCeiling = workspaceAgentDraft?.template
+  const editorAvailableTools = useMemo(
+    () =>
+      availableTools.filter((tool) =>
+        isToolWithinWorkspaceAgentTemplate(tool.name, templateCeiling),
+      ),
+    [availableTools, templateCeiling],
+  )
   const activeTabIndex = AGENT_EDITOR_TABS.findIndex((tab) => tab === activeTab)
   const activeTabIndexRef = useRef(activeTabIndex)
   const tabsNavRef = useRef<HTMLDivElement | null>(null)
@@ -585,6 +720,32 @@ export function AgentsSectionContent({
         availableTools,
       ),
       updatedAt: Date.now(),
+    }
+
+    if (workspaceAgentDraft) {
+      const nextAgent: WorkspaceAgent = {
+        ...workspaceAgentDraft.agent,
+        name: normalized.name,
+        behaviorOverrides: buildWorkspaceAgentBehaviorOverrides(
+          workspaceAgentDraft.template,
+          normalized,
+          workspaceAgentDraft.agentModeAllowed,
+        ),
+        updatedAt: Date.now(),
+      }
+      const exists = workspaceAgents.some((agent) => agent.id === nextAgent.id)
+      await setSettings({
+        ...settings,
+        workspaceAgents: exists
+          ? workspaceAgents.map((agent) =>
+              agent.id === nextAgent.id ? nextAgent : agent,
+            )
+          : [...workspaceAgents, nextAgent],
+        currentWorkspaceAgentId:
+          settings.currentWorkspaceAgentId ?? nextAgent.id,
+      })
+      onClose()
+      return
     }
 
     const exists = assistants.some(
@@ -825,7 +986,7 @@ export function AgentsSectionContent({
     // pre-D7 early-return.
     const builtinToolNamesPresent = new Set<string>()
 
-    availableTools.forEach((tool) => {
+    editorAvailableTools.forEach((tool) => {
       let serverName = localFsServerName
       let toolName = tool.name
 
@@ -912,7 +1073,7 @@ export function AgentsSectionContent({
       })
       .map(([key, value]) => ({ key, ...value }))
   }, [
-    availableTools,
+    editorAvailableTools,
     draftAgent?.includeBuiltinTools,
     localFsServerName,
     settings.mcp.builtinCapabilityOptions,
@@ -925,8 +1086,8 @@ export function AgentsSectionContent({
   )
 
   const enabledVisibleToolsCount = useMemo(() => {
-    return countEnabledVisibleAssistantTools(draftAgent, availableTools)
-  }, [availableTools, draftAgent])
+    return countEnabledVisibleAssistantTools(draftAgent, editorAvailableTools)
+  }, [draftAgent, editorAvailableTools])
 
   const groupEnabledCounts = useMemo(() => {
     const enabled = new Set(getEnabledAssistantToolNames(draftAgent))
@@ -972,7 +1133,7 @@ export function AgentsSectionContent({
       return
     }
 
-    const eligibleTools = availableTools.filter((tool) => {
+    const eligibleTools = editorAvailableTools.filter((tool) => {
       let serverName = localFsServerName
       try {
         serverName = parseToolName(tool.name).serverName
@@ -1070,7 +1231,7 @@ export function AgentsSectionContent({
       cancelled = true
     }
   }, [
-    availableTools,
+    editorAvailableTools,
     draftAgent,
     draftAgent?.enableTools,
     draftAgent?.includeBuiltinTools,
@@ -1111,6 +1272,9 @@ export function AgentsSectionContent({
   const skillRows = useMemo(() => {
     return skillEntries
       .filter((skill) => !disabledSkillNameSet.has(skill.name))
+      .filter((skill) =>
+        isSkillWithinWorkspaceAgentTemplate(skill.name, templateCeiling),
+      )
       .map((skill) => {
         const policy = resolveAssistantSkillPolicy({
           assistant: draftAgent,
@@ -1123,7 +1287,7 @@ export function AgentsSectionContent({
           loadMode: policy.loadMode,
         }
       })
-  }, [disabledSkillNameSet, draftAgent, skillEntries])
+  }, [disabledSkillNameSet, draftAgent, skillEntries, templateCeiling])
 
   // Same agent-scoped pattern as estimatedToolContextTokens above.
   const [estimatedSkillContextTokens, setEstimatedSkillContextTokens] =
@@ -2149,9 +2313,29 @@ export function AgentsSectionContent({
             </div>
           )}
 
-          {activeTab === 'workspace' && (
+          {activeTab === 'workspace' && workspaceAgentDraft && (
             <div className="yolo-agent-editor-body">
               <AgentWorkspaceScopeEditor
+                app={app}
+                vault={app.vault}
+                value={workspaceAgentDraft.agent.workspacePolicy}
+                onChange={(workspacePolicy) =>
+                  setWorkspaceAgentDraft((current) =>
+                    current
+                      ? {
+                          ...current,
+                          agent: { ...current.agent, workspacePolicy },
+                        }
+                      : current,
+                  )
+                }
+              />
+            </div>
+          )}
+
+          {activeTab === 'workspace' && !workspaceAgentDraft && (
+            <div className="yolo-agent-editor-body">
+              <TemplateWorkspaceScopeEditor
                 app={app}
                 vault={app.vault}
                 value={draftAgent.workspaceScope}

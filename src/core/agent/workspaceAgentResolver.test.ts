@@ -1,7 +1,8 @@
-import type { Assistant } from '../../types/assistant.types'
 import type { WorkspaceAgent } from '../../settings/schema/setting.types'
+import type { Assistant } from '../../types/assistant.types'
 
 import {
+  buildWorkspaceAgentBehaviorOverrides,
   getUnifiedAgentList,
   resolveActiveAssistant,
   resolveWorkspaceAgentAssistant,
@@ -106,6 +107,75 @@ describe('workspaceAgentResolver', () => {
     expect(resolved?.builtinCapabilityPreferences).toMatchObject({
       file_editing: { enabled: false, approvalMode: 'full_access' },
       vault_shell: { enabled: true, approvalMode: 'require_approval' },
+    })
+  })
+
+  it('persists only explicit workspace-agent diffs from the template', () => {
+    const ceiling: Assistant = {
+      ...template,
+      toolPreferences: {
+        'tool-a': {
+          enabled: true,
+          approvalMode: 'full_access',
+          disclosureMode: 'always',
+        },
+        'tool-b': { enabled: true },
+      },
+      builtinCapabilityPreferences: {
+        file_editing: { enabled: true, approvalMode: 'full_access' },
+        vault_shell: { enabled: true, approvalMode: 'dangerous_only' },
+      },
+      skillPreferences: {
+        'skill-1': { enabled: true, loadMode: 'always' },
+        'skill-2': { enabled: true, loadMode: 'always' },
+      },
+    }
+    const effective = resolveWorkspaceAgentAssistant(agent, [ceiling])!
+    const edited: Assistant = {
+      ...effective,
+      systemPrompt: 'workspace prompt',
+      toolPreferences: {
+        ...effective.toolPreferences,
+        'tool-a': {
+          enabled: true,
+          approvalMode: 'require_approval',
+          disclosureMode: 'on_demand',
+        },
+        'tool-b': { enabled: false },
+      },
+      builtinCapabilityPreferences: {
+        ...effective.builtinCapabilityPreferences,
+        file_editing: { enabled: false, approvalMode: 'full_access' },
+        vault_shell: { enabled: true, approvalMode: 'require_approval' },
+      },
+      enabledSkills: ['skill-1'],
+      skillPreferences: {
+        ...effective.skillPreferences,
+        'skill-1': { enabled: true, loadMode: 'lazy' },
+        'skill-2': { enabled: false, loadMode: 'always' },
+      },
+    }
+
+    expect(
+      buildWorkspaceAgentBehaviorOverrides(ceiling, edited, false),
+    ).toEqual({
+      systemPromptOverride: 'workspace prompt',
+      disabledToolNames: ['tool-b'],
+      toolConfigOverrides: {
+        'tool-a': {
+          approvalMode: 'require_approval',
+          disclosureMode: 'on_demand',
+        },
+      },
+      disabledBuiltinCapabilityIds: ['file_editing'],
+      builtinCapabilityConfigOverrides: {
+        vault_shell: { approvalMode: 'require_approval' },
+      },
+      disabledSkillIds: ['skill-2'],
+      skillConfigOverrides: {
+        'skill-1': { loadMode: 'lazy' },
+      },
+      agentModeAllowed: false,
     })
   })
 

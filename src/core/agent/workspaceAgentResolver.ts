@@ -1,13 +1,14 @@
 import type {
   WorkspaceAgent,
+  WorkspaceAgentBehaviorOverrides,
   YoloSettings,
 } from '../../settings/schema/setting.types'
 import type {
   Assistant,
-  AssistantToolApprovalMode,
-  AssistantToolDisclosureMode,
   AssistantSkillOverridePreference,
   AssistantSkillPreference,
+  AssistantToolApprovalMode,
+  AssistantToolDisclosureMode,
   AssistantToolOverridePreference,
   AssistantToolPreference,
   WorkspaceAccessPolicy,
@@ -175,7 +176,6 @@ export function resolveWorkspaceAgentAssistant(
   )
   if (!template) return null
   const overrides = agent.behaviorOverrides ?? {}
-  const agentModeAllowed = overrides.agentModeAllowed ?? true
 
   const templateEnabledToolNames = getTemplateEnabledRemoteToolNames(template)
   const templateToolSet = new Set(templateEnabledToolNames)
@@ -246,6 +246,126 @@ export function resolveWorkspaceAgentAssistant(
     skillPreferences,
     workspaceAccessPolicy: toWorkspaceAccessPolicy(agent),
   }
+}
+
+export function buildWorkspaceAgentBehaviorOverrides(
+  template: Assistant,
+  effective: Assistant,
+  agentModeAllowed: boolean,
+): WorkspaceAgentBehaviorOverrides {
+  const overrides: WorkspaceAgentBehaviorOverrides = {}
+
+  if (effective.systemPrompt !== (template.systemPrompt ?? '')) {
+    overrides.systemPromptOverride = effective.systemPrompt
+  }
+
+  const templateRemoteTools = getTemplateEnabledRemoteToolNames(template)
+  const effectiveToolPreferences = getAssistantToolPreferences(effective)
+  const disabledToolNames = templateRemoteTools.filter(
+    (toolName) => effectiveToolPreferences[toolName]?.enabled === false,
+  )
+  if (disabledToolNames.length > 0) {
+    overrides.disabledToolNames = disabledToolNames
+  }
+
+  const toolConfigOverrides: NonNullable<
+    WorkspaceAgentBehaviorOverrides['toolConfigOverrides']
+  > = {}
+  const templateToolPreferences = getAssistantToolPreferences(template)
+  for (const toolName of templateRemoteTools) {
+    const templatePreference = templateToolPreferences[toolName]
+    const effectivePreference = effectiveToolPreferences[toolName]
+    const config: AssistantToolOverridePreference = {}
+    if (
+      effectivePreference?.approvalMode &&
+      templatePreference?.approvalMode &&
+      APPROVAL_MODE_RANK[effectivePreference.approvalMode] >
+        APPROVAL_MODE_RANK[templatePreference.approvalMode]
+    ) {
+      config.approvalMode = effectivePreference.approvalMode
+    }
+    if (
+      effectivePreference?.disclosureMode &&
+      templatePreference?.disclosureMode &&
+      DISCLOSURE_MODE_RANK[effectivePreference.disclosureMode] >
+        DISCLOSURE_MODE_RANK[templatePreference.disclosureMode]
+    ) {
+      config.disclosureMode = effectivePreference.disclosureMode
+    }
+    if (Object.keys(config).length > 0) {
+      toolConfigOverrides[toolName] = config
+    }
+  }
+  if (Object.keys(toolConfigOverrides).length > 0) {
+    overrides.toolConfigOverrides = toolConfigOverrides
+  }
+
+  const templateBuiltinPreferences = mergeBuiltinCapabilityPreferences(
+    template,
+    [],
+  )
+  const effectiveBuiltinPreferences =
+    effective.builtinCapabilityPreferences ?? {}
+  const disabledBuiltinCapabilityIds: string[] = []
+  const builtinCapabilityConfigOverrides: NonNullable<
+    WorkspaceAgentBehaviorOverrides['builtinCapabilityConfigOverrides']
+  > = {}
+  for (const [capabilityId, templatePreference] of Object.entries(
+    templateBuiltinPreferences,
+  )) {
+    if (!templatePreference.enabled) continue
+    const effectivePreference = effectiveBuiltinPreferences[capabilityId]
+    if (effectivePreference?.enabled === false) {
+      disabledBuiltinCapabilityIds.push(capabilityId)
+      continue
+    }
+    if (
+      effectivePreference?.approvalMode &&
+      templatePreference.approvalMode &&
+      APPROVAL_MODE_RANK[effectivePreference.approvalMode] >
+        APPROVAL_MODE_RANK[templatePreference.approvalMode]
+    ) {
+      builtinCapabilityConfigOverrides[capabilityId] = {
+        approvalMode: effectivePreference.approvalMode,
+      }
+    }
+  }
+  if (disabledBuiltinCapabilityIds.length > 0) {
+    overrides.disabledBuiltinCapabilityIds = disabledBuiltinCapabilityIds
+  }
+  if (Object.keys(builtinCapabilityConfigOverrides).length > 0) {
+    overrides.builtinCapabilityConfigOverrides =
+      builtinCapabilityConfigOverrides
+  }
+
+  const templateSkills = unique(template.enabledSkills ?? [])
+  const effectiveSkills = new Set(effective.enabledSkills ?? [])
+  const disabledSkillIds = templateSkills.filter(
+    (skillName) => !effectiveSkills.has(skillName),
+  )
+  if (disabledSkillIds.length > 0) {
+    overrides.disabledSkillIds = disabledSkillIds
+  }
+
+  const skillConfigOverrides: NonNullable<
+    WorkspaceAgentBehaviorOverrides['skillConfigOverrides']
+  > = {}
+  for (const skillName of templateSkills) {
+    const templateMode = template.skillPreferences?.[skillName]?.loadMode
+    const effectiveMode = effective.skillPreferences?.[skillName]?.loadMode
+    if (templateMode === 'always' && effectiveMode === 'lazy') {
+      skillConfigOverrides[skillName] = { loadMode: 'lazy' }
+    }
+  }
+  if (Object.keys(skillConfigOverrides).length > 0) {
+    overrides.skillConfigOverrides = skillConfigOverrides
+  }
+
+  if (!agentModeAllowed) {
+    overrides.agentModeAllowed = false
+  }
+
+  return overrides
 }
 
 /**
