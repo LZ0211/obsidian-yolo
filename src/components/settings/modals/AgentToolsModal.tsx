@@ -15,7 +15,6 @@ import {
   CONTEXT_MANAGE_GROUP_TOOL_NAME,
   CONTEXT_MANAGE_LEGACY_SPLIT_TOOL_NAMES,
   FILE_EDIT_GROUP_TOOL_NAME,
-  MEMORY_OPS_GROUP_TOOL_NAME,
   WEB_OPS_GROUP_TOOL_NAME,
   WEB_OPS_SPLIT_ACTION_TOOL_NAMES,
   getBuiltinToolCategory,
@@ -23,16 +22,16 @@ import {
   getBuiltinToolUiMeta,
 } from '../../../core/agent/builtinToolUiMeta'
 import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from '../../../core/agent/subagent/tool-name-utils'
-import { getInjectedToolGroup } from '../../../core/mcp/injectedToolGroup'
+import {
+  getInjectedToolGroup,
+  isLocalToolConfigurableInEditor,
+} from '../../../core/mcp/injectedToolGroup'
 import {
   JS_SANDBOX_TOOL_NAME,
   LOCAL_FS_EDIT_TOOL_NAMES,
   TERMINAL_COMMAND_TOOL_NAME,
 } from '../../../core/mcp/localFileToolNames'
-import {
-  LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
-  getLocalFileTools,
-} from '../../../core/mcp/localFileTools'
+import { getLocalFileTools } from '../../../core/mcp/localFileTools'
 import YoloPlugin from '../../../main'
 import { ObsidianToggle } from '../../common/ObsidianToggle'
 import { ReactModal } from '../../common/ReactModal'
@@ -50,9 +49,6 @@ type AgentToolsModalProps = {
 }
 
 const EDIT_FS_TOOL_NAME_SET = new Set<string>(LOCAL_FS_EDIT_TOOL_NAMES)
-const SPLIT_MEMORY_TOOL_NAME_SET = new Set<string>(
-  LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
-)
 const SPLIT_WEB_TOOL_NAME_SET = new Set<string>(WEB_OPS_SPLIT_ACTION_TOOL_NAMES)
 const SPLIT_CONTEXT_TOOL_NAME_SET = new Set<string>(
   CONTEXT_MANAGE_LEGACY_SPLIT_TOOL_NAMES,
@@ -106,8 +102,8 @@ function AgentToolsModalContent({
     const tools = getLocalFileTools()
       .filter(
         (tool) =>
+          isLocalToolConfigurableInEditor(tool.name) &&
           !EDIT_FS_TOOL_NAME_SET.has(tool.name) &&
-          !SPLIT_MEMORY_TOOL_NAME_SET.has(tool.name) &&
           !SPLIT_WEB_TOOL_NAME_SET.has(tool.name) &&
           !SPLIT_CONTEXT_TOOL_NAME_SET.has(tool.name),
       )
@@ -144,23 +140,6 @@ function AgentToolsModalContent({
       hasSettings: false,
     }
 
-    const memorySplitToolEnabled = LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES.every(
-      (toolName) =>
-        !(toolOptions[toolName]?.disabled ?? false) &&
-        !(toolOptions[MEMORY_OPS_GROUP_TOOL_NAME]?.disabled ?? false),
-    )
-    const memoryOpsMeta = getBuiltinToolUiMeta(MEMORY_OPS_GROUP_TOOL_NAME)
-    if (!memoryOpsMeta) {
-      throw new Error('Missing built-in tool UI metadata for memory_ops')
-    }
-    const memoryOpsTool = {
-      id: MEMORY_OPS_GROUP_TOOL_NAME,
-      label: t(memoryOpsMeta.labelKey, memoryOpsMeta.labelFallback),
-      description: t(memoryOpsMeta.descKey ?? '', memoryOpsMeta.descFallback),
-      enabled: memorySplitToolEnabled,
-      hasSettings: false,
-    }
-
     const webSplitToolEnabled = WEB_OPS_SPLIT_ACTION_TOOL_NAMES.every(
       (toolName) =>
         !(toolOptions[toolName]?.disabled ?? false) &&
@@ -178,7 +157,7 @@ function AgentToolsModalContent({
       hasSettings: true,
     }
 
-    const allTools = [...tools, fileEditTool, memoryOpsTool, webOpsTool]
+    const allTools = [...tools, fileEditTool, webOpsTool]
 
     // 注入工具按插件自定义能力组名分组（如 "Smart-Docx 插件能力"）；
     // 未提供组名的注入工具回落通用 External 分类。
@@ -232,19 +211,14 @@ function AgentToolsModalContent({
     const targets =
       toolName === FILE_EDIT_GROUP_TOOL_NAME
         ? [FILE_EDIT_GROUP_TOOL_NAME, ...LOCAL_FS_EDIT_TOOL_NAMES]
-        : toolName === MEMORY_OPS_GROUP_TOOL_NAME
-          ? [
-              MEMORY_OPS_GROUP_TOOL_NAME,
-              ...LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES,
-            ]
-          : toolName === WEB_OPS_GROUP_TOOL_NAME
-            ? [WEB_OPS_GROUP_TOOL_NAME, ...WEB_OPS_SPLIT_ACTION_TOOL_NAMES]
-            : toolName === CONTEXT_MANAGE_GROUP_TOOL_NAME
-              ? [
-                  CONTEXT_MANAGE_GROUP_TOOL_NAME,
-                  ...CONTEXT_MANAGE_LEGACY_SPLIT_TOOL_NAMES,
-                ]
-              : [toolName]
+        : toolName === WEB_OPS_GROUP_TOOL_NAME
+          ? [WEB_OPS_GROUP_TOOL_NAME, ...WEB_OPS_SPLIT_ACTION_TOOL_NAMES]
+          : toolName === CONTEXT_MANAGE_GROUP_TOOL_NAME
+            ? [
+                CONTEXT_MANAGE_GROUP_TOOL_NAME,
+                ...CONTEXT_MANAGE_LEGACY_SPLIT_TOOL_NAMES,
+              ]
+            : [toolName]
     const nextBuiltinToolOptions = { ...settings.mcp.builtinToolOptions }
     for (const target of targets) {
       nextBuiltinToolOptions[target] = {

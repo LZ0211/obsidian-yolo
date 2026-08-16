@@ -136,7 +136,7 @@ beforeEach(() => {
 })
 
 describe('AgentSection builtin tool rows', () => {
-  it('renders memory_ops as a synthetic group row alongside fs_edit_ops and web_ops', () => {
+  it('keeps internal memory operations out of the global settings rows', () => {
     mockGetLocalFileTools.mockReturnValue([
       { name: 'fs_read' },
       { name: 'fs_edit' },
@@ -153,10 +153,7 @@ describe('AgentSection builtin tool rows', () => {
 
     const html = renderAgentSection()
 
-    // memory_ops group row is present (the fix: AgentSection previously only
-    // hand-built fs_edit_ops/web_ops and filtered the memory splits away).
-    expect(html).toContain('Memory Toolset')
-    // Split memory tools collapse into the group row and stay hidden.
+    expect(html).not.toContain('Memory Toolset')
     expect(html).not.toContain('Add Memory')
     expect(html).not.toContain('Update Memory')
     expect(html).not.toContain('Delete Memory')

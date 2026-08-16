@@ -57,6 +57,9 @@ export const LOCAL_FILE_TOOL_SHORT_NAMES = [
 const NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES = new Set<string>([
   'load_tool_schemas',
   'send_attachment',
+  'memory_add',
+  'memory_update',
+  'memory_delete',
 ])
 
 /**

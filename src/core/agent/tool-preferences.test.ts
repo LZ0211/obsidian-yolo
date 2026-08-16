@@ -69,6 +69,16 @@ describe('tool-preferences defaults', () => {
       )
     })
 
+    it('returns false for internal-only memory mutation tools', () => {
+      expect(getDefaultEnabledForTool('yolo_local__memory_add')).toBe(false)
+      expect(getDefaultEnabledForTool('yolo_local__memory_update')).toBe(
+        false,
+      )
+      expect(getDefaultEnabledForTool('yolo_local__memory_delete')).toBe(
+        false,
+      )
+    })
+
     it('returns false for built-in tools in the deny-list', () => {
       expect(
         getDefaultEnabledForTool('yolo_local__context_prune_tool_results'),
@@ -229,6 +239,19 @@ describe('tool-preferences defaults', () => {
       })
       expect(result).not.toContain('yolo_local__fs_write')
       expect(result).toContain('Gemini__get_all_tabs')
+    })
+
+    it('excludes internal-only memory tools left in legacy preferences', () => {
+      const result = getEnabledAssistantToolNames({
+        toolPreferences: {
+          yolo_local__memory_add: { enabled: true },
+          yolo_local__fs_write: { enabled: true },
+        },
+        enabledToolNames: [],
+      })
+
+      expect(result).not.toContain('yolo_local__memory_add')
+      expect(result).toContain('yolo_local__fs_write')
     })
   })
 

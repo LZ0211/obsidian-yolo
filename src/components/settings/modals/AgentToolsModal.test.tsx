@@ -127,4 +127,26 @@ describe('AgentToolsModal layout', () => {
       row?.children[1].querySelector('.yolo-mcp-tool-description'),
     ).not.toBeNull()
   })
+
+  it('does not list internal memory mutation tools', () => {
+    const plugin = {
+      settings: { mcp: { builtinToolOptions: {} } },
+      t: (key: string, fallback?: string) => fallback ?? key,
+      setSettings: jest.fn(),
+      addSettingsChangeListener: jest.fn(),
+    }
+    const modal = new AgentToolsModal(
+      {} as App,
+      plugin as never,
+    ) as unknown as CapturedModal
+
+    act(() => {
+      root.render(
+        <modal.Component {...modal.props} onClose={() => undefined} />,
+      )
+    })
+
+    expect(container.textContent).not.toContain('Memory Toolset')
+    expect(container.textContent).not.toContain('Send Attachment')
+  })
 })

@@ -144,6 +144,18 @@ const isLocalFileToolFqn = (toolName: string): boolean => {
   }
 }
 
+const isUserFacingLocalFileToolFqn = (toolName: string): boolean => {
+  try {
+    const { serverName, toolName: shortName } = parseToolName(toolName)
+    return (
+      serverName === getLocalFileToolServerName() &&
+      USER_FACING_LOCAL_TOOL_SHORT_NAME_SET.has(shortName)
+    )
+  } catch {
+    return false
+  }
+}
+
 /**
  * The default `enabled` value that the **settings migration** writes for a
  * tool when no explicit preference exists. User-facing built-in
@@ -452,7 +464,11 @@ export const getEnabledAssistantToolNames = (
 
   for (const [toolName, preference] of Object.entries(toolPreferences)) {
     if (!preference.enabled) continue
-    if (!includeBuiltinTools && isLocalFileToolFqn(toolName)) continue
+    if (isLocalFileToolFqn(toolName)) {
+      if (!includeBuiltinTools || !isUserFacingLocalFileToolFqn(toolName)) {
+        continue
+      }
+    }
     result.add(toolName)
   }
 
