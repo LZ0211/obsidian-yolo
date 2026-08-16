@@ -3977,8 +3977,10 @@ describe('project_ops', () => {
     if (result.status === ToolCallResponseStatus.Success) {
       expect(JSON.parse(result.text)).toMatchObject({ ok: true })
     }
-    expect(await adapter.exists('Projects/proj-x/project.md')).toBe(true)
-    expect(await adapter.exists('Projects/proj-x/tasks/T-001.md')).toBe(true)
+    expect(await adapter.exists('YOLO/Projects/proj-x/project.md')).toBe(true)
+    expect(
+      await adapter.exists('YOLO/Projects/proj-x/tasks/T-001.md'),
+    ).toBe(true)
   })
 
   it('reports a stale update precondition as a conflict', async () => {
