@@ -1340,7 +1340,7 @@ export const zh: TranslationKeys = {
         title: 'CLI Runtime MCP 共享',
         desc: '开启后通过 HTTP 把 YOLO 本地 MCP 服务共享给 CLI runtime（Claude Code / Hermes / OpenCode）；关闭时各 SDK 使用自身配置。',
         enabledLabel: '启用 MCP 共享',
-        enabledDesc: '写入各 CLI 的 MCP 配置（.claude.json / opencode.json），指向本地 MCP HTTP 服务。开启时自动启用本地 MCP 服务并生成 token。',
+        enabledDesc: '仅向活动的 CLI 会话注入本地 MCP HTTP 服务，不修改 CLI 全局配置。开启时自动启用本地 MCP 服务并生成 token。',
         noToken: '本地 MCP 服务的 token 未生成，请先启用本地 MCP 服务。',
       },
       cliInjection: {

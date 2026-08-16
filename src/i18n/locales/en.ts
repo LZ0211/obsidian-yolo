@@ -1449,7 +1449,7 @@ export const en: TranslationKeys = {
         title: 'CLI Runtime MCP Sharing',
         desc: 'When enabled, the YOLO local MCP server is shared with CLI runtimes (Claude Code / Hermes / OpenCode) over HTTP; when disabled, each SDK uses its own configuration.',
         enabledLabel: 'Enable MCP sharing',
-        enabledDesc: 'Writes the local MCP HTTP endpoint into each CLI\'s MCP config (.claude.json / opencode.json). Enabling also turns on the local MCP server and generates a token.',
+        enabledDesc: 'Injects the local MCP HTTP endpoint only into active CLI sessions without changing global CLI configuration. Enabling also turns on the local MCP server and generates a token.',
         noToken: 'The local MCP server token is missing; enable the local MCP server first.',
       },
       cliInjection: {

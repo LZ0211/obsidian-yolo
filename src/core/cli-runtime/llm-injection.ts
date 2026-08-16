@@ -164,8 +164,8 @@ export function buildCodexSessionOverrides(
 /**
  * 各 CLI runtime 的 LLM 环境变量（cc-switch 式）：
  * - claude-code / hermes / pi：Anthropic 兼容 env（pi 通过 Anthropic SDK 路径）
- * - codex：认证 env（baseUrl/model 走 config.toml，见 codex 配置同步）
- * - opencode：无 env（provider 段走 opencode.json，见 opencode 配置同步）
+ * - codex：认证 env（baseUrl/model 走当前会话的启动参数）
+ * - opencode：通过 OPENCODE_CONFIG_CONTENT 注入当前会话配置
  */
 export function buildLlmEnvForRuntime(
   runtimeId: CliRuntimeId,
@@ -184,7 +184,24 @@ export function buildLlmEnvForRuntime(
   }
 
   if (runtimeId === 'opencode') {
-    return {}
+    return {
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({
+        model: `yolo/${modelName}`,
+        provider: {
+          yolo: {
+            npm: '@ai-sdk/openai-compatible',
+            name: provider.name ?? provider.id,
+            options: {
+              baseURL: provider.baseUrl,
+              apiKey: provider.apiKey,
+            },
+            models: {
+              [modelName]: { name: modelName },
+            },
+          },
+        },
+      }),
+    }
   }
 
   // claude-code / hermes / pi

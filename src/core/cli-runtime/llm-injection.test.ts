@@ -96,8 +96,28 @@ describe('buildLlmEnvForRuntime', () => {
     })
   })
 
-  it('builds no env for opencode (config-file driven)', () => {
-    expect(buildLlmEnvForRuntime('opencode', injection)).toEqual({})
+  it('builds a session-scoped OpenCode provider config', () => {
+    const env = buildLlmEnvForRuntime('opencode', injection)
+
+    expect(Object.keys(env)).toEqual(['OPENCODE_CONFIG_CONTENT'])
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT)).toEqual({
+      model: 'yolo/claude-sonnet-4-20250514',
+      provider: {
+        yolo: {
+          npm: '@ai-sdk/openai-compatible',
+          name: 'Provider One',
+          options: {
+            baseURL: 'https://api.example.com/v1',
+            apiKey: 'sk-test-key',
+          },
+          models: {
+            'claude-sonnet-4-20250514': {
+              name: 'claude-sonnet-4-20250514',
+            },
+          },
+        },
+      },
+    })
   })
 
   it('falls back to the cc-switch default model when the model name is empty', () => {

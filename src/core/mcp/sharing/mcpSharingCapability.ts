@@ -7,10 +7,10 @@ import type { CliRuntimeId } from '../../cli-runtime/types'
  *
  * - native（yolo）：native agent 经自身 McpManager 直连工具，恒 supported true；
  *   `transports` 反映当前共享 server 的传输面。
- * - claude-code / codex：SDK 透传 / codex 配置注入已实现，但进程级投影注入
+ * - CLI runtime：SDK / ACP 透传或进程配置注入已实现，但进程级投影注入
  *   缝（coordinator runtime options）未接线前不得声明 true，避免能力与
  *   实际进程不一致；`processInjectionWired` 为真且存在共享 server 时才声明支持。
- * - hermes / pi：当前 runtime 没有 MCP 进程投影，始终不声明支持。
+ * - pi：当前 runtime 没有 MCP 进程投影，始终不声明支持。
  */
 
 const SHARED_TRANSPORTS = new Set(['http', 'sse', 'ws'])
@@ -35,7 +35,7 @@ export function deriveMcpSharingCapability(
     return { supported: true, info: { transports } }
   }
 
-  if (runtimeId === 'hermes' || runtimeId === 'pi') {
+  if (runtimeId === 'pi') {
     return {
       supported: false,
       reason: `${runtimeId} does not expose MCP process projection`,
