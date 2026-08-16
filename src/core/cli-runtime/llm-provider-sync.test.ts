@@ -187,6 +187,36 @@ describe('createLlmProviderSync', () => {
       readFile(path.join(configDir, 'opencode.json.yolo-backup'), 'utf8'),
     ).rejects.toThrow()
   })
+
+  it('does not remove a user provider when injection was never applied', async () => {
+    const userConfig = {
+      provider: {
+        yolo: {
+          npm: '@user/provider',
+          options: { apiKey: 'user-key' },
+        },
+      },
+    }
+    await writeFile(
+      path.join(configDir, 'opencode.json'),
+      `${JSON.stringify(userConfig)}\n`,
+    )
+    const storage = new Map<string, unknown>()
+    const sync = createLlmProviderSync({
+      app: {
+        loadLocalStorage: (key) => storage.get(key),
+        saveLocalStorage: (key, value) => storage.set(key, value),
+      },
+      getSettings: () => makeProviderSettings() as never,
+      injection: () => ({ enabled: false }),
+      configDirOverride: configDir,
+    })
+
+    await expect(sync.apply()).resolves.toBe(false)
+    await expect(
+      readFile(path.join(configDir, 'opencode.json'), 'utf8'),
+    ).resolves.toBe(`${JSON.stringify(userConfig)}\n`)
+  })
 })
 
 describe('createMcpSharingSync', () => {

@@ -248,7 +248,8 @@ export function createLlmProviderSync(input: {
       const signature = resolved
         ? await createLlmProviderSignature(resolved)
         : 'off'
-      if (signature === readSignature()) return false
+      const previousSignature = readSignature()
+      if (signature === previousSignature) return false
 
       const codexPath = await resolveCodexConfigPath(input.configDirOverride)
       const opencodePath = await resolveOpenCodeConfigPath(
@@ -256,12 +257,15 @@ export function createLlmProviderSync(input: {
       )
 
       if (!resolved) {
-        await Promise.allSettled([
-          restoreFromBackup(codexPath),
-          removeOpenCodeProvider(opencodePath),
-        ])
+        const wasApplied = previousSignature?.startsWith('on:') === true
+        if (wasApplied) {
+          await Promise.allSettled([
+            restoreFromBackup(codexPath),
+            removeOpenCodeProvider(opencodePath),
+          ])
+        }
         writeSignature('off')
-        return true
+        return wasApplied
       }
 
       const { provider, model } = resolved
