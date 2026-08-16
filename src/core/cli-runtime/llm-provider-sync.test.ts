@@ -127,6 +127,66 @@ describe('createLlmProviderSync', () => {
       readFile(path.join(configDir, 'config.toml.yolo-backup'), 'utf8'),
     ).rejects.toThrow()
   })
+
+  it('preserves MCP sharing when LLM injection is disabled', async () => {
+    const settings = makeProviderSettings() as {
+      providers: Array<Record<string, string>>
+      chatModels: Array<Record<string, string>>
+    }
+    settings.providers[0].apiType = 'openai-responses'
+    const llmStorage = new Map<string, unknown>()
+    let injectionEnabled = true
+    const llmSync = createLlmProviderSync({
+      app: {
+        loadLocalStorage: (key) => llmStorage.get(key),
+        saveLocalStorage: (key, value) => llmStorage.set(key, value),
+      },
+      getSettings: () => settings as never,
+      injection: () => ({
+        enabled: injectionEnabled,
+        providerId: 'provider-1',
+        modelId: 'model-1',
+      }),
+      configDirOverride: configDir,
+    })
+    await expect(llmSync.apply()).resolves.toBe(true)
+
+    const mcpStorage = new Map<string, unknown>()
+    const mcpSync = createMcpSharingSync({
+      app: {
+        loadLocalStorage: (key) => mcpStorage.get(key),
+        saveLocalStorage: (key, value) => mcpStorage.set(key, value),
+      },
+      enabled: () => true,
+      getServer: () => ({
+        enabled: true,
+        url: 'http://127.0.0.1:3210/mcp',
+        token: 'token-one',
+      }),
+      configDirOverride: configDir,
+    })
+    await expect(mcpSync.apply()).resolves.toBe(true)
+
+    injectionEnabled = false
+    await expect(llmSync.apply()).resolves.toBe(true)
+
+    const opencode = JSON.parse(
+      await readFile(path.join(configDir, 'opencode.json'), 'utf8'),
+    ) as {
+      provider?: { yolo?: unknown }
+      mcp?: { yolo?: { url: string } }
+    }
+    expect(opencode.provider?.yolo).toBeUndefined()
+    expect(opencode.mcp?.yolo).toEqual({
+      type: 'remote',
+      url: 'http://127.0.0.1:3210/mcp',
+      enabled: true,
+      headers: { Authorization: 'Bearer token-one' },
+    })
+    await expect(
+      readFile(path.join(configDir, 'opencode.json.yolo-backup'), 'utf8'),
+    ).rejects.toThrow()
+  })
 })
 
 describe('createMcpSharingSync', () => {

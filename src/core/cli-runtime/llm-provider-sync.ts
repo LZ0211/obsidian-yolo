@@ -192,6 +192,7 @@ async function writeOpenCodeProvider(
 
 async function removeOpenCodeProvider(configPath: string): Promise<void> {
   const { fs } = await loadFs()
+  const backupPath = `${configPath}${BACKUP_SUFFIX}`
   try {
     const raw = await fs.readFile(configPath, 'utf8')
     const parsed = JSON.parse(raw)
@@ -201,15 +202,19 @@ async function removeOpenCodeProvider(configPath: string): Promise<void> {
       current.provider && typeof current.provider === 'object'
         ? (current.provider as Record<string, unknown>)
         : null
-    if (!providers || !(OPENCODE_PROVIDER_ID in providers)) return
+    if (!providers || !(OPENCODE_PROVIDER_ID in providers)) {
+      await fs.rm(backupPath, { force: true })
+      return
+    }
     const nextProviders = { ...providers }
     delete nextProviders[OPENCODE_PROVIDER_ID]
     await atomicWriteWithBackup(
       configPath,
       `${JSON.stringify({ ...current, provider: nextProviders }, null, 2)}\n`,
     )
+    await fs.rm(backupPath, { force: true }).catch(() => undefined)
   } catch {
-    // 无文件/解析失败：无需清理。
+    await fs.rm(backupPath, { force: true }).catch(() => undefined)
   }
 }
 
@@ -253,7 +258,6 @@ export function createLlmProviderSync(input: {
       if (!resolved) {
         await Promise.allSettled([
           restoreFromBackup(codexPath),
-          restoreFromBackup(opencodePath),
           removeOpenCodeProvider(opencodePath),
         ])
         writeSignature('off')
