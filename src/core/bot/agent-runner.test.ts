@@ -53,6 +53,7 @@ import {
   createCompleteToolCallArguments,
 } from '../../types/tool-call.types'
 import type { AgentConversationState, AgentService } from '../agent/service'
+import type { InProcessToolServer } from '../mcp/inProcessToolServer'
 import type { McpManager } from '../mcp/mcpManager'
 import { getProtectedVaultPathRules } from '../paths/protectedPaths'
 
@@ -436,7 +437,9 @@ function makeHistoryMessage(id: string, text: string): SerializedChatMessage {
 describe('runBotAgentTurn', () => {
   const app = {} as unknown as import('obsidian').App
   const disposeBotToolServer = jest.fn()
-  const registerInProcessServer = jest.fn(() => disposeBotToolServer)
+  const registerInProcessServer = jest.fn(
+    (_serverName: string, _server: InProcessToolServer) => disposeBotToolServer,
+  )
   const mcpManager = { registerInProcessServer } as unknown as McpManager
 
   beforeEach(() => {
