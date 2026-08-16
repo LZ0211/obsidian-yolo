@@ -1,4 +1,4 @@
-import { Platform } from 'obsidian'
+import { Platform, type TFile } from 'obsidian'
 
 import { buildPdfPageImageCacheKey } from '../../../database/json/chat/imageCacheStore'
 import type { ContentPart } from '../../../types/llm/request'
@@ -10,6 +10,7 @@ import {
 import { uint8ArrayToBase64 } from '../../../utils/base64'
 import { collectWikilinkPaths } from '../../../utils/llm/annotate-wikilinks'
 import { extractMarkdownImages } from '../../../utils/llm/extract-markdown-images'
+import { tFileToImageDataUrl } from '../../../utils/llm/image'
 import {
   chatModelSupportsPdf,
   chatModelSupportsVision,
@@ -24,6 +25,11 @@ import {
   PDF_INDEX_MAX_PAGES,
   extractPdfText,
 } from '../../../utils/pdf/extractPdfText'
+import { convertPdfViaMinerU } from '../../../utils/pdf/mineruCacheStore'
+import {
+  isMinerUEnabled,
+  resolveMinerUImageRefs,
+} from '../../../utils/pdf/mineruClient'
 import { renderPdfPagesToImages } from '../../../utils/pdf/renderPdfPagesToImages'
 import { PdfSliceError, slicePdfPages } from '../../../utils/pdf/slicePdfPages'
 import {
@@ -47,6 +53,7 @@ import {
   getOptionalTextArg,
   getStringArrayArg,
 } from '../tool-args'
+import type { ToolContext } from '../types'
 
 import {
   type FsReadOperation,
@@ -130,6 +137,56 @@ const FS_READ_DESCRIPTION = [
   '- do not call when <browser_context> is absent',
   '- does not fetch internet content; use web_search or web_scrape when available',
 ].join('\n')
+
+async function readPdfViaMinerU(
+  app: ToolContext['app'],
+  file: TFile,
+  settings: ToolContext['settings'],
+  signal: AbortSignal | undefined,
+  includeImages: boolean,
+): Promise<{ markdown: string; imageParts: ContentPart[] } | null> {
+  if (!isMinerUEnabled(settings) || !settings?.mineru) return null
+
+  try {
+    const converted = await convertPdfViaMinerU({
+      app,
+      file,
+      options: settings.mineru,
+      settings,
+      signal,
+    })
+    const { refs, markdown } = resolveMinerUImageRefs(
+      converted.markdown,
+      converted.images,
+      8,
+    )
+    if (!includeImages) return { markdown, imageParts: [] }
+
+    const imageParts: ContentPart[] = []
+    for (const path of refs) {
+      const imageFile = app.vault.getFileByPath(path)
+      if (!imageFile) continue
+      try {
+        const url = await tFileToImageDataUrl(app, imageFile, {
+          cache: { enabled: true, settings },
+        })
+        imageParts.push({ type: 'image_url', image_url: { url } })
+      } catch (error) {
+        console.warn('[YOLO] Failed to read MinerU image', path, error)
+      }
+    }
+    return { markdown, imageParts }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw error
+    }
+    console.warn(
+      '[YOLO] MinerU conversion failed, falling back to default PDF handling',
+      error,
+    )
+    return null
+  }
+}
 
 export const fsReadDefinition = defineTool({
   name: 'fs_read',
@@ -266,6 +323,49 @@ export const fsReadDefinition = defineTool({
       ? chatModelSupportsPdf(activeChatModel)
       : false
 
+    const appendFullMinerUResult = async ({
+      file,
+      path,
+      wikilinkResultFields,
+      subpathWarning,
+    }: {
+      file: TFile
+      path: string
+      wikilinkResultFields: {
+        resolvedPath?: string
+        resolvedSubpath?: WikilinkReadSubpath
+      }
+      subpathWarning?: string
+    }): Promise<boolean> => {
+      const converted = await readPdfViaMinerU(
+        app,
+        file,
+        settings,
+        signal,
+        chatModelAcceptsImages,
+      )
+      if (!converted) return false
+
+      results.push({
+        path,
+        ok: true,
+        totalLines:
+          converted.markdown.length === 0
+            ? 0
+            : converted.markdown.split('\n').length,
+        hasMoreBelow: false,
+        nextStartLine: null,
+        content: converted.markdown,
+        effectiveModality: 'text',
+        ...wikilinkResultFields,
+        ...(subpathWarning ? { warning: subpathWarning } : {}),
+      })
+      if (converted.imageParts.length > 0) {
+        perFileAttachmentParts.push({ path, parts: converted.imageParts })
+      }
+      return true
+    }
+
     for (const path of paths) {
       if (signal?.aborted) {
         return { status: ToolCallResponseStatus.Aborted }
@@ -311,6 +411,16 @@ export const fsReadDefinition = defineTool({
             path,
             ok: false,
             error: 'Reading open web pages via fs_read is desktop-only.',
+          })
+          continue
+        }
+
+        if (typeof app.workspace.iterateAllLeaves !== 'function') {
+          results.push({
+            path,
+            ok: false,
+            error:
+              'Reading open web pages via fs_read is not supported in this environment (no desktop webview tabs).',
           })
           continue
         }
@@ -619,6 +729,26 @@ export const fsReadDefinition = defineTool({
             continue
           }
 
+          if (operation.type === 'full') {
+            try {
+              if (
+                await appendFullMinerUResult({
+                  path,
+                  file,
+                  wikilinkResultFields,
+                  subpathWarning,
+                })
+              ) {
+                continue
+              }
+            } catch (error) {
+              if (error instanceof DOMException && error.name === 'AbortError') {
+                return { status: ToolCallResponseStatus.Aborted }
+              }
+              throw error
+            }
+          }
+
           // Slice failed — fall through to text extraction with a warning prefix.
           let pdfSliceFallbackPages: { page: number; text: string }[] = []
           try {
@@ -772,6 +902,26 @@ export const fsReadDefinition = defineTool({
             })
           }
           continue
+        }
+
+        if (operation.type === 'full') {
+          try {
+            if (
+              await appendFullMinerUResult({
+                path,
+                file,
+                wikilinkResultFields,
+                subpathWarning,
+              })
+            ) {
+              continue
+            }
+          } catch (error) {
+            if (error instanceof DOMException && error.name === 'AbortError') {
+              return { status: ToolCallResponseStatus.Aborted }
+            }
+            throw error
+          }
         }
 
         let pages: { page: number; text: string }[] = []

@@ -7,7 +7,7 @@ import {
   requestUrl,
 } from 'obsidian'
 
-import { callLocalFileTool } from '../../core/mcp/localFileTools'
+import { executeBuiltinTool } from '../../core/tools/dispatcher'
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import { ToolCallResponseStatus } from '../../types/tool-call.types'
 
@@ -178,12 +178,7 @@ const requestParams = (call: unknown[]): RequestUrlParam =>
   typeof call[0] === 'string' ? { url: call[0] } : (call[0] as RequestUrlParam)
 
 const readFs = (args: Record<string, unknown>) =>
-  callLocalFileTool({
-    app,
-    settings: MINERU_SETTINGS,
-    toolName: 'fs_read',
-    args,
-  })
+  executeBuiltinTool('fs_read', args, { app, settings: MINERU_SETTINGS })
 
 const parseSuccessResults = (result: {
   status: ToolCallResponseStatus
@@ -246,7 +241,7 @@ describe('fs_read MinerU 端到端（mock requestUrl 模拟 gradio 会话）', (
     // 原始相对引用被改写为 vault 缓存绝对路径。
     expect(results[0]?.content as string).not.toContain('![](images/1.png)')
     expect(results[0]?.content as string).toContain(
-      '![](Projects/mineru-cache/',
+      '![](YOLO/Projects/mineru-cache/',
     )
     expect(mockedExtractPdfText).not.toHaveBeenCalled()
 
