@@ -571,6 +571,35 @@ describe('WebChatRuntimeAdapter.prepareRun', () => {
     })
   })
 
+  it('enables the context compaction capability for web auto-compaction', async () => {
+    const { agentService, runCalls } = makeAgentService()
+    const adapter = makeAdapter({
+      agentService,
+      settings: makeSettings({
+        chatOptions: {
+          includeCurrentFileContent: false,
+          autoContextCompactionEnabled: true,
+        },
+      }),
+    })
+
+    const prepared = await adapter.prepareRun(
+      {
+        conversationId: 'conv-1',
+        messages: [makeMessage('user-1', 'user', 'hi')],
+      },
+      makeActiveAgent(),
+    )
+    await prepared.execute({
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    })
+
+    expect(
+      runCalls[0].input.builtinCapabilityPreferences?.context_compaction,
+    ).toEqual({ enabled: true, approvalMode: 'full_access' })
+  })
+
   it('reads blocked terminal prefixes from the terminal capability settings', async () => {
     const { agentService, runCalls } = makeAgentService()
     const adapter = makeAdapter({

@@ -9,7 +9,6 @@ import type {
   WorkspaceAgentPolicy,
   YoloSettings,
 } from '../../settings/schema/setting.types'
-import type { AssistantToolPreference } from '../../types/assistant.types'
 import type { WorkspaceAccessPolicy } from '../../types/assistant.types'
 import type {
   ChatConversationCompaction,
@@ -115,26 +114,18 @@ export type ContextBreakdownRouteInput = CompactConversationInput & {
   compaction?: ChatConversationCompactionLike | null
 }
 
-// backup 的 compaction 模块导出 CONTEXT_COMPACT_ACTION（'compact'）；master
-// 只导出工具名，action 常量在本适配层补齐。
-const CONTEXT_COMPACT_ACTION = 'compact'
-
-// Auto-compaction runs through the consolidated `context_manage` tool's
-// `compact` action (the legacy `context_compact` name was removed by the 82→83
-// migration).
+// Auto-compaction is a built-in capability. Keep the tool name in the allowed
+// set because the native loop still dispatches the capability through its
+// concrete tool member, while the preference belongs to the capability map.
 const AUTO_CONTEXT_COMPACT_TOOL_FQN = getToolName(
   getLocalFileToolServerName(),
   CONTEXT_COMPACT_TOOL_NAME,
 )
 
-const AUTO_CONTEXT_COMPACT_TOOL_PREFERENCE: AssistantToolPreference = {
+const AUTO_CONTEXT_COMPACTION_CAPABILITY_PREFERENCE = {
   enabled: true,
   approvalMode: 'full_access',
-  disclosureMode: 'always',
-  actions: {
-    [CONTEXT_COMPACT_ACTION]: { enabled: true, approvalMode: 'full_access' },
-  },
-}
+} as const
 
 const WEB_AGENT_STATE_INTERVAL_MS = 250
 
@@ -164,11 +155,11 @@ const enableAutoContextCompactionTool = (
       includeBuiltinTools: true,
     },
     allowedToolNames,
-    toolPreferences: {
-      ...(runtime.toolPreferences ?? {}),
-      [AUTO_CONTEXT_COMPACT_TOOL_FQN]: {
-        ...(runtime.toolPreferences?.[AUTO_CONTEXT_COMPACT_TOOL_FQN] ?? {}),
-        ...AUTO_CONTEXT_COMPACT_TOOL_PREFERENCE,
+    builtinCapabilityPreferences: {
+      ...(runtime.builtinCapabilityPreferences ?? {}),
+      context_compaction: {
+        ...(runtime.builtinCapabilityPreferences?.context_compaction ?? {}),
+        ...AUTO_CONTEXT_COMPACTION_CAPABILITY_PREFERENCE,
       },
     },
   }
@@ -593,9 +584,8 @@ export class WebChatRuntimeAdapter {
       toolServerPreferences: chatModeRuntime.toolServerPreferences,
       toolCapabilityMode: chatModeRuntime.toolCapabilityMode,
       bypassToolApproval: chatModeRuntime.bypassToolApproval,
-      blockedCommandPrefixes:
-        settings.mcp.builtinCapabilityOptions.terminal?.blockedPrefixes ??
-        [...DEFAULT_BLOCKED_PREFIXES],
+      blockedCommandPrefixes: settings.mcp.builtinCapabilityOptions.terminal
+        ?.blockedPrefixes ?? [...DEFAULT_BLOCKED_PREFIXES],
       workspaceAccessPolicy: fileScope.workspaceAccessPolicy,
       allowedSkillPaths: resolved.allowedSkillPaths,
       requestParams,
