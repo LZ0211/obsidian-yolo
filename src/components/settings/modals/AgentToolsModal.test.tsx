@@ -33,7 +33,7 @@ jest.mock('../../../contexts/language-context', () => ({
 jest.mock('../../../contexts/settings-context', () => ({
   SettingsProvider: ({ children }: { children: ReactNode }) => children,
   useSettings: () => ({
-    settings: { mcp: { builtinToolOptions: {} } },
+    settings: { mcp: { builtinCapabilityOptions: {} } },
     setSettings: jest.fn(),
   }),
 }))
@@ -103,7 +103,7 @@ describe('AgentToolsModal layout', () => {
 
   it('keeps the switch column beside the description column', () => {
     const plugin = {
-      settings: { mcp: { builtinToolOptions: {} } },
+      settings: { mcp: { builtinCapabilityOptions: {} } },
       t: (key: string, fallback?: string) => fallback ?? key,
       setSettings: jest.fn(),
       addSettingsChangeListener: jest.fn(),
@@ -130,7 +130,7 @@ describe('AgentToolsModal layout', () => {
 
   it('does not list internal memory mutation tools', () => {
     const plugin = {
-      settings: { mcp: { builtinToolOptions: {} } },
+      settings: { mcp: { builtinCapabilityOptions: {} } },
       t: (key: string, fallback?: string) => fallback ?? key,
       setSettings: jest.fn(),
       addSettingsChangeListener: jest.fn(),

@@ -95,6 +95,7 @@ import {
 } from '../agent/bash/dangerousOperationGate'
 import { FakeAdapter } from '../agent/project/projectTestUtils'
 import { ProjectStore } from '../agent/project/store'
+import { ProjectTool } from '../agent/project/tool'
 import {
   type DelegatedAssistantProfile,
   resolveDelegatedAssistantProfile,
@@ -160,6 +161,13 @@ const callLocalFileTool = ({
     // production). Defaulted here so the suites below keep asserting against
     // the module mock at the top of this file, and still overridable per call.
     runSubagent: runSubagent as unknown as ToolContext['runSubagent'],
+    getProjectTool: () =>
+      new ProjectTool(
+        new ProjectStore({
+          getSettings: () => context.settings as YoloSettings,
+          adapter: context.app.vault.adapter,
+        }),
+      ),
     ...context,
   })
 
@@ -212,9 +220,7 @@ describe('workspacePolicyToUpstreamScope', () => {
         readExtraIncludes: [],
         readExcludes: [],
         writeExcludes: [],
-        protectedPaths: [
-          { kind: 'exact', path: 'YOLO/sessions.sqlite' },
-        ],
+        protectedPaths: [{ kind: 'exact', path: 'YOLO/sessions.sqlite' }],
       }),
     ).toEqual({
       enabled: true,
@@ -2284,9 +2290,7 @@ describe('local fs tool action helpers', () => {
           readExtraIncludes: [],
           readExcludes: [],
           writeExcludes: [],
-          protectedPaths: [
-            { kind: 'exact', path: 'YOLO/sessions.sqlite' },
-          ],
+          protectedPaths: [{ kind: 'exact', path: 'YOLO/sessions.sqlite' }],
         },
       })
       expect(result.status).toBe(ToolCallResponseStatus.Error)
@@ -4004,9 +4008,9 @@ describe('project_ops', () => {
       expect(JSON.parse(result.text)).toMatchObject({ ok: true })
     }
     expect(await adapter.exists('YOLO/Projects/proj-x/project.md')).toBe(true)
-    expect(
-      await adapter.exists('YOLO/Projects/proj-x/tasks/T-001.md'),
-    ).toBe(true)
+    expect(await adapter.exists('YOLO/Projects/proj-x/tasks/T-001.md')).toBe(
+      true,
+    )
   })
 
   it('reports a stale update precondition as a conflict', async () => {
@@ -4113,7 +4117,7 @@ describe('project_ops', () => {
     // silently falling through to `review` (the pre-fix behavior).
     expect(result.status).toBe(ToolCallResponseStatus.Error)
     if (result.status === ToolCallResponseStatus.Error) {
-      expect(result.error).toMatch(/unknown action bogus/)
+      expect(result.error).toMatch(/unsupported project_ops action: bogus/i)
     }
     expect(await adapter.exists('Projects/proj-x')).toBe(false)
   })
@@ -4129,7 +4133,7 @@ describe('project_ops', () => {
 
     expect(result.status).toBe(ToolCallResponseStatus.Error)
     if (result.status === ToolCallResponseStatus.Error) {
-      expect(result.error).toMatch(/requires a string action/)
+      expect(result.error).toMatch(/action is required/i)
     }
   })
 })

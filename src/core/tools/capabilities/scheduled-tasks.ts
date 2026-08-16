@@ -12,7 +12,7 @@ export const scheduledTasksCapability = defineCapability({
     fallback:
       'Grouped scheduled task operations: create, update, delete, list, get, and run tasks now.',
   },
-  category: 'external',
+  category: 'scheduling',
   defaultEnabled: true,
   approval: {
     defaultMode: 'full_access',

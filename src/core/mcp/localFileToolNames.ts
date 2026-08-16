@@ -62,6 +62,9 @@ const NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES = new Set<string>([
   'memory_delete',
 ])
 
+export const isUserFacingLocalToolShortName = (name: string): boolean =>
+  !NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES.has(name)
+
 /**
  * Subset of {@link LOCAL_FILE_TOOL_SHORT_NAMES} that the user actually
  * configures via the Agent settings panel. See
@@ -71,9 +74,7 @@ const NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES = new Set<string>([
  * preference surface.
  */
 export const USER_FACING_LOCAL_TOOL_SHORT_NAMES: readonly string[] =
-  LOCAL_FILE_TOOL_SHORT_NAMES.filter(
-    (name) => !NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES.has(name),
-  )
+  LOCAL_FILE_TOOL_SHORT_NAMES.filter(isUserFacingLocalToolShortName)
 
 export const LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION = {
   fs_write: 'write',

@@ -18,7 +18,7 @@ const t = (_key: string, fallback?: string) => fallback ?? ''
  * is the single failure mode this guards against.
  */
 describe('buildBuiltinCapabilityRows', () => {
-  it('returns one row per capability, in CAPABILITIES registration order', () => {
+  it('returns one row per user-facing capability, in registration order', () => {
     const rows = buildBuiltinCapabilityRows({ toolOptions: {}, t })
 
     expect(rows.map((row) => row.id)).toEqual([
@@ -29,11 +29,12 @@ describe('buildBuiltinCapabilityRows', () => {
       'context_compaction',
       'user_questions',
       'todo_list',
-      'memory',
       'web_access',
       'js_sandbox',
       'terminal',
       'subagent_delegation',
+      'scheduled_tasks',
+      'projects',
     ])
 
     expect(rows.map((row) => row.label)).toEqual([
@@ -44,23 +45,26 @@ describe('buildBuiltinCapabilityRows', () => {
       'Compact Context',
       'Ask User',
       'Task List',
-      'Memory Toolset',
       'Web Search Toolset',
       'Analysis Sandbox',
       'Terminal Commands',
       'Delegate Subagent',
+      'Scheduled Tasks Toolset',
+      'Project Management Toolset',
     ])
   })
 })
 
 describe('groupCapabilityRowsByCategory', () => {
-  it('buckets rows into the pre-D7 vault / context / external order and content', () => {
+  it('buckets rows into capability category order and content', () => {
     const rows = buildBuiltinCapabilityRows({ toolOptions: {}, t })
     const groups = groupCapabilityRowsByCategory(rows, t)
 
     expect(groups.map((group) => group.category)).toEqual([
       'vault',
       'context',
+      'scheduling',
+      'projects',
       'external',
     ])
 
@@ -80,21 +84,25 @@ describe('groupCapabilityRowsByCategory', () => {
 
     const context = groups.find((group) => group.category === 'context')
     // context_prune_tool_results -> context_compact -> ask_user_question ->
-    // todo_write -> memory_ops.
+    // todo_write. Internal memory mutation is not an Agent capability.
     expect(context?.rows.map((row) => row.id)).toEqual([
       'context_pruning',
       'context_compaction',
       'user_questions',
       'todo_list',
-      'memory',
     ])
     expect(context?.rows.map((row) => row.label)).toEqual([
       'Prune Tool Results',
       'Compact Context',
       'Ask User',
       'Task List',
-      'Memory Toolset',
     ])
+
+    const scheduling = groups.find((group) => group.category === 'scheduling')
+    expect(scheduling?.rows.map((row) => row.id)).toEqual(['scheduled_tasks'])
+
+    const projects = groups.find((group) => group.category === 'projects')
+    expect(projects?.rows.map((row) => row.id)).toEqual(['projects'])
 
     const external = groups.find((group) => group.category === 'external')
     // web_ops -> js_eval -> terminal_command -> delegate_subagent (former
@@ -120,6 +128,8 @@ describe('groupCapabilityRowsByCategory', () => {
     expect(groups.map((group) => group.title)).toEqual([
       'Vault',
       'Context & Memory',
+      'Scheduled Tasks',
+      'Projects',
       'External',
     ])
   })

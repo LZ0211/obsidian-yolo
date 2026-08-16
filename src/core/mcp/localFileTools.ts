@@ -43,6 +43,7 @@ export const LOCAL_FILE_TOOL_SHORT_NAMES = [
   TERMINAL_COMMAND_TOOL_NAME,
   'delegate_subagent',
   'scheduled_task_ops',
+  'project_ops',
   'load_tool_schemas',
   'todo_write',
   'ask_user_question',
@@ -122,6 +123,7 @@ const LOCAL_FILE_TOOL_CATALOG_ORDER: readonly BuiltinToolName[] = [
   TERMINAL_COMMAND_TOOL_NAME,
   'delegate_subagent',
   'scheduled_task_ops',
+  'project_ops',
   'ask_user_question',
   'todo_write',
 ]

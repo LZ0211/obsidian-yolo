@@ -6,6 +6,7 @@ import {
   type BuiltinCapabilityId,
   listCapabilities,
 } from '../../../core/tools/registry'
+import { isUserFacingLocalToolShortName } from '../../../core/mcp/localFileToolNames'
 import type { BuiltinToolCategory } from '../../../core/tools/types'
 import type { YoloSettings } from '../../../settings/schema/setting.types'
 
@@ -58,27 +59,33 @@ export function buildBuiltinCapabilityRows({
   toolOptions: YoloSettings['mcp']['builtinCapabilityOptions']
   t: TranslateFn
 }): readonly CapabilityRow[] {
-  return listCapabilities().map((capability) => {
-    const enabled = !(toolOptions[capability.id]?.disabled ?? false)
-    return {
-      // `listCapabilities()` returns the widened `readonly
-      // BuiltinCapabilityDefinition[]` view (registry.ts's own doc comment
-      // on why: a heterogeneous tuple can't be `.map`/`.flatMap`ed without
-      // widening first). Every element is still literally one of
-      // `CAPABILITIES`'s entries, so its `id` is safely one of
-      // `BuiltinCapabilityId`'s members — this cast recovers that, it does
-      // not assert anything not already true at runtime.
-      id: capability.id as BuiltinCapabilityId,
-      label: t(capability.label.key, capability.label.fallback),
-      description: capability.description
-        ? t(capability.description.key, capability.description.fallback)
-        : '',
-      enabled,
-      hasSettings: capability.hasSettings,
-      category: capability.category,
-      memberToolNames: capability.tools.map((tool) => tool.name),
-    }
-  })
+  return listCapabilities()
+    .filter((capability) =>
+      capability.tools.some((tool) =>
+        isUserFacingLocalToolShortName(tool.name),
+      ),
+    )
+    .map((capability) => {
+      const enabled = !(toolOptions[capability.id]?.disabled ?? false)
+      return {
+        // `listCapabilities()` returns the widened `readonly
+        // BuiltinCapabilityDefinition[]` view (registry.ts's own doc comment
+        // on why: a heterogeneous tuple can't be `.map`/`.flatMap`ed without
+        // widening first). Every element is still literally one of
+        // `CAPABILITIES`'s entries, so its `id` is safely one of
+        // `BuiltinCapabilityId`'s members — this cast recovers that, it does
+        // not assert anything not already true at runtime.
+        id: capability.id as BuiltinCapabilityId,
+        label: t(capability.label.key, capability.label.fallback),
+        description: capability.description
+          ? t(capability.description.key, capability.description.fallback)
+          : '',
+        enabled,
+        hasSettings: capability.hasSettings,
+        category: capability.category,
+        memberToolNames: capability.tools.map((tool) => tool.name),
+      }
+    })
 }
 
 export type CapabilityCategoryGroup = {

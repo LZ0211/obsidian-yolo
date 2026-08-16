@@ -11,6 +11,8 @@ import type { BuiltinToolCategory } from './types'
 export const BUILTIN_TOOL_CATEGORY_ORDER: readonly BuiltinToolCategory[] = [
   'vault',
   'context',
+  'scheduling',
+  'projects',
   'external',
 ]
 
@@ -25,6 +27,14 @@ export const BUILTIN_TOOL_CATEGORY_I18N: Record<
   context: {
     key: 'settings.agent.toolsGroupBuiltinContext',
     fallback: 'Context & Memory',
+  },
+  scheduling: {
+    key: 'settings.agent.toolsGroupBuiltinScheduling',
+    fallback: 'Scheduled Tasks',
+  },
+  projects: {
+    key: 'settings.agent.toolsGroupBuiltinProjects',
+    fallback: 'Projects',
   },
   external: {
     key: 'settings.agent.toolsGroupBuiltinExternal',

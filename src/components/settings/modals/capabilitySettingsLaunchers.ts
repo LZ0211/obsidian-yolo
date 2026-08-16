@@ -166,4 +166,5 @@ export const CAPABILITY_SETTINGS_LAUNCHERS = {
   terminal: openTerminalSettings,
   vault_shell: null,
   scheduled_tasks: null,
+  projects: null,
 } satisfies Record<BuiltinCapabilityId, SettingsLauncher | null>

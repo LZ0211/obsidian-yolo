@@ -22,6 +22,8 @@ import {
   ToolCallResponseStatus,
 } from '../../types/tool-call.types'
 import type { PromptSourceWatcher } from '../agent/promptSourceWatcher'
+import { ProjectStore } from '../agent/project/store'
+import { ProjectTool } from '../agent/project/tool'
 import type { SubagentParentContext } from '../agent/subagent/parent-context'
 import type { RAGEngine } from '../rag/ragEngine'
 import { executeBuiltinTool } from '../tools/dispatcher'
@@ -1211,6 +1213,13 @@ export class McpManager {
             openApplyReview: this.openApplyReview,
             getRagEngine: this.getRagEngine,
             getScheduledTasksService: this.getScheduledTasksService,
+            getProjectTool: () =>
+              new ProjectTool(
+                new ProjectStore({
+                  getSettings: () => this.settings,
+                  adapter: this.app.vault.adapter,
+                }),
+              ),
             conversationId,
             conversationMessages,
             roundId,

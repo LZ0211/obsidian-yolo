@@ -62,6 +62,7 @@ export const TOOL_RENDERERS = {
   terminal_command: terminalCommandRenderer,
   bash: { kind: 'generic', summary: getBashChatSummary },
   scheduled_task_ops: genericRenderer,
+  project_ops: genericRenderer,
 } satisfies Record<BuiltinToolName, ToolRenderer>
 
 /**

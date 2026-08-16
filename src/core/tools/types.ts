@@ -20,6 +20,8 @@ import type {
   ToolFsReadOperationSummary,
 } from '../../types/tool-call.types'
 import type { PromptSourceWatcher } from '../agent/promptSourceWatcher'
+import type { ProjectTool } from '../agent/project/tool'
+import type { ProjectTaskBinding } from '../agent/project/types'
 import type { SubagentAcceptedResult } from '../agent/subagent/types'
 import type { BaseLLMProvider } from '../llm/base'
 import type { RAGEngine } from '../rag/ragEngine'
@@ -95,7 +97,12 @@ export type LocalToolCallResult =
  */
 export type OpaqueSubagentParentContext = unknown
 
-export type BuiltinToolCategory = 'vault' | 'context' | 'external'
+export type BuiltinToolCategory =
+  | 'vault'
+  | 'context'
+  | 'scheduling'
+  | 'projects'
+  | 'external'
 
 /**
  * Context available when building a tool's MCP protocol projection (i.e.
@@ -151,6 +158,7 @@ export type ToolContext = {
   openApplyReview?: (state: ApplyViewState) => Promise<boolean>
   getRagEngine?: () => Promise<RAGEngine>
   getScheduledTasksService?: () => ScheduledTaskServiceLike | null
+  getProjectTool?: () => ProjectTool
   conversationId?: string
   conversationMessages?: ChatMessage[]
   roundId?: string
@@ -192,6 +200,11 @@ export type ToolContext = {
       model: ChatModel
       apiType?: LLMProviderApiType | null
     }
+    delegatedProfile?: unknown
+    projectTask?: ProjectTaskBinding
+    sessionId?: string
+    runSequence?: number
+    runKey?: string
     signal?: AbortSignal
   }) => Promise<SubagentAcceptedResult>
   promptSourceWatcher?: PromptSourceWatcher
