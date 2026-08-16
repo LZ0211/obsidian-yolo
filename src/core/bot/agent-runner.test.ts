@@ -200,6 +200,11 @@ function makeFakeAgentService(
       getRevision: jest.fn(() => 1),
       setWatchedPaths: jest.fn(),
     })),
+    // Render-stream hooks added with the upstream 0ba94dbf8 merge
+    // (assistantRenderStreamStore); the agent-api turn path subscribes to
+    // them, so the mock must provide both methods.
+    subscribeAssistantRenderStream: jest.fn(() => () => {}),
+    getAssistantRenderStream: jest.fn(() => undefined),
   } as unknown as AgentService
 
   return { agentService, runCalls }
