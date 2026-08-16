@@ -1,5 +1,6 @@
 import type { ChatModel } from '../../types/chat-model.types'
 import type { YoloSettingsLike } from '../../types/yoloSettingsLike'
+import { getLocalMcpServerUrl } from '../mcp/localMcpServerConfig'
 import type { CliRuntimeId } from './types'
 
 export type CliLlmInjectionSettings = {
@@ -18,6 +19,16 @@ export type LlmInjectionProvider = {
 export type LlmInjection = {
   provider: LlmInjectionProvider
   model: ChatModel
+}
+
+export type CliSessionMcpInjection = {
+  url: string
+  token: string
+}
+
+export type CliSessionInjection = {
+  llmEnv: Record<string, string> | null
+  mcp: CliSessionMcpInjection | null
 }
 
 /**
@@ -76,6 +87,36 @@ export function resolveRuntimeLlmEnv(
     getSettings: () => settings,
   })
   return resolved ? buildLlmEnvForRuntime(runtimeId, resolved) : null
+}
+
+/** Resolves all temporary CLI configuration from one settings read. */
+export function resolveCliSessionInjection(
+  getSettings: () => YoloSettingsLike | null,
+  runtimeId: CliRuntimeId,
+): CliSessionInjection {
+  const settings = getSettings()
+  if (!settings) return { llmEnv: null, mcp: null }
+
+  const cliSettings = settings as YoloSettingsLike & {
+    cliLlmInjection?: CliLlmInjectionSettings
+    cliMcpSharing?: { enabled?: boolean }
+    mcp?: { localServer?: { port?: number; token?: string } }
+  }
+  const llm = resolveLlmInjection({
+    injection: cliSettings.cliLlmInjection,
+    getSettings: () => settings,
+  })
+  const localServer = cliSettings.mcp?.localServer
+  const token = localServer?.token?.trim()
+  const port = localServer?.port
+
+  return {
+    llmEnv: llm ? buildLlmEnvForRuntime(runtimeId, llm) : null,
+    mcp:
+      cliSettings.cliMcpSharing?.enabled === true && token && port
+        ? { url: getLocalMcpServerUrl(port), token }
+        : null,
+  }
 }
 
 /**

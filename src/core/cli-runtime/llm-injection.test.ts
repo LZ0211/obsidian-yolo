@@ -3,6 +3,7 @@ import type { ChatModel } from '../../types/chat-model.types'
 import {
   buildLlmEnvForRuntime,
   DEFAULT_CLAUDE_MODEL,
+  resolveCliSessionInjection,
   resolveLlmInjection,
 } from './llm-injection'
 
@@ -112,5 +113,49 @@ describe('buildLlmEnvForRuntime', () => {
     expect(buildLlmEnvForRuntime('claude-code', emptyModel).ANTHROPIC_MODEL).toBe(
       DEFAULT_CLAUDE_MODEL,
     )
+  })
+})
+
+describe('resolveCliSessionInjection', () => {
+  it('resolves the enabled provider and local MCP server from one settings snapshot', () => {
+    const settings = {
+      ...makeSettings(),
+      cliLlmInjection: {
+        enabled: true,
+        providerId: 'provider-1',
+        modelId: 'model-1',
+      },
+      cliMcpSharing: { enabled: true },
+      mcp: { localServer: { port: 3210, token: 'local-token' } },
+    }
+
+    expect(resolveCliSessionInjection(() => settings as never, 'claude-code')).toEqual({
+      llmEnv: buildLlmEnvForRuntime(
+        'claude-code',
+        resolveLlmInjection({
+          injection: settings.cliLlmInjection,
+          getSettings: () => settings as never,
+        })!,
+      ),
+      mcp: { url: 'http://127.0.0.1:3210/mcp', token: 'local-token' },
+    })
+  })
+
+  it('omits invalid or disabled session overlays', () => {
+    const settings = {
+      ...makeSettings(),
+      cliLlmInjection: {
+        enabled: true,
+        providerId: 'missing',
+        modelId: 'model-1',
+      },
+      cliMcpSharing: { enabled: false },
+      mcp: { localServer: { port: 3210, token: 'local-token' } },
+    }
+
+    expect(resolveCliSessionInjection(() => settings as never, 'codex')).toEqual({
+      llmEnv: null,
+      mcp: null,
+    })
   })
 })
