@@ -3,13 +3,19 @@ import {
   BookOpen,
   Check,
   ChevronDown,
+  Copy,
+  Edit,
+  Eye,
+  EyeOff,
   FolderOpen,
+  Key,
   Maximize2,
+  Trash2,
   User,
   Wrench,
   X,
 } from 'lucide-react'
-import { App, TFile } from 'obsidian'
+import { App, Notice, TFile } from 'obsidian'
 import {
   useCallback,
   useEffect,
@@ -69,6 +75,7 @@ import {
 } from '../../../core/tools/registry'
 import { useLiteSkillEntries } from '../../../hooks/useLiteSkillEntries'
 import {
+  type AgentShareTokenScope,
   type WorkspaceAgent,
   YoloSettings,
 } from '../../../settings/schema/setting.types'
@@ -94,6 +101,7 @@ import { ObsidianTextArea } from '../../common/ObsidianTextArea'
 import { ObsidianTextInput } from '../../common/ObsidianTextInput'
 import { ObsidianToggle } from '../../common/ObsidianToggle'
 import { SimpleSelect } from '../../common/SimpleSelect'
+import { ConfirmModal } from '../../modals/ConfirmModal'
 import { openIconPicker } from '../assistants/AssistantIconPicker'
 
 import {
@@ -122,7 +130,7 @@ type WorkspaceAgentDraft = {
   agentModeAllowed: boolean
 }
 
-type AgentEditorTab = 'profile' | 'tools' | 'skills' | 'workspace'
+type AgentEditorTab = 'profile' | 'tools' | 'skills' | 'workspace' | 'tokens'
 
 type AgentToolView = {
   fullName: string
@@ -156,9 +164,73 @@ const AGENT_EDITOR_TAB_ICONS = {
   tools: Wrench,
   skills: BookOpen,
   workspace: FolderOpen,
+  tokens: Key,
 } as const
 
 const DEFAULT_PERSONA: AgentPersona = 'balanced'
+
+function formatDateInput(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return next
+}
+
+function parseDateInputToEndOfDayMs(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) return null
+  return new Date(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    23,
+    59,
+    59,
+    999,
+  ).getTime()
+}
+
+function maskShareTokenPlaintext(plaintext: string): string {
+  const separatorIndex = plaintext.lastIndexOf('_')
+  if (separatorIndex < 0 || separatorIndex >= plaintext.length - 4) {
+    return plaintext
+  }
+  return `${plaintext.slice(0, separatorIndex + 5)}**********${plaintext.slice(-4)}`
+}
+
+type TokenDisplayStatus = 'valid' | 'expired' | 'disabled' | 'root_mismatch'
+
+type TokenFormState =
+  | null
+  | { mode: 'create' }
+  | { mode: 'edit'; tokenId: string }
+
+function deriveTokenDisplayStatus(
+  token: {
+    expiresAt?: number
+    disabled?: boolean
+    scope: AgentShareTokenScope
+  },
+  now: number,
+  currentRootHash: string | null,
+): TokenDisplayStatus {
+  if (token.disabled === true) return 'disabled'
+  if (token.expiresAt != null && token.expiresAt <= now) return 'expired'
+  if (
+    token.scope.kind === 'workspaceRoot' &&
+    currentRootHash != null &&
+    token.scope.rootHash !== currentRootHash
+  ) {
+    return 'root_mismatch'
+  }
+  return 'valid'
+}
 
 const skillDefaultContextTokenCache = new Map<string, number>()
 // Caches the in-flight or resolved promise so concurrent calls dedupe to a
@@ -559,6 +631,173 @@ export function AgentsSectionContent({
     setSystemPromptOverlayTarget(target)
   }, [isSystemPromptExpanded])
   const [availableTools, setAvailableTools] = useState<McpTool[]>([])
+  const [generatingToken, setGeneratingToken] = useState(false)
+  const [tokenFormState, setTokenFormState] = useState<TokenFormState>(null)
+  const [tokenFormLabel, setTokenFormLabel] = useState('')
+  const [tokenFormScopeKind, setTokenFormScopeKind] = useState<
+    'agent' | 'workspaceRoot'
+  >('agent')
+  const [tokenFormExpiresAt, setTokenFormExpiresAt] = useState('')
+  const [revealedTokenIds, setRevealedTokenIds] = useState<Set<string>>(
+    () => new Set(),
+  )
+
+  const workspaceAgentShareTokens = useMemo(() => {
+    if (!workspaceAgentDraft) return []
+    const agent = settings.workspaceAgents.find(
+      (candidate) => candidate.id === workspaceAgentDraft.agent.id,
+    )
+    return (agent?.shareTokens ?? []).filter((token) => !token.revokedAt)
+  }, [settings.workspaceAgents, workspaceAgentDraft])
+
+  const currentAgentRootHash = useMemo(() => {
+    if (!workspaceAgentDraft) return null
+    return plugin.getWorkspaceAgentRootHash(workspaceAgentDraft.agent.id)
+  }, [plugin, settings.workspaceAgents, workspaceAgentDraft])
+
+  const closeTokenForm = () => {
+    setTokenFormState(null)
+    setTokenFormLabel('')
+    setTokenFormExpiresAt('')
+  }
+
+  const openCreateTokenForm = () => {
+    setTokenFormLabel('')
+    setTokenFormScopeKind('agent')
+    setTokenFormExpiresAt(formatDateInput(addDays(new Date(), 30)))
+    setTokenFormState({ mode: 'create' })
+  }
+
+  const openEditTokenForm = (token: {
+    id: string
+    label?: string
+    expiresAt?: number
+    scopeKind?: 'agent' | 'workspaceRoot'
+  }) => {
+    setTokenFormLabel(token.label ?? '')
+    setTokenFormScopeKind(token.scopeKind ?? 'agent')
+    setTokenFormExpiresAt(
+      token.expiresAt == null ? '' : formatDateInput(new Date(token.expiresAt)),
+    )
+    setTokenFormState({ mode: 'edit', tokenId: token.id })
+  }
+
+  const handleGenerateToken = async () => {
+    if (!workspaceAgentDraft || tokenFormState?.mode !== 'create') return
+    setGeneratingToken(true)
+    try {
+      const expiresAt = parseDateInputToEndOfDayMs(tokenFormExpiresAt)
+      await plugin.createWorkspaceAgentShareToken(
+        workspaceAgentDraft.agent.id,
+        {
+          label: tokenFormLabel.trim() || undefined,
+          scopeKind: tokenFormScopeKind,
+          ...(expiresAt == null ? {} : { expiresAt }),
+        },
+      )
+      closeTokenForm()
+    } catch (error) {
+      new Notice(
+        error instanceof Error
+          ? error.message
+          : t('settings.agent.editorTokenError', 'Failed to generate token.'),
+      )
+    } finally {
+      setGeneratingToken(false)
+    }
+  }
+
+  const handleSaveEditedToken = async () => {
+    if (!workspaceAgentDraft || tokenFormState?.mode !== 'edit') return
+    try {
+      await plugin.updateWorkspaceAgentShareToken(
+        workspaceAgentDraft.agent.id,
+        tokenFormState.tokenId,
+        {
+          expiresAt: parseDateInputToEndOfDayMs(tokenFormExpiresAt) ?? null,
+          label: tokenFormLabel.trim(),
+          scopeKind: tokenFormScopeKind,
+        },
+      )
+      closeTokenForm()
+    } catch (error) {
+      new Notice(
+        error instanceof Error
+          ? error.message
+          : t('settings.agent.editorTokenError', 'Failed to update token.'),
+      )
+    }
+  }
+
+  const handleToggleTokenDisabled = async (
+    tokenId: string,
+    disabled: boolean,
+  ) => {
+    if (!workspaceAgentDraft) return
+    try {
+      await plugin.updateWorkspaceAgentShareToken(
+        workspaceAgentDraft.agent.id,
+        tokenId,
+        { disabled },
+      )
+    } catch (error) {
+      new Notice(
+        error instanceof Error
+          ? error.message
+          : t('settings.agent.editorTokenError', 'Failed to update token.'),
+      )
+    }
+  }
+
+  const handleDeleteToken = (tokenId: string) => {
+    if (!workspaceAgentDraft) return
+    const agentId = workspaceAgentDraft.agent.id
+    new ConfirmModal(plugin.app, {
+      title: t('settings.agent.editorTokenDeleteTitle', 'Delete share token'),
+      message: t(
+        'settings.agent.editorTokenDeleteConfirm',
+        'Delete this share token? Existing sessions using it will be ended.',
+      ),
+      ctaText: t('common.delete', 'Delete'),
+      onConfirm: () => {
+        void plugin
+          .revokeWorkspaceAgentShareToken(agentId, tokenId)
+          .catch((error: unknown) => {
+            new Notice(
+              error instanceof Error
+                ? error.message
+                : t(
+                    'settings.agent.editorTokenError',
+                    'Failed to delete token.',
+                  ),
+            )
+          })
+      },
+    }).open()
+  }
+
+  const toggleTokenReveal = (tokenId: string) => {
+    setRevealedTokenIds((previous) => {
+      const next = new Set(previous)
+      if (next.has(tokenId)) next.delete(tokenId)
+      else next.add(tokenId)
+      return next
+    })
+  }
+
+  const handleCopyToken = async (plaintext: string) => {
+    try {
+      await navigator.clipboard.writeText(plaintext)
+      new Notice(
+        t('settings.agent.editorTokenCopied', 'Token copied to clipboard.'),
+      )
+    } catch {
+      new Notice(
+        t('settings.agent.editorTokenCopyFailed', 'Failed to copy token.'),
+      )
+    }
+  }
+
   const templateCeiling = workspaceAgentDraft?.template
   const editorAvailableTools = useMemo(
     () =>
@@ -567,7 +806,10 @@ export function AgentsSectionContent({
       ),
     [availableTools, templateCeiling],
   )
-  const activeTabIndex = AGENT_EDITOR_TABS.findIndex((tab) => tab === activeTab)
+  const editorTabs = workspaceAgentDraft
+    ? [...AGENT_EDITOR_TABS, 'tokens' as const]
+    : AGENT_EDITOR_TABS
+  const activeTabIndex = editorTabs.findIndex((tab) => tab === activeTab)
   const activeTabIndexRef = useRef(activeTabIndex)
   const tabsNavRef = useRef<HTMLDivElement | null>(null)
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
@@ -1467,7 +1709,7 @@ export function AgentsSectionContent({
               ref={tabsNavRef}
               style={
                 {
-                  '--yolo-agent-tab-count': AGENT_EDITOR_TABS.length,
+                  '--yolo-agent-tab-count': editorTabs.length,
                   '--yolo-agent-tab-index': activeTabIndex,
                 } as React.CSSProperties
               }
@@ -1476,7 +1718,7 @@ export function AgentsSectionContent({
                 className="yolo-agent-editor-tabs-glider"
                 aria-hidden="true"
               />
-              {AGENT_EDITOR_TABS.map((tab, index) => {
+              {editorTabs.map((tab, index) => {
                 const TabIcon = AGENT_EDITOR_TAB_ICONS[tab]
                 return (
                   <button
@@ -1509,6 +1751,7 @@ export function AgentsSectionContent({
                             'settings.agent.editorTabWorkspace',
                             'Workspace',
                           ),
+                          tokens: t('settings.agent.editorTabTokens', 'Tokens'),
                         }[tab]
                       }
                     </span>
@@ -2344,6 +2587,238 @@ export function AgentsSectionContent({
             </div>
           )}
 
+          {activeTab === 'tokens' && workspaceAgentDraft && (
+            <div className="yolo-agent-editor-body">
+              <ObsidianSetting
+                name={t('settings.agent.editorTokenTitle', 'Share Tokens')}
+                desc={t(
+                  'settings.agent.editorTokenDesc',
+                  'Generate a token for web access. Set an expiry to limit how long it works.',
+                )}
+              >
+                <ObsidianButton
+                  text={t('settings.agent.editorTokenCreate', 'Create Token')}
+                  cta
+                  onClick={openCreateTokenForm}
+                />
+              </ObsidianSetting>
+
+              {workspaceAgentShareTokens.length === 0 ? (
+                <div className="setting-item-description yolo-agent-token-empty">
+                  {t(
+                    'settings.agent.editorTokenEmpty',
+                    'No tokens yet. Click "Create Token" to issue one.',
+                  )}
+                </div>
+              ) : (
+                <div className="yolo-mcp-servers-container">
+                  <div className="yolo-agent-tokens-header">
+                    <div>{t('settings.agent.editorTokenLabel', 'Label')}</div>
+                    <div>{t('settings.agent.editorTokenStatus', 'Status')}</div>
+                    <div>
+                      {t('settings.agent.editorTokenCreated', 'Created')}
+                    </div>
+                    <div>
+                      {t('settings.agent.editorTokenExpiry', 'Expires')}
+                    </div>
+                    <div>{t('settings.agent.editorTokenSecret', 'Token')}</div>
+                    <div>{t('settings.mcp.enabled', 'Enabled')}</div>
+                    <div>{t('settings.mcp.actions', 'Actions')}</div>
+                  </div>
+                  {workspaceAgentShareTokens.map((token) => {
+                    const status = deriveTokenDisplayStatus(
+                      token,
+                      Date.now(),
+                      currentAgentRootHash,
+                    )
+                    const plaintext = token.plaintext ?? null
+                    const revealed = revealedTokenIds.has(token.id)
+                    const displayText = plaintext
+                      ? revealed
+                        ? plaintext
+                        : maskShareTokenPlaintext(plaintext)
+                      : token.id
+                    const formatDate = (timestamp: number) =>
+                      new Date(timestamp).toLocaleDateString()
+
+                    return (
+                      <div key={token.id} className="yolo-mcp-server">
+                        <div className="yolo-mcp-server-row yolo-agent-token-row">
+                          <div className="yolo-mcp-server-name">
+                            {token.label?.trim() ||
+                              t(
+                                'settings.agent.editorTokenUnnamed',
+                                '(Unnamed)',
+                              )}
+                          </div>
+                          <div className="yolo-mcp-server-status">
+                            <span
+                              className={`yolo-agent-token-status-badge yolo-agent-token-status-${status}`}
+                              title={
+                                status === 'root_mismatch'
+                                  ? t(
+                                      'settings.agent.editorTokenStatusRootMismatchHint',
+                                      'This token was issued for a previous workspace root and no longer authorizes requests.',
+                                    )
+                                  : undefined
+                              }
+                            >
+                              {status === 'valid'
+                                ? t(
+                                    'settings.agent.editorTokenStatusValid',
+                                    'Valid',
+                                  )
+                                : status === 'expired'
+                                  ? t(
+                                      'settings.agent.editorTokenStatusExpired',
+                                      'Expired',
+                                    )
+                                  : status === 'root_mismatch'
+                                    ? t(
+                                        'settings.agent.editorTokenStatusRootMismatch',
+                                        'Workspace changed',
+                                      )
+                                    : t(
+                                        'settings.agent.editorTokenStatusDisabled',
+                                        'Disabled',
+                                      )}
+                            </span>
+                          </div>
+                          <div className="yolo-agent-token-date">
+                            {formatDate(token.createdAt)}
+                          </div>
+                          <div className="yolo-agent-token-date">
+                            {token.expiresAt
+                              ? formatDate(token.expiresAt)
+                              : '-'}
+                          </div>
+                          <div
+                            className="yolo-agent-token-secret"
+                            title={
+                              token.expiresAt
+                                ? `${t('settings.agent.editorTokenExpiry', 'Expires')}: ${new Date(token.expiresAt).toLocaleString()}`
+                                : t(
+                                    'settings.agent.editorTokenNoExpiry',
+                                    'No expiry',
+                                  )
+                            }
+                          >
+                            <code className="yolo-agent-token-secret-text">
+                              {displayText}
+                            </code>
+                            {plaintext && (
+                              <>
+                                <button
+                                  type="button"
+                                  className="clickable-icon"
+                                  aria-label={
+                                    revealed
+                                      ? t(
+                                          'settings.agent.editorTokenHide',
+                                          'Hide token',
+                                        )
+                                      : t(
+                                          'settings.agent.editorTokenShow',
+                                          'Show token',
+                                        )
+                                  }
+                                  onClick={() => toggleTokenReveal(token.id)}
+                                >
+                                  {revealed ? (
+                                    <EyeOff size={16} />
+                                  ) : (
+                                    <Eye size={16} />
+                                  )}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="clickable-icon"
+                                  aria-label={t(
+                                    'settings.agent.editorTokenCopy',
+                                    'Copy',
+                                  )}
+                                  onClick={() =>
+                                    void handleCopyToken(plaintext)
+                                  }
+                                >
+                                  <Copy size={16} />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                          <div className="yolo-mcp-server-toggle">
+                            <ObsidianToggle
+                              value={!token.disabled}
+                              onChange={(enabled) =>
+                                void handleToggleTokenDisabled(
+                                  token.id,
+                                  !enabled,
+                                )
+                              }
+                            />
+                          </div>
+                          <div className="yolo-mcp-server-actions">
+                            <button
+                              type="button"
+                              className="clickable-icon"
+                              aria-label={t(
+                                'settings.agent.editorTokenEdit',
+                                'Edit',
+                              )}
+                              onClick={() =>
+                                openEditTokenForm({
+                                  id: token.id,
+                                  label: token.label,
+                                  expiresAt: token.expiresAt,
+                                  scopeKind: token.scope.kind,
+                                })
+                              }
+                            >
+                              <Edit size={16} />
+                            </button>
+                            <button
+                              type="button"
+                              className="clickable-icon"
+                              aria-label={t(
+                                'settings.agent.editorTokenDelete',
+                                'Delete',
+                              )}
+                              onClick={() => handleDeleteToken(token.id)}
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              {tokenFormState && (
+                <TokenFormDialog
+                  mode={tokenFormState.mode}
+                  label={tokenFormLabel}
+                  scopeKind={tokenFormScopeKind}
+                  expiresAt={tokenFormExpiresAt}
+                  onLabelChange={setTokenFormLabel}
+                  onScopeKindChange={setTokenFormScopeKind}
+                  onExpiresAtChange={setTokenFormExpiresAt}
+                  onCancel={closeTokenForm}
+                  onSubmit={() => {
+                    if (tokenFormState.mode === 'create') {
+                      void handleGenerateToken()
+                    } else {
+                      void handleSaveEditedToken()
+                    }
+                  }}
+                  submitting={generatingToken}
+                  t={t}
+                />
+              )}
+            </div>
+          )}
+
           {isDirectEntry && (
             <div className="yolo-agent-editor-direct-footer">
               <div className="yolo-agent-editor-direct-footer-actions">
@@ -2361,6 +2836,115 @@ export function AgentsSectionContent({
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+function TokenFormDialog(props: {
+  mode: 'create' | 'edit'
+  label: string
+  scopeKind: 'agent' | 'workspaceRoot'
+  expiresAt: string
+  onLabelChange: (value: string) => void
+  onScopeKindChange: (value: 'agent' | 'workspaceRoot') => void
+  onExpiresAtChange: (value: string) => void
+  onCancel: () => void
+  onSubmit: () => void
+  submitting: boolean
+  t: (key: string, fallback: string) => string
+}): React.JSX.Element {
+  const title =
+    props.mode === 'create'
+      ? props.t(
+          'settings.agent.editorTokenDialogCreateTitle',
+          'Create share token',
+        )
+      : props.t('settings.agent.editorTokenDialogEditTitle', 'Edit share token')
+  const submitLabel =
+    props.mode === 'create'
+      ? props.t('settings.agent.editorTokenGenerate', 'Generate')
+      : props.t('common.save', 'Save')
+
+  return (
+    <div
+      className="yolo-agent-token-dialog-overlay"
+      role="dialog"
+      aria-modal="true"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) props.onCancel()
+      }}
+    >
+      <div className="yolo-agent-token-dialog">
+        <div className="yolo-agent-token-dialog-title">{title}</div>
+        <div className="yolo-agent-token-dialog-content">
+          <label className="yolo-settings-card-desc">
+            {props.t('settings.agent.editorTokenLabel', 'Label')}
+            <input
+              type="text"
+              value={props.label}
+              onChange={(event) => props.onLabelChange(event.target.value)}
+              placeholder={props.t(
+                'settings.agent.editorTokenLabelPlaceholder',
+                'e.g. CI/CD, mobile access',
+              )}
+            />
+          </label>
+
+          <label className="yolo-settings-card-desc">
+            {props.t('settings.agent.editorTokenScope', 'Scope')}
+            <select
+              value={props.scopeKind}
+              onChange={(event) =>
+                props.onScopeKindChange(
+                  event.target.value as 'agent' | 'workspaceRoot',
+                )
+              }
+            >
+              <option value="agent">
+                {props.t(
+                  'settings.agent.editorTokenScopeAgent',
+                  'Current agent only',
+                )}
+              </option>
+              <option value="workspaceRoot">
+                {props.t(
+                  'settings.agent.editorTokenScopeRoot',
+                  'All agents in same workspace root',
+                )}
+              </option>
+            </select>
+          </label>
+
+          <label className="yolo-settings-card-desc">
+            {props.t('settings.agent.editorTokenExpiry', 'Expiry date')}
+            <input
+              type="date"
+              value={props.expiresAt}
+              min={formatDateInput(new Date())}
+              onChange={(event) => props.onExpiresAtChange(event.target.value)}
+            />
+            <span className="setting-item-description">
+              {props.t(
+                'settings.agent.editorTokenExpiryDesc',
+                'Leave empty for no expiry. The token is valid through the end of the selected day.',
+              )}
+            </span>
+          </label>
+        </div>
+        <div className="yolo-agent-token-dialog-actions">
+          <button type="button" onClick={props.onCancel}>
+            {props.t('common.cancel', 'Cancel')}
+          </button>
+          <button
+            type="button"
+            className="mod-cta"
+            disabled={props.submitting}
+            onClick={props.onSubmit}
+          >
+            {submitLabel}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
