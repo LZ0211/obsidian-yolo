@@ -543,6 +543,7 @@ describe('migrateFrom80To81', () => {
   const V81_CAPABILITY_IDS = [
     'file_reading',
     'metadata_search',
+    'pdf_conversion',
     'vault_shell',
     'file_editing',
     'context_pruning',

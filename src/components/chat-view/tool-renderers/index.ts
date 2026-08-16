@@ -56,6 +56,7 @@ export const TOOL_RENDERERS = {
   fs_read: { kind: 'generic', summary: getFsReadChatSummary },
   fs_edit: { kind: 'generic', summary: getFileEditingPathChatSummary },
   fs_write: { kind: 'generic', summary: getFileEditingPathChatSummary },
+  mineru_convert: genericRenderer,
   meta_search: genericRenderer,
   web_search: { kind: 'generic', summary: getWebSearchChatSummary },
   web_scrape: { kind: 'generic', summary: getWebScrapeChatSummary },

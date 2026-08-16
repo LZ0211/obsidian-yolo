@@ -161,6 +161,7 @@ export const CAPABILITY_SETTINGS_LAUNCHERS = {
   user_questions: null,
   file_reading: null,
   metadata_search: null,
+  pdf_conversion: null,
   file_editing: null,
   web_access: openWebSearchSettings,
   js_sandbox: openJsSandboxSettings,

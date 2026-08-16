@@ -40,6 +40,7 @@ const EXPECTED_ORDER_WITH_BASH = [
   'fs_read',
   'fs_edit',
   'fs_write',
+  'mineru_convert',
   'meta_search',
   'bash',
   'memory_add',

@@ -38,6 +38,7 @@ const EXPECTED_TOOL_NAMES = [
   'fs_read',
   'fs_edit',
   'fs_write',
+  'mineru_convert',
   'meta_search',
   'bash',
   'memory_add',
@@ -59,6 +60,7 @@ const EXPECTED_TOOL_NAMES = [
 const EXPECTED_CAPABILITY_IDS = [
   'file_reading',
   'metadata_search',
+  'pdf_conversion',
   'vault_shell',
   'file_editing',
   'context_pruning',

@@ -110,6 +110,12 @@ const V81_CAPABILITIES: readonly {
     allowedModes: DEFAULT_ALLOWED_MODES,
   },
   {
+    id: 'pdf_conversion',
+    toolNames: ['mineru_convert'],
+    defaultMode: 'full_access',
+    allowedModes: DEFAULT_ALLOWED_MODES,
+  },
+  {
     id: 'vault_shell',
     toolNames: ['bash'],
     defaultMode: 'dangerous_only',

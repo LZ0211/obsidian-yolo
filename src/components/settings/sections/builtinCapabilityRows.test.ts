@@ -24,6 +24,7 @@ describe('buildBuiltinCapabilityRows', () => {
     expect(rows.map((row) => row.id)).toEqual([
       'file_reading',
       'metadata_search',
+      'pdf_conversion',
       'vault_shell',
       'file_editing',
       'context_pruning',
@@ -41,6 +42,7 @@ describe('buildBuiltinCapabilityRows', () => {
     expect(rows.map((row) => row.label)).toEqual([
       'Read File',
       'Search Metadata',
+      'MinerU PDF Conversion',
       'Bash (Vault Shell)',
       'File Editing Toolset',
       'Prune Tool Results',
@@ -76,12 +78,14 @@ describe('groupCapabilityRowsByCategory', () => {
     expect(vault?.rows.map((row) => row.id)).toEqual([
       'file_reading',
       'metadata_search',
+      'pdf_conversion',
       'vault_shell',
       'file_editing',
     ])
     expect(vault?.rows.map((row) => row.label)).toEqual([
       'Read File',
       'Search Metadata',
+      'MinerU PDF Conversion',
       'Bash (Vault Shell)',
       'File Editing Toolset',
     ])
