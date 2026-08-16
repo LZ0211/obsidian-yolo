@@ -1,7 +1,7 @@
 jest.mock('../../components/chat-view/chat-runtime-inputs', () => {
   const { getProtectedVaultPathRules } = jest.requireActual(
     '../paths/protectedPaths',
-  ) as typeof import('../paths/protectedPaths')
+  )
   return {
     resolveWorkspaceAccessPolicyForRuntimeInput: jest.fn(
       (_assistant, _workingDirectory, settings) => ({
@@ -47,18 +47,17 @@ jest.mock('../../utils/chat/requestContextBuilder', () => ({
 }))
 
 import type { YoloSettings } from '../../settings/schema/setting.types'
-import type { SerializedChatMessage } from '../../types/chat'
+import type { ChatMessage, SerializedChatMessage } from '../../types/chat'
 import {
   ToolCallResponseStatus,
   createCompleteToolCallArguments,
 } from '../../types/tool-call.types'
 import type { AgentConversationState, AgentService } from '../agent/service'
-import type { ChatMessage } from '../../types/chat'
 import type { McpManager } from '../mcp/mcpManager'
+import { getProtectedVaultPathRules } from '../paths/protectedPaths'
 
 import { BOT_TURN_TIMEOUT_REASON, runBotAgentTurn } from './agent-runner'
 import { BotSentMessageRegistry } from './bot-sent-registry'
-import { getProtectedVaultPathRules } from '../paths/protectedPaths'
 import type {
   PlatformAdapter,
   SentMessageRef,
@@ -436,7 +435,14 @@ function makeHistoryMessage(id: string, text: string): SerializedChatMessage {
 
 describe('runBotAgentTurn', () => {
   const app = {} as unknown as import('obsidian').App
-  const mcpManager = {} as unknown as McpManager
+  const disposeBotToolServer = jest.fn()
+  const registerInProcessServer = jest.fn(() => disposeBotToolServer)
+  const mcpManager = { registerInProcessServer } as unknown as McpManager
+
+  beforeEach(() => {
+    disposeBotToolServer.mockClear()
+    registerInProcessServer.mockClear()
+  })
 
   it('loads conversation history and prepends it before the new user message', async () => {
     const priorMessage = makeHistoryMessage('hist-1', 'earlier message')
@@ -513,7 +519,7 @@ describe('runBotAgentTurn', () => {
     expect(runCalls[0]).toBeDefined()
   })
 
-  it('passes allowedToolNames straight through from the bound assistant, with send_attachment appended', async () => {
+  it('registers send_attachment for this bot turn and disposes it after completion', async () => {
     const { agentService, runCalls } = makeFakeAgentService(
       (sourceUserMessageId, emit) => {
         emit(buildCompletedState('conv-1', sourceUserMessageId, 'Hi there'))
@@ -539,11 +545,21 @@ describe('runBotAgentTurn', () => {
       mentionables: [],
     })
 
+    expect(registerInProcessServer).toHaveBeenCalledTimes(1)
+    const [serverName, server] = registerInProcessServer.mock.calls[0]
+    expect(serverName).toMatch(/^yolo-bot-/)
+    expect(server.listTools()).toEqual([
+      expect.objectContaining({
+        name: 'send_attachment',
+        inputSchema: expect.objectContaining({ required: ['path'] }),
+      }),
+    ])
     expect(runCalls[0].input.allowedToolNames).toEqual([
       'server__search',
       'yolo_local__fs_write',
-      'yolo_local__send_attachment',
+      `${serverName}__send_attachment`,
     ])
+    expect(disposeBotToolServer).toHaveBeenCalledTimes(1)
   })
 
   it('forwards toolCapabilityMode from resolveChatModeRuntime into the agent run input', async () => {

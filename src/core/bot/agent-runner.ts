@@ -71,11 +71,9 @@ import { getEnabledAssistantToolNames } from '../agent/tool-preferences'
 import type { AgentRuntimeRunInput } from '../agent/types'
 import { findUnifiedAgentById } from '../agent/workspaceAgentResolver'
 import { getChatModelClient } from '../llm/manager'
-import { getLocalFileToolServerName } from '../mcp/localFileToolNames'
 import type { McpManager } from '../mcp/mcpManager'
 import { getToolName } from '../mcp/tool-name-utils'
 import { getMemoryIndexRuntimeHandle } from '../memory/memoryIndexRuntime'
-import { augmentWorkspacePolicyWithProtectedPaths } from '../paths/protectedPaths'
 import { listLiteSkillEntries } from '../skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../skills/skillPolicy'
 
@@ -85,6 +83,7 @@ import {
   convertAttachmentsToReply,
   scanForSendAttachment,
 } from './message-converter'
+import { createSendAttachmentToolServer } from './send-attachment-tool'
 import type { PlatformAdapter, ReplyContent, SentMessageRef } from './types'
 
 /**
@@ -210,22 +209,6 @@ export async function runBotAgentTurn(
   // already derived from `assistantEnabledToolNames` above.
   let allowedToolNames = chatModeRuntime.allowedToolNames
 
-  // `send_attachment` is a bot-runtime-only capability (Bot Platform Phase
-  // 6.5): it is deliberately excluded from `USER_FACING_LOCAL_TOOL_SHORT_NAMES`
-  // so it can never reach `toolPreferences`/`assistantEnabledToolNames` (and
-  // thus `chatModeRuntime.allowedToolNames`) through the normal Agent
-  // settings surface. Bot runs are the only place that offers it, so it's
-  // appended here unconditionally — the real security gate is the bound
-  // assistant's `workspaceAccessPolicy`, enforced inside the tool's own
-  // dispatch handler (`callLocalFileTool`), not a tool-name allowlist.
-  const sendAttachmentToolName = getToolName(
-    getLocalFileToolServerName(),
-    SEND_ATTACHMENT_TOOL_NAME,
-  )
-  if (allowedToolNames && !allowedToolNames.includes(sendAttachmentToolName)) {
-    allowedToolNames = [...allowedToolNames, sendAttachmentToolName]
-  }
-
   const allowedSkillPaths = await resolveAllowedSkillPathsForBot({
     app,
     settings,
@@ -255,6 +238,14 @@ export async function runBotAgentTurn(
 
   const historyMessages = [...((await loadConversation(conversationId)) ?? [])]
   const sourceUserMessageId = uuidv4()
+  const botToolServerName = `yolo-bot-${sourceUserMessageId}`
+  const sendAttachmentToolName = getToolName(
+    botToolServerName,
+    SEND_ATTACHMENT_TOOL_NAME,
+  )
+  if (allowedToolNames && !allowedToolNames.includes(sendAttachmentToolName)) {
+    allowedToolNames = [...allowedToolNames, sendAttachmentToolName]
+  }
   const userMessage = buildAgentApiUserMessage({
     id: sourceUserMessageId,
     content: createPlainTextEditorState(promptContent),
@@ -265,6 +256,11 @@ export async function runBotAgentTurn(
 
   const ownedAbortController = abortSignal ? null : new AbortController()
   const runAbortSignal = abortSignal ?? ownedAbortController!.signal
+  const workspaceAccessPolicy = resolveWorkspaceAccessPolicyForRuntimeInput(
+    assistant,
+    undefined,
+    settings,
+  )
   const input: AgentRuntimeRunInput = {
     providerClient: resolvedClient.providerClient,
     model: resolvedClient.model,
@@ -287,11 +283,7 @@ export async function runBotAgentTurn(
     // host-managed protected-path deny rules — bot turns must never reach
     // the plugin's own data through fs/git-diff tools, no matter what the
     // bound assistant's policy says.
-    workspaceAccessPolicy: resolveWorkspaceAccessPolicyForRuntimeInput(
-      assistant,
-      undefined,
-      settings,
-    ),
+    workspaceAccessPolicy,
     allowedSkillPaths,
     requestParams: {
       deliveryMode: 'incremental',
@@ -318,6 +310,10 @@ export async function runBotAgentTurn(
   const withReplyTarget = (content: ReplyContent): ReplyContent =>
     replyToMessageId ? { ...content, replyToMessageId } : content
 
+  const disposeBotToolServer = mcpManager.registerInProcessServer(
+    botToolServerName,
+    createSendAttachmentToolServer(workspaceAccessPolicy),
+  )
   try {
     for await (const event of streamResolvedAgentRunEvents({
       conversationId,
@@ -422,6 +418,7 @@ export async function runBotAgentTurn(
       console.error('[YOLO Bot] Failed to send agent error reply:', sendError)
     }
   } finally {
+    disposeBotToolServer()
     ownedAbortController?.abort()
   }
 }

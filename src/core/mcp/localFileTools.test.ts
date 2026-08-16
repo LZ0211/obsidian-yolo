@@ -130,7 +130,6 @@ import {
   buildJsSandboxProxyHandlers,
   formatJsSandboxToolText,
 } from './jsSandboxTool'
-import { USER_FACING_LOCAL_TOOL_SHORT_NAMES } from './localFileToolNames'
 import {
   getLocalFileTools,
   isLocalFsWriteToolName,
@@ -4374,89 +4373,5 @@ describe('scheduled_task_ops', () => {
     })
 
     expect(result.status).toBe(ToolCallResponseStatus.Error)
-  })
-})
-
-describe('send_attachment (Bot Platform Phase 6.5)', () => {
-  const app = {} as unknown as App
-
-  it('is registered in getLocalFileTools() with a path-required schema', () => {
-    const tool = getLocalFileTools().find((t) => t.name === 'send_attachment')
-    expect(tool).toBeDefined()
-    expect(tool?.inputSchema.required).toEqual(['path'])
-    expect(
-      (tool?.inputSchema.properties as Record<string, unknown>).path,
-    ).toBeDefined()
-    expect(
-      (tool?.inputSchema.properties as Record<string, unknown>).label,
-    ).toBeDefined()
-  })
-
-  it('is excluded from USER_FACING_LOCAL_TOOL_SHORT_NAMES (bot-runtime-only, not user-configurable)', () => {
-    expect(USER_FACING_LOCAL_TOOL_SHORT_NAMES).not.toContain('send_attachment')
-  })
-
-  const allowExports = {
-    enabled: true,
-    workspaceRoot: 'exports',
-    readExtraIncludes: [],
-    readExcludes: [],
-    writeExcludes: [],
-  }
-
-  it('succeeds when no workspaceAccessPolicy is set (unrestricted assistant)', async () => {
-    const result = await callLocalFileTool({
-      app,
-      toolName: 'send_attachment',
-      args: { path: 'attachments/a.png' },
-    })
-    expect(result.status).toBe(ToolCallResponseStatus.Success)
-  })
-
-  it('returns Error for a path outside the readable workspace', async () => {
-    const result = await callLocalFileTool({
-      app,
-      toolName: 'send_attachment',
-      args: { path: 'other/a.png' },
-      workspaceAccessPolicy: allowExports,
-    })
-    expect(result.status).toBe(ToolCallResponseStatus.Error)
-  })
-
-  it('returns Error for path traversal', async () => {
-    const result = await callLocalFileTool({
-      app,
-      toolName: 'send_attachment',
-      args: { path: 'exports/../secret.md' },
-      workspaceAccessPolicy: allowExports,
-    })
-    expect(result.status).toBe(ToolCallResponseStatus.Error)
-  })
-
-  it('returns Error for a hidden/system path', async () => {
-    const result = await callLocalFileTool({
-      app,
-      toolName: 'send_attachment',
-      args: { path: '.obsidian/workspace.json' },
-      workspaceAccessPolicy: allowExports,
-    })
-    expect(result.status).toBe(ToolCallResponseStatus.Error)
-  })
-
-  it('succeeds with a normalized path when under the readable workspace', async () => {
-    const result = await callLocalFileTool({
-      app,
-      toolName: 'send_attachment',
-      args: { path: 'exports/report.pdf', label: 'Report' },
-      workspaceAccessPolicy: allowExports,
-    })
-    expect(result.status).toBe(ToolCallResponseStatus.Success)
-    if (result.status !== ToolCallResponseStatus.Success) {
-      throw new Error('expected success')
-    }
-    expect(JSON.parse(result.text)).toEqual({
-      ok: true,
-      path: 'exports/report.pdf',
-    })
   })
 })

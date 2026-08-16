@@ -44,19 +44,13 @@ export const LOCAL_FILE_TOOL_SHORT_NAMES = [
   'load_tool_schemas',
   'todo_write',
   'ask_user_question',
-  'send_attachment',
 ] as const
 
 // Excluded from the user-facing Agent settings surface. `load_tool_schemas`
 // is a protocol tool for the on-demand disclosure mechanism, not a user
-// capability. `send_attachment` is a bot-runtime-only capability (Bot
-// Platform Phase 6.5) — it is only ever offered by `agent-runner.ts`
-// appending its FQN directly to a bot run's `allowedToolNames`, never through
-// per-assistant `toolPreferences`, so it must not be enumerable/toggleable in
-// the normal Agent settings UI.
+// capability. Memory mutation is driven by host logic rather than the model.
 const NON_USER_FACING_LOCAL_TOOL_SHORT_NAMES = new Set<string>([
   'load_tool_schemas',
-  'send_attachment',
   'memory_add',
   'memory_update',
   'memory_delete',
