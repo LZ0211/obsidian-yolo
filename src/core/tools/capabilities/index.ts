@@ -5,6 +5,7 @@ import { fileReadingCapability } from './file-reading'
 import { jsSandboxCapability } from './js-sandbox'
 import { memoryCapability } from './memory'
 import { subagentDelegationCapability } from './subagent-delegation'
+import { scheduledTasksCapability } from './scheduled-tasks'
 import { terminalCapability } from './terminal'
 import { todoListCapability } from './todo-list'
 import { userQuestionsCapability } from './user-questions'
@@ -45,4 +46,5 @@ export const CAPABILITIES = [
   jsSandboxCapability,
   terminalCapability,
   subagentDelegationCapability,
+  scheduledTasksCapability,
 ] as const

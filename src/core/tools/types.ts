@@ -23,6 +23,10 @@ import type { PromptSourceWatcher } from '../agent/promptSourceWatcher'
 import type { SubagentAcceptedResult } from '../agent/subagent/types'
 import type { BaseLLMProvider } from '../llm/base'
 import type { RAGEngine } from '../rag/ragEngine'
+import type {
+  ScheduledTask,
+  TaskConfig,
+} from '../scheduler/scheduledTasksStore'
 
 /** A translatable piece of UI text: an i18n key plus its English fallback. */
 export type I18nText = {
@@ -104,6 +108,16 @@ export type ToolCatalogContext = {
   vaultBasePath?: string
 }
 
+/** The scheduled-task surface needed by the model-facing tool. */
+export type ScheduledTaskServiceLike = {
+  createTask(config: TaskConfig): Promise<ScheduledTask>
+  getTask(id: string): Promise<ScheduledTask>
+  updateTask(id: string, config: Partial<TaskConfig>): Promise<void>
+  deleteTask(id: string): Promise<void>
+  listTasks(filters?: { enabled?: boolean }): Promise<ScheduledTask[]>
+  executeTaskNow(taskId: string): Promise<unknown>
+}
+
 /**
  * Context available when deciding whether a tool is usable in the current
  * environment (platform, provider/feature configuration, ...). Kept separate
@@ -136,6 +150,7 @@ export type ToolContext = {
   settings?: YoloSettings
   openApplyReview?: (state: ApplyViewState) => Promise<boolean>
   getRagEngine?: () => Promise<RAGEngine>
+  getScheduledTasksService?: () => ScheduledTaskServiceLike | null
   conversationId?: string
   conversationMessages?: ChatMessage[]
   roundId?: string

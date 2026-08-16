@@ -30,7 +30,7 @@ import {
   getToolDefinition,
   isBuiltinToolName,
 } from '../tools/registry'
-import type { ToolContext } from '../tools/types'
+import type { ScheduledTaskServiceLike, ToolContext } from '../tools/types'
 
 import { InvalidToolNameException, McpNotAvailableException } from './exception'
 import type { InProcessToolServer } from './inProcessToolServer'
@@ -83,6 +83,7 @@ export class McpManager {
   private readonly oauthController: McpOAuthController
   private readonly openApplyReview: (state: ApplyViewState) => Promise<boolean>
   private readonly getRagEngine?: () => Promise<RAGEngine>
+  private readonly getScheduledTasksService?: () => ScheduledTaskServiceLike | null
   private readonly promptSourceWatcher?: PromptSourceWatcher
   private settings: YoloSettings
   private unsubscribeFromSettings: () => void
@@ -195,6 +196,7 @@ export class McpManager {
     openApplyReview,
     registerSettingsListener,
     getRagEngine,
+    getScheduledTasksService,
     promptSourceWatcher,
   }: {
     app: App
@@ -205,12 +207,14 @@ export class McpManager {
       listener: (settings: YoloSettings) => void,
     ) => () => void
     getRagEngine?: () => Promise<RAGEngine>
+    getScheduledTasksService?: () => ScheduledTaskServiceLike | null
     promptSourceWatcher?: PromptSourceWatcher
   }) {
     this.app = app
     this.oauthController = new McpOAuthController(app, pluginId)
     this.openApplyReview = openApplyReview
     this.getRagEngine = getRagEngine
+    this.getScheduledTasksService = getScheduledTasksService
     this.promptSourceWatcher = promptSourceWatcher
     this.settings = settings
     this.inProcessServers.set(
@@ -1206,6 +1210,7 @@ export class McpManager {
             settings: this.settings,
             openApplyReview: this.openApplyReview,
             getRagEngine: this.getRagEngine,
+            getScheduledTasksService: this.getScheduledTasksService,
             conversationId,
             conversationMessages,
             roundId,

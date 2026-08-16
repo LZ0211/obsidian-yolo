@@ -9,8 +9,8 @@ import {
 } from '../modules/moduleChatModeRegistry'
 import type { RAGEngine } from '../rag/ragEngine'
 
-import type { ScheduledTaskServiceLike } from './localFileTools'
 import { McpManager } from './mcpManager'
+import type { ScheduledTaskServiceLike } from '../tools/types'
 
 /** The subset of `ModuleChatModeRegistry` the coordinator needs to replay
  * module chat mode tool servers onto the MCP manager. */

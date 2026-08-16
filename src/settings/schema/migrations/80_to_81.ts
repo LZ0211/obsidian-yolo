@@ -173,6 +173,12 @@ const V81_CAPABILITIES: readonly {
     defaultMode: 'full_access',
     allowedModes: DEFAULT_ALLOWED_MODES,
   },
+  {
+    id: 'scheduled_tasks',
+    toolNames: ['scheduled_task_ops'],
+    defaultMode: 'full_access',
+    allowedModes: DEFAULT_ALLOWED_MODES,
+  },
 ]
 
 const isLocalFqn = (name: string): boolean =>

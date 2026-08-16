@@ -553,9 +553,10 @@ describe('migrateFrom80To81', () => {
     'js_sandbox',
     'terminal',
     'subagent_delegation',
+    'scheduled_tasks',
   ]
 
-  it('writes exactly the twelve v81 capabilities globally, never a later-added one', () => {
+  it('writes exactly the v81 capabilities globally, never a later-added one', () => {
     const result = runMigration({ version: 80 })
 
     expect(
@@ -563,7 +564,7 @@ describe('migrateFrom80To81', () => {
     ).toEqual([...V81_CAPABILITY_IDS].sort())
   })
 
-  it('writes exactly the twelve v81 capabilities per assistant, never a later-added one', () => {
+  it('writes exactly the v81 capabilities per assistant, never a later-added one', () => {
     const result = runMigration({
       version: 80,
       assistants: [{ id: 'agent-1', toolPreferences: {} }],
