@@ -1,10 +1,13 @@
 import { getCliPathOverride } from '../cli-path-override'
-import { resolveRuntimeLlmEnv } from '../llm-injection'
+import {
+  buildCodexSessionOverrides,
+  resolveCliSessionInjection,
+} from '../llm-injection'
 import { loadLoginShellEnvironment } from '../login-shell-env'
 import type { CliRuntimeFactory, CliRuntimeFactoryDeps } from '../types'
 import { resolveCliRuntimeWorkingPath } from '../working-directory'
 
-import { CodexAppServerHostPool } from './host'
+import { CodexAppServerHost } from './host'
 import { type ResolvedCodexLaunch, resolveCodexLaunch } from './launch'
 import type { CodexProcessOptions } from './process'
 import type { CodexCliRuntimeOptions } from './runtime'
@@ -22,12 +25,7 @@ export type CodexRuntimeFactoryDeps = CliRuntimeFactoryDeps &
   }>
 
 /**
- * Builds the Codex runtime factory, including the shared app-server host
- * pool: one pooled host process backs every Codex `CliRuntime` this factory
- * creates, so it is constructed once here and torn down via `dispose()`
- * rather than owned by the coordinator.
- *
- * Falls back to resolving the launch command from the login-shell PATH
+ * Builds session-owned Codex app-server runtimes. Falls back to resolving the launch command from the login-shell PATH
  * (auto-detect) when the caller does not supply its own options; the
  * fallback re-resolves on every host respawn so an install or path override
  * picked up after startup takes effect on the next attempt.
@@ -55,10 +53,6 @@ export const createCodexRuntimeFactory = async (
       spawnCwd: launchSnapshot.spawnCwd,
       launchArgs: launchSnapshot.launchArgs,
       mapRuntimePathToHost: launchSnapshot.mapRuntimePathToHost,
-      // getProcessEnv 会把 options.env 合并到进程环境之上，这里只需注入增量。
-      env:
-        resolveRuntimeLlmEnv(() => deps.getSettings?.() ?? null, 'codex') ??
-        undefined,
     })
     resolveProcessOptions = async (): Promise<CodexProcessOptions> => {
       launchSnapshot = await resolveLaunch()
@@ -71,26 +65,45 @@ export const createCodexRuntimeFactory = async (
     }
   }
 
-  const initialOptions = getCodexRuntimeOptions()
-  const hostPool = new CodexAppServerHostPool({
-    ...initialOptions,
-    cwd: initialOptions.cwd ?? deps.vaultPath,
-    resolveProcessOptions,
-  })
-
   return {
     create: (createDeps) => {
       const options = getCodexRuntimeOptions()
+      const cwd = resolveCliRuntimeWorkingPath(
+        options.cwd ?? createDeps.vaultPath,
+        createDeps.workingDirectory,
+      )
+      const getSessionInjection = () =>
+        resolveCliSessionInjection(
+          () => deps.getSettings?.() ?? null,
+          'codex',
+        )
       return new CodexCliRuntime({
         ...options,
-        cwd: resolveCliRuntimeWorkingPath(
-          options.cwd ?? createDeps.vaultPath,
-          createDeps.workingDirectory,
-        ),
-        resolveHost: hostPool.acquire,
+        cwd,
+        resolveHost: async () => {
+          const overrides = buildCodexSessionOverrides(getSessionInjection())
+          return new CodexAppServerHost({
+            ...options,
+            cwd,
+            launchArgs: [...(options.launchArgs ?? []), ...overrides.launchArgs],
+            env: { ...(options.env ?? {}), ...overrides.env },
+            resolveProcessOptions: resolveProcessOptions
+              ? async () => {
+                  const current = await resolveProcessOptions!()
+                  return {
+                    ...current,
+                    cwd,
+                    launchArgs: [
+                      ...(current.launchArgs ?? []),
+                      ...overrides.launchArgs,
+                    ],
+                    env: { ...(current.env ?? {}), ...overrides.env },
+                  }
+                }
+              : undefined,
+          })
+        },
       })
     },
-    warm: () => hostPool.warm(),
-    dispose: () => hostPool.dispose(),
   }
 }

@@ -2,6 +2,7 @@ import type { ChatModel } from '../../types/chat-model.types'
 
 import {
   buildLlmEnvForRuntime,
+  buildCodexSessionOverrides,
   DEFAULT_CLAUDE_MODEL,
   resolveCliSessionInjection,
   resolveLlmInjection,
@@ -130,6 +131,10 @@ describe('resolveCliSessionInjection', () => {
     }
 
     expect(resolveCliSessionInjection(() => settings as never, 'claude-code')).toEqual({
+      llm: resolveLlmInjection({
+        injection: settings.cliLlmInjection,
+        getSettings: () => settings as never,
+      }),
       llmEnv: buildLlmEnvForRuntime(
         'claude-code',
         resolveLlmInjection({
@@ -154,8 +159,31 @@ describe('resolveCliSessionInjection', () => {
     }
 
     expect(resolveCliSessionInjection(() => settings as never, 'codex')).toEqual({
+      llm: null,
       llmEnv: null,
       mcp: null,
+    })
+  })
+})
+
+describe('buildCodexSessionOverrides', () => {
+  it('creates temporary provider and MCP overrides without a config file', () => {
+    const injection = resolveCliSessionInjection(
+      () => ({
+        ...makeSettings(),
+        cliLlmInjection: { enabled: true, providerId: 'provider-1', modelId: 'model-1' },
+        cliMcpSharing: { enabled: true },
+        mcp: { localServer: { port: 3210, token: 'local-token' } },
+      }) as never,
+      'codex',
+    )
+
+    expect(buildCodexSessionOverrides(injection)).toMatchObject({
+      env: { CODEX_API_KEY: 'sk-test-key', YOLO_MCP_TOKEN: 'local-token' },
+      launchArgs: expect.arrayContaining([
+        'model_provider="yolo"',
+        'mcp_servers.yolo.bearer_token_env_var="YOLO_MCP_TOKEN"',
+      ]),
     })
   })
 })

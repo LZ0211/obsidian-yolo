@@ -26,26 +26,26 @@ jest.mock('./launch', () => ({
   }),
 }))
 
-type HostPoolInstance = {
+type HostInstance = {
   options: unknown
   acquire: jest.Mock
   warm: jest.Mock
   dispose: jest.Mock
 }
-const hostPoolInstances: HostPoolInstance[] = []
-const CodexAppServerHostPoolMock = jest.fn(function (
-  this: HostPoolInstance,
+const hostInstances: HostInstance[] = []
+const CodexAppServerHostMock = jest.fn(function (
+  this: HostInstance,
   options: unknown,
 ) {
   this.options = options
   this.acquire = jest.fn(async () => ({}))
   this.warm = jest.fn(async () => undefined)
   this.dispose = jest.fn(async () => undefined)
-  hostPoolInstances.push(this)
+  hostInstances.push(this)
 })
 jest.mock('./host', () => ({
-  get CodexAppServerHostPool() {
-    return CodexAppServerHostPoolMock
+  get CodexAppServerHost() {
+    return CodexAppServerHostMock
   },
 }))
 
@@ -71,8 +71,8 @@ const app = {} as App
 describe('createCodexRuntimeFactory', () => {
   beforeEach(() => {
     launchCallCount = 0
-    hostPoolInstances.length = 0
-    CodexAppServerHostPoolMock.mockClear()
+    hostInstances.length = 0
+    CodexAppServerHostMock.mockClear()
     CodexCliRuntimeMock.mockClear()
     mockedGetCliPathOverride.mockClear()
     mockedLoadLoginShellEnvironment.mockClear()
@@ -93,21 +93,13 @@ describe('createCodexRuntimeFactory', () => {
       process.platform,
       '/configured/codex',
     )
-    // The host pool is constructed once, up front, from the resolved launch.
-    expect(hostPoolInstances).toHaveLength(1)
-    expect(hostPoolInstances[0]?.options).toMatchObject({
-      command: '/bin/codex-1',
-      cwd: '/resolved/cwd-1',
-      spawnCwd: '/resolved/spawn-1',
-    })
-
     const runtime = factory.create({ app, vaultPath: '/vault/current' })
     expect(CodexCliRuntimeMock).toHaveBeenCalledWith(
       expect.objectContaining({
         command: '/bin/codex-1',
         // Resolved cwd wins over the create-time vault path.
         cwd: '/resolved/cwd-1',
-        resolveHost: hostPoolInstances[0]?.acquire,
+        resolveHost: expect.any(Function),
       }),
     )
     expect(runtime).toBeDefined()
@@ -122,11 +114,6 @@ describe('createCodexRuntimeFactory', () => {
     })
 
     expect(mockedResolveCodexLaunch).not.toHaveBeenCalled()
-    expect(hostPoolInstances[0]?.options).toMatchObject({
-      command: '/bin/codex',
-      cwd: '/vault',
-    })
-
     factory.create({ app, vaultPath: '/vault/current' })
     expect(CodexCliRuntimeMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -174,25 +161,23 @@ describe('createCodexRuntimeFactory', () => {
     )
   })
 
-  it('delegates warm() and dispose() to the shared host pool', async () => {
+  it('does not expose shared warm or dispose hooks', async () => {
     const factory = await createCodexRuntimeFactory({
       app,
       vaultPath: '/vault',
     })
-    const pool = hostPoolInstances[0]
-
-    await factory.warm?.()
-    expect(pool?.warm).toHaveBeenCalledTimes(1)
-
-    await factory.dispose?.()
-    expect(pool?.dispose).toHaveBeenCalledTimes(1)
+    expect(factory.warm).toBeUndefined()
+    expect(factory.dispose).toBeUndefined()
   })
 
   it('re-resolves the launch on every host respawn via resolveProcessOptions', async () => {
-    await createCodexRuntimeFactory({ app, vaultPath: '/vault' })
-
+    const factory = await createCodexRuntimeFactory({ app, vaultPath: '/vault' })
+    const runtime = factory.create({ app, vaultPath: '/vault' }) as { options: {
+      resolveHost: () => Promise<unknown>
+    } }
+    await runtime.options.resolveHost()
     const resolveProcessOptions = (
-      hostPoolInstances[0]?.options as {
+      hostInstances[0]?.options as {
         resolveProcessOptions?: () => Promise<unknown>
       }
     ).resolveProcessOptions
@@ -200,24 +185,26 @@ describe('createCodexRuntimeFactory', () => {
 
     await expect(resolveProcessOptions?.()).resolves.toMatchObject({
       command: '/bin/codex-2',
-      cwd: '/resolved/cwd-2',
+      cwd: '/resolved/cwd-1',
     })
     expect(mockedResolveCodexLaunch).toHaveBeenCalledTimes(2)
   })
 
   it('has no resolveProcessOptions hook when the caller supplies its own options', async () => {
-    await createCodexRuntimeFactory({
+    const factory = await createCodexRuntimeFactory({
       app,
       vaultPath: '/vault',
       getCodexRuntimeOptions: () => ({ command: '/bin/codex' }),
     })
 
+    const runtime = factory.create({ app, vaultPath: '/vault' }) as {
+      options: { resolveHost: () => Promise<unknown> }
+    }
+    await runtime.options.resolveHost()
     expect(
-      (
-        hostPoolInstances[0]?.options as {
-          resolveProcessOptions?: () => Promise<unknown>
-        }
-      ).resolveProcessOptions,
+      (hostInstances[0]?.options as {
+        resolveProcessOptions?: () => Promise<unknown>
+      }).resolveProcessOptions,
     ).toBeUndefined()
   })
 })

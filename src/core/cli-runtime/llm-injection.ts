@@ -27,6 +27,7 @@ export type CliSessionMcpInjection = {
 }
 
 export type CliSessionInjection = {
+  llm: LlmInjection | null
   llmEnv: Record<string, string> | null
   mcp: CliSessionMcpInjection | null
 }
@@ -95,7 +96,7 @@ export function resolveCliSessionInjection(
   runtimeId: CliRuntimeId,
 ): CliSessionInjection {
   const settings = getSettings()
-  if (!settings) return { llmEnv: null, mcp: null }
+  if (!settings) return { llm: null, llmEnv: null, mcp: null }
 
   const cliSettings = settings as YoloSettingsLike & {
     cliLlmInjection?: CliLlmInjectionSettings
@@ -111,12 +112,53 @@ export function resolveCliSessionInjection(
   const port = localServer?.port
 
   return {
+    llm,
     llmEnv: llm ? buildLlmEnvForRuntime(runtimeId, llm) : null,
     mcp:
       cliSettings.cliMcpSharing?.enabled === true && token && port
         ? { url: getLocalMcpServerUrl(port), token }
         : null,
   }
+}
+
+/** Builds the temporary Codex app-server configuration for one session. */
+export function buildCodexSessionOverrides(
+  injection: CliSessionInjection,
+): { launchArgs: string[]; env: Record<string, string> } {
+  const launchArgs: string[] = []
+  const env: Record<string, string> = {
+    ...(injection.llmEnv ?? {}),
+  }
+  if (injection.llm) {
+    const { provider, model } = injection.llm
+    const modelName = model.model.trim() || DEFAULT_CLAUDE_MODEL
+    if (provider.baseUrl) {
+      launchArgs.push(
+        '-c',
+        'model_provider="yolo"',
+        '-c',
+        `model=${JSON.stringify(modelName)}`,
+        '-c',
+        `model_providers.yolo.name=${JSON.stringify(provider.name ?? provider.id)}`,
+        '-c',
+        `model_providers.yolo.base_url=${JSON.stringify(provider.baseUrl)}`,
+        '-c',
+        'model_providers.yolo.wire_api="responses"',
+        '-c',
+        'model_providers.yolo.requires_openai_auth=true',
+      )
+    }
+  }
+  if (injection.mcp) {
+    env.YOLO_MCP_TOKEN = injection.mcp.token
+    launchArgs.push(
+      '-c',
+      `mcp_servers.yolo.url=${JSON.stringify(injection.mcp.url)}`,
+      '-c',
+      'mcp_servers.yolo.bearer_token_env_var="YOLO_MCP_TOKEN"',
+    )
+  }
+  return { launchArgs, env }
 }
 
 /**

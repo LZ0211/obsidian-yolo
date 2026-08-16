@@ -1036,6 +1036,7 @@ describe('ClaudeCliRuntime', () => {
   it('reads injected provider settings when a session starts', async () => {
     const { sdk, queryInputs } = createSdk()
     const getSessionInjection = jest.fn(() => ({
+      llm: null,
       llmEnv: { ANTHROPIC_AUTH_TOKEN: 'session-token' },
       mcp: null,
     }))
