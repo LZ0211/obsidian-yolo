@@ -464,6 +464,19 @@ export class ClaudeCliRuntime implements CliRuntime {
             ...this.llmEnv,
             ...(sessionInjection?.llmEnv ?? {}),
           },
+          ...(sessionInjection?.mcp
+            ? {
+                mcpServers: {
+                  yolo: {
+                    type: 'http' as const,
+                    url: sessionInjection.mcp.url,
+                    headers: {
+                      Authorization: `Bearer ${sessionInjection.mcp.token}`,
+                    },
+                  },
+                },
+              }
+            : {}),
           spawnClaudeCodeProcess: processSupport.spawnClaudeCodeProcess,
           includePartialMessages: true,
           enableFileCheckpointing: true,

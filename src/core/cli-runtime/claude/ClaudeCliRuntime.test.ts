@@ -1038,7 +1038,7 @@ describe('ClaudeCliRuntime', () => {
     const getSessionInjection = jest.fn(() => ({
       llm: null,
       llmEnv: { ANTHROPIC_AUTH_TOKEN: 'session-token' },
-      mcp: null,
+      mcp: { url: 'http://127.0.0.1:3210/mcp', token: 'local-token' },
     }))
     const runtime = new ClaudeCliRuntime({
       vaultPath: '/vault',
@@ -1054,6 +1054,13 @@ describe('ClaudeCliRuntime', () => {
     expect(getSessionInjection).toHaveBeenCalledTimes(1)
     expect(queryInputs[0]?.options?.env).toMatchObject({
       ANTHROPIC_AUTH_TOKEN: 'session-token',
+    })
+    expect(queryInputs[0]?.options?.mcpServers).toEqual({
+      yolo: {
+        type: 'http',
+        url: 'http://127.0.0.1:3210/mcp',
+        headers: { Authorization: 'Bearer local-token' },
+      },
     })
   })
 
