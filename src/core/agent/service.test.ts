@@ -3048,6 +3048,24 @@ describe('AgentService subagent approval routing', () => {
     )
   })
 
+  it('does not persist always-require-user approvals from a subagent', async () => {
+    const { toolCallId, mcpManager } = registerEntry({
+      requestMetadata: { approvalPolicy: 'always-require-user' },
+    })
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const service = new AgentService()
+
+    await service.approveToolCall({
+      conversationId: 'irrelevant',
+      toolCallId,
+      allowForConversation: true,
+    })
+
+    expect(mcpManager.allowToolForConversation).not.toHaveBeenCalled()
+    expect(warnSpy).toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
   it('rejectToolCall routes to the subagent runtime and resumes', () => {
     const { toolCallId, runtime, mcpManager, resumeRun } = registerEntry()
     const service = new AgentService()

@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid'
 
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import {
+  AgentFileChange,
   ChatConversationCompactionLike,
   ChatConversationCompactionState,
   ChatMessage,
@@ -26,10 +27,17 @@ import {
   TERMINAL_COMMAND_TOOL_NAME,
   getLocalFileToolServerName,
 } from '../mcp/localFileTools'
+import type { McpManager } from '../mcp/mcpManager'
 import { parseToolName } from '../mcp/tool-name-utils'
+import {
+  MemoryExtractionQueue,
+  type MemoryExtractionQueueTask,
+} from '../memory/memoryExtractionQueue'
 
+import type { AgentFileChangeTracker } from './agentFileChangeTracker'
 import {
   type BackgroundTaskEvent,
+  type SubagentCumulativeUsage,
   backgroundTaskCompletionBus,
 } from './background-task/completion-bus'
 import {
@@ -46,12 +54,33 @@ import {
   buildSubagentParentContext,
 } from './subagent/parent-context'
 import {
+  PARENT_SUBAGENT_TIMEOUT_ERROR,
+  clearParentSubagentDeadline,
+  clearParentSubagentTimeoutSettled,
+  hasParentSubagentDeadline,
+  isParentSubagentToolCallTimedOut,
+  markParentSubagentTimeoutSettled,
+  recordParentSubagentSuccess,
+  recordParentSubagentTimeout,
+  registerParentSubagentDeadline,
+} from './subagent/pending-timeout-registry'
+import {
+  SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH,
+  getSubagentResultMaxChars,
+  truncateSubagentResult,
+} from './subagent/result-limit'
+import {
   type SubagentRuntimeEntry,
   subagentRuntimeRegistry,
 } from './subagent/runtime-registry'
 import { subagentTaskRegistry } from './subagent/task-registry'
-import type { SubagentTaskRecord } from './subagent/types'
+import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from './subagent/tool-name-utils'
+import type {
+  SubagentTaskCompletionRecord,
+  SubagentTaskSummary,
+} from './subagent/types'
 import { SystemPromptSnapshotStore } from './systemPromptSnapshotStore'
+import type { MemoryExtractionRequest } from './types'
 import { AgentRuntimeLoopConfig, AgentRuntimeRunInput } from './types'
 
 export type AgentRunStatus =
@@ -182,6 +211,7 @@ type AgentServiceOptions = {
     status: AgentRunStatus
     touchUpdatedAt?: boolean
   }) => Promise<void>
+  fileChangeTracker?: AgentFileChangeTracker
 }
 
 export type AgentReplaceConversationMessagesReason =
@@ -195,11 +225,40 @@ export type AgentReplaceConversationMessagesReason =
 // in-flight upload of the same file.
 export const RUNNING_PERSIST_MIN_INTERVAL_MS = 15_000
 
+const isDelegateSubagentToolName = (toolName: string): boolean =>
+  (toolName.includes('__')
+    ? toolName.slice(toolName.indexOf('__') + 2)
+    : (toolName.split(/[/:]/).pop() ?? toolName)) ===
+  DELEGATE_SUBAGENT_TOOL_SHORT_NAME
+
+const findSubagentTaskByParentToolCall = (
+  toolCallId: string,
+): SubagentTaskSummary | undefined =>
+  subagentTaskRegistry
+    .list()
+    .find(
+      (record) =>
+        record.source.type === 'llm_tool_call' &&
+        record.source.toolCallId === toolCallId,
+    )
+
+const SUBAGENT_TIMEOUT_CONTENT =
+  'The delegated subagent did not respond before its deadline, so this delegation timed out and the child run was aborted. The parent agent may retry with a different approach or take over the task directly.'
+
 function buildSubagentResultMessage(
-  record: SubagentTaskRecord,
+  record: SubagentTaskCompletionRecord,
+  usage?: SubagentCumulativeUsage,
 ): ChatSubagentResultMessage {
   const completedAt = record.completedAt ?? Date.now()
   const result = record.result
+  const contentBudget = Math.max(
+    1,
+    getSubagentResultMaxChars() - SUBAGENT_RESULT_TRUNCATION_MARKER_LENGTH,
+  )
+  const content = truncateSubagentResult(
+    result?.content ?? record.error ?? '',
+    contentBudget,
+  ).text
   return {
     role: 'subagent_result',
     id: uuidv4(),
@@ -209,14 +268,21 @@ function buildSubagentResultMessage(
     status:
       result?.status ??
       (record.status === 'running' ? 'completed' : record.status),
-    content: result?.content ?? record.error ?? '',
+    content,
     activityLog: result?.activityLog ?? record.activityLog,
     durationMs: result?.durationMs ?? completedAt - record.createdAt,
     toolUseCount: result?.toolUseCount ?? 0,
-    usage: result?.usage,
+    usage: usage
+      ? {
+          prompt_tokens: usage.inputTokens,
+          completion_tokens: usage.outputTokens,
+          total_tokens: usage.inputTokens + usage.outputTokens,
+        }
+      : result?.usage,
     prompt: result?.prompt ?? record.prompt,
     modelName: result?.modelName,
     transcript: result?.transcript ?? record.liveTranscript,
+    delegatedRoleName: result?.delegatedRoleName,
     delegateAssistantMessageId:
       record.source.type === 'llm_tool_call'
         ? record.source.assistantMessageId
@@ -905,6 +971,7 @@ export class AgentService {
    * while the microtask spawning the next `run()` is still pending.
    */
   private continuationScheduledByKey = new Set<string>()
+  private approvedSubagentDeadlineToolCallIds = new Map<string, Set<string>>()
   private abortedQueuedMessagesSubscribers =
     new Set<AbortedQueuedMessagesSubscriber>()
   /**
@@ -914,6 +981,18 @@ export class AgentService {
    */
   private readonly systemPromptSnapshotStore = new SystemPromptSnapshotStore()
   private readonly promptSourceWatcher = new PromptSourceWatcher()
+  private readonly memoryExtractionQueue = new MemoryExtractionQueue<
+    MemoryExtractionQueueTask & { request: MemoryExtractionRequest }
+  >(async (task, signal) => {
+    if (task.request.signal.aborted || signal.aborted) return
+    await task.request.requestContextBuilder.processMemoryTurn({
+      messages: task.request.messages,
+      providerClient: task.request.providerClient,
+      model: task.request.model,
+      assistantId: task.request.assistantId,
+      signal,
+    })
+  })
 
   constructor(private readonly options: AgentServiceOptions = {}) {}
 
@@ -953,6 +1032,7 @@ export class AgentService {
       runEntry.runtime?.abort()
       this.runEntriesByKey.delete(getRunKey(conversationId, runEntry.branchId))
     }
+    this.teardownApprovedSubagentDeadlines(conversationId)
 
     const runKeyPrefix = `${conversationId}::`
     for (const key of [...this.pendingUserMessagesByKey.keys()]) {
@@ -1104,6 +1184,34 @@ export class AgentService {
 
   private handleBackgroundTaskCompleted(event: BackgroundTaskEvent): void {
     const { conversationId } = event
+    if (
+      event.kind === 'subagent' &&
+      event.record.source.type === 'llm_tool_call'
+    ) {
+      const toolCallId = event.record.source.toolCallId
+      clearParentSubagentDeadline(toolCallId)
+      this.approvedSubagentDeadlineToolCallIds
+        .get(conversationId)
+        ?.delete(toolCallId)
+      if (
+        event.record.error !== PARENT_SUBAGENT_TIMEOUT_ERROR &&
+        isParentSubagentToolCallTimedOut(toolCallId)
+      ) {
+        clearParentSubagentTimeoutSettled(toolCallId)
+        this.compactCompletedBackgroundTaskRecord(event)
+        return
+      }
+      if (
+        this.findToolCall(conversationId, toolCallId)?.toolCall.response
+          .status === ToolCallResponseStatus.Aborted
+      ) {
+        this.compactCompletedBackgroundTaskRecord(event)
+        return
+      }
+      if (event.record.result?.status === 'completed') {
+        recordParentSubagentSuccess(conversationId)
+      }
+    }
     if (this.droppedConversationIds.has(conversationId)) {
       this.compactCompletedBackgroundTaskRecord(event)
       return
@@ -1140,7 +1248,7 @@ export class AgentService {
   ): ChatMessage {
     switch (event.kind) {
       case 'subagent':
-        return buildSubagentResultMessage(event.record)
+        return buildSubagentResultMessage(event.record, event.usage)
       case 'terminal_command':
       case 'terminal_command_waiting':
         return buildTerminalCommandResultMessage(event.record)
@@ -1478,6 +1586,14 @@ export class AgentService {
       return false
     }
 
+    if (isDelegateSubagentToolName(toolCall.request.name)) {
+      this.registerApprovedSubagentDeadline({
+        toolCallId,
+        conversationId,
+        mcpManager: lastRunInput.mcpManager,
+      })
+    }
+
     const toolArgs = getToolCallArgumentsObject(toolCall.request.arguments)
     const debugTraceId = this.findDebugTraceIdForToolCall(
       messagesBeforeApproval,
@@ -1519,6 +1635,11 @@ export class AgentService {
             // `ToolCallRequest.metadata.executionConstraints`.
             bashReadOnly:
               toolCall.request.metadata?.executionConstraints?.bashReadOnly,
+            bashApprovalMode:
+              toolCall.request.metadata?.executionConstraints?.bashApprovalMode,
+            allowedSkillPaths:
+              toolCall.request.metadata?.executionConstraints
+                ?.allowedSkillPaths,
           }),
         getResponseBody: (response) => response,
       }),
@@ -1533,6 +1654,13 @@ export class AgentService {
       return false
     }
 
+    if (
+      result.status !== ToolCallResponseStatus.Success &&
+      result.status !== ToolCallResponseStatus.Running
+    ) {
+      this.cleanupApprovedSubagentDeadline({ toolCallId, conversationId })
+    }
+
     if (isTrailingResolvedToolMessage(nextMessages, toolMessage.id)) {
       await this.run({
         conversationId,
@@ -1542,6 +1670,185 @@ export class AgentService {
     }
 
     return true
+  }
+
+  private registerApprovedSubagentDeadline({
+    toolCallId,
+    conversationId,
+    mcpManager,
+  }: {
+    toolCallId: string
+    conversationId: string
+    mcpManager: McpManager
+  }): void {
+    if (hasParentSubagentDeadline(toolCallId)) return
+    const registered =
+      this.approvedSubagentDeadlineToolCallIds.get(conversationId)
+    if (registered) {
+      registered.add(toolCallId)
+    } else {
+      this.approvedSubagentDeadlineToolCallIds.set(
+        conversationId,
+        new Set([toolCallId]),
+      )
+    }
+    registerParentSubagentDeadline({
+      toolCallId,
+      conversationId,
+      onExpire: ({
+        toolCallId: expiredToolCallId,
+        conversationId: expiredConversationId,
+      }) => {
+        this.handleParentSubagentDeadlineExpiry({
+          toolCallId: expiredToolCallId,
+          conversationId: expiredConversationId,
+          mcpManager,
+        })
+      },
+    })
+  }
+
+  private cleanupApprovedSubagentDeadline({
+    toolCallId,
+    conversationId,
+  }: {
+    toolCallId: string
+    conversationId: string
+  }): void {
+    clearParentSubagentDeadline(toolCallId)
+    this.approvedSubagentDeadlineToolCallIds
+      .get(conversationId)
+      ?.delete(toolCallId)
+    if (!findSubagentTaskByParentToolCall(toolCallId)) {
+      clearParentSubagentTimeoutSettled(toolCallId)
+    }
+  }
+
+  private teardownApprovedSubagentDeadlines(conversationId: string): void {
+    const toolCallIds =
+      this.approvedSubagentDeadlineToolCallIds.get(conversationId)
+    if (!toolCallIds) return
+    for (const toolCallId of toolCallIds) {
+      clearParentSubagentDeadline(toolCallId)
+      clearParentSubagentTimeoutSettled(toolCallId)
+    }
+    this.approvedSubagentDeadlineToolCallIds.delete(conversationId)
+  }
+
+  private handleParentSubagentDeadlineExpiry({
+    toolCallId,
+    conversationId,
+    mcpManager,
+  }: {
+    toolCallId: string
+    conversationId: string
+    mcpManager: McpManager
+  }): void {
+    const childTask = findSubagentTaskByParentToolCall(toolCallId)
+    if (childTask) {
+      subagentTaskRegistry.abort(childTask.taskId)
+    }
+    mcpManager.abortToolCall(toolCallId)
+    markParentSubagentTimeoutSettled(toolCallId)
+    this.updateToolCallResponse({
+      conversationId,
+      toolCallId,
+      response: {
+        status: ToolCallResponseStatus.Error,
+        error: PARENT_SUBAGENT_TIMEOUT_ERROR,
+      },
+    })
+    const syntheticRecord = this.buildSubagentTimeoutCompletionRecord({
+      toolCallId,
+      childTask,
+      conversationId,
+    })
+    backgroundTaskCompletionBus.pushCompleted({
+      kind: 'subagent',
+      taskId: syntheticRecord.taskId,
+      conversationId: syntheticRecord.conversationId,
+      record: syntheticRecord,
+    })
+    recordParentSubagentTimeout(conversationId)
+  }
+
+  private buildSubagentTimeoutCompletionRecord({
+    toolCallId,
+    childTask,
+    conversationId,
+  }: {
+    toolCallId: string
+    childTask?: SubagentTaskSummary
+    conversationId: string
+  }): SubagentTaskCompletionRecord {
+    const now = Date.now()
+    const located = this.findToolCall(conversationId, toolCallId)
+    const requestArgs = located
+      ? getToolCallArgumentsObject(located.toolCall.request.arguments)
+      : undefined
+    const title =
+      typeof requestArgs?.description === 'string'
+        ? requestArgs.description
+        : 'Subagent task'
+    const prompt =
+      typeof requestArgs?.prompt === 'string' ? requestArgs.prompt : ''
+    const taskId = childTask?.taskId ?? `sub_timeout_${toolCallId}`
+    const createdAt = childTask?.createdAt ?? now
+    return {
+      taskId,
+      conversationId,
+      source: {
+        type: 'llm_tool_call',
+        toolCallId,
+        assistantMessageId: this.findSourceAssistantMessageId(
+          conversationId,
+          toolCallId,
+        ),
+      },
+      title,
+      status: 'aborted',
+      createdAt,
+      completedAt: now,
+      prompt,
+      activityLog: '[state] subagent timed out',
+      error: PARENT_SUBAGENT_TIMEOUT_ERROR,
+      result: {
+        taskId,
+        status: 'aborted',
+        content: SUBAGENT_TIMEOUT_CONTENT,
+        activityLog: '[state] subagent timed out',
+        durationMs: now - createdAt,
+        toolUseCount: 0,
+        prompt,
+        ...(childTask?.result?.modelName
+          ? { modelName: childTask.result.modelName }
+          : {}),
+      },
+    }
+  }
+
+  private findSourceAssistantMessageId(
+    conversationId: string,
+    toolCallId: string,
+  ): string {
+    const located = this.findToolCall(conversationId, toolCallId)
+    if (!located) return ''
+    const messages =
+      located.runEntry?.state.messages ??
+      this.getOrCreateConversationEntry(conversationId).state.messages
+    const toolMessageIndex = messages.findIndex(
+      (message) =>
+        message.role === 'tool' &&
+        message.toolCalls.some(
+          (toolCall) => toolCall.request.id === toolCallId,
+        ),
+    )
+    if (toolMessageIndex === -1) return ''
+    for (let index = toolMessageIndex - 1; index >= 0; index -= 1) {
+      const message = messages[index]
+      if (message.role === 'assistant') return message.id
+    }
+    return ''
   }
 
   /**
@@ -1773,14 +2080,24 @@ export class AgentService {
     }
 
     if (allowForConversation) {
-      // Scope the per-conversation allow to the parent conversation so the
-      // user's "allow for this chat" decision applies uniformly to both the
-      // parent and any subagents it dispatches.
-      entry.mcpManager.allowToolForConversation(
-        request.name,
-        entry.parentConversationId,
-        getToolCallArgumentsObject(request.arguments),
-      )
+      if (request.metadata?.approvalPolicy === 'always-require-user') {
+        console.warn(
+          '[YOLO] Ignoring allowForConversation: tool call approval policy is always-require-user',
+          {
+            conversationId: entry.parentConversationId,
+            toolCallId,
+            toolName: request.name,
+          },
+        )
+      } else {
+        // Scope the per-conversation allow to the parent conversation so the
+        // decision applies uniformly to the parent and its subagents.
+        entry.mcpManager.allowToolForConversation(
+          request.name,
+          entry.parentConversationId,
+          getToolCallArgumentsObject(request.arguments),
+        )
+      }
     }
 
     entry.runtime.setToolCallResponse(toolCallId, {
@@ -1798,6 +2115,13 @@ export class AgentService {
           conversationId: entry.parentConversationId,
           conversationMessages: entry.runtime.getMessages(),
           roundId: located.toolMessage.id,
+          signal: entry.abortSignal,
+          workspaceAccessPolicy: request.metadata?.workspaceAccessPolicy,
+          bashReadOnly: request.metadata?.executionConstraints?.bashReadOnly,
+          bashApprovalMode:
+            request.metadata?.executionConstraints?.bashApprovalMode,
+          allowedSkillPaths:
+            request.metadata?.executionConstraints?.allowedSkillPaths,
         }),
       )
     } catch (error) {
@@ -1853,6 +2177,10 @@ export class AgentService {
       conversationId,
       toolCallId,
     )
+    const childTask = findSubagentTaskByParentToolCall(toolCallId)
+    if (childTask) {
+      subagentTaskRegistry.abort(childTask.taskId)
+    }
     const located = this.findToolCall(conversationId, toolCallId)
     if (!located) {
       return abortedForegroundTool
@@ -2015,6 +2343,27 @@ export class AgentService {
     return undefined
   }
 
+  private attachFileChangesToLatestAssistant(
+    messages: ChatMessage[],
+    fileChanges: AgentFileChange[],
+  ): ChatMessage[] {
+    if (fileChanges.length === 0) return messages
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]
+      if (message.role !== 'assistant') continue
+      const next = [...messages]
+      next[index] = {
+        ...message,
+        metadata: {
+          ...message.metadata,
+          fileChanges,
+        },
+      }
+      return next
+    }
+    return messages
+  }
+
   async run({
     conversationId,
     input,
@@ -2072,8 +2421,31 @@ export class AgentService {
     const historyMergeAnchorMessageId =
       input.sourceUserMessageId ?? input.messages.at(-1)?.id
 
+    const fileChangeRunToken = this.options.fileChangeTracker?.beginRun({
+      workspaceAccessPolicy: input.workspaceAccessPolicy,
+    })
+    let fileChangesPromise: Promise<AgentFileChange[]> | null = null
+    const finishFileChangeTracking = (): Promise<AgentFileChange[]> => {
+      if (fileChangesPromise) return fileChangesPromise
+      fileChangesPromise = (
+        fileChangeRunToken && this.options.fileChangeTracker
+          ? this.options.fileChangeTracker.finishRun(fileChangeRunToken)
+          : Promise.resolve([])
+      ).catch(() => [])
+      return fileChangesPromise
+    }
+
     const runtimeInput: AgentRuntimeRunInput = {
       ...input,
+      enqueueMemoryExtraction: input.systemPromptOverride
+        ? undefined
+        : (request) => {
+            this.memoryExtractionQueue.enqueue({
+              assistantId: request.assistantId,
+              id: `${conversationId}:${runId}`,
+              request,
+            })
+          },
       drainPendingUserMessages: () => {
         const queue = this.pendingUserMessagesByKey.get(runKey)
         if (!queue || queue.length === 0) {
@@ -2150,15 +2522,19 @@ export class AgentService {
     const backgroundExecutionReleasePromise = acquireBackgroundExecution()
     try {
       await runtime.run(runtimeInput)
+      const trackedFileChanges = await finishFileChangeTracking()
 
       const currentRunEntry = this.runEntriesByKey.get(runKey)
       if (!currentRunEntry || currentRunEntry.runToken !== runToken) {
         return
       }
 
-      const nextMessages = this.attachSourcesToLatestAssistant(
-        currentRunEntry.state.messages,
-        citationRegistry,
+      const nextMessages = this.attachFileChangesToLatestAssistant(
+        this.attachSourcesToLatestAssistant(
+          currentRunEntry.state.messages,
+          citationRegistry,
+        ),
+        trackedFileChanges,
       )
 
       currentRunEntry.state = {
@@ -2176,8 +2552,13 @@ export class AgentService {
       const aborted =
         input.abortSignal?.aborted ||
         (error instanceof Error && error.name === 'AbortError')
+      const trackedFileChanges = await finishFileChangeTracking()
       currentRunEntry.state = {
         ...currentRunEntry.state,
+        messages: this.attachFileChangesToLatestAssistant(
+          currentRunEntry.state.messages,
+          trackedFileChanges,
+        ),
         status: aborted ? 'aborted' : 'error',
         pendingCompactionAnchorMessageId: null,
         errorMessage: aborted ? undefined : formatErrorMessageWithCauses(error),
@@ -2188,6 +2569,7 @@ export class AgentService {
       }
     } finally {
       unsubscribe()
+      void finishFileChangeTracking()
       const currentRunEntry = this.runEntriesByKey.get(runKey)
       if (currentRunEntry && currentRunEntry.runToken === runToken) {
         currentRunEntry.runToken = null
@@ -2196,6 +2578,9 @@ export class AgentService {
         }
       }
       this.finalizeSettledConversationRuns(conversationId)
+      if (input.abortSignal?.aborted) {
+        this.teardownApprovedSubagentDeadlines(conversationId)
+      }
       this.maybeScheduleAfterRunContinuation({
         conversationId,
         branchId,
@@ -2351,6 +2736,12 @@ export class AgentService {
       for (const subscriber of this.abortedQueuedMessagesSubscribers) {
         subscriber(conversationId, droppedQueuedByConversation)
       }
+    }
+    this.teardownApprovedSubagentDeadlines(conversationId)
+    for (const task of subagentTaskRegistry.listByConversation(
+      conversationId,
+    )) {
+      subagentTaskRegistry.abort(task.taskId)
     }
     return didAbort
   }
