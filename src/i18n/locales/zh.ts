@@ -2872,7 +2872,6 @@ export const zh: TranslationKeys = {
       displayName: {
         fs_read: '读取文件',
         fs_edit: '文本编辑',
-        fs_edit_ops: '文件编辑工作集',
         bash: 'Bash',
         memory_add: '新增记忆',
         memory_update: '更新记忆',

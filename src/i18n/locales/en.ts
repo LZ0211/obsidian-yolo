@@ -3077,7 +3077,6 @@ export const en: TranslationKeys = {
       displayName: {
         fs_read: 'Read files',
         fs_edit: 'Text editing',
-        fs_edit_ops: 'File Editing Toolset',
         bash: 'Bash',
         memory_add: 'Add memory',
         memory_update: 'Update memory',

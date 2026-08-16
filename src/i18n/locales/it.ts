@@ -3252,7 +3252,6 @@ export const it: DeepPartial<TranslationKeys> = {
       displayName: {
         fs_read: 'Leggi file',
         fs_edit: 'Modifica testo',
-        fs_edit_ops: 'Set modifica file',
         bash: 'Bash',
         memory_add: 'Aggiungi memoria',
         memory_update: 'Aggiorna memoria',

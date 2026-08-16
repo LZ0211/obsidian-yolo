@@ -2597,7 +2597,6 @@ export type TranslationKeys = {
       displayName?: {
         fs_read?: string
         fs_edit?: string
-        fs_edit_ops?: string
         bash?: string
         memory_add?: string
         memory_update?: string

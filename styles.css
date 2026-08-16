@@ -5988,12 +5988,6 @@ button.yolo-agent-mcp-config-copy {
   white-space: nowrap;
 }
 
-.yolo-agent-tools-modal-content {
-  margin-top: var(--size-4-2);
-  max-height: 420px;
-  overflow: auto;
-}
-
 .yolo-agent-tool-list {
   display: flex;
   flex-direction: column;
