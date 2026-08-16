@@ -4,13 +4,13 @@ import {
   isLocalToolConfigurableInEditor,
 } from './injectedToolGroup'
 import {
+  createInjectionBridgeToolServer,
   getInjectedBridgeTools,
   getInstalledInjectionBridge,
   installYoloInjectionBridge,
   uninstallYoloInjectionBridge,
+  YOLO_BRIDGE_TOOL_SERVER_NAME,
 } from './injectionBridge'
-import { getLocalFileToolServerName } from './localFileToolNames'
-import { getLocalFileTools } from './localFileTools'
 import { getToolName, parseToolName } from './tool-name-utils'
 
 const TEST_SOURCE = 'inject/test'
@@ -39,12 +39,12 @@ describe('injected tool grouping in the agent settings render chain', () => {
   it('passes the editor visibility filter and resolves its plugin group (regression: injected tools were dropped before grouping)', () => {
     registerTestTool('smart-docx_create_docx', 'Smart-Docx 插件能力')
 
-    // 渲染链：注册 → getLocalFileTools 附加 → yolo_local__ 前缀 → parse 拆回
+    // 渲染链：注册 → in-process server → yolo_bridge__ 前缀 → parse 拆回
     const listed = getInjectedBridgeTools()
     expect(listed.map((tool) => tool.name)).toContain('smart-docx_create_docx')
 
-    const fullName = getToolName(getLocalFileToolServerName(), listed[0].name)
-    expect(fullName).toBe('yolo_local__smart-docx_create_docx')
+    const fullName = getToolName(YOLO_BRIDGE_TOOL_SERVER_NAME, listed[0].name)
+    expect(fullName).toBe('yolo_bridge__smart-docx_create_docx')
 
     const { toolName } = parseToolName(fullName)
     expect(toolName).toBe('smart-docx_create_docx')
@@ -61,9 +61,11 @@ describe('injected tool grouping in the agent settings render chain', () => {
     )
   })
 
-  it('still keeps the injected tools listed through getLocalFileTools', () => {
+  it('keeps injected tools listed through the in-process server', () => {
     registerTestTool('browser_tools_open_url', '浏览器自动化插件能力')
-    const names = getLocalFileTools().map((tool) => tool.name)
+    const names = createInjectionBridgeToolServer()
+      .listTools()
+      .map((tool) => tool.name)
     expect(names).toContain('browser_tools_open_url')
   })
 
@@ -75,7 +77,7 @@ describe('injected tool grouping in the agent settings render chain', () => {
   it('falls back to no group when the plugin registers without a group name', () => {
     registerTestTool('legacy_plugin_tool')
     const { toolName } = parseToolName(
-      getToolName(getLocalFileToolServerName(), 'legacy_plugin_tool'),
+      getToolName(YOLO_BRIDGE_TOOL_SERVER_NAME, 'legacy_plugin_tool'),
     )
     expect(isLocalToolConfigurableInEditor(toolName)).toBe(true)
     expect(getInjectedToolGroup(toolName)).toBeNull()

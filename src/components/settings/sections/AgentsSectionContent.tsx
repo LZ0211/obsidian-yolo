@@ -53,6 +53,11 @@ import {
   resolveWorkspaceAgentAssistant,
 } from '../../../core/agent/workspaceAgentResolver'
 import { getJsSandboxSettings } from '../../../core/mcp/jsSandboxSettings'
+import {
+  getInjectedToolGroup,
+  getInjectedToolGroupKey,
+} from '../../../core/mcp/injectedToolGroup'
+import { YOLO_BRIDGE_TOOL_SERVER_NAME } from '../../../core/mcp/injectionBridge'
 import { getLocalFileToolServerName } from '../../../core/mcp/localFileTools'
 import { getToolName, parseToolName } from '../../../core/mcp/tool-name-utils'
 import { getYoloSkillsDir } from '../../../core/paths/yoloPaths'
@@ -145,6 +150,14 @@ type AgentToolView = {
    * hardcoded two-option literal.
    */
   capabilityId?: BuiltinCapabilityId
+}
+
+type AgentToolGroupView = {
+  key: string
+  serverName: string
+  title: string
+  tools: AgentToolView[]
+  isBuiltin: boolean
 }
 
 type SkillRowView = LiteSkillEntry & {
@@ -863,15 +876,31 @@ export function AgentsSectionContent({
 
   useEffect(() => {
     let mounted = true
-    void plugin
-      .getMcpManager()
-      .then((manager) =>
-        manager.listAvailableTools({ includeBuiltinTools: true }),
-      )
-      .then((tools) => {
+    let unsubscribe: (() => void) | undefined
+
+    const loadTools = async (
+      manager: Awaited<ReturnType<typeof plugin.getMcpManager>>,
+    ) => {
+      try {
+        const tools = await manager.listAvailableTools({
+          includeBuiltinTools: true,
+        })
         if (mounted) {
           setAvailableTools(tools)
         }
+      } catch (error: unknown) {
+        console.error('Failed to load available tools for agent editor', error)
+      }
+    }
+
+    void plugin
+      .getMcpManager()
+      .then((manager) => {
+        if (!mounted) return
+        void loadTools(manager)
+        unsubscribe = manager.subscribeToolCatalog(() => {
+          void loadTools(manager)
+        })
       })
       .catch((error: unknown) => {
         console.error('Failed to load available tools for agent editor', error)
@@ -879,6 +908,7 @@ export function AgentsSectionContent({
 
     return () => {
       mounted = false
+      unsubscribe?.()
     }
   }, [plugin])
 
@@ -1215,10 +1245,7 @@ export function AgentsSectionContent({
   }
 
   const visibleToolGroups = useMemo(() => {
-    const groups = new Map<
-      string,
-      { title: string; tools: AgentToolView[]; isBuiltin: boolean }
-    >()
+    const groups = new Map<string, AgentToolGroupView>()
     const includeBuiltinTools = draftAgent?.includeBuiltinTools !== false
     // Which built-in tool *short* names are actually present in this
     // request's tool catalog (`availableTools` — respects runtime
@@ -1249,11 +1276,19 @@ export function AgentsSectionContent({
         return
       }
 
-      const key = serverName
+      const injectedGroup =
+        serverName === YOLO_BRIDGE_TOOL_SERVER_NAME
+          ? getInjectedToolGroup(toolName)
+          : null
+      const key = injectedGroup
+        ? getInjectedToolGroupKey(injectedGroup.name)
+        : serverName
       const group = groups.get(key) ?? {
-        title: serverName,
+        serverName,
+        title: injectedGroup?.name ?? serverName,
         tools: [],
         isBuiltin: false,
+        key,
       }
       group.tools.push({
         fullName: tool.name,
@@ -1282,7 +1317,13 @@ export function AgentsSectionContent({
           BUILTIN_TOOL_CATEGORY_I18N[row.category].key,
           BUILTIN_TOOL_CATEGORY_I18N[row.category].fallback,
         )
-        const group = groups.get(key) ?? { title, tools: [], isBuiltin: true }
+        const group = groups.get(key) ?? {
+          key,
+          serverName: localFsServerName,
+          title,
+          tools: [],
+          isBuiltin: true,
+        }
         group.tools.push({
           // Only used as a React list key — any present member's own FQN is
           // fine, there is no group-vs-single-tool distinction to preserve
@@ -1313,7 +1354,7 @@ export function AgentsSectionContent({
         if (rb !== undefined) return 1
         return a.localeCompare(b)
       })
-      .map(([key, value]) => ({ key, ...value }))
+      .map(([, value]) => value)
   }, [
     editorAvailableTools,
     draftAgent?.includeBuiltinTools,
@@ -2064,7 +2105,7 @@ export function AgentsSectionContent({
                     enableToolDisclosure &&
                     group.tools.length > 0
                   const disclosureSelectionValue = showServerDisclosure
-                    ? (draftAgent.toolServerPreferences?.[group.key]
+                    ? (draftAgent.toolServerPreferences?.[group.serverName]
                         ?.disclosureMode ?? 'auto')
                     : 'auto'
                   const autoDisclosureMode = (() => {
@@ -2110,7 +2151,7 @@ export function AgentsSectionContent({
                       : disclosureModeLabel(disclosureSelectionValue)
                   const showServerApproval = !group.isBuiltin
                   const serverApprovalMode: AssistantToolApprovalMode =
-                    draftAgent.toolServerPreferences?.[group.key]
+                    draftAgent.toolServerPreferences?.[group.serverName]
                       ?.approvalMode ?? 'require_approval'
                   const groupFullyDisabled =
                     !group.isBuiltin &&
@@ -2169,7 +2210,7 @@ export function AgentsSectionContent({
                                     onValueChange={(nextValue) => {
                                       if (nextValue === 'auto') {
                                         setServerDisclosureMode(
-                                          group.key,
+                                          group.serverName,
                                           undefined,
                                         )
                                         return
@@ -2179,7 +2220,7 @@ export function AgentsSectionContent({
                                         nextValue === 'on_demand'
                                       ) {
                                         setServerDisclosureMode(
-                                          group.key,
+                                          group.serverName,
                                           nextValue,
                                         )
                                       }
@@ -2273,7 +2314,7 @@ export function AgentsSectionContent({
                                         nextValue === 'require_approval'
                                       ) {
                                         setServerApprovalMode(
-                                          group.key,
+                                          group.serverName,
                                           nextValue,
                                         )
                                       }

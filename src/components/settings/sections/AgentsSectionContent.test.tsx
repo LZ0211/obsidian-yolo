@@ -8,10 +8,21 @@ import type { Assistant } from '../../../types/assistant.types'
 
 const mockUseSettings = jest.fn()
 const mockSkillEntries: never[] = []
+const mockListAvailableTools = jest.fn(async () => [])
+let mockToolCatalogListener: (() => void) | undefined
+const mockSubscribeToolCatalog = jest.fn((listener: () => void) => {
+  mockToolCatalogListener = listener
+  return () => {
+    if (mockToolCatalogListener === listener) {
+      mockToolCatalogListener = undefined
+    }
+  }
+})
 const mockPlugin = {
   app: {},
   getMcpManager: jest.fn(async () => ({
-    listAvailableTools: jest.fn(async () => []),
+    listAvailableTools: mockListAvailableTools,
+    subscribeToolCatalog: mockSubscribeToolCatalog,
   })),
   getWorkspaceAgentRootHash: jest.fn(() => null),
 }
@@ -152,11 +163,25 @@ describe('AgentsSectionContent workspace agent tabs', () => {
     Reflect.deleteProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT')
   })
 
+  beforeEach(() => {
+    mockListAvailableTools.mockClear()
+    mockSubscribeToolCatalog.mockClear()
+    mockToolCatalogListener = undefined
+  })
+
   it('shows token management for workspace agents', async () => {
     await expect(renderEditor(true)).resolves.toContain('Tokens')
   })
 
   it('does not show token management for assistant templates', async () => {
     await expect(renderEditor(false)).resolves.not.toContain('Tokens')
+  })
+
+  it('subscribes to tool catalog changes and releases the subscription', async () => {
+    await renderEditor(false)
+
+    expect(mockListAvailableTools).toHaveBeenCalledTimes(1)
+    expect(mockSubscribeToolCatalog).toHaveBeenCalledTimes(1)
+    expect(mockToolCatalogListener).toBeUndefined()
   })
 })
