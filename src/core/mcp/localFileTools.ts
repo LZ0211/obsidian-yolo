@@ -15,65 +15,30 @@ import type { ToolCatalogContext } from '../tools/types'
 import { WEB_SCRAPE_TOOL_NAME, WEB_SEARCH_TOOL_NAME } from '../web-search'
 
 import {
+  BASH_TOOL_NAME,
   JS_SANDBOX_TOOL_NAME,
   LOCAL_FILE_TOOL_SERVER,
+  LOCAL_FS_SPLIT_ACTION_TOOL_NAMES,
+  LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION,
+  TERMINAL_COMMAND_TOOL_NAME,
 } from './localFileToolNames'
 import { parseToolName } from './tool-name-utils'
 
-export { getLocalFileToolServerName } from './localFileToolNames'
+export {
+  BASH_TOOL_NAME,
+  LOCAL_FILE_TOOL_SHORT_NAMES,
+  LOCAL_FS_EDIT_TOOL_NAMES,
+  LOCAL_FS_SPLIT_ACTION_TOOL_NAMES,
+  TERMINAL_COMMAND_TOOL_NAME,
+  USER_FACING_LOCAL_TOOL_SHORT_NAMES,
+  getLocalFileToolServerName,
+} from './localFileToolNames'
 
 export { recoverLikelyEscapedBackslashSequences }
 
-export const TERMINAL_COMMAND_TOOL_NAME = 'terminal_command'
-export const BASH_TOOL_NAME = 'bash'
-
-export const LOCAL_FILE_TOOL_SHORT_NAMES = [
-  BASH_TOOL_NAME,
-  'context_prune_tool_results',
-  'context_compact',
-  'fs_read',
-  'fs_edit',
-  'fs_write',
-  'mineru_convert',
-  'meta_search',
-  'memory_add',
-  'memory_update',
-  'memory_delete',
-  'web_search',
-  'web_scrape',
-  JS_SANDBOX_TOOL_NAME,
-  TERMINAL_COMMAND_TOOL_NAME,
-  'delegate_subagent',
-  'scheduled_task_ops',
-  'project_ops',
-  'load_tool_schemas',
-  'todo_write',
-  'ask_user_question',
-] as const
-
-/**
- * Subset of {@link LOCAL_FILE_TOOL_SHORT_NAMES} that the user actually
- * configures via the Agent settings panel. `load_tool_schemas` is a protocol
- * tool — it exists for the on-demand disclosure mechanism, not as a user-
- * facing capability — so it is excluded here. The runtime still dispatches and
- * normalizes it through `LOCAL_FILE_TOOL_SHORT_NAMES`; it just isn't part of
- * the per-agent tool preference surface.
- */
-export const USER_FACING_LOCAL_TOOL_SHORT_NAMES: readonly string[] =
-  LOCAL_FILE_TOOL_SHORT_NAMES.filter((name) => name !== 'load_tool_schemas')
 // 'delete' | 'create_dir' | 'move' retired with fs_delete/fs_create_dir/fs_move
 // (see the bash tool, which now covers path operations via vaultFileOps.ts).
 type FsFileOpAction = 'write'
-
-const LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION = {
-  fs_write: 'write',
-} as const
-
-export const LOCAL_FS_SPLIT_ACTION_TOOL_NAMES = Object.keys(
-  LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION,
-) as Array<keyof typeof LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION>
-
-export const LOCAL_FS_EDIT_TOOL_NAMES = ['fs_edit', 'fs_write'] as const
 
 export const LOCAL_MEMORY_SPLIT_ACTION_TOOL_NAMES = [
   'memory_add',

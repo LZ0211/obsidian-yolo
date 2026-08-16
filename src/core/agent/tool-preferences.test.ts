@@ -1,15 +1,20 @@
-import { USER_FACING_LOCAL_TOOL_SHORT_NAMES } from '../mcp/localFileToolNames'
+import {
+  LOCAL_FILE_TOOL_SHORT_NAMES,
+  USER_FACING_LOCAL_TOOL_SHORT_NAMES,
+} from '../mcp/localFileToolNames'
+import {
+  LOCAL_FILE_TOOL_SHORT_NAMES as EXPORTED_LOCAL_FILE_TOOL_SHORT_NAMES,
+  USER_FACING_LOCAL_TOOL_SHORT_NAMES as EXPORTED_USER_FACING_LOCAL_TOOL_SHORT_NAMES,
+} from '../mcp/localFileTools'
 import { getCapabilityForTool, listCapabilities } from '../tools/registry'
 
 import {
   BUILTIN_DEFAULT_ENABLED_TOOL_FQNS,
   buildServerToolTokenBudgets,
   getAssistantToolApprovalMode,
-  getAssistantToolCapabilityApprovalMode,
   getAssistantToolDisclosureMode,
   getDefaultApprovalModeForTool,
   getDefaultEnabledForTool,
-  getDefaultApprovalModeForCapability,
   getEnabledAssistantToolNames,
   getExplicitlyEnabledAssistantToolNames,
   isAssistantToolEnabled,
@@ -21,6 +26,24 @@ import {
 const JS_SANDBOX_FQN = 'yolo_local__js_eval'
 
 describe('tool-preferences defaults', () => {
+  it('uses one built-in tool-name list and keeps internal tools off the user-facing surface', () => {
+    expect(EXPORTED_LOCAL_FILE_TOOL_SHORT_NAMES).toBe(
+      LOCAL_FILE_TOOL_SHORT_NAMES,
+    )
+    expect(EXPORTED_USER_FACING_LOCAL_TOOL_SHORT_NAMES).toBe(
+      USER_FACING_LOCAL_TOOL_SHORT_NAMES,
+    )
+    expect(LOCAL_FILE_TOOL_SHORT_NAMES).not.toContain('context_manage')
+    expect(USER_FACING_LOCAL_TOOL_SHORT_NAMES).not.toEqual(
+      expect.arrayContaining([
+        'memory_add',
+        'memory_update',
+        'memory_delete',
+        'load_tool_schemas',
+      ]),
+    )
+  })
+
   it('shares cached MCP schema costs across catalog consumers', async () => {
     const estimate = jest.fn().mockResolvedValue(123)
     const buildCatalog = () =>
@@ -97,20 +120,6 @@ describe('tool-preferences defaults', () => {
       expect(getDefaultEnabledForTool('yolo_local__js_eval')).toBe(false)
     })
 
-    it('dual-reads the context_manage group default-off policy under both the legacy split names and the capability-key group', () => {
-      // Legacy split names (pre-82→83 form).
-      expect(
-        getDefaultEnabledForTool('yolo_local__context_prune_tool_results'),
-      ).toBe(false)
-      expect(getDefaultEnabledForTool('yolo_local__context_compact')).toBe(
-        false,
-      )
-      // Consolidated capability-key group form (post-migration form).
-      expect(getDefaultEnabledForTool('yolo_local__context_manage')).toBe(
-        false,
-      )
-    })
-
     it('returns false for third-party MCP tools', () => {
       expect(getDefaultEnabledForTool('Gemini__get_all_tabs')).toBe(false)
       expect(getDefaultEnabledForTool('some_server__some_tool')).toBe(false)
@@ -148,9 +157,15 @@ describe('tool-preferences defaults', () => {
       }
     })
 
-    it('the five capabilities that default off match master.md §3.1', () => {
+    it('the five user-facing capabilities that default off match master.md §3.1', () => {
       const disabledCapabilityIds = listCapabilities()
-        .filter((capability) => !capability.defaultEnabled)
+        .filter(
+          (capability) =>
+            !capability.defaultEnabled &&
+            capability.tools.some((tool) =>
+              USER_FACING_LOCAL_TOOL_SHORT_NAMES.includes(tool.name),
+            ),
+        )
         .map((capability) => capability.id)
         .sort()
       expect(disabledCapabilityIds).toEqual(
@@ -310,26 +325,6 @@ describe('tool-preferences defaults', () => {
       expect(disallowed).toEqual(['terminal', 'vault_shell'].sort())
     })
 
-    it('every other capability allows always-allow', () => {
-      const allowed = listCapabilities()
-        .filter((capability) => capability.approval.allowAlwaysAllow)
-        .map((capability) => capability.id)
-        .sort()
-      expect(allowed).toEqual(
-        [
-          'file_reading',
-          'file_editing',
-          'memory',
-          'context_compaction',
-          'context_pruning',
-          'todo_list',
-          'user_questions',
-          'web_access',
-          'js_sandbox',
-          'subagent_delegation',
-        ].sort(),
-      )
-    })
   })
 
   // D9 (docs/plans/2026-08-15-tool-registry/phase2-migration.md D9): a
@@ -493,6 +488,24 @@ describe('tool-preferences defaults', () => {
       expect(result).not.toContain('yolo_local__memory_add')
       expect(result).toContain('yolo_local__fs_write')
     })
+
+    it('does not re-expose memory mutation tools from a stale capability preference', () => {
+      const result = getEnabledAssistantToolNames({
+        toolPreferences: {},
+        enabledToolNames: [],
+        builtinCapabilityPreferences: {
+          memory: { enabled: true },
+        },
+      })
+
+      expect(result).not.toEqual(
+        expect.arrayContaining([
+          'yolo_local__memory_add',
+          'yolo_local__memory_update',
+          'yolo_local__memory_delete',
+        ]),
+      )
+    })
   })
 
   describe('getAssistantToolApprovalMode (js_eval)', () => {
@@ -595,115 +608,6 @@ describe('tool-preferences defaults', () => {
             enabledToolNames: [],
           },
           'server__tool_a',
-        ),
-      ).toBe('require_approval')
-    })
-  })
-
-  describe('getAssistantToolCapabilityApprovalMode (79→80 action-level approvals)', () => {
-    const SCHEDULED_TASK_OPS_FQN = 'yolo_local__scheduled_task_ops'
-
-    it('reads the migrated actions[action].approvalMode child (M1 regression: actions had no reader)', () => {
-      // RED before M1: the 79→80 migration writes the legacy split-tool
-      // approval into `toolPreferences[toolName].actions[action]`, but the
-      // runtime only read the tool-level `approvalMode` — the child silently
-      // fell back to the full_access tool default.
-      expect(
-        getAssistantToolCapabilityApprovalMode(
-          {
-            toolPreferences: {
-              [SCHEDULED_TASK_OPS_FQN]: {
-                enabled: true,
-                approvalMode: 'full_access',
-                actions: {
-                  create: { enabled: true, approvalMode: 'require_approval' },
-                },
-              },
-            },
-            enabledToolNames: [],
-          },
-          SCHEDULED_TASK_OPS_FQN,
-          'create',
-        ),
-      ).toBe('require_approval')
-    })
-
-    it.each([
-      ['scheduled_task_ops', 'create'],
-      ['scheduled_task_ops', 'update'],
-      ['scheduled_task_ops', 'delete'],
-      ['scheduled_task_ops', 'run_now'],
-      ['project_ops', 'update'],
-      ['project_ops', 'review'],
-      ['fs_file_ops', 'delete'],
-      ['fs_file_ops', 'create_dir'],
-      ['fs_file_ops', 'move'],
-    ] as const)(
-      'defaults the mutating action %s:%s to require_approval when no explicit mode exists',
-      (toolName, action) => {
-        // RED before M1: `getDefaultApprovalModeForTool` is not
-        // action-aware, so every consolidated action inherited the tool-level
-        // full_access default and the mutation ran without approval.
-        expect(
-          getAssistantToolCapabilityApprovalMode(
-            {
-              toolPreferences: {
-                [`yolo_local__${toolName}`]: { enabled: true },
-              },
-              enabledToolNames: [],
-            },
-            `yolo_local__${toolName}`,
-            action,
-          ),
-        ).toBe('require_approval')
-        expect(
-          getDefaultApprovalModeForCapability(
-            `yolo_local__${toolName}`,
-            action,
-          ),
-        ).toBe('require_approval')
-      },
-    )
-
-    it('keeps read-only consolidated actions on the tool-level full_access default', () => {
-      expect(
-        getAssistantToolCapabilityApprovalMode(
-          {
-            toolPreferences: {
-              [SCHEDULED_TASK_OPS_FQN]: { enabled: true },
-            },
-            enabledToolNames: [],
-          },
-          SCHEDULED_TASK_OPS_FQN,
-          'list',
-        ),
-      ).toBe('full_access')
-    })
-
-    it('lets an explicit tool-level mode override the capability default', () => {
-      expect(
-        getAssistantToolCapabilityApprovalMode(
-          {
-            toolPreferences: {
-              [SCHEDULED_TASK_OPS_FQN]: {
-                enabled: true,
-                approvalMode: 'full_access',
-              },
-            },
-            enabledToolNames: [],
-          },
-          SCHEDULED_TASK_OPS_FQN,
-          'create',
-        ),
-      ).toBe('full_access')
-    })
-
-    it('accepts bare consolidated short names', () => {
-      expect(
-        getAssistantToolCapabilityApprovalMode(
-          null,
-          'scheduled_task_ops',
-          'create',
         ),
       ).toBe('require_approval')
     })

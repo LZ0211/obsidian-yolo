@@ -25,7 +25,6 @@ export const LOCAL_FILE_TOOL_SHORT_NAMES = [
   BASH_TOOL_NAME,
   'context_prune_tool_results',
   'context_compact',
-  'context_manage',
   'fs_read',
   'fs_edit',
   'fs_write',

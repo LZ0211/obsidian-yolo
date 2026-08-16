@@ -2,9 +2,11 @@ import {
   Assistant,
   AssistantToolApprovalMode,
   AssistantToolDisclosureMode,
+  AssistantToolOverridePreference,
   AssistantToolPreference,
 } from '../../types/assistant.types'
 import type { McpTool } from '../../types/mcp.types'
+import { isUserFacingLocalToolShortName } from '../mcp/localFileToolNames'
 import {
   LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME,
   USER_FACING_LOCAL_TOOL_SHORT_NAMES,
@@ -366,6 +368,12 @@ export const getEnabledAssistantToolNames = (
 
   for (const [toolName, preference] of Object.entries(toolPreferences)) {
     if (!preference.enabled) continue
+    if (
+      isLocalFileToolFqn(toolName) &&
+      !isUserFacingLocalToolShortName(parseToolName(toolName).toolName)
+    ) {
+      continue
+    }
     if (!includeBuiltinTools && isLocalFileToolFqn(toolName)) continue
     result.add(toolName)
   }
@@ -379,6 +387,7 @@ export const getEnabledAssistantToolNames = (
         continue
       }
       for (const tool of capability.tools) {
+        if (!isUserFacingLocalToolShortName(tool.name)) continue
         result.add(
           `${localServer}${McpManager.TOOL_NAME_DELIMITER}${tool.name}`,
         )
@@ -572,6 +581,48 @@ export const renameAssistantToolPreferencesServer = <
   }
 }
 
+type WorkspaceAgentToolOverrides = {
+  disabledToolNames?: string[]
+  toolConfigOverrides?: Record<string, AssistantToolOverridePreference>
+}
+
+export const renameWorkspaceAgentToolOverridesServer = <
+  T extends WorkspaceAgentToolOverrides,
+>(
+  overrides: T | undefined,
+  oldServerName: string,
+  newServerName: string,
+): T | undefined => {
+  if (!overrides || oldServerName === newServerName) return overrides
+
+  const oldPrefix = `${oldServerName}${McpManager.TOOL_NAME_DELIMITER}`
+  const newPrefix = `${newServerName}${McpManager.TOOL_NAME_DELIMITER}`
+  const rewrite = (name: string): string =>
+    name.startsWith(oldPrefix)
+      ? `${newPrefix}${name.slice(oldPrefix.length)}`
+      : name
+
+  return {
+    ...overrides,
+    ...(overrides.disabledToolNames
+      ? {
+          disabledToolNames: [
+            ...new Set(overrides.disabledToolNames.map(rewrite)),
+          ],
+        }
+      : {}),
+    ...(overrides.toolConfigOverrides
+      ? {
+          toolConfigOverrides: Object.fromEntries(
+            Object.entries(overrides.toolConfigOverrides).map(
+              ([name, preference]) => [rewrite(name), preference],
+            ),
+          ),
+        }
+      : {}),
+  }
+}
+
 /**
  * As of the `80_to_81` settings migration (D9,
  * docs/plans/2026-08-15-tool-registry/phase2-migration.md D9), a built-in
@@ -599,6 +650,7 @@ export const isAssistantToolEnabled = (
   try {
     const { serverName, toolName: shortName } = parseToolName(toolName)
     if (serverName === getLocalFileToolServerName()) {
+      if (!isUserFacingLocalToolShortName(shortName)) return false
       const capability = getCapabilityForTool(shortName)
       if (capability) {
         return resolveBuiltinCapabilityPreference(assistant, capability.id)
