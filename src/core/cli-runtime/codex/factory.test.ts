@@ -172,7 +172,7 @@ describe('createCodexRuntimeFactory', () => {
 
   it('re-resolves the launch on every host respawn via resolveProcessOptions', async () => {
     const factory = await createCodexRuntimeFactory({ app, vaultPath: '/vault' })
-    const runtime = factory.create({ app, vaultPath: '/vault' }) as { options: {
+    const runtime = factory.create({ app, vaultPath: '/vault' }) as unknown as { options: {
       resolveHost: () => Promise<unknown>
     } }
     await runtime.options.resolveHost()
@@ -197,7 +197,7 @@ describe('createCodexRuntimeFactory', () => {
       getCodexRuntimeOptions: () => ({ command: '/bin/codex' }),
     })
 
-    const runtime = factory.create({ app, vaultPath: '/vault' }) as {
+    const runtime = factory.create({ app, vaultPath: '/vault' }) as unknown as {
       options: { resolveHost: () => Promise<unknown> }
     }
     await runtime.options.resolveHost()
