@@ -9,7 +9,7 @@ import type { AgentRuntimeRunInput } from '../agent/types'
 
 import { runBotAgentTurn } from './agent-runner'
 import { BotSentMessageRegistry } from './bot-sent-registry'
-import type { StreamReplyHandle } from './types'
+import type { PlatformAdapter, StreamReplyHandle } from './types'
 
 type MockRuntimeInstance = {
   emitSnapshot: (messages: ChatMessage[]) => void
@@ -126,26 +126,40 @@ const makeSettings = (): Record<string, unknown> =>
     },
   }) as Record<string, unknown>
 
-const makeFakeAdapter = (streaming: boolean) => ({
-  meta: { name: 'telegram', displayName: 'Telegram', description: '', version: '1.0.0' },
-  capabilities: {
-    markdownMode: 'none',
-    supportsImage: true,
-    supportsFile: true,
-    supportsStreaming: streaming,
-    maxMessageLength: 4096,
-    maxImageSize: 1,
-    maxFileSize: 1,
-  },
-  start: jest.fn(),
-  stop: jest.fn(),
-  health: jest.fn(() => 'running'),
-  sendMessage: jest.fn(async () => []),
-  sendStreamingMessage: jest.fn(),
-  downloadFile: jest.fn(),
-  onMessage: jest.fn(() => () => {}),
-  onError: jest.fn(() => () => {}),
-}) as never
+const makeFakeAdapter = (
+  streaming: boolean,
+): PlatformAdapter & {
+  sendMessage: jest.Mock
+  sendStreamingMessage: jest.Mock
+} =>
+  ({
+    meta: {
+      name: 'telegram',
+      displayName: 'Telegram',
+      description: '',
+      version: '1.0.0',
+    },
+    capabilities: {
+      markdownMode: 'none',
+      supportsImage: true,
+      supportsFile: true,
+      supportsStreaming: streaming,
+      maxMessageLength: 4096,
+      maxImageSize: 1,
+      maxFileSize: 1,
+    },
+    start: jest.fn(),
+    stop: jest.fn(),
+    health: jest.fn(() => 'running'),
+    sendMessage: jest.fn(async () => []),
+    sendStreamingMessage: jest.fn(),
+    downloadFile: jest.fn(),
+    onMessage: jest.fn(() => () => {}),
+    onError: jest.fn(() => () => {}),
+  }) as unknown as PlatformAdapter & {
+    sendMessage: jest.Mock
+    sendStreamingMessage: jest.Mock
+  }
 
 const makeAssistant = (content: string): ChatMessage => ({
   role: 'assistant',
@@ -166,7 +180,7 @@ async function driveBotTurn(params: {
   streaming: boolean
   drive: (runtime: MockRuntimeInstance) => void
 }): Promise<{
-  adapter: never
+  adapter: ReturnType<typeof makeFakeAdapter>
   sentMessageRegistry: BotSentMessageRegistry
 }> {
   const service = new AgentService()

@@ -126,7 +126,10 @@ const ctx = await esbuild.context({
   define: {
     'process.env.NODE_ENV': JSON.stringify(prod ? 'production' : 'development'),
   },
-  loader: { '.svg': 'dataurl' },
+  loader: {
+    '.svg': 'dataurl',
+    '.md': 'text',
+  },
   minify: prod,
   sourcemap: prod ? false : 'inline',
   treeShaking: true,
