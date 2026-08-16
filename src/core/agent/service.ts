@@ -1553,9 +1553,9 @@ export class AgentService {
 
     if (allowForConversation) {
       if (toolCall.request.metadata?.approvalPolicy === 'always-require-user') {
-        // Module chat mode tools declared `requiresApproval: true` are an
+        // In-process tools declared with a hard approval policy are an
         // unconditional per-call confirmation gate (see
-        // `tool-gateway.ts`'s `attachModuleChatModeSnapshot` /
+        // `tool-gateway.ts`'s `attachInProcessToolApprovalSnapshot` /
         // `resolveInitialResponse`). The UI hides the "allow for this
         // conversation" option for these calls (see `ToolMessage.tsx`), but
         // this is the enforcement point of last resort — never honor the

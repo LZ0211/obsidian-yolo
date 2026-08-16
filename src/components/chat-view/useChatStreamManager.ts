@@ -123,7 +123,7 @@ const AUTO_CONTEXT_COMPACT_TOOL_FQN = getToolName(
 // (`core/tools/capabilities/context-compaction.ts`).
 const AUTO_CONTEXT_COMPACT_CAPABILITY_ID = 'context_compaction'
 
-const AUTO_CONTEXT_COMPACT_TOOL_PREFERENCE: AssistantToolPreference = {
+const AUTO_CONTEXT_COMPACTION_CAPABILITY_PREFERENCE: AssistantToolPreference = {
   enabled: true,
   approvalMode: 'full_access',
 }
@@ -163,7 +163,7 @@ const enableAutoContextCompactionTool = (
         ...(runtime.builtinCapabilityPreferences?.[
           AUTO_CONTEXT_COMPACT_CAPABILITY_ID
         ] ?? {}),
-        ...AUTO_CONTEXT_COMPACT_TOOL_PREFERENCE,
+        ...AUTO_CONTEXT_COMPACTION_CAPABILITY_PREFERENCE,
       },
     },
   }

@@ -1070,9 +1070,9 @@ function ToolCallItem({
   const isExitPlanMode = request.name === CLAUDE_EXIT_PLAN_MODE_TOOL
   const isAlwaysAllowDisabled = useMemo(() => {
     if (isExitPlanMode) return true
-    // Module chat mode tools declared `requiresApproval: true` are an
-    // unconditional per-call confirmation gate (see `tool-gateway.ts`'s
-    // `attachModuleChatModeSnapshot`) — the "always allow this
+    // In-process tools with a hard approval policy are an unconditional
+    // per-call confirmation gate (see `tool-gateway.ts`'s
+    // `attachInProcessToolApprovalSnapshot`) — the "always allow this
     // conversation" option would be misleading since the service layer
     // rejects it anyway (see `AgentService.approveToolCall`).
     if (request.metadata?.approvalPolicy === 'always-require-user') return true
