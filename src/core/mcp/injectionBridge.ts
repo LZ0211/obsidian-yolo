@@ -32,8 +32,9 @@ export type InjectedToolDescriptor = {
   description: string
   inputSchema: {
     type: 'object'
-    properties: Record<string, unknown>
+    properties?: Record<string, unknown>
     required?: string[]
+    [keyword: string]: unknown
   }
   annotations?: McpTool['annotations']
   /** YOLO policy extension; this is intentionally separate from MCP hints. */
