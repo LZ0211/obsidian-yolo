@@ -483,7 +483,7 @@ describe('McpManager self-heal', () => {
     const editedUrl = 'https://example.com/edited-mcp'
 
     await manager.handleSettingsUpdate({
-      mcp: { servers: [httpServerConfig()], builtinToolOptions: {} },
+      mcp: { servers: [httpServerConfig()], builtinCapabilityOptions: {} },
       webSearch: {
         providers: [],
         defaultProviderId: undefined,
@@ -510,7 +510,7 @@ describe('McpManager self-heal', () => {
             parameters: { transport: 'http', url: editedUrl },
           },
         ],
-        builtinToolOptions: {},
+        builtinCapabilityOptions: {},
       },
       webSearch: {
         providers: [],
