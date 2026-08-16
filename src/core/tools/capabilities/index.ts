@@ -4,6 +4,7 @@ import { fileEditingCapability } from './file-editing'
 import { fileReadingCapability } from './file-reading'
 import { jsSandboxCapability } from './js-sandbox'
 import { memoryCapability } from './memory'
+import { metadataSearchCapability } from './metadata-search'
 import { projectsCapability } from './projects'
 import { subagentDelegationCapability } from './subagent-delegation'
 import { scheduledTasksCapability } from './scheduled-tasks'
@@ -36,6 +37,7 @@ import { webAccessCapability } from './web-access'
  */
 export const CAPABILITIES = [
   fileReadingCapability,
+  metadataSearchCapability,
   vaultShellCapability,
   fileEditingCapability,
   contextPruningCapability,

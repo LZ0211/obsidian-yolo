@@ -45,6 +45,7 @@ export function searchFilesByMetadataDsl(
   return searchFilesByMetadata(app, query.filters, {
     maxResults: Math.min(options.maxResults, query.limit ?? options.maxResults),
     path: query.path ?? options.path,
+    isReadablePath: options.isReadablePath,
     select: query.select,
     orderBy: query.orderBy,
   })

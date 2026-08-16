@@ -40,6 +40,7 @@ const EXPECTED_ORDER_WITH_BASH = [
   'fs_read',
   'fs_edit',
   'fs_write',
+  'meta_search',
   'bash',
   'memory_add',
   'memory_update',
@@ -49,6 +50,8 @@ const EXPECTED_ORDER_WITH_BASH = [
   'js_eval',
   'terminal_command',
   'delegate_subagent',
+  'scheduled_task_ops',
+  'project_ops',
   'ask_user_question',
   'todo_write',
 ]

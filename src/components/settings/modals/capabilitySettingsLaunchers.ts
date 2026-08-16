@@ -160,6 +160,7 @@ export const CAPABILITY_SETTINGS_LAUNCHERS = {
   todo_list: null,
   user_questions: null,
   file_reading: null,
+  metadata_search: null,
   file_editing: null,
   web_access: openWebSearchSettings,
   js_sandbox: openJsSandboxSettings,

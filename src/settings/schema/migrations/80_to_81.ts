@@ -104,6 +104,12 @@ const V81_CAPABILITIES: readonly {
     allowedModes: DEFAULT_ALLOWED_MODES,
   },
   {
+    id: 'metadata_search',
+    toolNames: ['meta_search'],
+    defaultMode: 'full_access',
+    allowedModes: DEFAULT_ALLOWED_MODES,
+  },
+  {
     id: 'vault_shell',
     toolNames: ['bash'],
     defaultMode: 'dangerous_only',
@@ -176,6 +182,12 @@ const V81_CAPABILITIES: readonly {
   {
     id: 'scheduled_tasks',
     toolNames: ['scheduled_task_ops'],
+    defaultMode: 'full_access',
+    allowedModes: DEFAULT_ALLOWED_MODES,
+  },
+  {
+    id: 'projects',
+    toolNames: ['project_ops'],
     defaultMode: 'full_access',
     allowedModes: DEFAULT_ALLOWED_MODES,
   },

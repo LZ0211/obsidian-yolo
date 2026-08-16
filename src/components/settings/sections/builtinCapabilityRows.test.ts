@@ -23,6 +23,7 @@ describe('buildBuiltinCapabilityRows', () => {
 
     expect(rows.map((row) => row.id)).toEqual([
       'file_reading',
+      'metadata_search',
       'vault_shell',
       'file_editing',
       'context_pruning',
@@ -39,6 +40,7 @@ describe('buildBuiltinCapabilityRows', () => {
 
     expect(rows.map((row) => row.label)).toEqual([
       'Read File',
+      'Search Metadata',
       'Bash (Vault Shell)',
       'File Editing Toolset',
       'Prune Tool Results',
@@ -73,11 +75,13 @@ describe('groupCapabilityRowsByCategory', () => {
     // brief's "已经替你查清的事实").
     expect(vault?.rows.map((row) => row.id)).toEqual([
       'file_reading',
+      'metadata_search',
       'vault_shell',
       'file_editing',
     ])
     expect(vault?.rows.map((row) => row.label)).toEqual([
       'Read File',
+      'Search Metadata',
       'Bash (Vault Shell)',
       'File Editing Toolset',
     ])

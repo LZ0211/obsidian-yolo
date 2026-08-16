@@ -542,6 +542,7 @@ describe('migrateFrom80To81', () => {
    */
   const V81_CAPABILITY_IDS = [
     'file_reading',
+    'metadata_search',
     'vault_shell',
     'file_editing',
     'context_pruning',
@@ -554,6 +555,7 @@ describe('migrateFrom80To81', () => {
     'terminal',
     'subagent_delegation',
     'scheduled_tasks',
+    'projects',
   ]
 
   it('writes exactly the v81 capabilities globally, never a later-added one', () => {
