@@ -32,6 +32,7 @@ export type DelegatedAssistantProfile = {
   modelId: string
   allowedToolNames: string[]
   toolPreferences: Record<string, AssistantToolPreference>
+  builtinCapabilityPreferences?: Record<string, AssistantToolPreference>
   toolServerPreferences?: Record<string, AssistantToolServerPreference>
   allowedSkillPaths: string[]
   workspaceAccessPolicy?: WorkspaceAccessPolicy
@@ -113,6 +114,7 @@ export async function resolveDelegatedAssistantProfile({
     modelId,
     allowedToolNames,
     toolPreferences,
+    builtinCapabilityPreferences: assistant.builtinCapabilityPreferences,
     toolServerPreferences: assistant.toolServerPreferences,
     allowedSkillPaths,
     workspaceAccessPolicy: parentWorkspacePolicy,

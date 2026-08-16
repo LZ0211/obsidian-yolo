@@ -1,7 +1,11 @@
 import { v4 as uuidv4 } from 'uuid'
 
-import type { TaskSource } from '../../../types/chat'
-import type { ChatMessage, ChatUserMessage } from '../../../types/chat'
+import type {
+  ChatMessage,
+  ChatUserMessage,
+  DelegatedRoleMetadata,
+  TaskSource,
+} from '../../../types/chat'
 import type { ChatModel } from '../../../types/chat-model.types'
 import type {
   LLMProvider,
@@ -16,6 +20,7 @@ import { type YoloAgentEvent, conversationStateToEvents } from '../agent-api'
 import { backgroundTaskCompletionBus } from '../background-task/completion-bus'
 import { liveTaskStreamBus } from '../live-stream/taskStreamBus'
 import { NativeAgentRuntime } from '../native-runtime'
+import type { ProjectTaskBinding } from '../project/types'
 import type { AgentConversationState } from '../service'
 import type { AgentRuntimeLoopConfig, AgentRuntimeRunInput } from '../types'
 
@@ -23,13 +28,19 @@ import {
   SUBAGENT_DEFAULT_SYSTEM_PROMPT,
   SUBAGENT_MAX_AUTO_ITERATIONS,
 } from './constants'
-import type { SubagentParentContext } from './parent-context'
+import type { DelegatedAssistantProfile } from './delegated-assistant-profile'
+import {
+  type SubagentParentContext,
+  composeParentContextPrompt,
+} from './parent-context'
+import { truncateLiveTranscriptMessages } from './result-limit'
 import { subagentRuntimeRegistry } from './runtime-registry'
 import { subagentTaskRegistry } from './task-registry'
 import { filterAllowedToolsForSubagent } from './tool-filter'
 import type {
   SubagentAcceptedResult,
   SubagentResult,
+  SubagentTaskCompletionRecord,
   SubagentTaskRecord,
 } from './types'
 
@@ -44,7 +55,40 @@ export type RunSubagentParams = {
     model: ChatModel
     apiType?: LLMProviderApiType | null
   }
+  delegatedProfile?: DelegatedAssistantProfile
+  projectTask?: ProjectTaskBinding
+  sessionId?: string
+  runSequence?: number
+  runKey?: string
   signal?: AbortSignal
+}
+
+const publishBackgroundSubagentCompletion = (
+  record: SubagentTaskRecord,
+): void => {
+  const updatedRecord = subagentTaskRegistry.get(record.taskId)
+  if (!updatedRecord || updatedRecord.status === 'running') return
+
+  const { abortController: _abortController, ...recordWithoutAbort } = record
+  const completionRecord: SubagentTaskCompletionRecord = {
+    ...recordWithoutAbort,
+    ...updatedRecord,
+  }
+  const usage = updatedRecord.result?.usage
+  backgroundTaskCompletionBus.pushCompleted({
+    kind: 'subagent',
+    taskId: updatedRecord.taskId,
+    conversationId: updatedRecord.conversationId,
+    record: completionRecord,
+    ...(usage
+      ? {
+          usage: {
+            inputTokens: usage.prompt_tokens,
+            outputTokens: usage.completion_tokens,
+          },
+        }
+      : {}),
+  })
 }
 
 function countToolUses(messages: ChatMessage[]): number {
@@ -128,11 +172,14 @@ export function autoRejectPendingApprovals(runtime: NativeAgentRuntime): void {
   const last = snapshot.messages.at(-1)
   if (!last || last.role !== 'tool') return
   for (const toolCall of last.toolCalls) {
-    if (toolCall.response.status === ToolCallResponseStatus.PendingApproval) {
+    if (
+      toolCall.response.status === ToolCallResponseStatus.PendingApproval ||
+      toolCall.response.status === ToolCallResponseStatus.AwaitingUserInput
+    ) {
       runtime.setToolCallResponse(toolCall.request.id, {
         status: ToolCallResponseStatus.Error,
         error:
-          'Tool approval timed out: the user did not respond within 5 minutes, so this call was auto-rejected. Try a different approach or summarise the situation in your final reply so the user can take over.',
+          'Tool interaction timed out: the user did not respond within 5 minutes, so this call was auto-rejected. Try a different approach or summarise the situation in your final reply so the user can take over.',
       })
     }
   }
@@ -140,6 +187,7 @@ export function autoRejectPendingApprovals(runtime: NativeAgentRuntime): void {
 
 /** Auto-reject window for paused subagent tool calls. */
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000
+const APPROVAL_PARENT_DEADLINE_RENEWAL_INTERVAL_MS = 60 * 1000
 
 function extractLastAssistantText(messages: ChatMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -224,29 +272,82 @@ function projectSubagentEvent({
   return undefined
 }
 
+export function resolveSubagentRunPolicy({
+  parent,
+  delegatedProfile,
+}: {
+  parent: SubagentParentContext
+  delegatedProfile?: DelegatedAssistantProfile
+}) {
+  if (delegatedProfile) {
+    return {
+      loopConfig: delegatedProfile.loopConfig,
+      allowedToolNames: filterAllowedToolsForSubagent(
+        delegatedProfile.allowedToolNames,
+      ),
+      toolPreferences: delegatedProfile.toolPreferences,
+      builtinCapabilityPreferences:
+        delegatedProfile.builtinCapabilityPreferences,
+      toolServerPreferences: delegatedProfile.toolServerPreferences,
+      workspaceAccessPolicy: parent.workspaceAccessPolicy,
+      allowedSkillPaths: delegatedProfile.allowedSkillPaths,
+      enableToolDisclosure: parent.enableToolDisclosure,
+      reasoningLevel: parent.reasoningLevel,
+      requestParams: parent.requestParams,
+      requestContextBuilder: delegatedProfile.requestContextBuilder,
+      bypassToolApproval: parent.bypassToolApproval,
+      systemPromptOverride: undefined,
+    }
+  }
+
+  return {
+    loopConfig: {
+      enableTools: parent.loopConfig.enableTools,
+      includeBuiltinTools: parent.loopConfig.includeBuiltinTools,
+      maxAutoIterations: SUBAGENT_MAX_AUTO_ITERATIONS,
+    },
+    allowedToolNames: filterAllowedToolsForSubagent(parent.allowedToolNames),
+    toolPreferences: parent.toolPreferences,
+    builtinCapabilityPreferences: parent.builtinCapabilityPreferences,
+    toolServerPreferences: parent.toolServerPreferences,
+    workspaceAccessPolicy: parent.workspaceAccessPolicy,
+    allowedSkillPaths: parent.allowedSkillPaths,
+    enableToolDisclosure: parent.enableToolDisclosure,
+    reasoningLevel: parent.reasoningLevel,
+    requestParams: parent.requestParams,
+    requestContextBuilder: parent.requestContextBuilder,
+    bypassToolApproval: parent.bypassToolApproval,
+    systemPromptOverride: SUBAGENT_DEFAULT_SYSTEM_PROMPT,
+  }
+}
+
 async function runChildAgent(
   record: SubagentTaskRecord,
   parent: SubagentParentContext,
   childModel: RunSubagentParams['childModel'],
+  delegatedProfile?: DelegatedAssistantProfile,
 ): Promise<void> {
   const startedAt = record.createdAt
   const childUserMessage: ChatUserMessage = {
     role: 'user',
     id: uuidv4(),
     content: null,
-    promptContent: record.prompt,
+    promptContent: composeParentContextPrompt({
+      prompt: record.prompt,
+      parentMessages: parent.parentMessages ?? [],
+      forkContext: parent.forkContext,
+    }),
     mentionables: [],
   }
 
-  const childAllowedToolNames = filterAllowedToolsForSubagent(
-    parent.allowedToolNames,
-  )
-
-  const loopConfig: AgentRuntimeLoopConfig = {
-    enableTools: parent.loopConfig.enableTools,
-    includeBuiltinTools: parent.loopConfig.includeBuiltinTools,
-    maxAutoIterations: SUBAGENT_MAX_AUTO_ITERATIONS,
-  }
+  const policy = resolveSubagentRunPolicy({ parent, delegatedProfile })
+  const loopConfig: AgentRuntimeLoopConfig = policy.loopConfig
+  const delegatedRole: DelegatedRoleMetadata | undefined = delegatedProfile
+    ? Object.freeze({
+        assistantId: delegatedProfile.delegatedRole.id,
+        assistantName: delegatedProfile.delegatedRole.name,
+      })
+    : undefined
 
   const runtime = new NativeAgentRuntime(loopConfig)
   const abortController = record.abortController
@@ -274,21 +375,22 @@ async function runChildAgent(
     conversationId: record.taskId,
     sourceUserMessageId: childUserMessage.id,
     assistantId: parent.assistantId,
-    requestContextBuilder: parent.requestContextBuilder,
+    requestContextBuilder: policy.requestContextBuilder,
     mcpManager: parent.mcpManager,
-    allowedToolNames: childAllowedToolNames,
-    toolPreferences: parent.toolPreferences,
-    builtinCapabilityPreferences: parent.builtinCapabilityPreferences,
-    toolServerPreferences: parent.toolServerPreferences,
+    allowedToolNames: policy.allowedToolNames,
+    toolPreferences: policy.toolPreferences,
+    builtinCapabilityPreferences: policy.builtinCapabilityPreferences,
+    toolServerPreferences: policy.toolServerPreferences,
     workspaceScope: parent.workspaceScope,
-    allowedSkillPaths: parent.allowedSkillPaths,
-    enableToolDisclosure: parent.enableToolDisclosure,
-    reasoningLevel: parent.reasoningLevel,
-    requestParams: parent.requestParams,
+    workspaceAccessPolicy: policy.workspaceAccessPolicy,
+    allowedSkillPaths: policy.allowedSkillPaths,
+    enableToolDisclosure: policy.enableToolDisclosure,
+    reasoningLevel: policy.reasoningLevel,
+    requestParams: policy.requestParams,
     abortSignal: abortController.signal,
-    systemPromptOverride: SUBAGENT_DEFAULT_SYSTEM_PROMPT,
+    systemPromptOverride: policy.systemPromptOverride,
     toolApprovalConversationId: parent.conversationId,
-    bypassToolApproval: parent.bypassToolApproval,
+    bypassToolApproval: policy.bypassToolApproval,
   }
 
   const unsubscribe = runtime.subscribe((snapshot) => {
@@ -301,7 +403,7 @@ async function runChildAgent(
         snapshot.pendingCompactionAnchorMessageId,
     }
     subagentTaskRegistry.update(record.taskId, {
-      liveTranscript: snapshot.messages,
+      liveTranscript: truncateLiveTranscriptMessages(snapshot.messages),
     })
     const nextEvents = conversationStateToEvents({
       state,
@@ -378,12 +480,19 @@ async function runChildAgent(
         autoRejectPendingApprovals(runtime)
         void resumeRun()
       }, APPROVAL_TIMEOUT_MS)
+      const { renewParentSubagentDeadline } = await import(
+        './pending-timeout-registry'
+      )
+      const renewalHandle = setInterval(() => {
+        renewParentSubagentDeadline(parentToolCallId)
+      }, APPROVAL_PARENT_DEADLINE_RENEWAL_INTERVAL_MS)
       try {
         await new Promise<void>((resolve) => {
           approvalResolver = resolve
         })
       } finally {
         clearTimeout(timeoutHandle)
+        clearInterval(renewalHandle)
       }
       if (abortController.signal.aborted) {
         break
@@ -416,6 +525,10 @@ async function runChildAgent(
       prompt: record.prompt,
       modelName: childModel.model.name ?? childModel.model.model,
       transcript: finalMessages,
+      ...(delegatedRole ? { delegatedRole } : {}),
+      ...(delegatedProfile
+        ? { delegatedRoleName: delegatedProfile.delegatedRole.name }
+        : {}),
     }
 
     subagentTaskRegistry.update(record.taskId, {
@@ -452,6 +565,10 @@ async function runChildAgent(
         toolUseCount: 0,
         prompt: record.prompt,
         modelName: childModel.model.name ?? childModel.model.model,
+        ...(delegatedRole ? { delegatedRole } : {}),
+        ...(delegatedProfile
+          ? { delegatedRoleName: delegatedProfile.delegatedRole.name }
+          : {}),
       },
     })
   } finally {
@@ -465,20 +582,13 @@ async function runChildAgent(
 
   unsubscribe()
 
-  const updatedRecord = subagentTaskRegistry.get(record.taskId)
-  if (updatedRecord && updatedRecord.status !== 'running') {
-    backgroundTaskCompletionBus.pushCompleted({
-      kind: 'subagent',
-      taskId: updatedRecord.taskId,
-      conversationId: updatedRecord.conversationId,
-      record: updatedRecord,
-    })
-  }
+  publishBackgroundSubagentCompletion(record)
 }
 
 export async function runSubagent(
   params: RunSubagentParams,
 ): Promise<SubagentAcceptedResult> {
+  let abortListener: (() => void) | undefined
   const {
     description,
     prompt,
@@ -486,6 +596,11 @@ export async function runSubagent(
     source,
     parent,
     childModel,
+    delegatedProfile,
+    projectTask,
+    sessionId,
+    runSequence,
+    runKey,
     signal,
   } = params
 
@@ -505,9 +620,8 @@ export async function runSubagent(
   const taskId = `sub_${uuidv4().replace(/-/g, '').slice(0, 12)}`
   const abortController = new AbortController()
   if (signal) {
-    signal.addEventListener('abort', () => abortController.abort(), {
-      once: true,
-    })
+    abortListener = () => abortController.abort()
+    signal.addEventListener('abort', abortListener, { once: true })
   }
 
   const record: SubagentTaskRecord = {
@@ -519,13 +633,50 @@ export async function runSubagent(
     createdAt: Date.now(),
     prompt: taskPrompt,
     abortController,
+    ...(projectTask ? { projectTask } : {}),
+    sessionId: sessionId ?? taskId,
+    runSequence: runSequence ?? 1,
+    runKey: runKey ?? taskId,
   }
 
   subagentTaskRegistry.register(record)
 
-  void runChildAgent(record, parent, childModel).catch(() => {
-    // Errors are persisted on the record; avoid unhandled rejection.
-  })
+  void runChildAgent(record, parent, childModel, delegatedProfile)
+    .catch((error: unknown) => {
+      const completedAt = Date.now()
+      const status = abortController.signal.aborted ? 'aborted' : 'failed'
+      const errorMessage = formatErrorMessageWithCauses(error)
+      const delegatedRole: DelegatedRoleMetadata | undefined = delegatedProfile
+        ? Object.freeze({
+            assistantId: delegatedProfile.delegatedRole.id,
+            assistantName: delegatedProfile.delegatedRole.name,
+          })
+        : undefined
+      subagentTaskRegistry.update(record.taskId, {
+        status,
+        completedAt,
+        error: errorMessage,
+        result: {
+          taskId: record.taskId,
+          status,
+          content: errorMessage,
+          durationMs: completedAt - record.createdAt,
+          toolUseCount: 0,
+          prompt: record.prompt,
+          modelName: childModel.model.name ?? childModel.model.model,
+          ...(delegatedRole ? { delegatedRole } : {}),
+          ...(delegatedProfile
+            ? { delegatedRoleName: delegatedProfile.delegatedRole.name }
+            : {}),
+        },
+      })
+      publishBackgroundSubagentCompletion(record)
+    })
+    .finally(() => {
+      if (signal && abortListener) {
+        signal.removeEventListener('abort', abortListener)
+      }
+    })
 
   return {
     accepted: true,

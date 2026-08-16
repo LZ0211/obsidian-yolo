@@ -302,6 +302,9 @@ describe('resolveSubagentRunPolicy', () => {
       },
       allowedToolNames: ['role__search', SUBAGENT_BLOCKED_TOOL_NAMES[0]],
       toolPreferences: { role: { enabled: true } },
+      builtinCapabilityPreferences: {
+        file_reading: { enabled: true, approvalMode: 'full_access' },
+      },
       toolServerPreferences: { role: { approvalMode: 'full_access' } },
       allowedSkillPaths: ['role/SKILL.md'],
       requestContextBuilder: {},
@@ -317,6 +320,8 @@ describe('resolveSubagentRunPolicy', () => {
       loopConfig: delegatedProfile.loopConfig,
       allowedToolNames: ['role__search'],
       toolPreferences: delegatedProfile.toolPreferences,
+      builtinCapabilityPreferences:
+        delegatedProfile.builtinCapabilityPreferences,
       toolServerPreferences: delegatedProfile.toolServerPreferences,
       allowedSkillPaths: delegatedProfile.allowedSkillPaths,
       requestContextBuilder: delegatedProfile.requestContextBuilder,

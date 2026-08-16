@@ -1,7 +1,7 @@
 /**
  * Migration Task 4 e2e test: the full delegate_subagent -> delivery chain.
  *
- * Path 1 (tool chain): a real `callLocalFileTool` dispatch of
+ * Path 1 (tool chain): a real `executeBuiltinTool` dispatch of
  * `delegate_subagent` carrying a full projectTask binding. runSubagent is
  * mocked so the dispatch params can be captured; the test asserts the binding
  * chain from T2 Step 6b actually forwarded the resolved binding and the
@@ -31,7 +31,7 @@ import type { App } from 'obsidian'
 import type { YoloSettings } from '../../../settings/schema/setting.types'
 import { RUN_OUTCOME } from '../../../types/agentRun'
 import { ToolCallResponseStatus } from '../../../types/tool-call.types'
-import { callLocalFileTool } from '../../mcp/localFileTools'
+import { executeBuiltinTool } from '../../tools/dispatcher'
 import { backgroundTaskCompletionBus } from '../background-task/completion-bus'
 import type { BackgroundTaskCompletedEvent } from '../background-task/completion-bus'
 import { runSubagent } from '../subagent/runner'
@@ -73,8 +73,8 @@ const buildSettings = (): YoloSettings =>
     mcp: {
       servers: [],
       enableToolDisclosure: false,
-      builtinToolOptions: {
-        delegate_subagent: {
+      builtinCapabilityOptions: {
+        subagent_delegation: {
           allowedModelIds: ['openai/gpt-5', 'openai/gpt-4.1-mini'],
           preferredModelId: 'openai/gpt-4.1-mini',
         },
@@ -207,25 +207,28 @@ afterEach(() => {
   ;(runSubagent as jest.Mock).mockClear()
 })
 
-describe('project e2e — tool chain (callLocalFileTool -> delegate_subagent)', () => {
+describe('project e2e — tool chain (executeBuiltinTool -> delegate_subagent)', () => {
   it('forwards the resolved projectTask binding and composed prompt to runSubagent', async () => {
     const { adapter, settings, store } = await seedProject('e2e-proj', 'T-001')
     const binding = await advanceToInProgress(store, 'e2e-proj', 'T-001')
 
-    const result = await callLocalFileTool({
-      app: { vault: { adapter } } as unknown as App,
-      settings,
-      conversationId: 'conv-1',
-      conversationMessages: [],
-      toolCallId: 'tool-1',
-      toolName: 'delegate_subagent',
-      args: {
+    const result = await executeBuiltinTool(
+      'delegate_subagent',
+      {
         description: 'Implement',
         prompt: 'Make it work',
         projectTask: binding,
       },
-      subagentParentContext: {} as never,
-    })
+      {
+        app: { vault: { adapter } } as unknown as App,
+        settings,
+        conversationId: 'conv-1',
+        conversationMessages: [],
+        toolCallId: 'tool-1',
+        subagentParentContext: {} as never,
+        runSubagent: runSubagent as never,
+      },
+    )
 
     expect(result.status).toBe(ToolCallResponseStatus.Success)
     const params = (runSubagent as jest.Mock).mock.calls.at(-1)?.[0]

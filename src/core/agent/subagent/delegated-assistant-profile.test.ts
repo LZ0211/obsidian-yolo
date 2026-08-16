@@ -55,7 +55,7 @@ function makeSettings(role: Assistant): YoloSettings {
   settings.assistants = [role]
   settings.chatModels = [ROLE_MODEL, GENERIC_MODEL]
   settings.chatModelId = GENERIC_MODEL.id
-  settings.mcp.builtinToolOptions.delegate_subagent = {
+  settings.mcp.builtinCapabilityOptions.subagent_delegation = {
     allowedModelIds: [GENERIC_MODEL.id],
     preferredModelId: GENERIC_MODEL.id,
   }
@@ -139,6 +139,9 @@ describe('resolveDelegatedAssistantProfile', () => {
       toolServerPreferences: {
         research: { approvalMode: 'full_access' },
       },
+      builtinCapabilityPreferences: {
+        file_reading: { enabled: false, approvalMode: 'require_approval' },
+      },
     })
     const parentWorkspacePolicy: WorkspaceAccessPolicy = {
       enabled: true,
@@ -150,6 +153,7 @@ describe('resolveDelegatedAssistantProfile', () => {
     const { promise, parentRequestContextBuilder } = resolveProfile({
       role,
       parentWorkspacePolicy,
+      availableToolNames: [roleTool],
     })
 
     const profile = await promise
@@ -158,6 +162,9 @@ describe('resolveDelegatedAssistantProfile', () => {
     expect(profile.modelId).toBe(ROLE_MODEL.id)
     expect(profile.allowedToolNames).toEqual([roleTool])
     expect(profile.toolPreferences).toEqual(role.toolPreferences)
+    expect(profile.builtinCapabilityPreferences).toBe(
+      role.builtinCapabilityPreferences,
+    )
     expect(profile.toolServerPreferences).toBe(role.toolServerPreferences)
     expect(profile.allowedSkillPaths).toEqual(['skills/research/SKILL.md'])
     expect(profile.workspaceAccessPolicy).toBe(parentWorkspacePolicy)
