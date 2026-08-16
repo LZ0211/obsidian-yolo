@@ -18,6 +18,7 @@ import {
   BASH_TOOL_NAME,
   JS_SANDBOX_TOOL_NAME,
   LOCAL_FILE_TOOL_SERVER,
+  LOCAL_FILE_TOOL_SHORT_NAMES,
   LOCAL_FS_SPLIT_ACTION_TOOL_NAMES,
   LOCAL_FS_SPLIT_ACTION_TOOL_TO_ACTION,
   TERMINAL_COMMAND_TOOL_NAME,
@@ -111,6 +112,31 @@ if (
   throw new Error(
     'getLocalFileTools() catalog order is out of sync with the built-in tool registry (core/tools/registry.ts) — add the missing tool name to LOCAL_FILE_TOOL_CATALOG_ORDER.',
   )
+}
+
+// `LOCAL_FILE_TOOL_SHORT_NAMES` (leaf module `localFileToolNames.ts`) feeds
+// `normalizeToolCallName`'s local-FQN prefixing and the preference surfaces.
+// Every name it carries must be a registered `BuiltinToolName` or the
+// protocol-only `load_tool_schemas`; a tool registered in `CAPABILITIES`
+// but missing here would have its bare model calls routed as remote server
+// tools and fail — the failure mode that already bit twice on migration day
+// (`meta_search`, `mineru_convert` each needed a manual entry here).
+{
+  const expectedNames = new Set<string>([
+    ...listBuiltinTools().map((tool) => tool.name),
+    LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME,
+  ])
+  const extra = LOCAL_FILE_TOOL_SHORT_NAMES.filter(
+    (name) => !expectedNames.has(name),
+  )
+  const missing = [...expectedNames].filter(
+    (name) => !LOCAL_FILE_TOOL_SHORT_NAMES.includes(name),
+  )
+  if (extra.length > 0 || missing.length > 0) {
+    throw new Error(
+      `LOCAL_FILE_TOOL_SHORT_NAMES is out of sync with the built-in tool registry (core/tools/registry.ts): extra ${JSON.stringify(extra)}, missing ${JSON.stringify(missing)} — fix core/mcp/localFileToolNames.ts.`,
+    )
+  }
 }
 
 export function getLocalFileTools(options?: {

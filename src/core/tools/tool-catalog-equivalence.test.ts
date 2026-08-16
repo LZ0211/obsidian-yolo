@@ -21,10 +21,14 @@
 jest.mock('obsidian')
 
 import type { ChatModelModality } from '../../types/chat-model.types'
-import { getLocalFileTools } from '../mcp/localFileTools'
+import {
+  LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME,
+  LOCAL_FILE_TOOL_SHORT_NAMES,
+  getLocalFileTools,
+} from '../mcp/localFileTools'
 import { setRuntimeComponentEnabledOverrideForTests } from '../runtime-components/runtimeComponentAccess'
 
-import { getToolDefinition } from './registry'
+import { getToolDefinition, listBuiltinTools } from './registry'
 
 afterEach(() => {
   setRuntimeComponentEnabledOverrideForTests(null)
@@ -63,14 +67,18 @@ function expectCatalogMatchesRegistry(
     | undefined,
   expectedOrder: readonly string[],
 ): void {
-  const tools = getLocalFileTools(options).filter((tool) =>
-    Boolean(getToolDefinition(tool.name)),
-  )
+  const tools = getLocalFileTools(options)
+
+  // Every catalog entry must resolve to a registered definition — an
+  // unregistered leftover here is exactly the "second truth source" this
+  // suite exists to kill (no filtering: an extra catalog entry must fail).
+  for (const tool of tools) {
+    expect(getToolDefinition(tool.name)).toBeDefined()
+  }
   expect(tools.map((tool) => tool.name)).toEqual(expectedOrder)
 
   for (const tool of tools) {
     const definition = getToolDefinition(tool.name)
-    expect(definition).toBeDefined()
     const { name: _name, ...rest } = tool
     expect(rest).toEqual(
       definition!.getMcpTool({
@@ -130,6 +138,19 @@ describe('getLocalFileTools() catalog: bash-engine on/off (D6b)', () => {
     expectCatalogMatchesRegistry(
       undefined,
       EXPECTED_ORDER_WITH_BASH.filter((name) => name !== 'bash'),
+    )
+  })
+})
+
+describe('LOCAL_FILE_TOOL_SHORT_NAMES sync (D6b follow-up)', () => {
+  // `normalizeToolCallName` prefixes bare model tool calls with the local
+  // server name only for names on this leaf-module list; a registered tool
+  // missing from it would be routed as a remote server tool and fail. The
+  // module-load assertion in `localFileTools.ts` enforces this at import
+  // time; this test pins it in the suite so a new tool fails loudly here.
+  it('covers exactly the registered built-in tools plus the protocol tool', () => {
+    expect([...LOCAL_FILE_TOOL_SHORT_NAMES].sort()).toEqual(
+      [...listBuiltinTools().map((tool) => tool.name), LOAD_TOOL_SCHEMAS_LOCAL_TOOL_NAME].sort(),
     )
   })
 })
