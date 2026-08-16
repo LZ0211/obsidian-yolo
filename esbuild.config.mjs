@@ -60,6 +60,7 @@ const context = await esbuild.context({
   metafile: true,
   loader: {
     '.svg': 'dataurl',
+    '.md': 'text',
   },
   plugins: [],
 })
