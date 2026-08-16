@@ -3,10 +3,10 @@ import type { App } from 'obsidian'
 import { deserializeChatMessage } from '../../../hooks/useChatHistory'
 import type { YoloSettings } from '../../../settings/schema/setting.types'
 import type { Assistant } from '../../../types/assistant.types'
+import { ToolCallResponseStatus } from '../../../types/tool-call.types'
 import type { McpManager } from '../../mcp/mcpManager'
 import { listLiteSkillEntries } from '../../skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../../skills/skillPolicy'
-import { ToolCallResponseStatus } from '../../../types/tool-call.types'
 import type { ResolvedWebAgentContext } from '../webAgentTypes'
 import { workspaceAgentPolicyToRuntimeAccessPolicy } from '../WebChatRuntimeAdapter'
 import { writeJson } from '../WebHttpServer'
@@ -199,7 +199,7 @@ export function registerMcpRoutes(
       return
     }
     const manager = await context.getMcpManager()
-    writeJson(res, 200, { aborted: manager.abortToolCall(id, conversationId) })
+    writeJson(res, 200, { aborted: manager.abortToolCall(id) })
   })
 }
 

@@ -7,9 +7,9 @@ import { TFile } from 'obsidian'
 import { parseYoloSettings } from '../../../settings/schema/settings'
 import { ToolCallResponseStatus } from '../../../types/tool-call.types'
 import type { McpManager } from '../../mcp/mcpManager'
+import { getProtectedVaultPathRules } from '../../paths/protectedPaths'
 import type { ResolvedWebAgentContext } from '../webAgentTypes'
 import { WebRouter } from '../WebRouter'
-import { getProtectedVaultPathRules } from '../../paths/protectedPaths'
 
 import { type McpRoutesContext, registerMcpRoutes } from './mcpRoutes'
 
@@ -274,7 +274,7 @@ describe('mcpRoutes', () => {
 
     await resolved?.handler(req as never, res as never, {})
 
-    expect(abortToolCall).toHaveBeenCalledWith('tool-1', 'chat-1')
+    expect(abortToolCall).toHaveBeenCalledWith('tool-1')
     expect(res.statusCode).toBe(200)
     expect(res.jsonBody).toEqual({ aborted: true })
   })
