@@ -44,6 +44,7 @@ export type AcpCliRuntimeOptions = Readonly<{
   getSessionInjection?: () => CliSessionInjection
   clientName?: string
   resolveHost?: AcpHostResolver
+  resolveProcessOptions?: AcpHostOptions['resolveProcessOptions']
   createProcess?: AcpHostOptions['createProcess']
 }>
 
@@ -372,12 +373,14 @@ export class AcpCliRuntime implements CliRuntime {
         : new AcpHost({
             runtimeId: this.runtimeId,
             clientName: this.options.clientName ?? 'obsidian-yolo',
-            resolveProcessOptions: async () => ({
-              command: this.options.command ?? '',
-              args: this.options.args ?? [],
-              cwd: this.options.cwd,
-              env: this.options.env,
-            }),
+            resolveProcessOptions:
+              this.options.resolveProcessOptions ??
+              (async () => ({
+                command: this.options.command ?? '',
+                args: this.options.args ?? [],
+                cwd: this.options.cwd,
+                env: this.options.env,
+              })),
             createProcess: this.options.createProcess,
           })
     if (this.host !== host) {
