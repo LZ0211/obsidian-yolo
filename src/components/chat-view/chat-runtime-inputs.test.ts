@@ -22,14 +22,22 @@ describe('chat-runtime-inputs', () => {
     })
   })
 
-  it('returns undefined policy when assistant is missing or has none', () => {
-    expect(resolveWorkspaceAccessPolicyForRuntimeInput(null)).toBeUndefined()
-    expect(
-      resolveWorkspaceAccessPolicyForRuntimeInput({
-        id: 'a',
-        name: 'A',
-        systemPrompt: '',
-      } as Assistant),
-    ).toBeUndefined()
+  it('still injects the host-protected-path baseline when the assistant has no policy', () => {
+    // Host-managed protected paths (baseDir minus skills) are always present:
+    // fs/bash/git-diff must never touch plugin-private data, even for an
+    // assistant without an explicit workspace policy.
+    const resolved = resolveWorkspaceAccessPolicyForRuntimeInput(null)
+    expect(resolved).toMatchObject({
+      enabled: false,
+      workspaceRoot: '',
+    })
+    expect((resolved?.protectedPaths ?? []).length).toBeGreaterThan(0)
+
+    const assistantResolved = resolveWorkspaceAccessPolicyForRuntimeInput({
+      id: 'a',
+      name: 'A',
+      systemPrompt: '',
+    } as Assistant)
+    expect(assistantResolved).toMatchObject({ enabled: false })
   })
 })

@@ -2342,6 +2342,9 @@ describe('YOLO user data root final defense', () => {
       extension: 'json',
       stat: { size: 20 },
     })
+    // A literal fs_read path inside the user-data root is caught at the
+    // security boundary (hidden check now applies to every tool) with the
+    // same not-found disguise; the file is never read.
     const result = await callLocalFileTool({
       app: {
         vault: {
@@ -2361,20 +2364,10 @@ describe('YOLO user data root final defense', () => {
       args: { paths: ['YOLO/data/chats/v1_abc.json'] },
     })
 
-    expect(result.status).toBe(ToolCallResponseStatus.Success)
-    if (result.status !== ToolCallResponseStatus.Success) {
-      throw new Error('expected success')
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+    if (result.status === ToolCallResponseStatus.Error) {
+      expect(result.error).toBe('File not found: YOLO/data/chats/v1_abc.json')
     }
-    const payload = JSON.parse(result.text) as {
-      results: Array<{ path: string; ok: boolean; error?: string }>
-    }
-    expect(payload.results).toEqual([
-      {
-        path: 'YOLO/data/chats/v1_abc.json',
-        ok: false,
-        error: 'File not found: YOLO/data/chats/v1_abc.json',
-      },
-    ])
     expect(read).not.toHaveBeenCalled()
   })
 
@@ -2471,8 +2464,7 @@ describe('callLocalFileTool: dispatcher-level boundaries (D5 parity with execute
 
     expect(result).toEqual({
       status: ToolCallResponseStatus.Error,
-      error:
-        'Path "secret/a.md" is outside this agent\'s workspace access policy.',
+      error: 'Path "secret/a.md" is outside this agent\'s workspace scope.',
     })
   })
 })

@@ -726,7 +726,10 @@ export const fsReadDefinition = defineTool({
                 continue
               }
             } catch (error) {
-              if (error instanceof DOMException && error.name === 'AbortError') {
+              if (
+                error instanceof DOMException &&
+                error.name === 'AbortError'
+              ) {
                 return { status: ToolCallResponseStatus.Aborted }
               }
               throw error

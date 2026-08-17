@@ -59,8 +59,7 @@ describe('executeBuiltinTool: workspace-scope second line of defense', () => {
 
     expect(result).toEqual({
       status: ToolCallResponseStatus.Error,
-      error:
-        'Path "secret/a.md" is outside this agent\'s workspace access policy.',
+      error: 'Path "secret/a.md" is outside this agent\'s workspace scope.',
     })
   })
 

@@ -6,7 +6,6 @@ import type {
 import type { App } from 'obsidian'
 import { v4 as uuidv4 } from 'uuid'
 
-import { getMemoryIndexRuntimeHandle } from '../memory/memoryIndexRuntime'
 import { resolveChatModeRuntime } from '../../components/chat-view/chat-runtime-profiles'
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import type { AssistantWorkspaceScope } from '../../types/assistant.types'
@@ -22,13 +21,10 @@ import { getChatModelClient } from '../llm/manager'
 import type { InProcessToolServer } from '../mcp/inProcessToolServer'
 import type { McpManager } from '../mcp/mcpManager'
 import { getToolName } from '../mcp/tool-name-utils'
+import { getMemoryIndexRuntimeHandle } from '../memory/memoryIndexRuntime'
 import { listLiteSkillEntries } from '../skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../skills/skillPolicy'
-import { findUnifiedAgentById } from './workspaceAgentResolver'
-import {
-  normalizeWorkspacePolicy,
-  resolveAssistantWorkspaceAccessPolicy,
-} from './workspaceScope'
+
 
 import { resolveAgentApiContext } from './agent-api-context'
 import { DEFAULT_ASSISTANT_ID } from './default-assistant'
@@ -40,6 +36,11 @@ import type {
 } from './service'
 import { getEnabledAssistantToolNames } from './tool-preferences'
 import type { AgentRuntimeLoopConfig, AgentRuntimeRunInput } from './types'
+import { findUnifiedAgentById } from './workspaceAgentResolver'
+import {
+  normalizeWorkspacePolicy,
+  resolveAssistantWorkspaceAccessPolicy,
+} from './workspaceScope'
 
 export type YoloAgentContext =
   | { type: 'file'; path: string }

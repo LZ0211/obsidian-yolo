@@ -2,14 +2,14 @@ import type { App } from 'obsidian'
 
 import type { YoloSettings } from '../../../settings/schema/setting.types'
 import type { WorkspaceAccessPolicy } from '../../../types/assistant.types'
-import { publishQueryProgress } from '../../rag/queryProgressBus'
 import { runVaultSearchStructured } from '../../mcp/vaultSearchService'
+import { publishQueryProgress } from '../../rag/queryProgressBus'
 import type { RAGEngine } from '../../rag/ragEngine'
-import { superSearchDedupKey } from '../../search/hybridSearch'
 import type {
   BashSearchCallback,
   BashSearchResultEntry,
 } from '../../runtime-components/contracts'
+import { superSearchDedupKey } from '../../search/hybridSearch'
 import type { CitationRegistry } from '../citationRegistry'
 import { resolvePathVisibility } from '../workspaceScope'
 

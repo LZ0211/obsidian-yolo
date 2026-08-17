@@ -435,12 +435,18 @@ describe('isVisibleForTraversal', () => {
     expect(isVisibleForTraversal('Projects/Client/x.md', access)).toBe(true)
   })
 
-  it('denies an excluded path even when it is an ancestor of an include rule', () => {
+  it('keeps the ancestor carve-out even when the ancestor is also excluded', () => {
+    // Traversal must be able to descend toward an include rule; the strict
+    // content read of the excluded ancestor is still denied by
+    // `resolvePathVisibility` (out-of-scope) — this only affects listing.
     const access = policy({
       workspaceRoot: 'Projects/Client',
       readExcludes: ['Projects'],
     })
-    expect(isVisibleForTraversal('Projects', access)).toBe(false)
+    expect(isVisibleForTraversal('Projects', access)).toBe(true)
+    expect(resolvePathVisibility('Projects/Other/file.md', { policy: access })).toBe(
+      'out-of-scope',
+    )
   })
 })
 

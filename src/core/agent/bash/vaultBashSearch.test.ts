@@ -1,7 +1,7 @@
 import type { App } from 'obsidian'
 
-import type { WorkspaceAccessPolicy } from '../../../types/assistant.types'
 import type { QueryProgressState } from '../../../components/chat-view/QueryProgress'
+import type { WorkspaceAccessPolicy } from '../../../types/assistant.types'
 import type { VaultSearchStructuredOutcome } from '../../mcp/vaultSearchService'
 import { subscribeQueryProgress } from '../../rag/queryProgressBus'
 import type { AggregatedSearchResult } from '../../search/searchResultAggregation'

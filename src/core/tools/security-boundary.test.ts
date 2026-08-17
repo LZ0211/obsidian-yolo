@@ -16,9 +16,7 @@ describe('enforceBuiltinToolSecurityBoundary', () => {
         { path: '/00-Email/x.md', content: 'x' },
         { workspaceAccessPolicy: workspacePolicy },
       ),
-    ).toThrow(
-      'Path "/00-Email/x.md" is outside this agent\'s workspace access policy.',
-    )
+    ).toThrow('Path "/00-Email/x.md" is outside this agent\'s workspace scope.')
   })
 
   it('allows a write inside the workspace root', () => {
@@ -64,14 +62,18 @@ describe('enforceBuiltinToolSecurityBoundary', () => {
     ).toThrow('File not found: YOLO/data/chat.json')
   })
 
-  it('skips the user-data-root check for fs_read raw paths', () => {
+  it('denies a literal fs_read path inside the user-data root at the boundary', () => {
+    // The hidden check applies unconditionally to every tool, fs_read
+    // included: literal paths are caught here with the same not-found
+    // disguise; wikilink targets (not literal paths) fall through to the
+    // per-resolved-file check inside fs_read itself.
     expect(() =>
       enforceBuiltinToolSecurityBoundary(
         'fs_read',
         { paths: ['YOLO/data/chat.json'] },
         {},
       ),
-    ).not.toThrow()
+    ).toThrow('File not found: YOLO/data/chat.json')
   })
 
   it('does not reject tools that carry no path args', () => {
@@ -106,7 +108,7 @@ describe('enforceBuiltinToolSecurityBoundary', () => {
         { workspaceAccessPolicy: policyWithReadExclude },
       ),
     ).toThrow(
-      'Path "/禁止阅读/a.pdf" is outside this agent\'s workspace access policy.',
+      'Path "/禁止阅读/a.pdf" is outside this agent\'s workspace scope.',
     )
   })
 })

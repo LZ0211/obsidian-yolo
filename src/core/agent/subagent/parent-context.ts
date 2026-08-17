@@ -1,7 +1,6 @@
 import type {
   AssistantToolPreference,
   AssistantToolServerPreference,
-  AssistantWorkspaceScope,
 } from '../../../types/assistant.types'
 import type { ChatMessage } from '../../../types/chat'
 import type { ChatModel } from '../../../types/chat-model.types'

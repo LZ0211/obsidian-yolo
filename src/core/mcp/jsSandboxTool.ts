@@ -35,8 +35,8 @@ import {
   readActiveWebviewHtml,
 } from '../browser/activeWebviewReader'
 import { isWithinYoloUserDataRoot } from '../paths/yoloPaths'
-import type { RAGEngine } from '../rag/ragEngine'
 import { publishQueryProgress } from '../rag/queryProgressBus'
+import type { RAGEngine } from '../rag/ragEngine'
 import {
   BROWSER_READ_PATH_USAGE,
   parseBrowserReadPageId,
