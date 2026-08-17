@@ -18,6 +18,7 @@ main.css
 # web-ui build outputs now land in the repo-root web-ui/ dir (no dist
 # subdirectory). Root-anchored so src/web-ui/ source stays tracked.
 /web-ui/
+/dist/
 
 # Exclude sourcemaps
 *.map
@@ -44,4 +45,3 @@ scripts/bench-tool-disclosure/
 .yolo-update-staging/
 supabase/
 .tmp/
-

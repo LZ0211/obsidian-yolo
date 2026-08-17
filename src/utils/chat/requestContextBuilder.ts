@@ -318,6 +318,7 @@ type MentionedFilesCollection = {
 
 const MAX_MENTIONED_FILE_OUTLINES = 10
 const MAX_MENTIONED_FOLDER_FILES = 50
+const MAX_MENTIONED_FOLDER_PREVIEW_FILES = 12
 const MAX_MENTIONED_FILE_CONTENT_CHARS = 64_000
 /** 单份 MinerU 转换最多附带图片数（与 fs_read 分支一致）。 */
 const MINERU_ATTACHMENT_IMAGE_LIMIT = 8
@@ -2202,10 +2203,7 @@ ${entries}
   ): string {
     if (!policy?.enabled) return ''
 
-    const include = [
-      policy.workspaceRoot,
-      ...(policy.readExtraIncludes ?? []),
-    ]
+    const include = [policy.workspaceRoot, ...(policy.readExtraIncludes ?? [])]
       .map((path) => path.trim())
       .filter(Boolean)
     const exclude = (policy.readExcludes ?? [])
@@ -2533,14 +2531,20 @@ ${customInstruction}
       return ''
     }
 
+    const directFileEntries = unifiedFiles.filter(
+      ({ source }) => source === 'file',
+    )
+    const folderFileEntries = unifiedFiles.filter(
+      ({ source }) => source === 'folder',
+    )
     const outlinedFilePaths = new Set(
-      unifiedFiles
+      directFileEntries
         .filter(({ file }) => file.extension === 'md')
         .slice(0, MAX_MENTIONED_FILE_OUTLINES)
         .map(({ file }) => file.path),
     )
     const fileLines = await Promise.all(
-      unifiedFiles.map(async ({ file }) => {
+      directFileEntries.map(async ({ file }) => {
         const frontmatter =
           file.extension === 'md'
             ? this.app.metadataCache.getFileCache(file)?.frontmatter
@@ -2586,7 +2590,7 @@ ${customInstruction}
       }),
     )
 
-    const markdownFileCount = unifiedFiles.filter(
+    const markdownFileCount = directFileEntries.filter(
       ({ file }) => file.extension === 'md',
     ).length
     const omittedOutlineCount = Math.max(
@@ -2594,14 +2598,39 @@ ${customInstruction}
       markdownFileCount - outlinedFilePaths.size,
     )
 
-    const sections = [
-      `## Mentioned Vault Files (outline only)
-${fileLines.join('\n')}`,
-    ]
+    const sections: string[] = []
+
+    if (fileLines.length > 0) {
+      sections.push(`## Mentioned Vault Files (outline only)
+${fileLines.join('\n')}`)
+    }
 
     if (folderPathSet.size > 0) {
+      const folderFileCount = folderFileEntries.length + omittedFolderFileCount
+      const previewEntries = folderFileEntries.slice(
+        0,
+        MAX_MENTIONED_FOLDER_PREVIEW_FILES,
+      )
+      const previewOmittedCount = Math.max(
+        0,
+        folderFileEntries.length - previewEntries.length,
+      )
+      const previewLines = previewEntries.map(
+        ({ file }) => `  - \`${file.path}\``,
+      )
+      const previewOmitted = previewOmittedCount + omittedFolderFileCount
       sections.push(`## Mentioned Vault Folders
-${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
+${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}
+Folder scope contains at least ${folderFileCount} file${folderFileCount === 1 ? '' : 's'}. No file contents, headings, or frontmatter are loaded automatically.`)
+      if (previewLines.length > 0) {
+        sections.push(`Folder file preview (paths only):
+${previewLines.join('\n')}`)
+      }
+      if (previewOmitted > 0) {
+        sections.push(
+          `Additional folder files omitted from the path preview: ${previewOmitted}`,
+        )
+      }
     }
 
     if (omittedOutlineCount > 0) {
@@ -2610,14 +2639,8 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
       )
     }
 
-    if (omittedFolderFileCount > 0) {
-      sections.push(
-        `Additional mentioned folder files omitted after the first ${MAX_MENTIONED_FOLDER_FILES} files: ${omittedFolderFileCount}`,
-      )
-    }
-
     sections.push(
-      'This section provides only paths and outlines. Use file tools only if you need the full contents or a specific line range.',
+      'This section provides paths and a small preview only. Use file tools only if you need the full contents or a specific line range.',
     )
 
     return `${sections.join('\n\n')}\n`

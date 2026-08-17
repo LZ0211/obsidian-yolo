@@ -603,7 +603,7 @@ describe('RequestContextBuilder compileUserMessagePrompt', () => {
     )
   })
 
-  it('builds unified mentioned file context with outlines for files, current file, and folder files', async () => {
+  it('builds direct file outlines and a lightweight folder summary', async () => {
     const explicitFile = createMockFile('notes/explicit.md')
     const currentFile = createMockFile('notes/current.md')
     const folderFile = createMockFile('docs/from-folder.md')
@@ -665,57 +665,83 @@ describe('RequestContextBuilder compileUserMessagePrompt', () => {
     expect(textContent).not.toContain('notes/current.md')
     expect(textContent).toContain(
       [
-        '- `docs/from-folder.md`',
-        '  - Properties:',
-        '    - `exported_from`: `YOLO`',
-        '  - L1 ## Folder Heading',
+        'Folder file preview (paths only):',
+        '  - `docs/from-folder.md`',
+        '  - `docs/plain.txt`',
       ].join('\n'),
     )
-    expect(textContent).toContain('- `docs/plain.txt`')
+    expect(textContent).not.toContain('exported_from')
+    expect(textContent).not.toContain('Folder Heading')
     expect(textContent).toContain('## Mentioned Vault Folders\n- `docs`')
+    expect(textContent).toContain('Folder scope contains at least 2 files.')
     expect(textContent).toContain(
-      'This section provides only paths and outlines. Use file tools only if you need the full contents or a specific line range.',
+      'This section provides paths and a small preview only. Use file tools only if you need the full contents or a specific line range.',
     )
   })
 
-  it('caps markdown outlines and reports omitted files', async () => {
-    const explicitFile = createMockFile('notes/explicit.md')
-    const folderFiles = Array.from({ length: 11 }, (_, index) =>
+  it('does not read folder files when compiling a light folder mention', async () => {
+    const folderFile = createMockFile('docs/large-note.md')
+    const folder = createMockFolder('docs', [folderFile])
+    const app = createMockApp({
+      files: [folderFile],
+      folders: [folder],
+      fileContents: new Map([
+        [folderFile.path, '# Should not be loaded\nLarge body'],
+      ]),
+      frontmatters: new Map([
+        [folderFile.path, { title: 'Should not be loaded' }],
+      ]),
+    })
+
+    const builder = new RequestContextBuilder(app as never, settings)
+
+    const result = await builder.compileUserMessagePrompt({
+      message: createUserMessage([{ type: 'folder', folder }]),
+    })
+
+    const textContent = getTextContent(result.promptContent)
+
+    expect(app.vault.cachedRead).not.toHaveBeenCalled()
+    expect(app.metadataCache.getFileCache).not.toHaveBeenCalled()
+    expect(textContent).toContain('Folder scope contains at least 1 file.')
+    expect(textContent).toContain('  - `docs/large-note.md`')
+    expect(textContent).not.toContain('Should not be loaded')
+    expect(textContent).not.toContain('Large body')
+  })
+
+  it('caps direct markdown outlines and reports omitted files', async () => {
+    const mentionedFiles = Array.from({ length: 11 }, (_, index) =>
       createMockFile(`docs/file-${index + 1}.md`),
     )
-    const folder = createMockFolder('docs', folderFiles)
 
     const fileContents = new Map<string, string>([
-      [explicitFile.path, '# Explicit'],
-      ...folderFiles.map(
+      ...mentionedFiles.map(
         (file, index) => [file.path, `# Folder ${index + 1}`] as const,
       ),
     ])
 
     const app = createMockApp({
-      files: [explicitFile, ...folderFiles],
-      folders: [folder],
+      files: mentionedFiles,
       fileContents,
     })
 
     const builder = new RequestContextBuilder(app as never, settings)
 
     const result = await builder.compileUserMessagePrompt({
-      message: createUserMessage([
-        { type: 'file', file: explicitFile },
-        { type: 'folder', folder },
-      ]),
+      message: createUserMessage(
+        mentionedFiles.map((file) => ({ type: 'file', file })),
+      ),
     })
 
     const textContent = getTextContent(result.promptContent)
 
     expect(textContent.match(/- L1 # /g)?.length).toBe(10)
     expect(textContent).toContain(
-      'Additional mentioned markdown files omitted from outline due to limit: 2',
+      'Additional mentioned markdown files omitted from outline due to limit: 1',
     )
   })
 
-  it('caps the number of files expanded from a mentioned folder', async () => {
+  it('caps the folder path preview and reports omitted files', async () => {
     const folderFiles = Array.from({ length: 51 }, (_, index) =>
       createMockFile(`docs/file-${index + 1}.md`),
     )
@@ -734,10 +760,12 @@ describe('RequestContextBuilder compileUserMessagePrompt', () => {
 
     const textContent = getTextContent(result.promptContent)
 
-    expect(textContent).toContain('- `docs/file-50.md`')
-    expect(textContent).not.toContain('- `docs/file-51.md`')
+    expect(textContent).toContain('  - `docs/file-12.md`')
+    expect(textContent).not.toContain('  - `docs/file-13.md`')
+    expect(textContent).not.toContain('  - `docs/file-51.md`')
+    expect(textContent).toContain('Folder scope contains at least 51 files.')
     expect(textContent).toContain(
-      'Additional mentioned folder files omitted after the first 50 files',
+      'Additional folder files omitted from the path preview: 39',
     )
   })
 
@@ -857,8 +885,9 @@ describe('RequestContextBuilder compileUserMessagePrompt', () => {
     )
     expect(textContent).toContain('## Mentioned Vault Folders\n- `docs`')
     expect(textContent).toContain(
-      '- `docs/from-folder.md`\n  - L1 ## Folder Heading',
+      'Folder file preview (paths only):\n  - `docs/from-folder.md`',
     )
+    expect(textContent).not.toContain('L1 ## Folder Heading')
     expect(textContent).not.toContain('Folder body')
   })
 

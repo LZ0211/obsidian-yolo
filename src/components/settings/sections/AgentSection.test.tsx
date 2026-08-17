@@ -83,6 +83,7 @@ jest.mock('../../common/ObsidianSetting', () => ({
       {props.children}
     </section>
   ),
+  useObsidianSetting: () => ({ setting: null }),
 }))
 
 jest.mock('../../common/ObsidianToggle', () => ({

@@ -83,10 +83,9 @@ export function AgentSection({ app }: AgentSectionProps) {
   const plugin = usePlugin()
   const assistants = settings.assistants || []
   const workspaceAgents = settings.workspaceAgents || []
+  const chatOptions = settings.chatOptions ?? {}
   const [toolResultMaxCharsInput, setToolResultMaxCharsInput] = useState(
-    String(
-      settings.chatOptions.toolResultMaxChars ?? DEFAULT_TOOL_RESULT_MAX_CHARS,
-    ),
+    String(chatOptions.toolResultMaxChars ?? DEFAULT_TOOL_RESULT_MAX_CHARS),
   )
   const [mcpManager, setMcpManager] = useState<McpManager | null>(null)
   const [mcpServers, setMcpServers] = useState<McpServerState[]>([])
@@ -318,7 +317,7 @@ export function AgentSection({ app }: AgentSectionProps) {
     void setSettings({
       ...settings,
       chatOptions: {
-        ...settings.chatOptions,
+        ...chatOptions,
         toolResultMaxChars: parsed,
       },
     })
@@ -326,12 +325,9 @@ export function AgentSection({ app }: AgentSectionProps) {
 
   useEffect(() => {
     setToolResultMaxCharsInput(
-      String(
-        settings.chatOptions.toolResultMaxChars ??
-          DEFAULT_TOOL_RESULT_MAX_CHARS,
-      ),
+      String(chatOptions.toolResultMaxChars ?? DEFAULT_TOOL_RESULT_MAX_CHARS),
     )
-  }, [settings.chatOptions.toolResultMaxChars])
+  }, [chatOptions.toolResultMaxChars])
 
   const mcpTools = useMemo(
     () =>
@@ -585,7 +581,7 @@ export function AgentSection({ app }: AgentSectionProps) {
               ) {
                 setToolResultMaxCharsInput(
                   String(
-                    settings.chatOptions.toolResultMaxChars ??
+                    chatOptions.toolResultMaxChars ??
                       DEFAULT_TOOL_RESULT_MAX_CHARS,
                   ),
                 )
