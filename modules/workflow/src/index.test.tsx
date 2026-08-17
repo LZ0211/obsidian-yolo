@@ -1,3 +1,16 @@
+import type { ReactElement } from 'react'
+
+import { updateWorkflowManagedBlocks } from './domain/workflow-document'
+import type { WorkflowTopology } from './domain/workflow-model'
+import { createWorkflowCopy } from './i18n'
+import type { WorkflowEditorModel } from './ui/workflow-editor-model'
+
+type WorkflowModuleDefinition = Readonly<{
+  activate(host: YoloModuleHostApiV1): void
+}>
+
+let moduleDefinition: WorkflowModuleDefinition | null = null
+
 describe('workflow module chat mode', () => {
   it('registers one localized workflow mode with the unified tools', async () => {
     const registerModule = jest.fn()
@@ -10,9 +23,9 @@ describe('workflow module chat mode', () => {
     }
 
     await import('./index')
-    const definition = registerModule.mock.calls[0]?.[0] as {
-      activate(host: YoloModuleHostApiV1): void
-    }
+    const definition = registerModule.mock
+      .calls[0]?.[0] as WorkflowModuleDefinition
+    moduleDefinition = definition
     const host = fakeHost()
 
     definition.activate(host as unknown as YoloModuleHostApiV1)
@@ -51,19 +64,154 @@ describe('workflow module chat mode', () => {
     expect(mode.tools[0]?.requiresApproval).toBeUndefined()
     expect(mode.tools[1]?.requiresApproval).toBe(true)
   })
+
+  it('keeps dirty editor state when the host restores the current view state', async () => {
+    expect(moduleDefinition).not.toBeNull()
+    const host = fakeWorkflowHost()
+    moduleDefinition!.activate(host as unknown as YoloModuleHostApiV1)
+
+    const view = host.workspace.registerView.mock.calls[0]?.[0] as {
+      render(): ReactElement<{ editor: WorkflowEditorModel }>
+      setState(state: Readonly<{ path?: unknown }>): Promise<void>
+    }
+    const viewElement = view.render()
+    const editor = viewElement.props.editor
+    await editor.load('demo/WORKFLOW.md')
+    const topology = editor.getSnapshot().topology
+    expect(topology).not.toBeNull()
+    editor.updateTopology({
+      ...topology!,
+      nodes: topology!.nodes.map((node) =>
+        node.id === 'agent' ? { ...node, label: 'Changed' } : node,
+      ),
+    })
+    expect(editor.getSnapshot().dirty).toBe(true)
+
+    await view.setState({ path: 'demo/WORKFLOW.md' })
+
+    expect(editor.getSnapshot().dirty).toBe(true)
+  })
 })
 
 function fakeHost(): RegistrationHost {
   return {
     chat: { registerMode: jest.fn() },
-    i18n: { getSnapshot: () => ({ locale: 'zh-CN' }) },
+    lifecycle: { add: jest.fn() },
+    workspace: {
+      registerView: jest.fn(),
+      registerRibbonAction: jest.fn(),
+      registerCommand: jest.fn(),
+      openView: jest.fn(async () => undefined),
+    },
+    i18n: {
+      getSnapshot: () => ({ locale: 'zh-CN' }),
+      subscribe: jest.fn(() => () => undefined),
+    },
+    ui: {
+      notice: jest.fn(),
+      openFileAt: jest.fn(async () => true),
+    },
     paths: {
       getSnapshot: () => ({ contentRoot: 'managed/workflows' }),
+      subscribe: jest.fn(() => () => undefined),
     },
-    vault: {},
+    vault: {
+      listChildren: jest.fn(() => []),
+      subscribe: jest.fn(() => () => undefined),
+    },
   } as unknown as RegistrationHost
 }
 
-type RegistrationHost = Omit<YoloModuleHostApiV1, 'chat'> & {
+type RegistrationHost = Omit<YoloModuleHostApiV1, 'chat' | 'workspace'> & {
   chat: { registerMode: jest.Mock }
+  workspace: {
+    registerView: jest.Mock
+    registerRibbonAction: jest.Mock
+    registerCommand: jest.Mock
+    openView: jest.Mock
+  }
+}
+
+function fakeWorkflowHost(): RegistrationHost {
+  const copy = createWorkflowCopy('en')
+  const topology: WorkflowTopology = {
+    revision: 1,
+    nodes: [
+      {
+        id: 'input',
+        kind: 'input',
+        label: 'Input',
+        stepPath: 'steps/input/STEP.md',
+        position: { x: 70, y: 90 },
+      },
+      {
+        id: 'agent',
+        kind: 'agent',
+        label: 'Agent',
+        stepPath: 'steps/agent/STEP.md',
+        position: { x: 315, y: 90 },
+      },
+      {
+        id: 'output',
+        kind: 'output',
+        label: 'Output',
+        stepPath: 'steps/output/STEP.md',
+        position: { x: 560, y: 90 },
+      },
+    ],
+    edges: [
+      { id: 'input-agent', source: 'input', target: 'agent' },
+      { id: 'agent-output', source: 'agent', target: 'output' },
+    ],
+  }
+  const manifestPath = 'managed/workflows/demo/WORKFLOW.md'
+  const manifestSnapshot = {
+    path: manifestPath,
+    content: updateWorkflowManagedBlocks('# Demo\n', topology, copy),
+  }
+  const stepSnapshots = new Map(
+    topology.nodes.map((node) => [
+      `managed/workflows/demo/${node.stepPath}`,
+      {
+        path: `managed/workflows/demo/${node.stepPath}`,
+        content: `# ${node.label}\n`,
+      },
+    ]),
+  )
+  const host = fakeHost()
+  return {
+    ...host,
+    vault: {
+      ...host.vault,
+      listChildren: jest.fn((path: string) => {
+        if (path === 'managed/workflows')
+          return [
+            {
+              kind: 'folder' as const,
+              path: 'managed/workflows/demo',
+              name: 'demo',
+            },
+          ]
+        if (path === 'managed/workflows/demo')
+          return [
+            {
+              kind: 'file' as const,
+              path: manifestPath,
+              name: 'WORKFLOW.md',
+              extension: 'md',
+              basename: 'WORKFLOW',
+              ctime: 0,
+              mtime: 0,
+              size: manifestSnapshot.content.length,
+            },
+          ]
+        return []
+      }),
+      readTextSnapshot: jest.fn(async (path: string) =>
+        path === manifestPath
+          ? manifestSnapshot
+          : (stepSnapshots.get(path) ?? null),
+      ),
+    },
+  } as unknown as RegistrationHost
 }

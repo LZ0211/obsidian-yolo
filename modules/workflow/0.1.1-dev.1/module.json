@@ -1,0 +1,219 @@
+{
+  "schemaVersion": 1,
+  "id": "workflow",
+  "version": "0.1.1-dev.1",
+  "hostApi": "^1.7.0",
+  "dataSchemas": {},
+  "variants": [
+    {
+      "platform": "desktop",
+      "entry": "entry.js",
+      "files": [
+        {
+          "role": "entry",
+          "name": "entry.js",
+          "path": "entry.js",
+          "byteSize": 66636,
+          "sha256": "cc3ce228b9fbe4e03382e7fc97b91a68594cda3f0791e7f197047c6817fc8662",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/entry.js",
+          "storage": "module"
+        },
+        {
+          "role": "style",
+          "name": "style.css",
+          "path": "style.css",
+          "byteSize": 18959,
+          "sha256": "dbcfd0e31f5e452f5209bce2e5334479cbb15619b2a142774d99709e2000e146",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/style.css",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__SKILL.md",
+          "path": "skills/workflow/SKILL.md",
+          "byteSize": 696,
+          "sha256": "14061a18168afcc9b5bc7a4546c3ddf17d614a3eff90441be060585f6881a650",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__SKILL.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__examples__debug-quality-workflow__WORKFLOW.md",
+          "path": "skills/workflow/examples/debug-quality-workflow/WORKFLOW.md",
+          "byteSize": 2869,
+          "sha256": "976a5e93db27a594550517c989c2e5bed613d0ed7f8e93971fe04ef7be419b79",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__examples__debug-quality-workflow__WORKFLOW.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__examples__debug-quality-workflow__steps__input__STEP.md",
+          "path": "skills/workflow/examples/debug-quality-workflow/steps/input/STEP.md",
+          "byteSize": 71,
+          "sha256": "ff17701cf5f6f25aa22e5baa2071044a69947d82c6cbb8a5b3e6a1a1a8f684da",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__examples__debug-quality-workflow__steps__input__STEP.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__examples__debug-quality-workflow__steps__diagnose__STEP.md",
+          "path": "skills/workflow/examples/debug-quality-workflow/steps/diagnose/STEP.md",
+          "byteSize": 88,
+          "sha256": "8182537e8d89ce7442a2590f23df4ede9e3c7bd359c5b3b1c7eb4400c50c4286",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__examples__debug-quality-workflow__steps__diagnose__STEP.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__examples__debug-quality-workflow__steps__quality__STEP.md",
+          "path": "skills/workflow/examples/debug-quality-workflow/steps/quality/STEP.md",
+          "byteSize": 74,
+          "sha256": "8cd3ef1f0d21db5330c618b13760e3ae7ddeb2948426b0c602bf629157e62e1f",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__examples__debug-quality-workflow__steps__quality__STEP.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__examples__debug-quality-workflow__steps__repair__STEP.md",
+          "path": "skills/workflow/examples/debug-quality-workflow/steps/repair/STEP.md",
+          "byteSize": 70,
+          "sha256": "5e480deb458adc98f40dccf31b30e08e080a4c3d01a6b01a511980544265b3cd",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__examples__debug-quality-workflow__steps__repair__STEP.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__examples__debug-quality-workflow__steps__merge__STEP.md",
+          "path": "skills/workflow/examples/debug-quality-workflow/steps/merge/STEP.md",
+          "byteSize": 71,
+          "sha256": "66cbb9da2e8b2c4eb13fb44476e4d82d30fb921d228ae7851632d77df2c5cc2d",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__examples__debug-quality-workflow__steps__merge__STEP.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__examples__debug-quality-workflow__steps__output__STEP.md",
+          "path": "skills/workflow/examples/debug-quality-workflow/steps/output/STEP.md",
+          "byteSize": 67,
+          "sha256": "492132c38327e7b879ead0471ebf580d6e1c141a30157773568c447c90cc2e89",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__examples__debug-quality-workflow__steps__output__STEP.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "third-party__dsh-deepseek-flow-LICENSE.txt",
+          "path": "third-party/dsh-deepseek-flow-LICENSE.txt",
+          "byteSize": 1066,
+          "sha256": "37dbcf01b8b639b86b8c7151c20c2f8597f51beb8408dacdb0b412fd5da3f04c",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/third-party__dsh-deepseek-flow-LICENSE.txt",
+          "storage": "module"
+        }
+      ]
+    },
+    {
+      "platform": "mobile",
+      "entry": "entry.js",
+      "files": [
+        {
+          "role": "entry",
+          "name": "entry.js",
+          "path": "entry.js",
+          "byteSize": 66636,
+          "sha256": "cc3ce228b9fbe4e03382e7fc97b91a68594cda3f0791e7f197047c6817fc8662",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/entry.js",
+          "storage": "module"
+        },
+        {
+          "role": "style",
+          "name": "style.css",
+          "path": "style.css",
+          "byteSize": 18959,
+          "sha256": "dbcfd0e31f5e452f5209bce2e5334479cbb15619b2a142774d99709e2000e146",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/style.css",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__SKILL.md",
+          "path": "skills/workflow/SKILL.md",
+          "byteSize": 696,
+          "sha256": "14061a18168afcc9b5bc7a4546c3ddf17d614a3eff90441be060585f6881a650",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__SKILL.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__examples__debug-quality-workflow__WORKFLOW.md",
+          "path": "skills/workflow/examples/debug-quality-workflow/WORKFLOW.md",
+          "byteSize": 2869,
+          "sha256": "976a5e93db27a594550517c989c2e5bed613d0ed7f8e93971fe04ef7be419b79",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__examples__debug-quality-workflow__WORKFLOW.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__examples__debug-quality-workflow__steps__input__STEP.md",
+          "path": "skills/workflow/examples/debug-quality-workflow/steps/input/STEP.md",
+          "byteSize": 71,
+          "sha256": "ff17701cf5f6f25aa22e5baa2071044a69947d82c6cbb8a5b3e6a1a1a8f684da",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__examples__debug-quality-workflow__steps__input__STEP.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__examples__debug-quality-workflow__steps__diagnose__STEP.md",
+          "path": "skills/workflow/examples/debug-quality-workflow/steps/diagnose/STEP.md",
+          "byteSize": 88,
+          "sha256": "8182537e8d89ce7442a2590f23df4ede9e3c7bd359c5b3b1c7eb4400c50c4286",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__examples__debug-quality-workflow__steps__diagnose__STEP.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__examples__debug-quality-workflow__steps__quality__STEP.md",
+          "path": "skills/workflow/examples/debug-quality-workflow/steps/quality/STEP.md",
+          "byteSize": 74,
+          "sha256": "8cd3ef1f0d21db5330c618b13760e3ae7ddeb2948426b0c602bf629157e62e1f",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__examples__debug-quality-workflow__steps__quality__STEP.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__examples__debug-quality-workflow__steps__repair__STEP.md",
+          "path": "skills/workflow/examples/debug-quality-workflow/steps/repair/STEP.md",
+          "byteSize": 70,
+          "sha256": "5e480deb458adc98f40dccf31b30e08e080a4c3d01a6b01a511980544265b3cd",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__examples__debug-quality-workflow__steps__repair__STEP.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__examples__debug-quality-workflow__steps__merge__STEP.md",
+          "path": "skills/workflow/examples/debug-quality-workflow/steps/merge/STEP.md",
+          "byteSize": 71,
+          "sha256": "66cbb9da2e8b2c4eb13fb44476e4d82d30fb921d228ae7851632d77df2c5cc2d",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__examples__debug-quality-workflow__steps__merge__STEP.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "skills__workflow__examples__debug-quality-workflow__steps__output__STEP.md",
+          "path": "skills/workflow/examples/debug-quality-workflow/steps/output/STEP.md",
+          "byteSize": 67,
+          "sha256": "492132c38327e7b879ead0471ebf580d6e1c141a30157773568c447c90cc2e89",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/skills__workflow__examples__debug-quality-workflow__steps__output__STEP.md",
+          "storage": "module"
+        },
+        {
+          "role": "data",
+          "name": "third-party__dsh-deepseek-flow-LICENSE.txt",
+          "path": "third-party/dsh-deepseek-flow-LICENSE.txt",
+          "byteSize": 1066,
+          "sha256": "37dbcf01b8b639b86b8c7151c20c2f8597f51beb8408dacdb0b412fd5da3f04c",
+          "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/third-party__dsh-deepseek-flow-LICENSE.txt",
+          "storage": "module"
+        }
+      ]
+    }
+  ]
+}
