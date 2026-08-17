@@ -2,7 +2,7 @@ jest.mock('obsidian')
 
 import { App, TFile, TFolder } from 'obsidian'
 
-import type { AssistantWorkspaceScope } from '../../../types/assistant.types'
+import type { WorkspaceAccessPolicy } from '../../../types/assistant.types'
 import { createVaultBashFileSystem } from './vaultBashFileSystem'
 
 const basename = (path: string) => path.split('/').pop() ?? path
@@ -416,10 +416,12 @@ describe('createVaultBashFileSystem', () => {
   })
 
   describe('workspace scope enforcement', () => {
-    const scope = {
+    const scope: WorkspaceAccessPolicy = {
       enabled: true,
-      include: ['projects/foo'],
-      exclude: [],
+      workspaceRoot: 'projects/foo',
+      readExtraIncludes: [],
+      readExcludes: [],
+      writeExcludes: [],
     }
 
     it('denies reads outside the included scope', async () => {
@@ -488,13 +490,16 @@ describe('createVaultBashFileSystem', () => {
       // produces. Before M4 the fold only carried readExcludes, so a
       // whole-vault agent could `cat YOLO/sessions.sqlite` via bash while the
       // fs tools rejected it.
-      const protectedScope: AssistantWorkspaceScope = {
+      const protectedScope: WorkspaceAccessPolicy = {
         enabled: true,
-        include: [''],
-        exclude: [
-          'YOLO/sessions.sqlite',
-          'YOLO/private',
-          'YOLO/.yolo_vector_db.tar.gz',
+        workspaceRoot: '',
+        readExtraIncludes: [],
+        readExcludes: [],
+        writeExcludes: [],
+        protectedPaths: [
+          { kind: 'exact', path: 'YOLO/sessions.sqlite' },
+          { kind: 'prefix', path: 'YOLO/private' },
+          { kind: 'exact', path: 'YOLO/.yolo_vector_db.tar.gz' },
         ],
       }
       const dbFile = makeFile('YOLO/sessions.sqlite')
@@ -545,9 +550,11 @@ describe('createVaultBashFileSystem', () => {
       const { app, trashFile } = makeApp([yoloFolder, notes])
       const fs = createVaultBashFileSystem(app, {
         enabled: true,
-        include: [],
-        exclude: ['YOLO/.yolo_json_db'],
-      })
+        workspaceRoot: '',
+        readExtraIncludes: [],
+        readExcludes: ['YOLO/.yolo_json_db'],
+        writeExcludes: ['YOLO/.yolo_json_db'],
+      } satisfies WorkspaceAccessPolicy)
 
       await expect(fs.rm('YOLO', { recursive: true })).rejects.toThrow(
         /excluded path/,

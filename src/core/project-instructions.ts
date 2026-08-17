@@ -1,6 +1,6 @@
 import { App, TFile, TFolder } from 'obsidian'
 
-import { AssistantWorkspaceScope } from '../types/assistant.types'
+import { WorkspaceAccessPolicy } from '../types/assistant.types'
 
 const PROJECT_INSTRUCTION_FILES = ['AGENTS.md', 'CLAUDE.md'] as const
 
@@ -52,21 +52,28 @@ function truncateUtf8ToBytes(text: string, budget: number): string {
 }
 
 /**
- * Whether a vault-relative path is shadowed by any exclude rule in the scope.
- * We deliberately do not reuse `isPathAllowedByScope`: that helper also
- * requires the path to match an include entry, but here we already trust the
- * caller — the path *is* an include entry — and only want to know whether an
- * exclude rule overlaps it. Rules are normalized the same way as `path` so a
- * sloppy entry like `'  /secrets/  '` still matches `'secrets'`.
+ * Whether a vault-relative path is shadowed by any exclude rule in the
+ * workspace access policy (`readExcludes` + protected paths). We deliberately
+ * do not reuse `isReadablePath`: that helper also requires the path to match
+ * an include entry, but here we already trust the caller — the path *is* an
+ * include entry — and only want to know whether an exclude rule overlaps it.
+ * Rules are normalized the same way as `path` so a sloppy entry like
+ * `'  /secrets/  '` still matches `'secrets'`.
  */
 function isShadowedByExclude(
   path: string,
-  scope: AssistantWorkspaceScope,
+  policy: WorkspaceAccessPolicy | undefined,
 ): boolean {
-  for (const raw of scope.exclude) {
+  if (!policy?.enabled) return false
+  const protectedPaths = (policy.protectedPaths ?? []).map((rule) =>
+    rule.kind === 'namePrefix'
+      ? `${rule.dir}/${rule.name}`.replace(/\/+$/, '')
+      : rule.path,
+  )
+  for (const raw of [...(policy.readExcludes ?? []), ...protectedPaths]) {
     const rule = normalizePathInput(raw)
-    // Mirror `workspaceScope.matchesRule`: an empty rule denotes the vault
-    // root and therefore matches every path. A user setting exclude=['/'] is
+    // Mirror `matchesRule`: an empty rule denotes the vault root and
+    // therefore matches every path. A user setting exclude=['/'] is
     // effectively "block everything"; no project instructions should load.
     if (rule === '') return true
     if (path === rule || path.startsWith(`${rule}/`)) return true
@@ -114,18 +121,23 @@ function buildFolderChain(folder: TFolder): TFolder[] {
  */
 function deriveFolderChains(
   app: App,
-  scope: AssistantWorkspaceScope | undefined,
+  policy: WorkspaceAccessPolicy | undefined,
 ): TFolder[][] {
   const chains: TFolder[][] = [[app.vault.getRoot()]]
 
-  if (!scope?.enabled || scope.include.length === 0) return chains
+  const includes = policy?.enabled
+    ? [policy.workspaceRoot, ...(policy.readExtraIncludes ?? [])].filter(
+        (entry) => entry !== '',
+      )
+    : []
+  if (includes.length === 0) return chains
 
-  for (const entry of scope.include) {
+  for (const entry of includes) {
     const trimmed = normalizePathInput(entry)
     if (trimmed === '') continue
     // Skip include entries whose effective root is shadowed by an exclude rule:
     // loading instructions from a path the agent cannot touch is incoherent.
-    if (isShadowedByExclude(trimmed, scope)) continue
+    if (isShadowedByExclude(trimmed, policy)) continue
     const folder = resolveRootFolder(app, trimmed)
     if (!folder) continue
     chains.push(buildFolderChain(folder))
@@ -246,10 +258,10 @@ function renderSections(sections: CollectedSection[]): string {
 export async function getProjectInstructionsSection(
   app: App,
   enabled: boolean,
-  workspaceScope?: AssistantWorkspaceScope,
+  workspaceAccessPolicy?: WorkspaceAccessPolicy,
 ): Promise<string> {
   if (!enabled) return ''
-  const chains = deriveFolderChains(app, workspaceScope)
+  const chains = deriveFolderChains(app, workspaceAccessPolicy)
   const sections = await collectSections(app, chains)
   return renderSections(sections)
 }
@@ -262,10 +274,10 @@ export async function getProjectInstructionsSection(
 export function resolveProjectInstructionFilePaths(
   app: App,
   enabled: boolean,
-  workspaceScope?: AssistantWorkspaceScope,
+  workspaceAccessPolicy?: WorkspaceAccessPolicy,
 ): Set<string> {
   if (!enabled) return new Set()
-  const chains = deriveFolderChains(app, workspaceScope)
+  const chains = deriveFolderChains(app, workspaceAccessPolicy)
   const paths = new Set<string>()
   for (const chain of chains) {
     for (const folder of chain) {

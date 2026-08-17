@@ -50,7 +50,7 @@ import {
 } from '../../core/skills/skillPolicy'
 import { readPromptSnapshotEntries } from '../../database/json/chat/promptSnapshotStore'
 import type { YoloSettings } from '../../settings/schema/setting.types'
-import type { AssistantWorkspaceScope } from '../../types/assistant.types'
+import type { WorkspaceAccessPolicy } from '../../types/assistant.types'
 import type {
   ChatAssistantMessage,
   ChatConversationCompactionLike,
@@ -2003,7 +2003,7 @@ ${entries}
       resolveProjectInstructionFilePaths(
         this.app,
         assistant?.enableProjectInstructions === true,
-        assistant?.workspaceScope,
+        assistant?.workspaceAccessPolicy,
       ).forEach((p) => watchedPaths.add(p))
       this.promptSourcePathsCallback(watchedPaths)
     }
@@ -2052,7 +2052,7 @@ ${entries}
             skillPreferences: assistant.skillPreferences ?? null,
             enableProjectInstructions:
               assistant.enableProjectInstructions ?? false,
-            workspaceScope: assistant.workspaceScope ?? null,
+            workspaceAccessPolicy: assistant.workspaceAccessPolicy ?? null,
           }
         : null,
       delegatableAssistantCatalogue,
@@ -2124,7 +2124,7 @@ ${entries}
     }
 
     const workspaceScopeContent = this.buildWorkspaceScopeSection(
-      currentAssistant?.workspaceScope,
+      currentAssistant?.workspaceAccessPolicy,
     )
     if (workspaceScopeContent) {
       sections.push({
@@ -2137,7 +2137,7 @@ ${entries}
     const projectInstructionsContent = await getProjectInstructionsSection(
       this.app,
       currentAssistant?.enableProjectInstructions === true,
-      currentAssistant?.workspaceScope,
+      currentAssistant?.workspaceAccessPolicy,
     )
     if (projectInstructionsContent) {
       sections.push({
@@ -2151,20 +2151,37 @@ ${entries}
   }
 
   private buildWorkspaceScopeSection(
-    scope: AssistantWorkspaceScope | undefined,
+    policy: WorkspaceAccessPolicy | undefined,
   ): string {
-    if (!scope?.enabled) return ''
+    if (!policy?.enabled) return ''
 
-    const include = scope.include.map((path) => path.trim()).filter(Boolean)
-    const exclude = scope.exclude.map((path) => path.trim()).filter(Boolean)
+    const include = [
+      policy.workspaceRoot,
+      ...(policy.readExtraIncludes ?? []),
+    ]
+      .map((path) => path.trim())
+      .filter(Boolean)
+    const exclude = (policy.readExcludes ?? [])
+      .map((path) => path.trim())
+      .filter(Boolean)
     if (include.length === 0 && exclude.length === 0) return ''
 
+    // Exclude paths are intentionally never surfaced here: they are enforced
+    // by the tool layer regardless of what the model is told, and listing
+    // them would leak vault structure into the request without changing the
+    // enforcement outcome (#577).
+    if (include.length === 0) {
+      return `<workspace_scope>
+- Some vault paths are outside your working range. Out-of-scope access will be rejected by the tool layer and reported to you.
+- All file paths must be vault-relative.
+- If the task requires an out-of-scope path, tell the user about the workspace restriction.
+</workspace_scope>`
+    }
+
     return `<workspace_scope>
-- Included paths: ${include.length > 0 ? include.join(', ') : 'all vault paths'}
-- Excluded paths: ${exclude.length > 0 ? exclude.join(', ') : 'none'}
+- Included paths: ${include.join(', ')}
 - All file paths must be vault-relative.
 - Each listed folder includes itself and all descendants.
-- Excluded paths take precedence over included paths.
 - Do not attempt to access paths outside this scope. If the task requires an out-of-scope path, tell the user about the workspace restriction.
 </workspace_scope>`
   }

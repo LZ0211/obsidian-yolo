@@ -12,7 +12,6 @@ import {
 } from '../../agent/bash/outputBudget'
 import { createVaultBashFileSystem } from '../../agent/bash/vaultBashFileSystem'
 import { createVaultBashSearch } from '../../agent/bash/vaultBashSearch'
-import { workspacePolicyToUpstreamScope } from '../../agent/workspaceScope'
 import {
   acquireRuntimeComponent,
   isRuntimeComponentEnabled,
@@ -92,12 +91,9 @@ export const bashDefinition = defineTool({
       bashReadOnly,
     } = ctx
     const command = getTextArg(args, 'command')
-    const workspaceScope = workspacePolicyToUpstreamScope(
-      workspaceAccessPolicy,
-    )
     const lease = await acquireRuntimeComponent('bash-engine')
     try {
-      const fs = createVaultBashFileSystem(app, workspaceScope, settings)
+      const fs = createVaultBashFileSystem(app, workspaceAccessPolicy, settings)
       const confirmDangerousOperation = async (
         kind: DangerousBashOperationKind,
         targets: readonly string[],
@@ -127,7 +123,7 @@ export const bashDefinition = defineTool({
           app,
           settings,
           getRagEngine,
-          workspaceScope,
+          workspaceAccessPolicy,
           signal,
         }),
         signal,

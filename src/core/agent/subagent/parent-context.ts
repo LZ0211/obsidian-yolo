@@ -48,7 +48,6 @@ export type SubagentParentContext = {
   toolPreferences?: Record<string, AssistantToolPreference>
   builtinCapabilityPreferences?: Record<string, AssistantToolPreference>
   toolServerPreferences?: Record<string, AssistantToolServerPreference>
-  workspaceScope?: AssistantWorkspaceScope
   workspaceAccessPolicy?: import('../../../types/assistant.types').WorkspaceAccessPolicy
   allowedSkillPaths?: string[]
   enableToolDisclosure?: boolean
@@ -193,7 +192,6 @@ export function buildSubagentParentContext(
     toolPreferences: input.toolPreferences,
     builtinCapabilityPreferences: input.builtinCapabilityPreferences,
     toolServerPreferences: input.toolServerPreferences,
-    workspaceScope: input.workspaceScope,
     workspaceAccessPolicy: input.workspaceAccessPolicy,
     allowedSkillPaths: input.allowedSkillPaths,
     enableToolDisclosure: input.enableToolDisclosure,

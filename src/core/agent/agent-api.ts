@@ -7,7 +7,6 @@ import type { App } from 'obsidian'
 import { v4 as uuidv4 } from 'uuid'
 
 import { getMemoryIndexRuntimeHandle } from '../memory/memoryIndexRuntime'
-import { resolveWorkspaceScopeForRuntimeInput } from '../../components/chat-view/chat-runtime-inputs'
 import { resolveChatModeRuntime } from '../../components/chat-view/chat-runtime-profiles'
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import type { AssistantWorkspaceScope } from '../../types/assistant.types'
@@ -26,6 +25,10 @@ import { getToolName } from '../mcp/tool-name-utils'
 import { listLiteSkillEntries } from '../skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../skills/skillPolicy'
 import { findUnifiedAgentById } from './workspaceAgentResolver'
+import {
+  normalizeWorkspacePolicy,
+  resolveAssistantWorkspaceAccessPolicy,
+} from './workspaceScope'
 
 import { resolveAgentApiContext } from './agent-api-context'
 import { DEFAULT_ASSISTANT_ID } from './default-assistant'
@@ -544,9 +547,11 @@ export async function resolveAgentApiRunInput({
       modePersonaPrompt: chatModeRuntime.modePersonaPrompt,
       modePersonaModuleId: chatModeRuntime.modePersonaModuleId,
       contextPolicy: chatModeRuntime.contextPolicy,
-      workspaceScope:
-        request.workspaceScope ??
-        resolveWorkspaceScopeForRuntimeInput(assistant),
+      // Legacy scope-shaped overrides (module agents) win over the assistant
+      // policy, mirroring the previous `request.workspaceScope ??` precedence.
+      workspaceAccessPolicy: request.workspaceScope
+        ? normalizeWorkspacePolicy(request.workspaceScope, undefined)
+        : resolveAssistantWorkspaceAccessPolicy(assistant),
       bashReadOnly: request.bashReadOnly,
       allowedSkillPaths,
       requestParams: {

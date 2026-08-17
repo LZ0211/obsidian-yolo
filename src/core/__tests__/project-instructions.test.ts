@@ -1,6 +1,6 @@
 import { App, TFile, TFolder } from 'obsidian'
 
-import { AssistantWorkspaceScope } from '../../types/assistant.types'
+import { WorkspaceAccessPolicy } from '../../types/assistant.types'
 import { getProjectInstructionsSection } from '../project-instructions'
 
 type FileMap = Record<string, string>
@@ -73,11 +73,13 @@ function createApp(files: FileMap): App {
 }
 
 const scope = (
-  overrides: Partial<AssistantWorkspaceScope>,
-): AssistantWorkspaceScope => ({
+  overrides: Partial<WorkspaceAccessPolicy>,
+): WorkspaceAccessPolicy => ({
   enabled: true,
-  include: [],
-  exclude: [],
+  workspaceRoot: '',
+  readExtraIncludes: [],
+  readExcludes: [],
+  writeExcludes: [],
   ...overrides,
 })
 
@@ -144,7 +146,7 @@ describe('getProjectInstructionsSection', () => {
     const result = await getProjectInstructionsSection(
       app,
       true,
-      scope({ enabled: false, include: ['projects/web'] }),
+      scope({ enabled: false, readExtraIncludes: ['projects/web'] }),
     )
     expect(result).toContain('root rule')
     expect(result).not.toContain('web rule')
@@ -158,7 +160,7 @@ describe('getProjectInstructionsSection', () => {
     const result = await getProjectInstructionsSection(
       app,
       true,
-      scope({ enabled: true, include: [], exclude: ['secrets'] }),
+      scope({ enabled: true, readExcludes: ['secrets'] }),
     )
     expect(result).toContain('root rule')
     expect(result).not.toContain('web rule')
@@ -173,7 +175,7 @@ describe('getProjectInstructionsSection', () => {
     const result = await getProjectInstructionsSection(
       app,
       true,
-      scope({ include: ['projects/web'] }),
+      scope({ readExtraIncludes: ['projects/web'] }),
     )
     const rootIdx = result.indexOf('root agents')
     const midIdx = result.indexOf('projects agents')
@@ -193,7 +195,7 @@ describe('getProjectInstructionsSection', () => {
     const result = await getProjectInstructionsSection(
       app,
       true,
-      scope({ include: ['projects/web/notes/topic.md'] }),
+      scope({ readExtraIncludes: ['projects/web/notes/topic.md'] }),
     )
     // 'topic.md' parent is 'projects/web/notes' — chain goes root -> projects -> projects/web -> projects/web/notes
     expect(result).toContain('## Project instructions: projects/web/AGENTS.md')
@@ -209,7 +211,7 @@ describe('getProjectInstructionsSection', () => {
     const result = await getProjectInstructionsSection(
       app,
       true,
-      scope({ include: ['projects/a', 'projects/b'] }),
+      scope({ readExtraIncludes: ['projects/a', 'projects/b'] }),
     )
     // shared parent should appear exactly once
     const parentMatches = result.match(/shared parent rule/g) ?? []
@@ -228,7 +230,7 @@ describe('getProjectInstructionsSection', () => {
     const result = await getProjectInstructionsSection(
       app,
       true,
-      scope({ include: ['secrets'], exclude: ['secrets'] }),
+      scope({ readExtraIncludes: ['secrets'], readExcludes: ['secrets'] }),
     )
     expect(result).toContain('root rule')
     expect(result).not.toContain('secret rule')
@@ -239,7 +241,7 @@ describe('getProjectInstructionsSection', () => {
     const result = await getProjectInstructionsSection(
       app,
       true,
-      scope({ include: ['ghost/folder'] }),
+      scope({ readExtraIncludes: ['ghost/folder'] }),
     )
     expect(result).toContain('root rule')
   })
@@ -294,7 +296,7 @@ describe('getProjectInstructionsSection', () => {
     const result = await getProjectInstructionsSection(
       app,
       true,
-      scope({ include: ['projects/web'], exclude: ['/'] }),
+      scope({ readExtraIncludes: ['projects/web'], readExcludes: ['/'] }),
     )
     // vault root chain still loads (it's always added before exclude is checked)
     expect(result).toContain('root rule')
@@ -309,7 +311,7 @@ describe('getProjectInstructionsSection', () => {
     const result = await getProjectInstructionsSection(
       app,
       true,
-      scope({ include: ['  /projects/web/  '] }),
+      scope({ readExtraIncludes: ['  /projects/web/  '] }),
     )
     expect(result).toContain('## Project instructions: projects/web/CLAUDE.md')
     expect(result).toContain('web rule')

@@ -1,4 +1,5 @@
 import { normalizeSubagentModelOptions } from '../../core/agent/subagent/model-config'
+import { normalizeWorkspacePolicy } from '../../core/agent/workspaceScope'
 
 import { SETTINGS_SCHEMA_VERSION, SETTING_MIGRATIONS } from './migrations'
 import { YoloSettings, yoloSettingsSchema } from './setting.types'
@@ -49,14 +50,26 @@ export function normalizeYoloSettingsReferences(
     return fallbackModelId
   }
   const assistants = settings.assistants.map((assistant) => {
-    if (!assistant.modelId || validChatModelIds.has(assistant.modelId)) {
-      return assistant
-    }
-
-    return {
+    const normalized = {
       ...assistant,
-      modelId: undefined,
+      modelId:
+        !assistant.modelId || validChatModelIds.has(assistant.modelId)
+          ? assistant.modelId
+          : undefined,
     }
+    // 上游残留的 workspaceScope 字段仅用于兼容旧持久化：初始化时一次性翻译
+    // 进 workspaceAccessPolicy（本地策略是其严格超集），运行时只读 policy。
+    // 翻译只发生在 policy 缺失或未启用时——显式配置的 policy 永远优先。
+    if (
+      normalized.workspaceScope?.enabled &&
+      !normalized.workspaceAccessPolicy?.enabled
+    ) {
+      normalized.workspaceAccessPolicy = normalizeWorkspacePolicy(
+        normalized.workspaceScope,
+        undefined,
+      )
+    }
+    return normalized
   })
   const validAssistantIds = new Set(assistants.map((assistant) => assistant.id))
   const workspaceAgents = settings.workspaceAgents.filter((agent) =>

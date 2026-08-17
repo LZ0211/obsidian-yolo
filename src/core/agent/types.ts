@@ -106,12 +106,12 @@ export type AgentRuntimeRunInput = {
       disclosureMode?: 'always' | 'on_demand'
     }
   >
-  workspaceScope?: {
-    enabled: boolean
-    include: string[]
-    exclude: string[]
-  }
-  /** Enhanced workspace access policy (home directory + read/write rules). */
+  /**
+   * Enhanced workspace access policy (home directory + read/write rules).
+   * The canonical workspace-confinement shape for the whole runtime: the
+   * legacy upstream `workspaceScope` is folded into this at settings-init
+   * time and never carried through the run context.
+   */
   workspaceAccessPolicy?: WorkspaceAccessPolicy
   allowedSkillPaths?: string[]
   contextualInjections?: ContextualInjection[]

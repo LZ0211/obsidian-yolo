@@ -270,20 +270,26 @@ describe('agent api helpers', () => {
     expect(mockCompilePlainUserMessagePrompt).not.toHaveBeenCalled()
   })
 
-  it('uses request.workspaceScope when provided', async () => {
+  it('translates request.workspaceScope into the canonical workspaceAccessPolicy', async () => {
     const workspaceScope = { enabled: true, include: ['ref/'], exclude: [] }
 
     const result = await resolveAgentApiRunInput(
       buildResolveAgentApiRunInputArgs({ prompt: 'Read refs', workspaceScope }),
     )
 
-    expect(result.input.workspaceScope).toBe(workspaceScope)
+    expect(result.input.workspaceAccessPolicy).toEqual({
+      enabled: true,
+      workspaceRoot: '',
+      readExtraIncludes: ['ref/'],
+      readExcludes: [],
+      writeExcludes: [],
+    })
 
     const fallbackResult = await resolveAgentApiRunInput(
       buildResolveAgentApiRunInputArgs({ prompt: 'No refs' }),
     )
 
-    expect(fallbackResult.input.workspaceScope).toBeNull()
+    expect(fallbackResult.input.workspaceAccessPolicy).toBeUndefined()
   })
 
   it('uses an explicit request model before the assistant model', async () => {

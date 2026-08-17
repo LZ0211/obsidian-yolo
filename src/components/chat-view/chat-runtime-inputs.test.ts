@@ -1,25 +1,31 @@
 import type { Assistant } from '../../types/assistant.types'
 
-import { resolveWorkspaceScopeForRuntimeInput } from './chat-runtime-inputs'
+import { resolveWorkspaceAccessPolicyForRuntimeInput } from './chat-runtime-inputs'
 
 describe('chat-runtime-inputs', () => {
-  it('passes through assistant workspace scope when present', () => {
-    const scope = {
+  it('passes through the assistant workspace access policy when present', () => {
+    const accessPolicy = {
       enabled: true,
-      include: ['notes/'],
-      exclude: [],
+      workspaceRoot: 'notes/',
+      readExtraIncludes: [],
+      readExcludes: [],
+      writeExcludes: [],
     }
     const assistant = {
-      workspaceScope: scope,
+      workspaceAccessPolicy: accessPolicy,
     } as unknown as Assistant
 
-    expect(resolveWorkspaceScopeForRuntimeInput(assistant)).toEqual(scope)
+    const resolved = resolveWorkspaceAccessPolicyForRuntimeInput(assistant)
+    expect(resolved).toMatchObject({
+      enabled: true,
+      workspaceRoot: 'notes/',
+    })
   })
 
-  it('returns undefined workspace scope when assistant is missing or has none', () => {
-    expect(resolveWorkspaceScopeForRuntimeInput(null)).toBeUndefined()
+  it('returns undefined policy when assistant is missing or has none', () => {
+    expect(resolveWorkspaceAccessPolicyForRuntimeInput(null)).toBeUndefined()
     expect(
-      resolveWorkspaceScopeForRuntimeInput({
+      resolveWorkspaceAccessPolicyForRuntimeInput({
         id: 'a',
         name: 'A',
         systemPrompt: '',

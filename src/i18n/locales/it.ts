@@ -1093,16 +1093,18 @@ export const it: DeepPartial<TranslationKeys> = {
       editorTabSkills: 'Competenze',
       editorTabWorkspace: 'Spazio di lavoro',
       workspace: {
-        enableTitle: "Limita l'accesso alle directory",
+        enableTitle: "Limita l'ambito di lavoro autonomo",
         enableDesc:
-          "Se disattivato, l'agent può accedere all'intero vault. Se attivo, si applicano solo le regole sotto.",
-        includeTitle: 'Consenti',
-        includeDesc: 'Leggi/scrivi solo i file in questi percorsi',
+          "Se disattivato, l'agent può esplorare e modificare l'intero vault in autonomia. Se attivo, le sue azioni autonome di navigazione e modifica restano entro gli ambiti qui sotto — i file che menzioni con @ o che hai aperto non sono mai limitati.",
+        includeTitle: 'Lavora entro',
+        includeDesc:
+          "L'agent esplora e modifica solo all'interno di questi percorsi in autonomia",
         includeBadge: 'INCLUDE',
         includeEmpty:
-          "Lascia vuoto per consentire tutto tranne l'elenco di esclusione sotto.",
-        excludeTitle: 'Nega',
-        excludeDesc: "Escluso dall'intervallo consentito (priorità maggiore)",
+          'Lascia vuoto per consentire tutto tranne i percorsi esclusi sotto.',
+        excludeTitle: 'Tieni fuori',
+        excludeDesc:
+          "Fuori portata per la navigazione e la modifica autonome dell'agent, anche entro i percorsi sopra",
         excludeBadge: 'EXCLUDE',
         excludeEmpty: 'Nessuna esclusione.',
 
@@ -1128,6 +1130,8 @@ export const it: DeepPartial<TranslationKeys> = {
         writeExcludeBadge: 'DENY WRITE',
         writeExcludeEmpty: 'No write exclusions.',
         denyDisabledHint: 'Set a workspace root first to configure deny lists.',
+        toolBypassNotice: 'Gli agent con comandi da terminale o strumenti MCP di terze parti abilitati possono aggirare questo ambito: non è un confine di sicurezza.',
+
       },
       editorTabModel: 'Modello',
       editorName: 'Nome',

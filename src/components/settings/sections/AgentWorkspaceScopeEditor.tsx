@@ -210,6 +210,13 @@ export function AgentWorkspaceScopeEditor({
           'No write exclusions.',
         )}
       />
+
+      <div className="yolo-agent-workspace-footnote">
+        {t(
+          'settings.agent.workspace.toolBypassNotice',
+          'Agents with terminal commands or third-party MCP tools enabled can go around this range — it is not a security boundary.',
+        )}
+      </div>
     </div>
   )
 }

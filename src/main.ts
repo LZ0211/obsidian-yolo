@@ -477,7 +477,10 @@ export default class YoloPlugin extends Plugin {
           skillPreferences: assistant.skillPreferences ?? null,
           enableProjectInstructions:
             assistant.enableProjectInstructions ?? false,
-          workspaceScope: assistant.workspaceScope ?? null,
+          // 运行时只读 workspaceAccessPolicy（旧 workspaceScope 字段在设置
+          // 初始化时已翻译进 policy）；指纹跟着生效值走，旧字段的改动不会
+          // 再影响提示词快照的失效判定。
+          workspaceAccessPolicy: assistant.workspaceAccessPolicy ?? null,
         }))
         .sort((left, right) => left.id.localeCompare(right.id)),
     })

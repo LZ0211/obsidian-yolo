@@ -785,6 +785,7 @@ export type TranslationKeys = {
         writeExcludeBadge?: string
         writeExcludeEmpty?: string
         denyDisabledHint?: string
+        toolBypassNotice?: string
       }
       editorTabModel?: string
       editorName?: string

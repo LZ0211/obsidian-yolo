@@ -1,5 +1,4 @@
 import {
-  AssistantWorkspaceScope,
   WorkspaceAccessPolicy,
 } from '../../types/assistant.types'
 import { getProtectedVaultPathRules } from '../paths/protectedPaths'
@@ -7,77 +6,32 @@ import { getProtectedVaultPathRules } from '../paths/protectedPaths'
 import {
   collectToolCallPaths,
   collectToolCallPathsWithModes,
-  findPathOutsideScope,
-  isPathAllowedByScope,
+  describePathDenial,
+  isAncestorOfIncludePath,
   isReadablePath,
-  isWorkspaceScopeActive,
+  isVisibleForTraversal,
   isWritablePath,
   normalizeWorkspacePath,
+  normalizeWorkspacePolicy,
+  resolvePathVisibility,
   resolveReadablePath,
   resolveWritablePath,
 } from './workspaceScope'
 
-const scope = (
-  override: Partial<AssistantWorkspaceScope>,
-): AssistantWorkspaceScope => ({
+const policy = (override: {
+  enabled?: boolean
+  workspaceRoot?: string
+  readExtraIncludes?: string[]
+  readExcludes?: string[]
+  writeExcludes?: string[]
+  protectedPaths?: WorkspaceAccessPolicy['protectedPaths']
+}): WorkspaceAccessPolicy => ({
   enabled: true,
-  include: [],
-  exclude: [],
+  workspaceRoot: 'Work',
+  readExtraIncludes: [],
+  readExcludes: [],
+  writeExcludes: [],
   ...override,
-})
-
-describe('isPathAllowedByScope', () => {
-  it('allows everything when scope is undefined or disabled', () => {
-    expect(isPathAllowedByScope('foo/bar.md', undefined)).toBe(true)
-    expect(
-      isPathAllowedByScope(
-        'foo/bar.md',
-        scope({ enabled: false, include: ['allowed/'] }),
-      ),
-    ).toBe(true)
-  })
-
-  it('whitelists only include paths (exact + prefix) when enabled', () => {
-    const s = scope({ include: ['Projects'] })
-    expect(isPathAllowedByScope('Projects', s)).toBe(true)
-    expect(isPathAllowedByScope('Projects/a.md', s)).toBe(true)
-    expect(isPathAllowedByScope('ProjectsX/a.md', s)).toBe(false)
-    expect(isPathAllowedByScope('Notes/a.md', s)).toBe(false)
-  })
-
-  it('treats empty include as "allow everything not excluded" (blacklist mode)', () => {
-    const s = scope({ exclude: ['Private'] })
-    expect(isPathAllowedByScope('Notes/a.md', s)).toBe(true)
-    expect(isPathAllowedByScope('Private/a.md', s)).toBe(false)
-  })
-
-  it('applies exclude with higher priority than include', () => {
-    const s = scope({
-      include: ['Projects'],
-      exclude: ['Projects/Private'],
-    })
-    expect(isPathAllowedByScope('Projects/public.md', s)).toBe(true)
-    expect(isPathAllowedByScope('Projects/Private/secret.md', s)).toBe(false)
-  })
-
-  it('normalizes leading and trailing slashes on both path and rule', () => {
-    const s = scope({ include: ['/Projects/'] })
-    expect(isPathAllowedByScope('/Projects/a.md', s)).toBe(true)
-    expect(isPathAllowedByScope('Projects', s)).toBe(true)
-  })
-})
-
-describe('isWorkspaceScopeActive', () => {
-  it('returns false when disabled or empty', () => {
-    expect(isWorkspaceScopeActive(undefined)).toBe(false)
-    expect(isWorkspaceScopeActive(scope({ enabled: false }))).toBe(false)
-    expect(isWorkspaceScopeActive(scope({}))).toBe(false)
-  })
-
-  it('returns true when enabled with any rule', () => {
-    expect(isWorkspaceScopeActive(scope({ include: ['a'] }))).toBe(true)
-    expect(isWorkspaceScopeActive(scope({ exclude: ['b'] }))).toBe(true)
-  })
 })
 
 describe('collectToolCallPaths', () => {
@@ -168,13 +122,10 @@ describe('collectToolCallPathsWithModes', () => {
   })
 
   it('resolves the hybrid input with the read policy and outputDir with the write policy', () => {
-    const access = {
-      enabled: true,
+    const access = policy({
       workspaceRoot: 'Work',
-      readExtraIncludes: [],
       readExcludes: ['Work/Private'],
-      writeExcludes: [],
-    }
+    })
     // inputPath honors readExcludes (read-denied → rejected).
     expect(() => resolveReadablePath('Work/Private/plan.pdf', access)).toThrow(
       /outside/i,
@@ -186,124 +137,7 @@ describe('collectToolCallPathsWithModes', () => {
   })
 })
 
-describe('findPathOutsideScope', () => {
-  it('returns null when scope is disabled', () => {
-    expect(
-      findPathOutsideScope(
-        'fs_read',
-        { paths: ['secret/a.md'] },
-        scope({ enabled: false, include: ['allowed'] }),
-      ),
-    ).toBeNull()
-  })
-
-  it('returns the first offending path for array args', () => {
-    expect(
-      findPathOutsideScope(
-        'fs_read',
-        { paths: ['allowed/a.md', 'secret/b.md', 'allowed/c.md'] },
-        scope({ include: ['allowed'] }),
-      ),
-    ).toBe('secret/b.md')
-  })
-
-  it('returns the first offending path for fs_write', () => {
-    expect(
-      findPathOutsideScope(
-        'fs_write',
-        { path: 'secret/b.md', content: 'x' },
-        scope({ include: ['allowed'] }),
-      ),
-    ).toBe('secret/b.md')
-  })
-
-  it('returns null when all paths are allowed', () => {
-    expect(
-      findPathOutsideScope(
-        'fs_edit',
-        { path: 'allowed/a.md', newText: 'x' },
-        scope({ include: ['allowed'] }),
-      ),
-    ).toBeNull()
-  })
-
-  it('returns null for retired built-in tool names (no path keys are collected)', () => {
-    expect(
-      findPathOutsideScope(
-        'fs_file_ops',
-        { action: 'move', oldPath: 'secret/a.md', newPath: 'secret/b.md' },
-        scope({ include: ['allowed'] }),
-      ),
-    ).toBeNull()
-  })
-
-  it('exempts listed skill paths from workspace scope', () => {
-    const exemptPaths = new Set(['YOLO/skills/demo/SKILL.md'])
-    expect(
-      findPathOutsideScope(
-        'fs_read',
-        { paths: ['YOLO/skills/demo/SKILL.md'] },
-        scope({ include: ['Notes'] }),
-        { exemptPaths },
-      ),
-    ).toBeNull()
-    expect(
-      findPathOutsideScope(
-        'fs_read',
-        { paths: ['YOLO/skills/demo/references/guide.md'] },
-        scope({ include: ['Notes'] }),
-        { exemptPaths },
-      ),
-    ).toBeNull()
-    expect(
-      findPathOutsideScope(
-        'fs_read',
-        { paths: ['YOLO/skills/other/SKILL.md'] },
-        scope({ include: ['Notes'] }),
-        { exemptPaths },
-      ),
-    ).toBe('YOLO/skills/other/SKILL.md')
-  })
-
-  it('exempts builtin skill paths from workspace scope', () => {
-    const exemptPaths = new Set(['builtin://skills/skill-creator.md'])
-    expect(
-      findPathOutsideScope(
-        'fs_read',
-        { paths: ['builtin://skills/skill-creator.md'] },
-        scope({ include: ['Notes'] }),
-        { exemptPaths },
-      ),
-    ).toBeNull()
-  })
-
-  it('exempts browser:// paths from workspace scope', () => {
-    expect(
-      findPathOutsideScope(
-        'fs_read',
-        { paths: ['browser://page_ab12cd34_ef56gh78'] },
-        scope({ include: ['Notes'] }),
-      ),
-    ).toBeNull()
-  })
-})
-
 describe('WorkspaceAccessPolicy helpers', () => {
-  const policy = (override: {
-    enabled?: boolean
-    workspaceRoot?: string
-    readExtraIncludes?: string[]
-    readExcludes?: string[]
-    writeExcludes?: string[]
-  }) => ({
-    enabled: true,
-    workspaceRoot: 'Work',
-    readExtraIncludes: [],
-    readExcludes: [],
-    writeExcludes: [],
-    ...override,
-  })
-
   it('normalizes valid workspace paths and rejects traversal/OS-absolute paths', () => {
     expect(normalizeWorkspacePath(' Work//Notes/ ')).toBe('Work/Notes')
     expect(normalizeWorkspacePath('')).toBe('')
@@ -486,5 +320,178 @@ describe('host-managed protected-path deny', () => {
     expect(isReadablePath('notes/plain.md', access)).toBe(true)
     expect(resolveWritablePath('notes/draft.md', access)).toBe('notes/draft.md')
     expect(isReadablePath('YOLO/skills/review/SKILL.md', access)).toBe(true)
+  })
+})
+
+describe('normalizeWorkspacePolicy', () => {
+  it('maps a legacy scope-shaped config into the policy at init time', () => {
+    const scope = { enabled: true, include: ['Notes'], exclude: ['Notes/Private'] }
+    expect(normalizeWorkspacePolicy(scope, undefined)).toEqual({
+      enabled: true,
+      workspaceRoot: '',
+      readExtraIncludes: ['Notes'],
+      readExcludes: ['Notes/Private'],
+      writeExcludes: ['Notes/Private'],
+    })
+  })
+
+  it('lets an explicit policy win over the legacy scope', () => {
+    const scope = { enabled: true, include: ['Notes'], exclude: [] }
+    const access = policy({ workspaceRoot: 'Work' })
+    expect(normalizeWorkspacePolicy(scope, access)).toEqual(access)
+  })
+
+  it('returns undefined when nothing is enabled', () => {
+    expect(normalizeWorkspacePolicy(undefined, undefined)).toBeUndefined()
+    expect(
+      normalizeWorkspacePolicy({ enabled: false, include: [], exclude: [] }, undefined),
+    ).toBeUndefined()
+  })
+})
+
+describe('resolvePathVisibility', () => {
+  const settings = { yolo: { baseDir: 'YOLO' } }
+
+  it('is visible when no policy or settings constrain the path', () => {
+    expect(resolvePathVisibility('Notes/a.md', {})).toBe('visible')
+  })
+
+  it('is hidden for a path inside the YOLO user-data root, regardless of policy', () => {
+    expect(
+      resolvePathVisibility('YOLO/data/chats/v1_abc.json', { settings }),
+    ).toBe('hidden')
+    // Hidden wins even when the policy would otherwise allow the path.
+    expect(
+      resolvePathVisibility('YOLO/data/chats/v1_abc.json', {
+        settings,
+        policy: policy({ workspaceRoot: '/' }),
+      }),
+    ).toBe('hidden')
+    // ...and even when the policy is disabled entirely.
+    expect(
+      resolvePathVisibility('YOLO/data/chats/v1_abc.json', {
+        settings,
+        policy: policy({ enabled: false, workspaceRoot: '/' }),
+      }),
+    ).toBe('hidden')
+  })
+
+  it('is out-of-scope for a real path excluded by the workspace policy', () => {
+    expect(
+      resolvePathVisibility('Private/secret.md', {
+        policy: policy({ workspaceRoot: 'Notes' }),
+      }),
+    ).toBe('out-of-scope')
+  })
+
+  it('is visible for a path allowed by the policy', () => {
+    expect(
+      resolvePathVisibility('Notes/a.md', {
+        policy: policy({ workspaceRoot: 'Notes' }),
+      }),
+    ).toBe('visible')
+  })
+
+  it('is visible when the policy excludes the path but a skill exemption covers it', () => {
+    const exemptPaths = new Set(['Skills/pkg/SKILL.md'])
+    expect(
+      resolvePathVisibility('Skills/pkg/reference.md', {
+        policy: policy({ workspaceRoot: 'Notes' }),
+        exemptPaths,
+      }),
+    ).toBe('visible')
+  })
+
+  it('does not let a skill exemption override the hidden check', () => {
+    const exemptPaths = new Set(['YOLO/data/SKILL.md'])
+    expect(
+      resolvePathVisibility('YOLO/data/chats/v1_abc.json', {
+        settings,
+        policy: policy({ workspaceRoot: 'Notes' }),
+        exemptPaths,
+      }),
+    ).toBe('hidden')
+  })
+})
+
+describe('isVisibleForTraversal', () => {
+  it('allows everything when the policy is missing or disabled', () => {
+    expect(isVisibleForTraversal('Anything', undefined)).toBe(true)
+    expect(isVisibleForTraversal('Anything', policy({ enabled: false }))).toBe(
+      true,
+    )
+  })
+
+  it('allows in-scope paths and ancestors of include rules, denies everything else', () => {
+    const access = policy({
+      workspaceRoot: 'Projects/Client',
+      readExtraIncludes: ['Shared'],
+    })
+    expect(isVisibleForTraversal('Projects/Client', access)).toBe(true)
+    expect(isVisibleForTraversal('Projects', access)).toBe(true)
+    expect(isVisibleForTraversal('', access)).toBe(true)
+    expect(isVisibleForTraversal('Shared', access)).toBe(true)
+    expect(isVisibleForTraversal('Other', access)).toBe(false)
+    expect(isVisibleForTraversal('Projects/Client/x.md', access)).toBe(true)
+  })
+
+  it('denies an excluded path even when it is an ancestor of an include rule', () => {
+    const access = policy({
+      workspaceRoot: 'Projects/Client',
+      readExcludes: ['Projects'],
+    })
+    expect(isVisibleForTraversal('Projects', access)).toBe(false)
+  })
+})
+
+describe('isAncestorOfIncludePath', () => {
+  it('is false without an enabled policy or includes', () => {
+    expect(isAncestorOfIncludePath('Projects', undefined)).toBe(false)
+    expect(
+      isAncestorOfIncludePath('Projects', policy({ enabled: false })),
+    ).toBe(false)
+    expect(
+      isAncestorOfIncludePath('Projects', policy({ workspaceRoot: '' })),
+    ).toBe(false)
+  })
+
+  it('matches equal and ancestor paths of the include rules', () => {
+    const access = policy({ workspaceRoot: 'Projects/Client' })
+    expect(isAncestorOfIncludePath('Projects', access)).toBe(true)
+    expect(isAncestorOfIncludePath('Projects/Client', access)).toBe(true)
+    expect(isAncestorOfIncludePath('Projects/Other', access)).toBe(false)
+    expect(isAncestorOfIncludePath('ProjectsX', access)).toBe(false)
+  })
+})
+
+describe('describePathDenial', () => {
+  it('disguises a hidden path as a genuine miss, defaulting to "file"', () => {
+    expect(describePathDenial('hidden', 'YOLO/data/chats/v1_abc.json')).toBe(
+      'File not found: YOLO/data/chats/v1_abc.json',
+    )
+  })
+
+  it('disguises a hidden folder using the folder wording when asked', () => {
+    expect(describePathDenial('hidden', 'YOLO/data', 'folder')).toBe(
+      'Folder not found: YOLO/data',
+    )
+  })
+
+  it('explicitly denies an out-of-scope path rather than disguising it as missing', () => {
+    expect(describePathDenial('out-of-scope', 'Private/secret.md')).toBe(
+      'Path "Private/secret.md" is outside this agent\'s workspace scope.',
+    )
+  })
+
+  it('echoes exactly the string it was given, never a resolved path (issue #577)', () => {
+    // The caller is responsible for passing the agent's raw, unresolved
+    // input (e.g. a wikilink) rather than whatever it resolved to — this
+    // just pins that the function itself performs no substitution.
+    expect(describePathDenial('out-of-scope', '[[Secret]]')).toBe(
+      'Path "[[Secret]]" is outside this agent\'s workspace scope.',
+    )
+    expect(describePathDenial('hidden', '[[Secret]]')).toBe(
+      'File not found: [[Secret]]',
+    )
   })
 })

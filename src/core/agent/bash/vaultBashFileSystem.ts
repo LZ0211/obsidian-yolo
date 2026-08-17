@@ -1,6 +1,6 @@
 import { App, TFile, TFolder } from 'obsidian'
 
-import type { AssistantWorkspaceScope } from '../../../types/assistant.types'
+import type { WorkspaceAccessPolicy } from '../../../types/assistant.types'
 import {
   createVaultFolder,
   ensureFolderPathExists,
@@ -8,22 +8,23 @@ import {
   moveVaultPath,
   trashVaultPath,
 } from '../../mcp/vaultFileOps'
-import { isWithinYoloUserDataRoot } from '../../paths/yoloPaths'
+import {
+  type YoloSettingsLike,
+  isWithinYoloUserDataRoot,
+} from '../../paths/yoloPaths'
 import type {
   BashFsCallbacks,
   BashFsDirentEntry,
   BashFsRmResult,
   BashFsStat,
 } from '../../runtime-components/contracts'
-import { isPathAllowedByScope } from '../workspaceScope'
+import {
+  type PathVisibility,
+  isVisibleForTraversal,
+  resolvePathVisibility,
+} from '../workspaceScope'
 
 const SCOPE_ERROR_PREFIX = 'EACCES: path is outside the allowed workspace scope'
-
-type BashFsSettingsLike = {
-  yolo?: {
-    baseDir?: string
-  }
-}
 
 const stripSlashes = (raw: string): string =>
   raw.replace(/^\/+/, '').replace(/\/+$/, '')
@@ -35,45 +36,34 @@ const stripSlashes = (raw: string): string =>
  * has to be enforced at the filesystem boundary instead, exactly where
  * `rm`/`mv`/content writes already are (see CLAUDE.md's "fs 层 = 硬边界"
  * principle carried over from the plan). An include-list scope still needs
- * its ancestor directories visible so `ls`/`find` can descend into them;
- * `isAncestorOfIncludeRule` grants that without allowing the ancestor's
- * *content* to be read.
+ * its ancestor directories visible so `ls`/`find` can descend into them —
+ * that carve-out is `isVisibleForTraversal` (workspaceScope.ts), used below
+ * for `readdir`/`exists`; every other operation here means genuine
+ * read/write access to `vaultPath` itself, so it goes through the stricter
+ * `resolvePathVisibility` (hidden always wins; scope is the exact-match
+ * check, no ancestor allowance).
  */
-function isAncestorOfIncludeRule(
+function throwForDeniedVisibility(
   vaultPath: string,
-  scope: AssistantWorkspaceScope,
-): boolean {
-  if (scope.include.length === 0) return false
-  const normalizedPath = stripSlashes(vaultPath)
-  return scope.include.some((rule) => {
-    const normalizedRule = stripSlashes(rule)
-    return (
-      normalizedRule === normalizedPath ||
-      normalizedRule.startsWith(
-        normalizedPath === '' ? '' : `${normalizedPath}/`,
-      )
-    )
-  })
-}
-
-function assertPathInScope(
-  vaultPath: string,
-  scope: AssistantWorkspaceScope | undefined,
-): void {
-  if (!scope?.enabled) return
-  if (isPathAllowedByScope(vaultPath, scope)) return
+  verb: string,
+  visibility: Exclude<PathVisibility, 'visible'>,
+): never {
+  if (visibility === 'hidden') {
+    throw new Error(`ENOENT: no such file or directory, ${verb} '${vaultPath}'`)
+  }
   throw new Error(`${SCOPE_ERROR_PREFIX}: '${vaultPath}'`)
 }
 
-function isVisibleForTraversal(
+function assertPathAccessible(
   vaultPath: string,
-  scope: AssistantWorkspaceScope | undefined,
-): boolean {
-  if (!scope?.enabled) return true
-  return (
-    isPathAllowedByScope(vaultPath, scope) ||
-    isAncestorOfIncludeRule(vaultPath, scope)
-  )
+  verb: string,
+  policy: WorkspaceAccessPolicy | undefined,
+  settings: YoloSettingsLike | null | undefined,
+): void {
+  const visibility = resolvePathVisibility(vaultPath, { policy, settings })
+  if (visibility !== 'visible') {
+    throwForDeniedVisibility(vaultPath, verb, visibility)
+  }
 }
 
 /**
@@ -108,29 +98,33 @@ function isVisibleForTraversal(
  */
 export function createVaultBashFileSystem(
   app: App,
-  scope?: AssistantWorkspaceScope,
-  settings?: BashFsSettingsLike | null,
+  policy?: WorkspaceAccessPolicy,
+  settings?: YoloSettingsLike | null,
 ): BashFsCallbacks {
   const isHiddenUserDataPath = (vaultPath: string): boolean =>
     vaultPath !== '' && isWithinYoloUserDataRoot(vaultPath, settings)
-  const assertNotHiddenUserDataPath = (
-    vaultPath: string,
-    verb: string,
-  ): void => {
-    if (isHiddenUserDataPath(vaultPath)) {
-      throw new Error(
-        `ENOENT: no such file or directory, ${verb} '${vaultPath}'`,
-      )
-    }
-  }
+  // Local addition over the upstream baseline: `rm`/`mv` on an ancestor
+  // folder must not be able to reach excluded descendants (e.g. `rm -rf`
+  // on a folder that contains an excluded subtree). `resolvePathVisibility`
+  // only checks the target path itself, so the excluded prefixes
+  // (`readExcludes` + protected paths) are checked here explicitly.
+  const excludedPathPrefixes: string[] = (() => {
+    if (!policy?.enabled) return []
+    const protectedPaths = (policy.protectedPaths ?? []).map((rule) =>
+      rule.kind === 'namePrefix'
+        ? `${rule.dir}/${rule.name}`.replace(/\/+$/, '')
+        : rule.path,
+    )
+    return [...(policy.readExcludes ?? []), ...protectedPaths]
+      .filter(Boolean)
+      .map(stripSlashes)
+  })()
   const assertNoExcludedDescendants = (vaultPath: string): void => {
-    if (!scope?.enabled) return
     const normalizedPath = stripSlashes(vaultPath)
     const descendantPrefix = normalizedPath ? `${normalizedPath}/` : ''
-    const excludedDescendant = scope.exclude.find((rule) => {
-      const normalizedRule = stripSlashes(rule)
-      return normalizedRule.startsWith(descendantPrefix)
-    })
+    const excludedDescendant = excludedPathPrefixes.find((rule) =>
+      rule.startsWith(descendantPrefix),
+    )
     if (excludedDescendant !== undefined) {
       throw new Error(`Path contains an excluded path: ${excludedDescendant}`)
     }
@@ -150,14 +144,12 @@ export function createVaultBashFileSystem(
 
   return {
     async readFile(vaultPath) {
-      assertNotHiddenUserDataPath(vaultPath, 'open')
-      assertPathInScope(vaultPath, scope)
+      assertPathAccessible(vaultPath, 'open', policy, settings)
       return app.vault.cachedRead(getFileOrThrow(vaultPath))
     },
 
     async readFileBuffer(vaultPath) {
-      assertNotHiddenUserDataPath(vaultPath, 'open')
-      assertPathInScope(vaultPath, scope)
+      assertPathAccessible(vaultPath, 'open', policy, settings)
       const buffer = await app.vault.readBinary(getFileOrThrow(vaultPath))
       return new Uint8Array(buffer)
     },
@@ -165,7 +157,7 @@ export function createVaultBashFileSystem(
     async exists(vaultPath) {
       if (vaultPath === '') return true
       if (isHiddenUserDataPath(vaultPath)) return false
-      if (scope?.enabled && !isVisibleForTraversal(vaultPath, scope)) {
+      if (policy?.enabled && !isVisibleForTraversal(vaultPath, policy)) {
         return false
       }
       return app.vault.getAbstractFileByPath(vaultPath) !== null
@@ -175,8 +167,7 @@ export function createVaultBashFileSystem(
       if (vaultPath === '') {
         return { isFile: false, isDirectory: true, mtimeMs: 0, size: 0 }
       }
-      assertNotHiddenUserDataPath(vaultPath, 'stat')
-      assertPathInScope(vaultPath, scope)
+      assertPathAccessible(vaultPath, 'stat', policy, settings)
       const abstractFile = app.vault.getAbstractFileByPath(vaultPath)
       if (!abstractFile) {
         throw new Error(
@@ -195,8 +186,7 @@ export function createVaultBashFileSystem(
     },
 
     async mkdir(vaultPath, options) {
-      assertNotHiddenUserDataPath(vaultPath, 'mkdir')
-      assertPathInScope(vaultPath, scope)
+      assertPathAccessible(vaultPath, 'mkdir', policy, settings)
       const existing =
         vaultPath === ''
           ? undefined
@@ -223,8 +213,15 @@ export function createVaultBashFileSystem(
     },
 
     async readdir(vaultPath): Promise<BashFsDirentEntry[]> {
-      assertNotHiddenUserDataPath(vaultPath, 'scandir')
-      if (scope?.enabled && !isVisibleForTraversal(vaultPath, scope)) {
+      // Traversal (not `assertPathAccessible`'s exact-match scope check):
+      // an ancestor of an include rule must stay listable so `ls`/`find`
+      // can descend into it, even though it fails the strict check.
+      if (isHiddenUserDataPath(vaultPath)) {
+        throw new Error(
+          `ENOENT: no such file or directory, scandir '${vaultPath}'`,
+        )
+      }
+      if (policy?.enabled && !isVisibleForTraversal(vaultPath, policy)) {
         throw new Error(`${SCOPE_ERROR_PREFIX}: '${vaultPath}'`)
       }
       const folder =
@@ -242,7 +239,7 @@ export function createVaultBashFileSystem(
       const children = folder.children
         .filter((child) => !isHiddenUserDataPath(child.path))
         .filter((child) =>
-          scope?.enabled ? isVisibleForTraversal(child.path, scope) : true,
+          policy?.enabled ? isVisibleForTraversal(child.path, policy) : true,
         )
       return children.map((child) => ({
         name: child.name,
@@ -252,17 +249,14 @@ export function createVaultBashFileSystem(
     },
 
     async rm(vaultPath, options): Promise<BashFsRmResult> {
-      assertNotHiddenUserDataPath(vaultPath, 'unlink')
-      assertPathInScope(vaultPath, scope)
+      assertPathAccessible(vaultPath, 'unlink', policy, settings)
       assertNoExcludedDescendants(vaultPath)
       return trashVaultPath(app, vaultPath, options)
     },
 
     async mv(oldVaultPath, newVaultPath) {
-      assertNotHiddenUserDataPath(oldVaultPath, 'rename')
-      assertNotHiddenUserDataPath(newVaultPath, 'rename')
-      assertPathInScope(oldVaultPath, scope)
-      assertPathInScope(newVaultPath, scope)
+      assertPathAccessible(oldVaultPath, 'rename', policy, settings)
+      assertPathAccessible(newVaultPath, 'rename', policy, settings)
       assertNoExcludedDescendants(oldVaultPath)
       await moveVaultPath(app, oldVaultPath, newVaultPath)
     },
@@ -273,8 +267,11 @@ export function createVaultBashFileSystem(
         .map((file) => file.path)
         .filter((filePath) => filePath !== '' && filePath !== '/')
         .filter((filePath) => !isHiddenUserDataPath(filePath))
-      return scope?.enabled
-        ? paths.filter((filePath) => isPathAllowedByScope(filePath, scope))
+      return policy?.enabled
+        ? paths.filter(
+            (filePath) =>
+              resolvePathVisibility(filePath, { policy }) === 'visible',
+          )
         : paths
     },
   }

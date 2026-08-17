@@ -68,10 +68,7 @@ import { resolveEffectiveMaxContextTokens } from '../../utils/llm/model-capabili
 import { ErrorModal } from '../modals/ErrorModal'
 
 import { ChatMode, isModuleChatMode } from './chat-input/ChatModeSelect'
-import {
-  resolveWorkspaceAccessPolicyForRuntimeInput,
-  resolveWorkspaceScopeForRuntimeInput,
-} from './chat-runtime-inputs'
+import { resolveWorkspaceAccessPolicyForRuntimeInput } from './chat-runtime-inputs'
 import {
   type ChatModeRuntime,
   resolveChatModeRuntime,
@@ -772,13 +769,6 @@ export function useChatStreamManager({
           bypassToolApproval: chatModeRuntime.bypassToolApproval,
           blockedCommandPrefixes: settings.mcp.builtinCapabilityOptions.terminal
             ?.blockedPrefixes ?? [...DEFAULT_BLOCKED_PREFIXES],
-          // The assistant selector stays populated in settings even while a
-          // module chat mode is active (D4 hides it in the UI); its
-          // workspace scope must not leak into a run where the assistant
-          // otherwise takes no part at all.
-          workspaceScope: isModuleMode
-            ? undefined
-            : resolveWorkspaceScopeForRuntimeInput(selectedAssistant),
           // fork 特有：工作目录领域（backup 语义）同样受模块模式隔离——
           // assistant 不参与时，其 workspace access policy 不得泄入运行。
           // 宿主托管保护路径由 resolveWorkspaceAccessPolicyForRuntimeInput

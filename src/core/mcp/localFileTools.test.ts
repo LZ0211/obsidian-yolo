@@ -77,6 +77,7 @@ jest.mock('../../utils/llm/image', () => ({
 import { App, TFile, TFolder } from 'obsidian'
 
 import type { YoloSettings } from '../../settings/schema/setting.types'
+import type { WorkspaceAccessPolicy } from '../../types/assistant.types'
 import {
   ToolCallResponseStatus,
   createCompleteToolCallArguments,
@@ -111,7 +112,6 @@ import {
   resetParentSubagentTimeoutSettingsGetter,
 } from '../agent/subagent/pending-timeout-registry'
 import { runSubagent } from '../agent/subagent/runner'
-import { workspacePolicyToUpstreamScope } from '../agent/workspaceScope'
 import { findWebviewHandleByPageId } from '../browser/activeWebviewProbe'
 import { readActiveWebviewHtml } from '../browser/activeWebviewReader'
 import type {
@@ -175,58 +175,6 @@ afterEach(() => {
   ;(runSubagent as jest.Mock).mockClear()
   ;(searchFilesByMetadataDsl as jest.Mock).mockClear()
   setRuntimeComponentAcquirerForTests(null)
-})
-
-describe('workspacePolicyToUpstreamScope', () => {
-  it('folds protectedPaths into the scope exclude (M4 regression: bash layer never saw them)', () => {
-    // RED before M4: only readExcludes were folded, so a whole-vault
-    // workspaceRoot agent could reach plugin-private data through the bash
-    // tool (e.g. `cat YOLO/sessions.sqlite`) while the fs tools rejected it.
-    const scope = workspacePolicyToUpstreamScope({
-      enabled: true,
-      // Whole-vault roots are stored normalized (empty string) — see
-      // normalizeWorkspacePath.
-      workspaceRoot: '',
-      readExtraIncludes: [],
-      readExcludes: ['private/excluded.md'],
-      writeExcludes: [],
-      protectedPaths: [
-        { kind: 'exact', path: 'YOLO/sessions.sqlite' },
-        { kind: 'prefix', path: 'YOLO/data' },
-        { kind: 'exact', path: 'YOLO/.yolo_vector_db.tar.gz' },
-      ],
-    })
-
-    expect(scope).toEqual({
-      enabled: true,
-      // Empty include + exclude-first matching = whole vault minus the
-      // protected paths (see `isPathAllowedByScope`).
-      include: [],
-      exclude: [
-        'private/excluded.md',
-        'YOLO/sessions.sqlite',
-        'YOLO/data',
-        'YOLO/.yolo_vector_db.tar.gz',
-      ],
-    })
-  })
-
-  it('keeps protection excludes for a disabled workspace policy', () => {
-    expect(
-      workspacePolicyToUpstreamScope({
-        enabled: false,
-        workspaceRoot: '/',
-        readExtraIncludes: [],
-        readExcludes: [],
-        writeExcludes: [],
-        protectedPaths: [{ kind: 'exact', path: 'YOLO/sessions.sqlite' }],
-      }),
-    ).toEqual({
-      enabled: true,
-      include: [],
-      exclude: ['YOLO/sessions.sqlite'],
-    })
-  })
 })
 
 describe('recoverLikelyEscapedBackslashSequences', () => {
@@ -469,6 +417,161 @@ describe('js sandbox vault list handler', () => {
       await expect(
         handlers.vaultReadBinary('YOLO/data/chats/v1_abc.json'),
       ).resolves.toBeNull()
+    })
+  })
+
+  describe('workspace scope exclusion (issue #577)', () => {
+    const scope: WorkspaceAccessPolicy = {
+      enabled: true,
+      workspaceRoot: 'Notes',
+      readExtraIncludes: [],
+      readExcludes: [],
+      writeExcludes: [],
+    }
+
+    it('throws for an explicit vault.readText request outside scope, instead of returning null', async () => {
+      const secretFile = makeFile('Private/secret.md')
+      const root = makeFolder('', [secretFile])
+      const handlers = buildJsSandboxProxyHandlers(
+        makeApp(root, [secretFile]),
+        { allowVaultRead: true },
+        undefined,
+        undefined,
+        scope,
+      )
+      if (!handlers.vaultReadText) {
+        throw new Error('expected vaultReadText handler')
+      }
+
+      // Must reject, not resolve to null — null is this handler's
+      // established "file genuinely does not exist" signal, and silently
+      // returning it here would let the model wrongly conclude the file is
+      // missing rather than merely out of its workspace scope.
+      await expect(handlers.vaultReadText('Private/secret.md')).rejects.toThrow(
+        'Path "Private/secret.md" is outside this agent\'s workspace scope.',
+      )
+    })
+
+    it('throws for an explicit vault.readBinary request outside scope', async () => {
+      const secretFile = makeFile('Private/secret.png')
+      const root = makeFolder('', [secretFile])
+      const handlers = buildJsSandboxProxyHandlers(
+        makeApp(root, [secretFile]),
+        { allowVaultRead: true },
+        undefined,
+        undefined,
+        scope,
+      )
+      if (!handlers.vaultReadBinary) {
+        throw new Error('expected vaultReadBinary handler')
+      }
+
+      await expect(
+        handlers.vaultReadBinary('Private/secret.png'),
+      ).rejects.toThrow(
+        'Path "Private/secret.png" is outside this agent\'s workspace scope.',
+      )
+    })
+
+    it('silently drops out-of-scope entries from vault.list instead of erroring', async () => {
+      const inScopeFile = makeFile('Notes/a.md')
+      const outOfScopeFile = makeFile('Private/secret.md')
+      const root = makeFolder('', [inScopeFile, outOfScopeFile])
+      const handlers = buildJsSandboxProxyHandlers(
+        makeApp(root, [inScopeFile, outOfScopeFile]),
+        { allowVaultRead: true },
+        undefined,
+        undefined,
+        scope,
+      )
+      if (!handlers.vaultList) throw new Error('expected vaultList handler')
+
+      // Only the in-scope file is returned — the out-of-scope one is
+      // silently dropped, not reported as an error: enumeration must not
+      // reveal "there's something here you can't see".
+      await expect(handlers.vaultList('/')).resolves.toEqual([
+        {
+          kind: 'file',
+          path: 'Notes/a.md',
+          name: 'a.md',
+          size: 10,
+          mtime: 1000,
+        },
+      ])
+    })
+
+    it('allows traversal through an ancestor of an include rule in vault.list', async () => {
+      const nestedFile = makeFile('Notes/Sub/a.md')
+      const subFolder = makeFolder('Notes/Sub', [nestedFile])
+      const notesFolder = makeFolder('Notes', [subFolder])
+      const includeAncestorScope: WorkspaceAccessPolicy = {
+        enabled: true,
+        workspaceRoot: 'Notes/Sub',
+        readExtraIncludes: [],
+        readExcludes: [],
+        writeExcludes: [],
+      }
+      const root = makeFolder('', [notesFolder])
+      const handlers = buildJsSandboxProxyHandlers(
+        makeApp(root, [notesFolder, subFolder, nestedFile]),
+        { allowVaultRead: true },
+        undefined,
+        undefined,
+        includeAncestorScope,
+      )
+      if (!handlers.vaultList) throw new Error('expected vaultList handler')
+
+      // "Notes" is only an ancestor of the include rule "Notes/Sub", not
+      // in-scope content itself — listing it must still succeed so the
+      // agent can descend toward "Notes/Sub".
+      await expect(handlers.vaultList('Notes')).resolves.toEqual([
+        { kind: 'dir', path: 'Notes/Sub', name: 'Sub' },
+      ])
+    })
+
+    it('drops out-of-scope rows from db.search', async () => {
+      const root = makeFolder('', [])
+      const processQuery = jest.fn().mockResolvedValue([
+        { id: 1, path: 'Notes/a.md', content: 'in scope', similarity: 0.9 },
+        { id: 2, path: 'Private/secret.md', content: 'shh', similarity: 0.8 },
+      ])
+      const handlers = buildJsSandboxProxyHandlers(
+        makeApp(root, []),
+        { allowDbQuery: true },
+        () => Promise.resolve({ processQuery } as never),
+        undefined,
+        scope,
+      )
+      if (!handlers.dbQuery) throw new Error('expected dbQuery handler')
+
+      // The RAG index spans the whole vault and each row carries the chunk's
+      // real text, so an unfiltered search is a read path around workspace
+      // scope. Retrieval is an enumeration — denied rows vanish silently.
+      const rows = (await handlers.dbQuery('search', {
+        query: 'secret',
+      })) as Array<{ path: string }>
+      expect(rows.map((row) => row.path)).toEqual(['Notes/a.md'])
+      expect(JSON.stringify(rows)).not.toContain('shh')
+    })
+
+    it('exempts an allowed skill path from workspace scope for vault.readText', async () => {
+      const skillFile = makeFile('Skills/pkg/reference.md')
+      const root = makeFolder('', [skillFile])
+      const handlers = buildJsSandboxProxyHandlers(
+        makeApp(root, [skillFile]),
+        { allowVaultRead: true },
+        undefined,
+        undefined,
+        scope,
+        ['Skills/pkg/SKILL.md'],
+      )
+      if (!handlers.vaultReadText) {
+        throw new Error('expected vaultReadText handler')
+      }
+
+      await expect(
+        handlers.vaultReadText('Skills/pkg/reference.md'),
+      ).resolves.toBe('content:Skills/pkg/reference.md')
     })
   })
 })
@@ -2142,6 +2245,40 @@ describe('local fs tool action helpers', () => {
 describe('YOLO user data root final defense', () => {
   const settings = { yolo: { baseDir: 'YOLO' } } as unknown as YoloSettings
 
+  it('keeps the not-found disguise when the path is also outside the workspace scope', async () => {
+    const create = jest.fn()
+    const result = await callLocalFileTool({
+      app: {
+        vault: {
+          getAbstractFileByPath: jest.fn().mockReturnValue(null),
+          create,
+          createFolder: jest.fn(),
+        },
+      } as unknown as App,
+      settings,
+      toolName: 'fs_write',
+      args: { path: 'YOLO/data/chats/v1_new.json', content: 'leak' },
+      workspaceAccessPolicy: {
+        enabled: true,
+        workspaceRoot: 'Notes',
+        readExtraIncludes: [],
+        readExcludes: [],
+        writeExcludes: [],
+      },
+    })
+
+    // Hidden wins over scope: a scope-violation message would confirm the
+    // path as a real, merely-restricted location — exactly what hiding the
+    // user-data root is meant to prevent.
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+    if (result.status !== ToolCallResponseStatus.Error) {
+      throw new Error('expected error')
+    }
+    expect(result.error).toBe('File not found: YOLO/data/chats/v1_new.json')
+    expect(result.error).not.toMatch(/workspace scope/i)
+    expect(create).not.toHaveBeenCalled()
+  })
+
   it('reports fs_write to the user data root as not found instead of writing', async () => {
     const create = jest.fn()
     const result = await callLocalFileTool({
@@ -2235,7 +2372,7 @@ describe('YOLO user data root final defense', () => {
       {
         path: 'YOLO/data/chats/v1_abc.json',
         ok: false,
-        error: 'File not found: "YOLO/data/chats/v1_abc.json".',
+        error: 'File not found: YOLO/data/chats/v1_abc.json',
       },
     ])
     expect(read).not.toHaveBeenCalled()
@@ -2279,7 +2416,7 @@ describe('YOLO user data root final defense', () => {
       {
         path: '[[v1_abc]]',
         ok: false,
-        error: 'File not found: "[[v1_abc]]".',
+        error: 'File not found: [[v1_abc]]',
       },
     ])
     expect(read).not.toHaveBeenCalled()
@@ -2578,7 +2715,7 @@ describe('fs_read wikilink resolution', () => {
     })
   })
 
-  it('rejects a wikilink target that resolves outside the workspace scope', async () => {
+  it('rejects a wikilink target that resolves outside the workspace scope, without leaking the resolved path (issue #577)', async () => {
     const file = makeMdFile('Private/Secret.md')
     const app = makeReadApp({
       content: { 'Private/Secret.md': 'shh' },
@@ -2599,12 +2736,17 @@ describe('fs_read wikilink resolution', () => {
     })
 
     const results = parseSuccessResults(result)
+    // The error must echo the agent's own unresolved input ("[[Secret]]"),
+    // never the real vault path ("Private/Secret.md") it resolved to — an
+    // agent scoped away from Private/ has no way to know a wikilink lands
+    // there, and the denial message must not be how it finds out.
     expect(results[0]).toEqual({
       path: '[[Secret]]',
       ok: false,
-      error:
-        'Path "Private/Secret.md" is outside this agent\'s workspace scope.',
+      error: 'Path "[[Secret]]" is outside this agent\'s workspace scope.',
     })
+    const resultText = JSON.stringify(results[0])
+    expect(resultText).not.toContain('Private/Secret.md')
   })
 
   it('allows a wikilink target that resolves inside the workspace scope', async () => {

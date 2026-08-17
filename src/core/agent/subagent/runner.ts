@@ -381,7 +381,6 @@ async function runChildAgent(
     toolPreferences: policy.toolPreferences,
     builtinCapabilityPreferences: policy.builtinCapabilityPreferences,
     toolServerPreferences: policy.toolServerPreferences,
-    workspaceScope: parent.workspaceScope,
     workspaceAccessPolicy: policy.workspaceAccessPolicy,
     allowedSkillPaths: policy.allowedSkillPaths,
     enableToolDisclosure: policy.enableToolDisclosure,
