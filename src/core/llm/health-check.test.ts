@@ -3,10 +3,13 @@ import {
   HealthCheckAbortedError,
   testChatModelHealth,
   testEmbeddingModelHealth,
+  testRerankModelHealth,
 } from './health-check'
 
 const mockStreamResponse = jest.fn()
 const mockGetEmbedding = jest.fn()
+const mockRerank = jest.fn()
+const mockGetRerankModelClient = jest.fn()
 
 jest.mock('./manager', () => ({
   getProviderClient: jest.fn(() => ({
@@ -18,6 +21,11 @@ jest.mock('../rag/embedding', () => ({
   getEmbeddingModelClient: jest.fn(() => ({
     getEmbedding: mockGetEmbedding,
   })),
+}))
+
+jest.mock('../rag/rerank', () => ({
+  getRerankModelClient: (...args: unknown[]) =>
+    mockGetRerankModelClient(...args),
 }))
 
 const settings: any = { providers: [{ id: 'p' }] }
@@ -44,6 +52,9 @@ const usageChunk = (completionTokens: number) => ({
 beforeEach(() => {
   mockStreamResponse.mockReset()
   mockGetEmbedding.mockReset()
+  mockRerank.mockReset()
+  mockGetRerankModelClient.mockReset()
+  mockGetRerankModelClient.mockReturnValue({ id: 'p/r', rerank: mockRerank })
 })
 
 describe('testChatModelHealth', () => {
@@ -213,5 +224,114 @@ describe('testEmbeddingModelHealth', () => {
     if (result.status === 'fail') {
       expect(result.message).toContain('dimension mismatch')
     }
+  })
+})
+
+describe('testRerankModelHealth', () => {
+  const rerankModel: any = { id: 'p/r', providerId: 'p', model: 'r-call' }
+
+  it('returns ok with total latency when rerank returns scores', async () => {
+    mockRerank.mockResolvedValue({
+      kind: 'scores',
+      results: [{ index: 0, relevanceScore: 0.9 }],
+    })
+
+    const result = await testRerankModelHealth(settings, rerankModel, {
+      signal: new AbortController().signal,
+    })
+
+    expect(result.status).toBe('ok')
+    if (result.status === 'ok') {
+      expect(typeof result.totalMs).toBe('number')
+    }
+    expect(mockRerank).toHaveBeenCalledWith('ok', ['hello'], {
+      topN: 1,
+      signal: expect.any(AbortSignal),
+    })
+  })
+
+  it('returns ok for an ordering response', async () => {
+    mockRerank.mockResolvedValue({ kind: 'ordering', indices: [0] })
+
+    const result = await testRerankModelHealth(settings, rerankModel, {
+      signal: new AbortController().signal,
+    })
+
+    expect(result.status).toBe('ok')
+  })
+
+  it('returns fail when rerank returns no results', async () => {
+    mockRerank.mockResolvedValue({ kind: 'scores', results: [] })
+
+    const result = await testRerankModelHealth(settings, rerankModel, {
+      signal: new AbortController().signal,
+    })
+
+    expect(result.status).toBe('fail')
+    if (result.status === 'fail') {
+      expect(result.message).toContain('no results')
+    }
+  })
+
+  it('maps a rejected rerank call to a failure', async () => {
+    mockRerank.mockRejectedValue(
+      Object.assign(new Error('unauthorized'), { status: 401 }),
+    )
+
+    const result = await testRerankModelHealth(settings, rerankModel, {
+      signal: new AbortController().signal,
+    })
+
+    expect(result).toMatchObject({ status: 'fail', code: 401 })
+  })
+
+  it('returns fail when the rerank model is not configured', async () => {
+    mockGetRerankModelClient.mockReturnValue(null)
+
+    const result = await testRerankModelHealth(settings, rerankModel, {
+      signal: new AbortController().signal,
+    })
+
+    expect(result.status).toBe('fail')
+    expect(mockRerank).not.toHaveBeenCalled()
+  })
+
+  it('returns timeout when the request exceeds the budget', async () => {
+    mockRerank.mockImplementation(async (_query, _docs, opts) => {
+      await new Promise((_resolve, reject) => {
+        opts.signal.addEventListener('abort', () => {
+          const error = new Error('aborted')
+          error.name = 'AbortError'
+          reject(error)
+        })
+      })
+    })
+
+    const result = await testRerankModelHealth(settings, rerankModel, {
+      signal: new AbortController().signal,
+      timeoutMs: 20,
+    })
+
+    expect(result.status).toBe('timeout')
+  })
+
+  it('throws HealthCheckAbortedError when cancelled by the caller', async () => {
+    const controller = new AbortController()
+    mockRerank.mockImplementation(async (_query, _docs, opts) => {
+      await new Promise((_resolve, reject) => {
+        opts.signal.addEventListener('abort', () => {
+          const error = new Error('aborted')
+          error.name = 'AbortError'
+          reject(error)
+        })
+      })
+    })
+
+    const promise = testRerankModelHealth(settings, rerankModel, {
+      signal: controller.signal,
+    })
+    setTimeout(() => controller.abort(), 10)
+
+    await expect(promise).rejects.toBeInstanceOf(HealthCheckAbortedError)
   })
 })

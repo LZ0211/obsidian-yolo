@@ -28,6 +28,7 @@ import YoloPlugin from '../../../main'
 import { ChatModel } from '../../../types/chat-model.types'
 import { EmbeddingModel } from '../../../types/embedding-model.types'
 import { LLMProvider } from '../../../types/provider.types'
+import { RerankModel } from '../../../types/rerank-model.types'
 import { resolveProviderDisplayBaseUrl } from '../../../utils/llm/provider-base-url'
 import { ReactModal } from '../../common/ReactModal'
 
@@ -141,7 +142,7 @@ function MetricInline({
   kind,
 }: {
   cell: CellState
-  kind: 'chat' | 'embedding'
+  kind: 'chat' | 'embedding' | 'rerank'
 }) {
   const { t } = useLanguage()
   // While testing, the status chip ("检测中") + button spinner already convey
@@ -236,8 +237,8 @@ function ModelRow({
   deleteDisabled,
   deleteDisabledReason,
 }: {
-  model: ChatModel | EmbeddingModel
-  kind: 'chat' | 'embedding'
+  model: ChatModel | EmbeddingModel | RerankModel
+  kind: 'chat' | 'embedding' | 'rerank'
   cell: CellState
   disabled: boolean
   onTest: (id: string) => void
@@ -306,8 +307,12 @@ function ConnectivityTestPanel({
     chatTitleModelId,
     memoryAgentModelId,
     embeddingModelId,
+    rerankModelId,
   } = settings
   const [deletingEmbeddingModelIds, setDeletingEmbeddingModelIds] = useState(
+    () => new Set<string>(),
+  )
+  const [deletingRerankModelIds, setDeletingRerankModelIds] = useState(
     () => new Set<string>(),
   )
 
@@ -388,6 +393,41 @@ function ConnectivityTestPanel({
     [deletingEmbeddingModelIds, plugin, settings, setSettings],
   )
 
+  const handleDeleteRerankModel = useCallback(
+    (modelId: string) => {
+      if (modelId === settings.rerankModelId) {
+        new Notice(
+          'Cannot remove model that is currently selected as rerank model',
+        )
+        return
+      }
+
+      if (deletingRerankModelIds.has(modelId)) {
+        return
+      }
+
+      void (async () => {
+        setDeletingRerankModelIds((prev) => new Set(prev).add(modelId))
+        try {
+          await setSettings({
+            ...settings,
+            rerankModels: settings.rerankModels.filter((v) => v.id !== modelId),
+          })
+        } catch (error) {
+          console.error('[YOLO] Failed to delete rerank model:', error)
+          new Notice('Failed to delete rerank model.')
+        } finally {
+          setDeletingRerankModelIds((prev) => {
+            const next = new Set(prev)
+            next.delete(modelId)
+            return next
+          })
+        }
+      })()
+    },
+    [deletingRerankModelIds, settings, setSettings],
+  )
+
   const getChatDeleteState = (modelId: string) => {
     if (
       modelId === chatModelId ||
@@ -427,6 +467,28 @@ function ConnectivityTestPanel({
     return { disabled: false }
   }
 
+  const getRerankDeleteState = (modelId: string) => {
+    if (modelId === rerankModelId) {
+      return {
+        disabled: true,
+        reason: t(
+          'settings.models.connectivityTest.deleteRerankModelBlocked',
+          '无法删除当前选中的重排序模型',
+        ),
+      }
+    }
+    if (deletingRerankModelIds.has(modelId)) {
+      return {
+        disabled: true,
+        reason: t(
+          'settings.models.connectivityTest.deleteRerankModelInProgress',
+          '正在删除重排序模型…',
+        ),
+      }
+    }
+    return { disabled: false }
+  }
+
   const chatModels = useMemo(
     () => settings.chatModels.filter((m) => m.providerId === provider.id),
     [settings.chatModels, provider.id],
@@ -435,9 +497,13 @@ function ConnectivityTestPanel({
     () => settings.embeddingModels.filter((m) => m.providerId === provider.id),
     [settings.embeddingModels, provider.id],
   )
+  const rerankModels = useMemo(
+    () => settings.rerankModels.filter((m) => m.providerId === provider.id),
+    [settings.rerankModels, provider.id],
+  )
 
   const { results, testOne, testAll, stop, counts, done, total, phase } =
-    useConnectivityTest({ chatModels, embeddingModels })
+    useConnectivityTest({ chatModels, embeddingModels, rerankModels })
 
   const baseUrl = resolveProviderDisplayBaseUrl(provider)
   const running = phase === 'running'
@@ -577,6 +643,33 @@ function ConnectivityTestPanel({
                     disabled={running}
                     onTest={testOne}
                     onDelete={handleDeleteEmbeddingModel}
+                    deleteDisabled={deleteState.disabled}
+                    deleteDisabledReason={deleteState.reason}
+                  />
+                )
+              })}
+            </>
+          ) : null}
+
+          {rerankModels.length > 0 ? (
+            <>
+              <div className="yolo-health-grouplabel">
+                {t('settings.models.rerankModels', '重排序模型')}
+                <span className="yolo-health-grouplabel-ct">
+                  {rerankModels.length}
+                </span>
+              </div>
+              {rerankModels.map((model) => {
+                const deleteState = getRerankDeleteState(model.id)
+                return (
+                  <ModelRow
+                    key={model.id}
+                    model={model}
+                    kind="rerank"
+                    cell={results[model.id] ?? { status: 'idle' }}
+                    disabled={running}
+                    onTest={testOne}
+                    onDelete={handleDeleteRerankModel}
                     deleteDisabled={deleteState.disabled}
                     deleteDisabledReason={deleteState.reason}
                   />

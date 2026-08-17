@@ -1746,6 +1746,9 @@ export const it: DeepPartial<TranslationKeys> = {
         deleteEmbeddingModelBlocked:
           'Impossibile eliminare il modello embedding selezionato',
         deleteEmbeddingModelInProgress: 'Eliminazione modello embedding…',
+        deleteRerankModelBlocked:
+          'Impossibile eliminare il modello di rerank selezionato',
+        deleteRerankModelInProgress: 'Eliminazione modello di rerank…',
       },
       availableModelsAuto: 'Modelli disponibili (recuperati automaticamente)',
       searchModels: 'Cerca modelli...',

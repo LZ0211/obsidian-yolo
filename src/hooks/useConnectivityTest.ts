@@ -6,9 +6,11 @@ import {
   HealthResult,
   testChatModelHealth,
   testEmbeddingModelHealth,
+  testRerankModelHealth,
 } from '../core/llm/health-check'
 import { ChatModel } from '../types/chat-model.types'
 import { EmbeddingModel } from '../types/embedding-model.types'
+import { RerankModel } from '../types/rerank-model.types'
 
 const CONCURRENCY = 4
 
@@ -30,13 +32,16 @@ export type ConnectivityCounts = {
 type TestItem =
   | { kind: 'chat'; model: ChatModel }
   | { kind: 'embedding'; model: EmbeddingModel }
+  | { kind: 'rerank'; model: RerankModel }
 
 export function useConnectivityTest({
   chatModels,
   embeddingModels,
+  rerankModels,
 }: {
   chatModels: ChatModel[]
   embeddingModels: EmbeddingModel[]
+  rerankModels: RerankModel[]
 }) {
   const plugin = usePlugin()
 
@@ -47,8 +52,9 @@ export function useConnectivityTest({
         kind: 'embedding' as const,
         model,
       })),
+      ...rerankModels.map((model) => ({ kind: 'rerank' as const, model })),
     ],
-    [chatModels, embeddingModels],
+    [chatModels, embeddingModels, rerankModels],
   )
   const total = items.length
 
@@ -88,9 +94,13 @@ export function useConnectivityTest({
             ? await testChatModelHealth(plugin.settings, item.model, {
                 signal: controller.signal,
               })
-            : await testEmbeddingModelHealth(plugin.settings, item.model, {
-                signal: controller.signal,
-              })
+            : item.kind === 'embedding'
+              ? await testEmbeddingModelHealth(plugin.settings, item.model, {
+                  signal: controller.signal,
+                })
+              : await testRerankModelHealth(plugin.settings, item.model, {
+                  signal: controller.signal,
+                })
       } catch (error) {
         if (!(error instanceof HealthCheckAbortedError)) {
           result = {

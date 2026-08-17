@@ -1,7 +1,9 @@
 import { YoloSettings } from '../../settings/schema/setting.types'
 import { ChatModel } from '../../types/chat-model.types'
 import { EmbeddingModel } from '../../types/embedding-model.types'
+import { RerankModel } from '../../types/rerank-model.types'
 import { getEmbeddingModelClient } from '../rag/embedding'
+import { getRerankModelClient } from '../rag/rerank'
 
 import {
   LLMAPIKeyInvalidException,
@@ -298,5 +300,79 @@ export async function testEmbeddingModelHealth(
     if (onExternalAbort) {
       opts.signal.removeEventListener('abort', onExternalAbort)
     }
+  }
+}
+
+/**
+ * Probe a rerank model via the shared RAG client so the probe exercises the
+ * same provider path as real retrieval (`getRerankModelClient` → provider
+ * `rerank`). A minimal query + single document, `topN: 1`. Empty results are
+ * reported as a failure (like the chat "no content" guard) so a broken
+ * endpoint doesn't surface as a misleading 'ok'.
+ *
+ * The client passes `signal` through to the provider transport, so timeout and
+ * stop use the same linked-controller pattern as the chat probe.
+ */
+export async function testRerankModelHealth(
+  settings: YoloSettings,
+  model: RerankModel,
+  opts: HealthCheckOptions,
+): Promise<HealthResult> {
+  const timeoutMs = opts.timeoutMs ?? HEALTH_CHECK_TIMEOUT_MS
+  const client = getRerankModelClient({
+    settings,
+    rerankModelId: model.id,
+  })
+  if (!client) {
+    return {
+      status: 'fail',
+      message:
+        'Rerank model client is not configured — verify the rerank model and provider settings.',
+    }
+  }
+
+  const controller = new AbortController()
+  let timedOut = false
+  const onExternalAbort = () => controller.abort()
+  if (opts.signal.aborted) {
+    controller.abort()
+  } else {
+    opts.signal.addEventListener('abort', onExternalAbort)
+  }
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+
+  const start = performance.now()
+  try {
+    const response = await client.rerank('ok', ['hello'], {
+      topN: 1,
+      signal: controller.signal,
+    })
+    const results =
+      response.kind === 'scores' ? response.results : response.indices
+    if (results.length === 0) {
+      return {
+        status: 'fail',
+        message:
+          'Rerank returned no results — verify the model id and the provider rerank endpoint.',
+      }
+    }
+    return { status: 'ok', totalMs: performance.now() - start }
+  } catch (error) {
+    if (opts.signal.aborted && !timedOut) {
+      throw new HealthCheckAbortedError()
+    }
+    if (timedOut) {
+      return { status: 'timeout', totalMs: timeoutMs }
+    }
+    if (isAbortError(error)) {
+      throw new HealthCheckAbortedError()
+    }
+    return mapErrorToResult(error)
+  } finally {
+    clearTimeout(timer)
+    opts.signal.removeEventListener('abort', onExternalAbort)
   }
 }

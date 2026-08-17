@@ -1618,6 +1618,9 @@ export const en: TranslationKeys = {
         deleteEmbeddingModelBlocked:
           'Cannot delete the currently selected embedding model',
         deleteEmbeddingModelInProgress: 'Deleting embedding model…',
+        deleteRerankModelBlocked:
+          'Cannot delete the currently selected rerank model',
+        deleteRerankModelInProgress: 'Deleting rerank model…',
       },
       availableModelsAuto: 'Available models (auto-fetched)',
       searchModels: 'Search models...',

@@ -1498,6 +1498,8 @@ export const zh: TranslationKeys = {
         deleteChatModelBlocked: '无法删除当前选中的聊天、标题或记忆模型',
         deleteEmbeddingModelBlocked: '无法删除当前选中的嵌入模型',
         deleteEmbeddingModelInProgress: '正在删除嵌入模型…',
+        deleteRerankModelBlocked: '无法删除当前选中的重排序模型',
+        deleteRerankModelInProgress: '正在删除重排序模型…',
       },
       availableModelsAuto: '可用模型（自动获取）',
       searchModels: '搜索模型...',

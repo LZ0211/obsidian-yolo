@@ -1270,6 +1270,8 @@ export type TranslationKeys = {
         deleteChatModelBlocked: string
         deleteEmbeddingModelBlocked: string
         deleteEmbeddingModelInProgress: string
+        deleteRerankModelBlocked: string
+        deleteRerankModelInProgress: string
       }
       // auto-fetched models helper labels
       availableModelsAuto?: string
