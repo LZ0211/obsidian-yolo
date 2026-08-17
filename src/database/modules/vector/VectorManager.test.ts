@@ -804,6 +804,99 @@ describe('VectorManager.reconcile', () => {
     expect(ragStore.replaceFile).toHaveBeenCalledTimes(1)
   })
 
+  it('with VectorStore, abandons remaining files after consecutive permanent embedding failures', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(new Map())
+    const files = Array.from({ length: 12 }, (_, index) => ({
+      path: `notes/f${String(index).padStart(2, '0')}.md`,
+      mtime: 100 + index,
+      content: `file ${index}`,
+    }))
+    const { manager } = createVectorStoreManager(ragStore, files)
+    const embedSpy = (embeddingModel as unknown as { getEmbedding: jest.Mock })
+      .getEmbedding
+    embedSpy.mockRejectedValue(
+      Object.assign(new Error('bad request'), { status: 400 }),
+    )
+
+    await expect(
+      manager.reconcile(
+        embeddingModel,
+        { ...baseConfig, embeddingConcurrency: 1 },
+        { scope: { kind: 'all' } },
+      ),
+    ).rejects.toMatchObject({ name: 'RagIndexAbandonedError' })
+
+    // The first 5 files were attempted (2 batch attempts each) and written as
+    // permanent failures; the remaining 7 files were never touched.
+    expect(embedSpy.mock.calls.map(([content]) => content)).toEqual([
+      'file 0',
+      'file 0',
+      'file 1',
+      'file 1',
+      'file 2',
+      'file 2',
+      'file 3',
+      'file 3',
+      'file 4',
+      'file 4',
+    ])
+    expect(ragStore.replaceFile).toHaveBeenCalledTimes(5)
+    expect(
+      ragStore.replaceFile.mock.calls
+        .map(([, fileWrite]) => fileWrite.path)
+        .sort(),
+    ).toEqual([
+      'notes/f00.md',
+      'notes/f01.md',
+      'notes/f02.md',
+      'notes/f03.md',
+      'notes/f04.md',
+    ])
+  })
+
+  it('with VectorStore, does not abandon when a file succeeds between permanent failures', async () => {
+    const ragStore = fakeVectorStore()
+    ragStore.getIndexedFiles.mockResolvedValue(new Map())
+    const files = Array.from({ length: 9 }, (_, index) => ({
+      path: `notes/f${String(index).padStart(2, '0')}.md`,
+      mtime: 100 + index,
+      content: index === 4 ? 'success 4' : `fail ${index}`,
+    }))
+    const { manager } = createVectorStoreManager(ragStore, files)
+    ;(embeddingModel as unknown as { getEmbedding: jest.Mock }).getEmbedding =
+      jest.fn(async (chunkContent: string) => {
+        if (chunkContent.includes('success')) {
+          return [0.1, 0.2, 0.3]
+        }
+        throw Object.assign(new Error('bad request'), { status: 400 })
+      })
+
+    await expect(
+      manager.reconcile(
+        embeddingModel,
+        { ...baseConfig, embeddingConcurrency: 1 },
+        { scope: { kind: 'all' } },
+      ),
+    ).resolves.toEqual({
+      permanentFailedPaths: [
+        'notes/f00.md',
+        'notes/f01.md',
+        'notes/f02.md',
+        'notes/f03.md',
+        'notes/f05.md',
+        'notes/f06.md',
+        'notes/f07.md',
+        'notes/f08.md',
+      ],
+      chunkifyFailedPaths: [],
+    })
+
+    // Every file was attempted: the success in the middle reset the
+    // consecutive-failure counter so the run completed normally.
+    expect(ragStore.replaceFile).toHaveBeenCalledTimes(9)
+  })
+
   it('with VectorStore, truncate calls clearNamespace', async () => {
     const ragStore = fakeVectorStore()
     ragStore.getIndexedFiles.mockResolvedValue(new Map())

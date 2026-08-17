@@ -1,6 +1,7 @@
 import { DatabaseSaveFailedError } from '../../database/exception'
 
 import {
+  RagIndexAbandonedError,
   RagIndexIncompleteError,
   classifyRagIndexError,
   isTransientRagIndexError,
@@ -37,5 +38,25 @@ describe('classifyRagIndexError - DatabaseSaveFailedError', () => {
     expect(error.cause).toBe(cause)
     expect(error.name).toBe('DatabaseSaveFailedError')
     expect(error.message).toContain('disk full')
+  })
+})
+
+describe('classifyRagIndexError - RagIndexAbandonedError', () => {
+  it('classifies RagIndexAbandonedError as permanent', () => {
+    // Repeated permanent embedding failures abandon the remaining files: the
+    // run must land on `failed` and NOT enter the transient retry loop —
+    // retrying won't help a broken embedding configuration.
+    const error = new RagIndexAbandonedError(5, 3)
+    expect(classifyRagIndexError(error)).toBe('permanent')
+    expect(isTransientRagIndexError(error)).toBe(false)
+  })
+
+  it('carries the consecutive failure count and remaining file count', () => {
+    const error = new RagIndexAbandonedError(5, 3)
+    expect(error.name).toBe('RagIndexAbandonedError')
+    expect(error.consecutiveFailedFiles).toBe(5)
+    expect(error.remainingFiles).toBe(3)
+    expect(error.message).toContain('5')
+    expect(error.message).toContain('3')
   })
 })

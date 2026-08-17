@@ -6,6 +6,7 @@ import { IndexProgress } from '../../../components/chat-view/QueryProgress'
 import { isRagIndexablePath } from '../../../core/rag/indexSourcePolicy'
 import { splitMarkdownIntoChunks } from '../../../core/rag/markdownChunkSplitter'
 import {
+  RagIndexAbandonedError,
   RagIndexFailureKind,
   RagIndexIncompleteError,
   classifyRagIndexError,
@@ -49,6 +50,14 @@ const SQLITE_FILE_WORKER_MAX = 8
 const PDF_PROJECTION_SOURCE_PARSER_VERSION = 'pdf-text-v1'
 /** Projection source parser version for MinerU markdown (T3 md-source path). */
 const MINERU_MD_PROJECTION_SOURCE_PARSER_VERSION = 'mineru-md-v1'
+/**
+ * Consecutive whole-file permanent embedding failures that trigger abandoning
+ * the remaining file tasks. A broken embedding configuration (invalid key,
+ * wrong model id) fails every file, so a handful of consecutive failures is an
+ * unambiguous signal — keep burning API calls on the rest of the vault is
+ * pointless. A successful file resets the counter (consecutive, not total).
+ */
+export const MAX_CONSECUTIVE_PERMANENT_EMBEDDING_FAILURES = 5
 
 export type ReconcileConfig = {
   chunkSize: number
@@ -754,6 +763,9 @@ export class VectorManager {
     let nextFileIndex = 0
     let fatalError: unknown = null
     let writeQueue: Promise<void> = Promise.resolve()
+    // Consecutive whole-file permanent embedding failures across workers (in
+    // completion order). Reaching the threshold abandons the remaining files.
+    let consecutivePermanentFailures = 0
 
     const fileWorkerLimit = Math.max(
       1,
@@ -824,6 +836,9 @@ export class VectorManager {
 
         if (permanentFailed) {
           permanentFailedPaths.push(file.path)
+          consecutivePermanentFailures += 1
+        } else {
+          consecutivePermanentFailures = 0
         }
         // Whole-file permanent failure (`chunks` is empty) still enqueues the
         // write: `replaceFile` advances the file's recorded mtime so the
@@ -865,6 +880,15 @@ export class VectorManager {
         }
         try {
           await processFile(file)
+          if (
+            consecutivePermanentFailures >=
+            MAX_CONSECUTIVE_PERMANENT_EMBEDDING_FAILURES
+          ) {
+            throw new RagIndexAbandonedError(
+              consecutivePermanentFailures,
+              Math.max(0, filesToChunkify.length - nextFileIndex),
+            )
+          }
         } catch (error) {
           fatalError = error
           throw error

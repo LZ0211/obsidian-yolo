@@ -32,6 +32,27 @@ export class RagIndexIncompleteError extends Error {
   }
 }
 
+/**
+ * Raised by the reconcile loop when the embedding provider fails permanently
+ * for N consecutive files. The remaining file tasks are abandoned instead of
+ * burning API calls on every vault file. Classified as `permanent` so the run
+ * lands on `failed` and does NOT enter the transient retry loop — retrying
+ * won't help a broken embedding configuration.
+ */
+export class RagIndexAbandonedError extends Error {
+  readonly consecutiveFailedFiles: number
+  readonly remainingFiles: number
+
+  constructor(consecutiveFailedFiles: number, remainingFiles: number) {
+    super(
+      `Embedding failed ${consecutiveFailedFiles} times in a row; abandoned the remaining ${remainingFiles} file(s) to avoid further failures. Check the embedding model configuration.`,
+    )
+    this.name = 'RagIndexAbandonedError'
+    this.consecutiveFailedFiles = consecutiveFailedFiles
+    this.remainingFiles = remainingFiles
+  }
+}
+
 const TRANSIENT_STATUS_CODES = new Set([408, 409, 425, 429, 500, 502, 503, 504])
 const TRANSIENT_ERROR_CODES = new Set([
   'ECONNABORTED',
@@ -61,6 +82,10 @@ export const isAbortLikeError = (error: unknown): boolean => {
 export const classifyRagIndexError = (error: unknown): RagIndexFailureKind => {
   if (error instanceof RagIndexIncompleteError) {
     return 'transient'
+  }
+
+  if (error instanceof RagIndexAbandonedError) {
+    return 'permanent'
   }
 
   if (isAbortLikeError(error)) {
