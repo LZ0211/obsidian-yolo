@@ -119,6 +119,15 @@ import {
   filterContextPrunedAssistantToolCalls,
   filterContextPrunedToolCalls,
 } from './tool-context-pruning'
+import {
+  MAX_ASSISTANT_CONTENT_CONTEXT_CHARS,
+  MAX_ASSISTANT_REASONING_CONTEXT_CHARS,
+  MAX_TOOL_ARGUMENT_CONTEXT_CHARS,
+  boundRequestMessagesForContext,
+  resolveToolResultMaxChars,
+  truncateContextText,
+  truncateJsonStrings,
+} from './contextBudget'
 
 /** Regex matching the `<user_selected_skills>...</user_selected_skills>` block
  * produced by `buildSelectedSkillsPrompt`. Used by the breakdown estimator to
@@ -302,7 +311,14 @@ type MentionedFileContextEntry = {
   source: 'file' | 'folder'
 }
 
+type MentionedFilesCollection = {
+  entries: MentionedFileContextEntry[]
+  omittedFolderFileCount: number
+}
+
 const MAX_MENTIONED_FILE_OUTLINES = 10
+const MAX_MENTIONED_FOLDER_FILES = 50
+const MAX_MENTIONED_FILE_CONTENT_CHARS = 64_000
 /** 单份 MinerU 转换最多附带图片数（与 fs_read 分支一致）。 */
 const MINERU_ATTACHMENT_IMAGE_LIMIT = 8
 
@@ -586,6 +602,12 @@ export class RequestContextBuilder {
     return this.settings.chatOptions?.mentionContextMode ?? 'light'
   }
 
+  private getToolResultMaxChars(): number {
+    return resolveToolResultMaxChars(
+      this.settings.chatOptions?.toolResultMaxChars,
+    )
+  }
+
   /**
    * Whether the active chat model accepts image input, resolved from settings
    * (mirrors fs_read). Unknown model → allow; the request-time
@@ -807,10 +829,14 @@ export class RequestContextBuilder {
       { app: this.app, settings: this.settings },
     )
 
-    const requestMessages = await prepareDocumentsForModel(
+    const preparedMessages = await prepareDocumentsForModel(
       stripUnsupportedImages(withInjections, _model),
       _model,
       { app: this.app, settings: this.settings },
+    )
+    const requestMessages = boundRequestMessagesForContext(
+      preparedMessages,
+      this.getToolResultMaxChars(),
     )
 
     return {
@@ -1296,10 +1322,21 @@ ${message.annotations
       {
         role: 'assistant',
         content: [
-          message.content,
+          truncateContextText(
+            message.content,
+            MAX_ASSISTANT_CONTENT_CONTEXT_CHARS,
+            'assistant content',
+          ),
           ...(citationContent ? [citationContent] : []),
         ].join('\n'),
-        reasoning: message.reasoning,
+        reasoning:
+          typeof message.reasoning === 'string'
+            ? truncateContextText(
+                message.reasoning,
+                MAX_ASSISTANT_REASONING_CONTEXT_CHARS,
+                'assistant reasoning',
+              )
+            : message.reasoning,
         providerMetadata: message.metadata?.providerMetadata,
         tool_calls: filterContextPrunedAssistantToolCalls(
           message.toolCallRequests
@@ -1338,7 +1375,13 @@ ${message.annotations
       ...toolCall,
       id: callId,
       name,
-      arguments: createCompleteToolCallArguments({ value: args }),
+      arguments: createCompleteToolCallArguments({
+        value: truncateJsonStrings(
+          args,
+          MAX_TOOL_ARGUMENT_CONTEXT_CHARS,
+          'tool arguments',
+        ) as Record<string, unknown>,
+      }),
     }
   }
 
@@ -1400,7 +1443,11 @@ ${message.annotations
           toolMessages.push({
             role: 'tool',
             tool_call: toolCall.request,
-            content: toolCall.response.data.text,
+            content: truncateContextText(
+              toolCall.response.data.text,
+              this.getToolResultMaxChars(),
+              'tool result',
+            ),
           })
           // Collect hoistable parts (image_url and document) for a follow-up
           // user message after all tool messages, so the message sequence stays valid.
@@ -2476,10 +2523,11 @@ ${customInstruction}
     folders: TFolder[]
   }): Promise<string> {
     const folderPathSet = new Set(folders.map((folder) => folder.path))
-    const unifiedFiles = this.collectMentionedFiles({
-      files,
-      folders,
-    })
+    const { entries: unifiedFiles, omittedFolderFileCount } =
+      this.collectMentionedFiles({
+        files,
+        folders,
+      })
 
     if (unifiedFiles.length === 0 && folderPathSet.size === 0) {
       return ''
@@ -2562,6 +2610,12 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
       )
     }
 
+    if (omittedFolderFileCount > 0) {
+      sections.push(
+        `Additional mentioned folder files omitted after the first ${MAX_MENTIONED_FOLDER_FILES} files: ${omittedFolderFileCount}`,
+      )
+    }
+
     sections.push(
       'This section provides only paths and outlines. Use file tools only if you need the full contents or a specific line range.',
     )
@@ -2610,7 +2664,7 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
     const uniqueFiles = this.collectMentionedFiles({
       files,
       folders: [],
-    }).map(({ file }) => file)
+    }).entries.map(({ file }) => file)
 
     if (uniqueFiles.length === 0) {
       return { text: '', imageDataUrls: [] }
@@ -2635,7 +2689,14 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
           } else {
             rawContent = await readTFileContent(file, this.app.vault)
           }
-          return { file, content: rawContent }
+          return {
+            file,
+            content: truncateContextText(
+              rawContent,
+              MAX_MENTIONED_FILE_CONTENT_CHARS,
+              `mentioned file ${file.path}`,
+            ),
+          }
         } catch (error) {
           console.warn('[YOLO] Failed to read mentioned file', file.path, error)
           return null
@@ -2760,9 +2821,11 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
   }: {
     files: TFile[]
     folders: TFolder[]
-  }): MentionedFileContextEntry[] {
+  }): MentionedFilesCollection {
     const collected: MentionedFileContextEntry[] = []
     const seenPaths = new Set<string>()
+    let folderFileCount = 0
+    let omittedFolderFileCount = 0
 
     const pushFile = (
       file: TFile,
@@ -2781,11 +2844,19 @@ ${[...folderPathSet].map((path) => `- \`${path}\``).join('\n')}`)
 
     for (const folder of folders) {
       for (const file of getNestedFiles(folder, this.app.vault)) {
+        if (seenPaths.has(file.path)) {
+          continue
+        }
+        if (folderFileCount >= MAX_MENTIONED_FOLDER_FILES) {
+          omittedFolderFileCount += 1
+          continue
+        }
+        folderFileCount += 1
         pushFile(file, 'folder')
       }
     }
 
-    return collected
+    return { entries: collected, omittedFolderFileCount }
   }
 
   private addLineNumbersToContent({

@@ -94,6 +94,24 @@ describe('executeSingleTurn', () => {
     consoleWarnSpy.mockRestore()
   })
 
+  it('does not call the provider when the assembled context reaches the model limit', async () => {
+    const provider = new MockProvider()
+
+    await expect(
+      executeSingleTurn({
+        providerClient: provider,
+        model: { ...TEST_MODEL, maxContextTokens: 1 },
+        request: TEST_REQUEST,
+        deliveryMode: 'buffered',
+      }),
+    ).rejects.toMatchObject({
+      code: 'context_length_exceeded',
+    })
+
+    expect(provider.generateResponseMock).not.toHaveBeenCalled()
+    expect(provider.streamResponseMock).not.toHaveBeenCalled()
+  })
+
   it('applies lightweight policy without clearing reasoningType', async () => {
     const provider = new MockProvider()
     provider.generateResponseMock.mockResolvedValue({

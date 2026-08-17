@@ -36,7 +36,7 @@ import {
 } from '../../core/skills/liteSkills'
 import { readPromptSnapshotEntries } from '../../database/json/chat/promptSnapshotStore'
 import type { YoloSettings } from '../../settings/schema/setting.types'
-import type { ChatUserMessage } from '../../types/chat'
+import type { ChatToolMessage, ChatUserMessage } from '../../types/chat'
 import type { ChatModel } from '../../types/chat-model.types'
 import type { ContentPart, RequestMessage } from '../../types/llm/request'
 import { ToolCallResponseStatus } from '../../types/tool-call.types'
@@ -712,6 +712,32 @@ describe('RequestContextBuilder compileUserMessagePrompt', () => {
     expect(textContent.match(/- L1 # /g)?.length).toBe(10)
     expect(textContent).toContain(
       'Additional mentioned markdown files omitted from outline due to limit: 2',
+    )
+  })
+
+  it('caps the number of files expanded from a mentioned folder', async () => {
+    const folderFiles = Array.from({ length: 51 }, (_, index) =>
+      createMockFile(`docs/file-${index + 1}.md`),
+    )
+    const folder = createMockFolder('docs', folderFiles)
+    const app = createMockApp({
+      files: folderFiles,
+      folders: [folder],
+      fileContents: new Map(),
+    })
+
+    const builder = new RequestContextBuilder(app as never, settings)
+
+    const result = await builder.compileUserMessagePrompt({
+      message: createUserMessage([{ type: 'folder', folder }]),
+    })
+
+    const textContent = getTextContent(result.promptContent)
+
+    expect(textContent).toContain('- `docs/file-50.md`')
+    expect(textContent).not.toContain('- `docs/file-51.md`')
+    expect(textContent).toContain(
+      'Additional mentioned folder files omitted after the first 50 files',
     )
   })
 
@@ -2300,6 +2326,64 @@ describe('parseToolMessage document hoisting', () => {
 
   // Use this model ID when building request messages so the PDF modality gate passes.
   const PDF_MODEL_ID = 'pdf-provider/pdf-model'
+
+  it('limits tool results in request context without changing the stored result', () => {
+    const settings = {
+      ...mockSettings,
+      chatOptions: {
+        ...mockSettings.chatOptions,
+        toolResultMaxChars: 1_024,
+      },
+    } as YoloSettings
+    const builder = new RequestContextBuilder(mockApp as never, settings)
+    const storedText = 'x'.repeat(4_000)
+    const message: ChatToolMessage = {
+      role: 'tool',
+      id: 'tool-1',
+      toolCalls: [
+        {
+          request: {
+            id: 'tc-1',
+            name: 'yolo_bridge__plugin_read',
+            arguments: emptyArgs,
+          },
+          response: {
+            status: ToolCallResponseStatus.Success,
+            data: { type: 'text', text: storedText },
+          },
+        },
+      ],
+    }
+
+    const requestMessages = builder.parseTurnMessagesToRequestMessages([
+      {
+        role: 'assistant',
+        id: 'assistant-1',
+        content: '',
+        toolCallRequests: [
+          {
+            id: 'tc-1',
+            name: 'yolo_bridge__plugin_read',
+            arguments: emptyArgs,
+          },
+        ],
+      },
+      message,
+    ])
+    const requestTool = requestMessages.find((item) => item.role === 'tool')
+
+    expect(
+      requestTool?.role === 'tool' ? requestTool.content.length : undefined,
+    ).toBeLessThanOrEqual(1_024)
+    expect(message.toolCalls[0]?.response.status).toBe(
+      ToolCallResponseStatus.Success,
+    )
+    if (
+      message.toolCalls[0]?.response.status === ToolCallResponseStatus.Success
+    ) {
+      expect(message.toolCalls[0].response.data.text).toBe(storedText)
+    }
+  })
 
   /**
    * Build a minimal conversation with one assistant turn (with tool calls),

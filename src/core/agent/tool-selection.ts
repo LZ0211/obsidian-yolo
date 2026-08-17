@@ -6,6 +6,10 @@ import type {
 import type { RequestTool } from '../../types/llm/request'
 import type { McpTool } from '../../types/mcp.types'
 import type { LLMProviderApiType } from '../../types/provider.types'
+import {
+  truncateContextText,
+  truncateJsonStrings,
+} from '../../utils/chat/contextBudget'
 import { estimateJsonTokens } from '../../utils/llm/contextTokenEstimate'
 import { type JsSandboxSettings } from '../mcp/jsSandboxSettings'
 import { getJsSandboxTool } from '../mcp/jsSandboxTool'
@@ -34,6 +38,45 @@ const LOCAL_MEMORY_TOOL_NAMES = new Set([
   'memory_update',
   'memory_delete',
 ])
+
+const MAX_TOOL_DESCRIPTION_CONTEXT_CHARS = 2_000
+const MAX_TOOL_SCHEMA_CONTEXT_CHARS = 20_000
+const MAX_TOOL_SCHEMA_STRING_CHARS = 1_000
+
+const boundToolSchema = (
+  inputSchema: McpTool['inputSchema'],
+): McpTool['inputSchema'] => {
+  const bounded = truncateJsonStrings(
+    inputSchema,
+    MAX_TOOL_SCHEMA_STRING_CHARS,
+    'tool schema',
+  ) as Record<string, unknown>
+
+  if (JSON.stringify(bounded).length <= MAX_TOOL_SCHEMA_CONTEXT_CHARS) {
+    return bounded as McpTool['inputSchema']
+  }
+
+  const properties =
+    bounded.properties && typeof bounded.properties === 'object'
+      ? (bounded.properties as Record<string, unknown>)
+      : {}
+  const retainedProperties: Record<string, unknown> = {}
+  for (const [name, property] of Object.entries(properties)) {
+    const candidate = {
+      type: bounded.type ?? 'object',
+      properties: { ...retainedProperties, [name]: property },
+    }
+    if (JSON.stringify(candidate).length > MAX_TOOL_SCHEMA_CONTEXT_CHARS) {
+      break
+    }
+    retainedProperties[name] = property
+  }
+
+  return {
+    type: bounded.type ?? 'object',
+    properties: retainedProperties,
+  } as McpTool['inputSchema']
+}
 
 export const isLoadToolSchemasToolName = (toolName: string): boolean => {
   try {
@@ -98,17 +141,24 @@ export const buildRequestTools = (
     return undefined
   }
 
-  return toolDefinitions.map((tool) => ({
-    type: 'function',
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: {
-        ...tool.inputSchema,
-        properties: tool.inputSchema.properties ?? {},
+  return toolDefinitions.map((tool) => {
+    const boundedSchema = boundToolSchema(tool.inputSchema)
+    return {
+      type: 'function' as const,
+      function: {
+        name: tool.name,
+        description: truncateContextText(
+          tool.description ?? '',
+          MAX_TOOL_DESCRIPTION_CONTEXT_CHARS,
+          'tool description',
+        ),
+        parameters: {
+          ...boundedSchema,
+          properties: boundedSchema.properties ?? {},
+        },
       },
-    },
-  }))
+    }
+  })
 }
 
 /**

@@ -878,6 +878,9 @@ export const en: TranslationKeys = {
       enableToolDisclosure: 'Enable on-demand tool loading (Beta)',
       enableToolDisclosureDesc:
         "Optional tools start as short descriptions, then load full details when needed. Recommended when you have many MCP tools enabled. Note: this mechanism relies on the model's own tool-use capability — some models may not reliably recognize tools loaded this way.",
+      toolResultMaxChars: 'Tool result context limit (characters)',
+      toolResultMaxCharsDesc:
+        'Limits tool results sent to the model; the original result remains available in chat. Range: 1,024–200,000 characters.',
       expandDescription: 'Expand',
       collapseDescription: 'Collapse',
       viewAllTools: 'View all tools',

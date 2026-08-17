@@ -1,9 +1,34 @@
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import type { McpTool } from '../../types/mcp.types'
 
-import { selectAllowedTools } from './tool-selection'
+import { buildRequestTools, selectAllowedTools } from './tool-selection'
 
 describe('selectAllowedTools', () => {
+  it('bounds oversized external tool descriptions and schemas', () => {
+    const requestTools = buildRequestTools([
+      {
+        name: 'external__huge',
+        description: 'description '.repeat(5000),
+        inputSchema: {
+          type: 'object',
+          properties: {
+            payload: {
+              type: 'string',
+              description: 'schema '.repeat(5000),
+            },
+          },
+        },
+      },
+    ])
+
+    expect(requestTools?.[0]?.function.description?.length).toBeLessThanOrEqual(
+      2_000,
+    )
+    expect(
+      JSON.stringify(requestTools?.[0]?.function.parameters).length,
+    ).toBeLessThanOrEqual(20_000)
+  })
+
   it('keeps full schemas for tools left in always mode', async () => {
     const availableTools: McpTool[] = [
       {

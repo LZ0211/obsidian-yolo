@@ -801,6 +801,9 @@ export const zh: TranslationKeys = {
       enableToolDisclosure: '启用工具按需加载（Beta）',
       enableToolDisclosureDesc:
         '可选工具集会先以简要说明提供，模型需要时再加载完整说明，推荐在启用了大量 MCP 工具时开启。注意：该机制依赖模型自身的工具调用能力，部分模型可能无法稳定识别已加载的工具。',
+      toolResultMaxChars: '工具返回内容上限（字符）',
+      toolResultMaxCharsDesc:
+        '限制发送给模型的工具返回内容；聊天界面仍保留原始结果。范围：1,024–200,000 字符。',
       expandDescription: '展开',
       collapseDescription: '收起',
       viewAllTools: '查看全部工具',

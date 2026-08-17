@@ -31,6 +31,11 @@ import { rerankModelSchema } from '../../types/rerank-model.types'
 import { sttModelSchema } from '../../types/stt-model.types'
 import { ttsModelSchema } from '../../types/tts-model.types'
 import { DEFAULT_CHAT_QUICK_ACCESS_ENTRIES } from '../chatQuickAccess'
+import {
+  DEFAULT_TOOL_RESULT_MAX_CHARS,
+  MAX_TOOL_RESULT_MAX_CHARS,
+  MIN_TOOL_RESULT_MAX_CHARS,
+} from '../../utils/chat/contextBudget'
 
 import { SETTINGS_SCHEMA_VERSION } from './migrations/version'
 
@@ -890,6 +895,13 @@ export const yoloSettingsSchema = z.object({
         .optional(),
       autoContextCompactionThresholdTokens: z.number().int().min(1).optional(),
       autoContextCompactionThresholdRatio: z.number().min(0).max(1).optional(),
+      toolResultMaxChars: z
+        .number()
+        .int()
+        .min(MIN_TOOL_RESULT_MAX_CHARS)
+        .max(MAX_TOOL_RESULT_MAX_CHARS)
+        .optional()
+        .catch(DEFAULT_TOOL_RESULT_MAX_CHARS),
       // Font scale factor for chat messages (1 = default)
       chatFontScale: z.number().min(0.7).max(1.5).optional(),
       // Image reading & compression for vision tool calls
@@ -949,6 +961,7 @@ export const yoloSettingsSchema = z.object({
       autoContextCompactionThresholdMode: 'tokens',
       autoContextCompactionThresholdTokens: 100000,
       autoContextCompactionThresholdRatio: 0.8,
+      toolResultMaxChars: DEFAULT_TOOL_RESULT_MAX_CHARS,
       chatFontScale: undefined,
       imageReadingEnabled: true,
       imageCompressionEnabled: true,

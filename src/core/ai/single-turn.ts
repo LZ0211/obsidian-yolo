@@ -18,6 +18,8 @@ import {
   getToolCallArgumentsObject,
 } from '../../types/tool-call.types'
 import { createToolCallArguments } from '../../utils/chat/tool-arguments'
+import { estimateJsonTokens } from '../../utils/llm/contextTokenEstimate'
+import { resolveEffectiveMaxContextTokens } from '../../utils/llm/model-capability-registry'
 import { BaseLLMProvider } from '../llm/base'
 import {
   bindLLMDebugTraceToSignal,
@@ -109,6 +111,20 @@ type SingleTurnExecutionInput = {
     chunk: LLMResponseStreaming
     toolCalls?: StreamedToolCall[]
   }) => void | Promise<void>
+}
+
+export class ContextLengthExceededError extends Error {
+  readonly code = 'context_length_exceeded'
+
+  constructor(
+    readonly estimatedTokens: number,
+    readonly maxContextTokens: number,
+  ) {
+    super(
+      `Request not sent: the assembled context is estimated at ${estimatedTokens} tokens, which reaches the model context limit of ${maxContextTokens} tokens. Switch to a model with a larger context window or remove some referenced content and tool results.`,
+    )
+    this.name = 'ContextLengthExceededError'
+  }
 }
 
 const DEFAULT_PRIMARY_REQUEST_TIMEOUT_MS = DEFAULT_MODEL_REQUEST_TIMEOUT_MS
@@ -242,6 +258,50 @@ const logStreamingRecoverTriggered = ({
   })
 }
 
+const estimateFallbackJsonTokens = (value: unknown): number => {
+  try {
+    return Math.ceil(JSON.stringify(value).length / 3)
+  } catch {
+    return Number.MAX_SAFE_INTEGER
+  }
+}
+
+const assertRequestFitsModelContext = async ({
+  model,
+  request,
+  tools,
+}: {
+  model: ChatModel
+  request: LLMRequestBase
+  tools?: RequestTool[]
+}): Promise<void> => {
+  const maxContextTokens = resolveEffectiveMaxContextTokens(model)
+  if (maxContextTokens === undefined) {
+    return
+  }
+
+  let estimatedTokens: number
+  try {
+    estimatedTokens = await estimateJsonTokens({
+      messages: request.messages,
+      tools,
+    })
+  } catch (error) {
+    console.warn(
+      '[YOLO] Context tokenizer unavailable; using conservative JSON-size estimate.',
+      error,
+    )
+    estimatedTokens = estimateFallbackJsonTokens({
+      messages: request.messages,
+      tools,
+    })
+  }
+
+  if (estimatedTokens >= maxContextTokens) {
+    throw new ContextLengthExceededError(estimatedTokens, maxContextTokens)
+  }
+}
+
 export async function executeSingleTurn({
   providerClient,
   model,
@@ -277,6 +337,11 @@ export async function executeSingleTurn({
       ? { ...request, reasoningLevel: undefined }
       : request
   const effectiveProviderOptions = effectivePolicy.options
+  await assertRequestFitsModelContext({
+    model: effectiveModel,
+    request: effectiveRequest,
+    tools,
+  })
   const executionMode =
     providerClient.resolveResponseExecutionMode(deliveryMode)
   const withDebugTrace = <T>(run: () => Promise<T>): Promise<T> =>

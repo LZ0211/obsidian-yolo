@@ -17,8 +17,14 @@ import { WorkspaceAgent } from '../../../settings/schema/setting.types'
 import { Assistant } from '../../../types/assistant.types'
 import { McpServerState, McpServerStatus } from '../../../types/mcp.types'
 import { renderAssistantIcon } from '../../../utils/assistant-icon'
+import {
+  DEFAULT_TOOL_RESULT_MAX_CHARS,
+  MAX_TOOL_RESULT_MAX_CHARS,
+  MIN_TOOL_RESULT_MAX_CHARS,
+} from '../../../utils/chat/contextBudget'
 import { ObsidianButton } from '../../common/ObsidianButton'
 import { ObsidianSetting } from '../../common/ObsidianSetting'
+import { ObsidianTextInput } from '../../common/ObsidianTextInput'
 import { ObsidianToggle } from '../../common/ObsidianToggle'
 import { ConfirmModal } from '../../modals/ConfirmModal'
 import { AgentSkillsModal } from '../modals/AgentSkillsModal'
@@ -77,6 +83,11 @@ export function AgentSection({ app }: AgentSectionProps) {
   const plugin = usePlugin()
   const assistants = settings.assistants || []
   const workspaceAgents = settings.workspaceAgents || []
+  const [toolResultMaxCharsInput, setToolResultMaxCharsInput] = useState(
+    String(
+      settings.chatOptions.toolResultMaxChars ?? DEFAULT_TOOL_RESULT_MAX_CHARS,
+    ),
+  )
   const [mcpManager, setMcpManager] = useState<McpManager | null>(null)
   const [mcpServers, setMcpServers] = useState<McpServerState[]>([])
   const [mcpManagerLoading, setMcpManagerLoading] = useState(true)
@@ -288,6 +299,39 @@ export function AgentSection({ app }: AgentSectionProps) {
       },
     })
   }
+
+  const parseIntegerInput = (input: string): number | null => {
+    const parsed = Number(input.trim())
+    return Number.isInteger(parsed) ? parsed : null
+  }
+
+  const handleToolResultMaxCharsChange = (value: string) => {
+    setToolResultMaxCharsInput(value)
+    const parsed = parseIntegerInput(value)
+    if (
+      parsed === null ||
+      parsed < MIN_TOOL_RESULT_MAX_CHARS ||
+      parsed > MAX_TOOL_RESULT_MAX_CHARS
+    ) {
+      return
+    }
+    void setSettings({
+      ...settings,
+      chatOptions: {
+        ...settings.chatOptions,
+        toolResultMaxChars: parsed,
+      },
+    })
+  }
+
+  useEffect(() => {
+    setToolResultMaxCharsInput(
+      String(
+        settings.chatOptions.toolResultMaxChars ??
+          DEFAULT_TOOL_RESULT_MAX_CHARS,
+      ),
+    )
+  }, [settings.chatOptions.toolResultMaxChars])
 
   const mcpTools = useMemo(
     () =>
@@ -514,6 +558,39 @@ export function AgentSection({ app }: AgentSectionProps) {
           <ObsidianToggle
             value={settings.mcp.enableToolDisclosure}
             onChange={(value) => void handleToggleToolDisclosure(value)}
+          />
+        </ObsidianSetting>
+
+        <ObsidianSetting
+          name={t(
+            'settings.agent.toolResultMaxChars',
+            'Tool result context limit (characters)',
+          )}
+          desc={t(
+            'settings.agent.toolResultMaxCharsDesc',
+            'Limits tool results sent to the model. The original result remains available in the chat. Range: 1,024–200,000 characters.',
+          )}
+        >
+          <ObsidianTextInput
+            value={toolResultMaxCharsInput}
+            inputMode="numeric"
+            placeholder={String(DEFAULT_TOOL_RESULT_MAX_CHARS)}
+            onChange={handleToolResultMaxCharsChange}
+            onBlur={() => {
+              const parsed = parseIntegerInput(toolResultMaxCharsInput)
+              if (
+                parsed === null ||
+                parsed < MIN_TOOL_RESULT_MAX_CHARS ||
+                parsed > MAX_TOOL_RESULT_MAX_CHARS
+              ) {
+                setToolResultMaxCharsInput(
+                  String(
+                    settings.chatOptions.toolResultMaxChars ??
+                      DEFAULT_TOOL_RESULT_MAX_CHARS,
+                  ),
+                )
+              }
+            }}
           />
         </ObsidianSetting>
       </section>
