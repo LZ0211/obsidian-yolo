@@ -1,0 +1,32 @@
+{
+  "id": "workflow",
+  "icon": "git-branch",
+  "localizations": {
+    "en": {
+      "name": "Workflow mode",
+      "description": "Visualize and maintain Markdown-first agent workflows."
+    },
+    "zh": {
+      "name": "工作流模式",
+      "description": "可视化并维护 Markdown 优先的智能体工作流。"
+    },
+    "it": {
+      "name": "Modalita workflow",
+      "description": "Visualizza e gestisce workflow agentici basati su Markdown."
+    }
+  },
+  "hostApi": "^1.7.0",
+  "platforms": ["desktop", "mobile"],
+  "dataSchemas": {},
+  "dataFiles": [
+    "skills/workflow/SKILL.md",
+    "skills/workflow/examples/debug-quality-workflow/WORKFLOW.md",
+    "skills/workflow/examples/debug-quality-workflow/steps/input/STEP.md",
+    "skills/workflow/examples/debug-quality-workflow/steps/diagnose/STEP.md",
+    "skills/workflow/examples/debug-quality-workflow/steps/quality/STEP.md",
+    "skills/workflow/examples/debug-quality-workflow/steps/repair/STEP.md",
+    "skills/workflow/examples/debug-quality-workflow/steps/merge/STEP.md",
+    "skills/workflow/examples/debug-quality-workflow/steps/output/STEP.md",
+    "third-party/dsh-deepseek-flow-LICENSE.txt"
+  ]
+}
