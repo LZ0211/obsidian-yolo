@@ -4,6 +4,10 @@ import { App, Platform } from 'obsidian'
 
 import { ToolCallResponseStatus } from '../../types/tool-call.types'
 
+import {
+  getInstalledInjectionBridge,
+  installYoloInjectionBridge,
+} from './injectionBridge'
 import type { InProcessToolServer } from './inProcessToolServer'
 import { getLocalFileToolServerName } from './localFileToolNames'
 import { McpManager } from './mcpManager'
@@ -24,7 +28,10 @@ describe('McpManager in-process tool server registry', () => {
     Platform.isDesktop = originalIsDesktop
   })
 
-  function createManager(configuredServerNames: string[] = []): McpManager {
+  function createManager(
+    configuredServerNames: string[] = [],
+    injectedToolOptions: Record<string, { disabled?: boolean }> = {},
+  ): McpManager {
     const manager = new McpManager({
       pluginId: 'test-plugin',
       app: {
@@ -34,6 +41,7 @@ describe('McpManager in-process tool server registry', () => {
         mcp: {
           servers: [],
           builtinCapabilityOptions: {},
+          injectedToolOptions,
         },
         webSearch: {
           providers: [],
@@ -342,5 +350,33 @@ describe('McpManager in-process tool server registry', () => {
         requireAutoExecution: true,
       }),
     ).toBe(true)
+  })
+
+  it('rejects disabled bridge tools at authorization and execution boundaries', async () => {
+    const uninstall = installYoloInjectionBridge()
+    getInstalledInjectionBridge()?.registerTool(
+      {
+        name: 'plugin_tool',
+        description: 'Plugin tool',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      async () => 'ok',
+      'external-plugin',
+    )
+    const manager = createManager([], { plugin_tool: { disabled: true } })
+
+    try {
+      expect(
+        manager.isToolExecutionAllowed({
+          requestToolName: 'yolo_bridge__plugin_tool',
+          requireAutoExecution: true,
+        }),
+      ).toBe(false)
+      await expect(
+        manager.callTool({ name: 'yolo_bridge__plugin_tool', args: {} }),
+      ).resolves.toMatchObject({ status: ToolCallResponseStatus.Error })
+    } finally {
+      uninstall()
+    }
   })
 })

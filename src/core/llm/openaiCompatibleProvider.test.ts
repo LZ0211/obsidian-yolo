@@ -1,6 +1,32 @@
 import { OpenAICompatibleProvider } from './openaiCompatibleProvider'
 
 describe('OpenAICompatibleProvider', () => {
+  it('normalizes top-level array rerank responses', async () => {
+    const provider = new OpenAICompatibleProvider({
+      id: 'test-openai-compatible-rerank',
+      name: 'Test OpenAI Compatible Rerank',
+      presetType: 'openai-compatible',
+      apiType: 'openai-compatible',
+      apiKey: 'token',
+      baseUrl: 'https://example.com/v1',
+      enable: true,
+      models: [],
+      customHeaders: [],
+      additionalSettings: {
+        requestTransportMode: 'node',
+      },
+    } as never)
+    const post = jest
+      .fn()
+      .mockResolvedValue([{ index: 0, score: 0.3522015644617017 }])
+    ;(provider as unknown as { nodeClient: { post: typeof post } }).nodeClient =
+      { post }
+
+    await expect(
+      provider.rerank('rerank-model', 'ok', ['hello'], { topN: 1 }),
+    ).resolves.toEqual([{ index: 0, relevanceScore: 0.3522015644617017 }])
+  })
+
   it('uses node transport for embeddings when requestTransportMode is node', async () => {
     const provider = new OpenAICompatibleProvider({
       id: 'test-openai-compatible',

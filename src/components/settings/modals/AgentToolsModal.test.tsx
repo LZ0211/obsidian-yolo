@@ -14,6 +14,13 @@ import {
 import type { McpTool } from '../../../types/mcp.types'
 
 const mockListAvailableTools = jest.fn(async (): Promise<McpTool[]> => [])
+const mockSetSettings = jest.fn()
+const mockSettings = {
+  mcp: {
+    builtinCapabilityOptions: {},
+    injectedToolOptions: {} as Record<string, { disabled?: boolean }>,
+  },
+}
 let mockToolCatalogListener: (() => void) | undefined
 const mockUnsubscribeToolCatalog = jest.fn()
 const mockSubscribeToolCatalog = jest.fn((listener: () => void) => {
@@ -55,13 +62,26 @@ jest.mock('../../../contexts/language-context', () => ({
 jest.mock('../../../contexts/settings-context', () => ({
   SettingsProvider: ({ children }: { children: ReactNode }) => children,
   useSettings: () => ({
-    settings: { mcp: { builtinCapabilityOptions: {} } },
-    setSettings: jest.fn(),
+    settings: mockSettings,
+    setSettings: mockSetSettings,
   }),
 }))
 
 jest.mock('../../common/ObsidianToggle', () => ({
-  ObsidianToggle: () => null,
+  ObsidianToggle: ({
+    value,
+    onChange,
+  }: {
+    value: boolean
+    onChange: (value: boolean) => void
+  }) => (
+    <button
+      type="button"
+      data-testid="tool-toggle"
+      data-value={String(value)}
+      onClick={() => onChange(!value)}
+    />
+  ),
 }))
 
 jest.mock('../common/CollapsibleToolDescription', () => ({
@@ -120,6 +140,8 @@ describe('AgentToolsModal layout', () => {
     mockUnsubscribeToolCatalog.mockClear()
     mockGetMcpManager.mockClear()
     mockToolCatalogListener = undefined
+    mockSetSettings.mockReset()
+    mockSettings.mcp.injectedToolOptions = {}
   })
 
   afterEach(() => {
@@ -231,11 +253,34 @@ describe('AgentToolsModal layout', () => {
 
     expect(mockListAvailableTools).toHaveBeenCalledWith({
       includeBuiltinTools: true,
+      includeDisabledInjectedTools: true,
     })
     expect(mockSubscribeToolCatalog).toHaveBeenCalledTimes(1)
     expect(container.textContent).toContain('External plugin tools')
     expect(container.textContent).toContain('plugin_tool')
     expect(container.textContent).toContain('Plugin tool description')
+
+    const injectedRow = Array.from(
+      container.querySelectorAll('.yolo-builtin-tools-table-row'),
+    ).find((candidate) => candidate.textContent?.includes('plugin_tool'))
+    const toggle = injectedRow?.querySelector<HTMLButtonElement>(
+      '[data-testid="tool-toggle"]',
+    )
+    expect(toggle?.dataset.value).toBe('true')
+
+    await act(async () => {
+      toggle?.click()
+      await Promise.resolve()
+    })
+    expect(mockSetSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mcp: expect.objectContaining({
+          injectedToolOptions: {
+            plugin_tool: { disabled: true },
+          },
+        }),
+      }),
+    )
 
     act(() => {
       root.unmount()

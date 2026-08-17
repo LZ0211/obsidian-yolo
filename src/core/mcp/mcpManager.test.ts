@@ -30,6 +30,7 @@ describe('McpManager mobile built-in tool behavior', () => {
   function createManager(
     openApplyReview: (state: unknown) => Promise<boolean> = jest.fn(),
     builtinCapabilityOptions: Record<string, { disabled?: boolean }> = {},
+    injectedToolOptions: Record<string, { disabled?: boolean }> = {},
   ) {
     const file = Object.assign(new TFile(), {
       path: 'note.md',
@@ -54,6 +55,7 @@ describe('McpManager mobile built-in tool behavior', () => {
         mcp: {
           servers: [],
           builtinCapabilityOptions,
+          injectedToolOptions,
         },
         webSearch: {
           providers: [],
@@ -135,6 +137,37 @@ describe('McpManager mobile built-in tool behavior', () => {
           }),
         ]),
       )
+    } finally {
+      uninstall()
+    }
+  })
+
+  it('filters disabled bridge tools but exposes them to settings catalog requests', async () => {
+    const uninstall = installYoloInjectionBridge()
+    getInstalledInjectionBridge()?.registerTool(
+      {
+        name: 'plugin_tool',
+        description: 'Plugin tool',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      async () => 'ok',
+      'external-plugin',
+    )
+    const manager = createManager(
+      jest.fn(),
+      {},
+      {
+        plugin_tool: { disabled: true },
+      },
+    )
+
+    try {
+      await expect(manager.listAvailableTools()).resolves.toEqual([])
+      await expect(
+        manager.listAvailableTools({ includeDisabledInjectedTools: true }),
+      ).resolves.toEqual([
+        expect.objectContaining({ name: 'yolo_bridge__plugin_tool' }),
+      ])
     } finally {
       uninstall()
     }

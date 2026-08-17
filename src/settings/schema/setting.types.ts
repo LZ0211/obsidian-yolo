@@ -21,15 +21,15 @@ import {
 import { chatModelSchema } from '../../types/chat-model.types'
 import { embeddingModelSchema } from '../../types/embedding-model.types'
 import { imageModelSchema } from '../../types/image-model.types'
-import { rerankModelSchema } from '../../types/rerank-model.types'
-import { sttModelSchema } from '../../types/stt-model.types'
-import { ttsModelSchema } from '../../types/tts-model.types'
 import {
   mcpServerConfigSchema,
   mcpServerToolOptionsSchema,
 } from '../../types/mcp.types'
 import { llmProviderSchema } from '../../types/provider.types'
 import { REASONING_LEVELS, ReasoningLevel } from '../../types/reasoning'
+import { rerankModelSchema } from '../../types/rerank-model.types'
+import { sttModelSchema } from '../../types/stt-model.types'
+import { ttsModelSchema } from '../../types/tts-model.types'
 import { DEFAULT_CHAT_QUICK_ACCESS_ENTRIES } from '../chatQuickAccess'
 
 import { SETTINGS_SCHEMA_VERSION } from './migrations/version'
@@ -741,6 +741,7 @@ export const yoloSettingsSchema = z.object({
        * `terminal` respectively.
        */
       builtinCapabilityOptions: mcpServerToolOptionsSchema.catch({}),
+      injectedToolOptions: mcpServerToolOptionsSchema.catch({}),
       enableToolDisclosure: z.boolean().catch(false),
       localServer: z
         .object({
@@ -762,6 +763,7 @@ export const yoloSettingsSchema = z.object({
     .catch({
       servers: [],
       builtinCapabilityOptions: {},
+      injectedToolOptions: {},
       enableToolDisclosure: false,
       localServer: {
         enabled: false,

@@ -143,7 +143,11 @@ function makeSettings(overrides: Partial<YoloSettings> = {}): YoloSettings {
     providers: [{ id: 'mock-provider', apiType: 'openai-compatible' }],
     assistants: [],
     workspaceAgents: [],
-    mcp: { enableToolDisclosure: false, builtinCapabilityOptions: {} },
+    mcp: {
+      enableToolDisclosure: false,
+      builtinCapabilityOptions: {},
+      injectedToolOptions: {},
+    },
     chatOptions: {},
     continuationOptions: {
       primaryRequestTimeoutMs: 30000,
@@ -611,6 +615,7 @@ describe('WebChatRuntimeAdapter.prepareRun', () => {
           builtinCapabilityOptions: {
             terminal: { blockedPrefixes: ['format'] },
           },
+          injectedToolOptions: {},
           localServer: { enabled: false, port: 27124, token: '' },
         },
       }),

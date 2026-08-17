@@ -995,7 +995,12 @@ button.yolo-agent-chip--more:hover {
    解析出相同列宽；超长名称由 nowrap+ellipsis 截断。 */
 .yolo-builtin-tools-table-header,
 .yolo-builtin-tools-table-row {
-  grid-template-columns: minmax(140px, 1fr) minmax(200px, 2fr) 1fr 100px;
+  grid-template-columns: minmax(140px, 1fr) minmax(0, 2fr) max-content;
+}
+
+.yolo-builtin-tools-table-header > div:nth-child(3),
+.yolo-builtin-tools-table-row > div:nth-child(3) {
+  display: none;
 }
 
 .yolo-builtin-tools-table-header > div:last-child {

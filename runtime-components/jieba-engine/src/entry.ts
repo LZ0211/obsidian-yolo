@@ -86,3 +86,10 @@ export const jiebaEngineComponent = {
     currentWorker = null
   },
 }
+
+globalThis.__yolo_register_runtime_component__({
+  id: 'jieba-engine',
+  create(): typeof jiebaEngineComponent {
+    return jiebaEngineComponent
+  },
+})

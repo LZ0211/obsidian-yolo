@@ -21,9 +21,9 @@ import {
   ToolCallResponse,
   ToolCallResponseStatus,
 } from '../../types/tool-call.types'
-import type { PromptSourceWatcher } from '../agent/promptSourceWatcher'
 import { ProjectStore } from '../agent/project/store'
 import { ProjectTool } from '../agent/project/tool'
+import type { PromptSourceWatcher } from '../agent/promptSourceWatcher'
 import type { SubagentParentContext } from '../agent/subagent/parent-context'
 import type { RAGEngine } from '../rag/ragEngine'
 import { executeBuiltinTool } from '../tools/dispatcher'
@@ -35,6 +35,10 @@ import {
 import type { ScheduledTaskServiceLike, ToolContext } from '../tools/types'
 
 import { InvalidToolNameException, McpNotAvailableException } from './exception'
+import {
+  YOLO_BRIDGE_TOOL_SERVER_NAME,
+  createInjectionBridgeToolServer,
+} from './injectionBridge'
 import type {
   InProcessToolApprovalPolicy,
   InProcessToolServer,
@@ -44,10 +48,6 @@ import {
   getJsSandboxSettings,
 } from './jsSandboxSettings'
 import { disposeJsSandbox } from './jsSandboxTool'
-import {
-  YOLO_BRIDGE_TOOL_SERVER_NAME,
-  createInjectionBridgeToolServer,
-} from './injectionBridge'
 import {
   getLocalFileToolServerName,
   getLocalFileTools,
@@ -192,6 +192,12 @@ export class McpManager {
     return !(
       this.settings.mcp.builtinCapabilityOptions[capability.id]?.disabled ??
       false
+    )
+  }
+
+  private isInjectedToolPersistedEnabled(toolName: string): boolean {
+    return !(
+      this.settings.mcp.injectedToolOptions?.[toolName]?.disabled ?? false
     )
   }
 
@@ -444,7 +450,13 @@ export class McpManager {
   }
 
   public async handleSettingsUpdate(settings: YoloSettings) {
+    const previousInjectedToolOptions = this.settings.mcp.injectedToolOptions
     this.settings = settings
+    if (
+      !isEqual(previousInjectedToolOptions, settings.mcp.injectedToolOptions)
+    ) {
+      this.invalidateToolCatalog()
+    }
     if (settings.mcp.enableToolDisclosure) {
       for (const server of this.servers) {
         if (
@@ -900,6 +912,7 @@ export class McpManager {
   private getAvailableToolsCacheKey(
     includeBuiltinTools: boolean,
     chatModelModalities: ChatModelModality[] | undefined,
+    includeDisabledInjectedTools: boolean,
   ): string {
     // Modalities are part of the cache key because built-in tool schemas
     // (notably fs_read) are tailored per-model. Sort to be stable across the
@@ -907,7 +920,7 @@ export class McpManager {
     const modalityFingerprint = chatModelModalities
       ? [...chatModelModalities].sort().join(',')
       : 'superset'
-    return `${includeBuiltinTools ? 'with_builtin' : 'mcp_only'}|${modalityFingerprint}`
+    return `${includeBuiltinTools ? 'with_builtin' : 'mcp_only'}|${modalityFingerprint}|${includeDisabledInjectedTools ? 'with_disabled_injected' : 'enabled_injected_only'}`
   }
 
   private shouldPrewarmToolTokenCosts(serverName: string): boolean {
@@ -994,10 +1007,19 @@ export class McpManager {
     }
   }
 
-  private listInProcessServerTools(): McpTool[] {
+  private listInProcessServerTools(
+    includeDisabledInjectedTools = false,
+  ): McpTool[] {
     const tools: McpTool[] = []
     for (const [serverName, server] of this.inProcessServers) {
       for (const tool of server.listTools()) {
+        if (
+          serverName === YOLO_BRIDGE_TOOL_SERVER_NAME &&
+          !includeDisabledInjectedTools &&
+          !this.isInjectedToolPersistedEnabled(tool.name)
+        ) {
+          continue
+        }
         tools.push({ ...tool, name: getToolName(serverName, tool.name) })
       }
     }
@@ -1007,13 +1029,16 @@ export class McpManager {
   public async listAvailableTools({
     includeBuiltinTools = false,
     chatModelModalities,
+    includeDisabledInjectedTools = false,
   }: {
     includeBuiltinTools?: boolean
     chatModelModalities?: ChatModelModality[]
+    includeDisabledInjectedTools?: boolean
   } = {}): Promise<McpTool[]> {
     const cacheKey = this.getAvailableToolsCacheKey(
       includeBuiltinTools,
       chatModelModalities,
+      includeDisabledInjectedTools,
     )
     const cached = this.availableToolsCache.get(cacheKey)
     if (cached) {
@@ -1059,7 +1084,10 @@ export class McpManager {
     // fixed local-file-tool set. A server only ends up in the registry
     // because a caller explicitly opted in for this run, so listing its
     // tools needs no separate opt-in flag.
-    const nextTools = [...builtinTools, ...this.listInProcessServerTools()]
+    const nextTools = [
+      ...builtinTools,
+      ...this.listInProcessServerTools(includeDisabledInjectedTools),
+    ]
 
     this.availableToolsCache.set(cacheKey, [...nextTools])
     return nextTools
@@ -1119,6 +1147,12 @@ export class McpManager {
           return false
         }
       } else if (this.inProcessServers.has(serverName)) {
+        if (
+          serverName === YOLO_BRIDGE_TOOL_SERVER_NAME &&
+          !this.isInjectedToolPersistedEnabled(toolName)
+        ) {
+          return false
+        }
         // Registered in-process servers have no user-facing enable/disable
         // toggle — being registered for this run is authorization enough.
         // Still verify the tool is actually one this server offers.
@@ -1334,6 +1368,12 @@ export class McpManager {
 
       const inProcessServer = this.inProcessServers.get(serverName)
       if (inProcessServer) {
+        if (
+          serverName === YOLO_BRIDGE_TOOL_SERVER_NAME &&
+          !this.isInjectedToolPersistedEnabled(toolName)
+        ) {
+          throw new Error(`Injected tool ${toolName} is disabled`)
+        }
         // A thrown/rejected error here falls through to the catch block
         // below, which already converts it into an Error-status response —
         // no separate try/catch needed just to keep the handler from

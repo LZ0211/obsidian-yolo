@@ -11,7 +11,11 @@ import {
   LLMResponseNonStreaming,
   LLMResponseStreaming,
 } from '../../types/llm/response'
-import { LLMProvider, LLMProviderPresetType, RequestTransportMode } from '../../types/provider.types'
+import {
+  LLMProvider,
+  LLMProviderPresetType,
+  RequestTransportMode,
+} from '../../types/provider.types'
 import { resolveRequestReasoningLevel } from '../../types/reasoning'
 import { getBuiltinProviderTools } from '../../utils/llm/model-tools'
 import { resolveProviderBaseUrl } from '../../utils/llm/provider-base-url'
@@ -21,7 +25,10 @@ import { formatMessages } from '../../utils/llm/request'
 import { BaseLLMProvider } from './base'
 import { resolveAdapterForBaseUrl } from './baseUrlDetection'
 import { extractEmbeddingVector } from './embedding-utils'
-import { LLMAPIKeyNotSetException, LLMBaseUrlNotSetException } from './exception'
+import {
+  LLMAPIKeyNotSetException,
+  LLMBaseUrlNotSetException,
+} from './exception'
 import { NoStainlessOpenAI } from './NoStainlessOpenAI'
 import { applyOpenAICompatibleCapabilities } from './openaiCompatibleCapabilities'
 import { OpenAIMessageAdapter } from './openaiMessageAdapter'
@@ -471,19 +478,53 @@ export class OpenAICompatibleProvider extends BaseLLMProvider<LLMProvider> {
     }
 
     const topN = options?.topN ?? documents.length
-    const body = { model, query, documents, top_n: topN, return_documents: false }
+    const body = {
+      model,
+      query,
+      documents,
+      top_n: topN,
+      return_documents: false,
+    }
 
     const response = await runWithRequestTransport({
       mode: this.requestTransportMode,
       memoryKey: this.requestTransportMemoryKey,
-      runBrowser: () => this.browserClient.post("/rerank", { body, signal: options?.signal }),
-      runObsidian: () => this.obsidianClient.post("/rerank", { body, signal: options?.signal }),
-      runNode: () => this.nodeClient.post("/rerank", { body, signal: options?.signal }),
+      runBrowser: () =>
+        this.browserClient.post('/rerank', { body, signal: options?.signal }),
+      runObsidian: () =>
+        this.obsidianClient.post('/rerank', { body, signal: options?.signal }),
+      runNode: () =>
+        this.nodeClient.post('/rerank', { body, signal: options?.signal }),
     })
 
-    const data = response as { results?: Array<{ index: number; relevance_score: number }> }
-    if (!data.results || !Array.isArray(data.results)) return []
-    return data.results.map((r) => ({ index: r.index, relevanceScore: r.relevance_score }))
+    const data = response
+    const rawResults = Array.isArray(data)
+      ? data
+      : data && typeof data === 'object'
+        ? (data as { results?: unknown }).results
+        : undefined
+    if (!Array.isArray(rawResults)) return []
+
+    return rawResults.flatMap((result) => {
+      if (!result || typeof result !== 'object') return []
+      const item = result as {
+        index?: unknown
+        relevance_score?: unknown
+        score?: unknown
+      }
+      const relevanceScore =
+        typeof item.relevance_score === 'number'
+          ? item.relevance_score
+          : item.score
+      if (
+        typeof item.index !== 'number' ||
+        typeof relevanceScore !== 'number' ||
+        !Number.isFinite(relevanceScore)
+      ) {
+        return []
+      }
+      return [{ index: item.index, relevanceScore }]
+    })
   }
 
   private assertApiKeyConfigured(): void {
@@ -496,5 +537,4 @@ export class OpenAICompatibleProvider extends BaseLLMProvider<LLMProvider> {
       )
     }
   }
-
 }

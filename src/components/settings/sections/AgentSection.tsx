@@ -522,179 +522,6 @@ export function AgentSection({ app }: AgentSectionProps) {
         <div className="yolo-agent-block-head">
           <div className="yolo-agent-block-head-title-row">
             <div className="yolo-settings-sub-header">
-              {t('settings.agent.workspaceAgents', 'Workspace Agents')}
-            </div>
-            <ObsidianButton
-              text={t(
-                'settings.agent.newWorkspaceAgent',
-                'New workspace agent',
-              )}
-              onClick={handleNewWorkspaceAgent}
-              cta
-            />
-          </div>
-          <div className="yolo-settings-desc">
-            {t(
-              'settings.agent.workspaceAgentsDesc',
-              'Agent instances bound to working directories. Each derives from a template and limits its file access to a workspace root.',
-            )}
-          </div>
-        </div>
-
-        <div className="yolo-agent-grid">
-          {workspaceAgents.map((agent) => {
-            const template = assistants.find(
-              (assistant) => assistant.id === agent.templateId,
-            )
-            const templateToolCount = template?.enableTools
-              ? getEnabledAssistantToolNames(template).length
-              : 0
-            const templateSkillCount = template
-              ? allSkillEntries.filter((skill) =>
-                  isSkillEnabledForAssistant({
-                    assistant: template,
-                    skillName: skill.name,
-                    disabledSkillNames: disabledSkillIds,
-                  }),
-                ).length
-              : 0
-            return (
-              <article
-                key={agent.id}
-                className="yolo-agent-card yolo-agent-card--clickable"
-                role="button"
-                tabIndex={0}
-                onClick={() => handleOpenWorkspaceAgentModal(agent.id)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    handleOpenWorkspaceAgentModal(agent.id)
-                  }
-                }}
-              >
-                <div className="yolo-agent-card-top">
-                  <div className="yolo-agent-card-top-main">
-                    <div className="yolo-agent-avatar">
-                      {renderAssistantIcon(template?.icon, 16)}
-                    </div>
-                    <div className="yolo-agent-main">
-                      <div className="yolo-agent-name-row">
-                        <div className="yolo-agent-name">{agent.name}</div>
-                        {agent.disabled && (
-                          <span className="yolo-agent-card-badge yolo-agent-card-badge--disabled">
-                            {t('settings.agent.disabledBadge', 'disabled')}
-                          </span>
-                        )}
-                      </div>
-                      <div className="yolo-agent-desc">
-                        <span className="yolo-agent-card-badge yolo-agent-card-badge--template">
-                          {t('settings.agent.templateBadge', 'Template')}
-                        </span>
-                        <span className="yolo-agent-template-name">
-                          {template?.name ?? agent.templateId}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                  <DropdownMenu.Root>
-                    <DropdownMenu.Trigger
-                      className="yolo-agent-card-menu-trigger"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <span
-                        className="yolo-agent-card-menu-trigger-dots"
-                        aria-hidden="true"
-                      >
-                        ...
-                      </span>
-                    </DropdownMenu.Trigger>
-                    <DropdownMenu.Portal container={portalContainer}>
-                      <DropdownMenu.Content
-                        className="yolo-agent-card-menu-popover"
-                        align="end"
-                        sideOffset={8}
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <ul className="yolo-agent-card-menu-list">
-                          <DropdownMenu.Item
-                            asChild
-                            onSelect={() => handleDeleteWorkspaceAgent(agent)}
-                          >
-                            <li className="yolo-agent-card-menu-item yolo-agent-card-menu-danger">
-                              <span className="yolo-agent-card-menu-icon">
-                                <Trash2 size={16} />
-                              </span>
-                              {t('common.delete')}
-                            </li>
-                          </DropdownMenu.Item>
-                        </ul>
-                      </DropdownMenu.Content>
-                    </DropdownMenu.Portal>
-                  </DropdownMenu.Root>
-                </div>
-                <div className="yolo-agent-meta-row">
-                  {template ? (
-                    <>
-                      <span className="yolo-agent-meta-item">
-                        <Cpu size={12} />
-                        {getAssistantModelDisplayLabel(
-                          template.modelId,
-                          t(
-                            'settings.agent.followDefaultModel',
-                            'Follow default model',
-                          ),
-                        )}
-                      </span>
-                      <span className="yolo-agent-meta-item">
-                        <Wrench size={12} />
-                        {t('settings.agent.toolsCount', '{count} tools').replace(
-                          '{count}',
-                          String(templateToolCount),
-                        )}
-                      </span>
-                      <span className="yolo-agent-meta-item">
-                        <BookOpen size={12} />
-                        {t('settings.agent.skillsCount', '{count} skills').replace(
-                          '{count}',
-                          String(templateSkillCount),
-                        )}
-                      </span>
-                    </>
-                  ) : null}
-                  <span className="yolo-agent-meta-item">
-                    <Folder size={12} />
-                    {agent.workspacePolicy.workspaceRoot}
-                  </span>
-                </div>
-              </article>
-            )
-          })}
-          <article
-            className="yolo-agent-create-card"
-            role="button"
-            tabIndex={0}
-            onClick={handleNewWorkspaceAgent}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault()
-                handleNewWorkspaceAgent()
-              }
-            }}
-          >
-            <div className="yolo-agent-create-card-icon">
-              <Plus size={28} />
-            </div>
-            <div className="yolo-agent-create-card-text">
-              {t('settings.agent.newWorkspaceAgent', 'New workspace agent')}
-            </div>
-          </article>
-        </div>
-      </section>
-
-      <section className="yolo-agent-block">
-        <div className="yolo-agent-block-head">
-          <div className="yolo-agent-block-head-title-row">
-            <div className="yolo-settings-sub-header">
               {t('settings.agent.agents', 'Agents')}
             </div>
             <ObsidianButton
@@ -844,6 +671,179 @@ export function AgentSection({ app }: AgentSectionProps) {
             </div>
             <div className="yolo-agent-create-card-text">
               {t('settings.agent.newAgent', 'New agent')}
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section className="yolo-agent-block">
+        <div className="yolo-agent-block-head">
+          <div className="yolo-agent-block-head-title-row">
+            <div className="yolo-settings-sub-header">
+              {t('settings.agent.workspaceAgents', 'Workspace Agents')}
+            </div>
+            <ObsidianButton
+              text={t(
+                'settings.agent.newWorkspaceAgent',
+                'New workspace agent',
+              )}
+              onClick={handleNewWorkspaceAgent}
+              cta
+            />
+          </div>
+          <div className="yolo-settings-desc">
+            {t(
+              'settings.agent.workspaceAgentsDesc',
+              'Agent instances bound to working directories. Each derives from a template and limits its file access to a workspace root.',
+            )}
+          </div>
+        </div>
+
+        <div className="yolo-agent-grid">
+          {workspaceAgents.map((agent) => {
+            const template = assistants.find(
+              (assistant) => assistant.id === agent.templateId,
+            )
+            const templateToolCount = template?.enableTools
+              ? getEnabledAssistantToolNames(template).length
+              : 0
+            const templateSkillCount = template
+              ? allSkillEntries.filter((skill) =>
+                  isSkillEnabledForAssistant({
+                    assistant: template,
+                    skillName: skill.name,
+                    disabledSkillNames: disabledSkillIds,
+                  }),
+                ).length
+              : 0
+            return (
+              <article
+                key={agent.id}
+                className="yolo-agent-card yolo-agent-card--clickable"
+                role="button"
+                tabIndex={0}
+                onClick={() => handleOpenWorkspaceAgentModal(agent.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    handleOpenWorkspaceAgentModal(agent.id)
+                  }
+                }}
+              >
+                <div className="yolo-agent-card-top">
+                  <div className="yolo-agent-card-top-main">
+                    <div className="yolo-agent-avatar">
+                      {renderAssistantIcon(template?.icon, 16)}
+                    </div>
+                    <div className="yolo-agent-main">
+                      <div className="yolo-agent-name-row">
+                        <div className="yolo-agent-name">{agent.name}</div>
+                        {agent.disabled && (
+                          <span className="yolo-agent-card-badge yolo-agent-card-badge--disabled">
+                            {t('settings.agent.disabledBadge', 'disabled')}
+                          </span>
+                        )}
+                      </div>
+                      <div className="yolo-agent-desc">
+                        <span className="yolo-agent-card-badge yolo-agent-card-badge--template">
+                          {t('settings.agent.templateBadge', 'Template')}
+                        </span>
+                        <span className="yolo-agent-template-name">
+                          {template?.name ?? agent.templateId}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <DropdownMenu.Root>
+                    <DropdownMenu.Trigger
+                      className="yolo-agent-card-menu-trigger"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <span
+                        className="yolo-agent-card-menu-trigger-dots"
+                        aria-hidden="true"
+                      >
+                        ...
+                      </span>
+                    </DropdownMenu.Trigger>
+                    <DropdownMenu.Portal container={portalContainer}>
+                      <DropdownMenu.Content
+                        className="yolo-agent-card-menu-popover"
+                        align="end"
+                        sideOffset={8}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <ul className="yolo-agent-card-menu-list">
+                          <DropdownMenu.Item
+                            asChild
+                            onSelect={() => handleDeleteWorkspaceAgent(agent)}
+                          >
+                            <li className="yolo-agent-card-menu-item yolo-agent-card-menu-danger">
+                              <span className="yolo-agent-card-menu-icon">
+                                <Trash2 size={16} />
+                              </span>
+                              {t('common.delete')}
+                            </li>
+                          </DropdownMenu.Item>
+                        </ul>
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Portal>
+                  </DropdownMenu.Root>
+                </div>
+                <div className="yolo-agent-meta-row">
+                  {template ? (
+                    <>
+                      <span className="yolo-agent-meta-item">
+                        <Cpu size={12} />
+                        {getAssistantModelDisplayLabel(
+                          template.modelId,
+                          t(
+                            'settings.agent.followDefaultModel',
+                            'Follow default model',
+                          ),
+                        )}
+                      </span>
+                      <span className="yolo-agent-meta-item">
+                        <Wrench size={12} />
+                        {t(
+                          'settings.agent.toolsCount',
+                          '{count} tools',
+                        ).replace('{count}', String(templateToolCount))}
+                      </span>
+                      <span className="yolo-agent-meta-item">
+                        <BookOpen size={12} />
+                        {t(
+                          'settings.agent.skillsCount',
+                          '{count} skills',
+                        ).replace('{count}', String(templateSkillCount))}
+                      </span>
+                    </>
+                  ) : null}
+                  <span className="yolo-agent-meta-item">
+                    <Folder size={12} />
+                    {agent.workspacePolicy.workspaceRoot}
+                  </span>
+                </div>
+              </article>
+            )
+          })}
+          <article
+            className="yolo-agent-create-card"
+            role="button"
+            tabIndex={0}
+            onClick={handleNewWorkspaceAgent}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                handleNewWorkspaceAgent()
+              }
+            }}
+          >
+            <div className="yolo-agent-create-card-icon">
+              <Plus size={28} />
+            </div>
+            <div className="yolo-agent-create-card-text">
+              {t('settings.agent.newWorkspaceAgent', 'New workspace agent')}
             </div>
           </article>
         </div>

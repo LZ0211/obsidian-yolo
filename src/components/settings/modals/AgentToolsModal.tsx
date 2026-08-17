@@ -63,11 +63,12 @@ const CAPABILITY_SETTINGS_BUTTON_ARIA_LABEL: Partial<
 type InjectedToolGroup = {
   key: string
   title: string
-  tools: Array<{ name: string; description: string }>
+  tools: Array<{ name: string; description: string; enabled: boolean }>
 }
 
 function buildInjectedToolGroups(
   tools: readonly McpTool[],
+  injectedToolOptions: Record<string, { disabled?: boolean }>,
   t: (keyPath: string, fallback?: string) => string,
 ): InjectedToolGroup[] {
   const groups = new Map<string, InjectedToolGroup>()
@@ -95,6 +96,7 @@ function buildInjectedToolGroups(
     group.tools.push({
       name: toolName,
       description: tool.description ?? '',
+      enabled: !(injectedToolOptions[toolName]?.disabled ?? false),
     })
     groups.set(key, group)
   }
@@ -156,6 +158,7 @@ function AgentToolsModalContent({
       try {
         const tools = await manager.listAvailableTools({
           includeBuiltinTools: true,
+          includeDisabledInjectedTools: true,
         })
         if (mounted) {
           setAvailableTools(tools)
@@ -206,8 +209,13 @@ function AgentToolsModalContent({
   }, [settings.mcp.builtinCapabilityOptions, t])
 
   const injectedToolGroups = useMemo(
-    () => buildInjectedToolGroups(availableTools, t),
-    [availableTools, t],
+    () =>
+      buildInjectedToolGroups(
+        availableTools,
+        settings.mcp.injectedToolOptions,
+        t,
+      ),
+    [availableTools, settings.mcp.injectedToolOptions, t],
   )
 
   const handleToggleBuiltinTool = (
@@ -222,6 +230,22 @@ function AgentToolsModalContent({
           ...settings.mcp.builtinCapabilityOptions,
           [capabilityId]: {
             ...settings.mcp.builtinCapabilityOptions[capabilityId],
+            disabled: !enabled,
+          },
+        },
+      },
+    })
+  }
+
+  const handleToggleInjectedTool = (toolName: string, enabled: boolean) => {
+    void setSettings({
+      ...settings,
+      mcp: {
+        ...settings.mcp,
+        injectedToolOptions: {
+          ...settings.mcp.injectedToolOptions,
+          [toolName]: {
+            ...settings.mcp.injectedToolOptions[toolName],
             disabled: !enabled,
           },
         },
@@ -312,7 +336,7 @@ function AgentToolsModalContent({
               <div>{t('settings.mcp.tools', 'Tools')}</div>
               <div>{t('settings.agent.descriptionColumn', 'Description')}</div>
               <div />
-              <div />
+              <div>{t('settings.mcp.enabled', 'Enabled')}</div>
             </div>
             <div className="yolo-mcp-server yolo-builtin-tools-table-body">
               {group.tools.map((tool) => (
@@ -327,7 +351,14 @@ function AgentToolsModalContent({
                     />
                   </div>
                   <div />
-                  <div />
+                  <div className="yolo-builtin-tools-table-control">
+                    <ObsidianToggle
+                      value={tool.enabled}
+                      onChange={(enabled) =>
+                        handleToggleInjectedTool(tool.name, enabled)
+                      }
+                    />
+                  </div>
                 </div>
               ))}
             </div>

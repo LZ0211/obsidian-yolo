@@ -183,6 +183,51 @@ describe('AgentSection builtin tool rows', () => {
     expect(html).toContain('New workspace agent')
   })
 
+  it('renders Workspace Agents below the Agents section', () => {
+    mockUseSettings.mockReturnValue({
+      settings: {
+        assistants: [
+          {
+            id: 'template-1',
+            name: 'Assistant template',
+            enableTools: false,
+          },
+        ],
+        workspaceAgents: [
+          {
+            id: 'workspace-agent-1',
+            name: 'Workspace agent',
+            templateId: 'template-1',
+            workspacePolicy: {
+              workspaceRoot: 'D:/workspace',
+              readAllowlist: [],
+              readDenylist: [],
+              writeDenylist: [],
+            },
+            shareTokens: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        mcp: {
+          builtinCapabilityOptions: {},
+          injectedToolOptions: {},
+          servers: [],
+          enableToolDisclosure: false,
+        },
+        skills: { disabledSkillIds: [] },
+      },
+      setSettings: jest.fn(),
+    })
+
+    const html = renderAgentSection()
+    const agentsIndex = html.indexOf('>Agents</div>')
+    const workspaceAgentsIndex = html.indexOf('>Workspace Agents</div>')
+
+    expect(agentsIndex).toBeGreaterThanOrEqual(0)
+    expect(workspaceAgentsIndex).toBeGreaterThan(agentsIndex)
+  })
+
   it('uses translated labels for workspace agent capability counts', () => {
     mockUseSettings.mockReturnValue({
       settings: {
@@ -220,8 +265,10 @@ describe('AgentSection builtin tool rows', () => {
     })
     mockUseLanguage.mockReturnValue({
       t: (key: string, fallback: string) => {
-        if (key === 'settings.agent.toolsCount') return 'translated tools {count}'
-        if (key === 'settings.agent.skillsCount') return 'translated skills {count}'
+        if (key === 'settings.agent.toolsCount')
+          return 'translated tools {count}'
+        if (key === 'settings.agent.skillsCount')
+          return 'translated skills {count}'
         return fallback
       },
     })

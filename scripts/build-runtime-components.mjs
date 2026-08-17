@@ -68,6 +68,15 @@ for (const entry of entries.sort((left, right) =>
   verifyBoundary(entry.name, result.metafile)
   const output = result.outputFiles?.[0]?.contents
   const bytes = output ?? new Uint8Array(await readFile(outputPath))
+  const registrationMarker = '__yolo_register_runtime_component__'
+  const registrationCount = new TextDecoder()
+    .decode(bytes)
+    .split(registrationMarker).length - 1
+  if (registrationCount !== 1) {
+    throw new Error(
+      `Runtime component ${entry.name} must register exactly once; found ${registrationCount}`,
+    )
+  }
   const descriptor = Object.freeze({
     id: config.id,
     platforms: Object.freeze([...config.platforms]),
