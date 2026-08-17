@@ -1,15 +1,15 @@
 import { en } from '../i18n'
 import {
-  parseWorkflowDocument,
-  updateWorkflowManagedBlocks,
-} from '../domain/workflow-document'
-import type { WorkflowTopology } from '../domain/workflow-model'
-import type {
-  WorkflowBundle,
-  WorkflowRepository,
-  WorkflowRepositoryEvent,
+  type WorkflowBundle,
+  type WorkflowRepository,
+  type WorkflowRepositoryEvent,
 } from '../domain/workflow-repository'
-import { createWorkflowEditorModel } from './workflow-editor-model'
+import type { WorkflowTopology } from '../domain/workflow-model'
+import { updateWorkflowManagedBlocks } from '../domain/workflow-document'
+import {
+  type WorkflowEditorSnapshot,
+  createWorkflowEditorModel,
+} from './workflow-editor-model'
 
 const topology: WorkflowTopology = {
   revision: 1,
@@ -19,21 +19,21 @@ const topology: WorkflowTopology = {
       kind: 'input',
       label: 'Input',
       stepPath: 'steps/input/STEP.md',
-      position: { x: 0, y: 0 },
+      position: { x: 70, y: 90 },
     },
     {
       id: 'agent',
       kind: 'agent',
-      label: 'Agent',
-      stepPath: 'steps/agent/STEP.md',
-      position: { x: 1, y: 0 },
+      label: 'Draft',
+      stepPath: 'steps/draft/STEP.md',
+      position: { x: 315, y: 90 },
     },
     {
       id: 'output',
       kind: 'output',
       label: 'Output',
       stepPath: 'steps/output/STEP.md',
-      position: { x: 2, y: 0 },
+      position: { x: 560, y: 90 },
     },
   ],
   edges: [
@@ -43,237 +43,322 @@ const topology: WorkflowTopology = {
 }
 
 describe('workflow editor model', () => {
-  it('loads a bundle into an immutable ready snapshot', async () => {
-    const repository = createRepository(bundleFor(topology))
-    const model = createWorkflowEditorModel(repository)
+  it('loads a workflow and exposes a detached editor snapshot', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
 
-    expect(model.getSnapshot()).toMatchObject({
-      status: 'loading',
-      workflows: [{ path: 'alpha/WORKFLOW.md', title: 'Alpha' }],
-      path: null,
-      bundle: null,
-      topology: null,
-      selectedNodeId: null,
-      dirty: false,
-      history: { canUndo: false, canRedo: false },
+    await expect(model.load('quality/WORKFLOW.md')).resolves.toEqual({
+      ok: true,
     })
-
-    await model.load('alpha/WORKFLOW.md')
 
     const snapshot = model.getSnapshot()
     expect(snapshot.status).toBe('ready')
-    expect(snapshot.path).toBe('alpha/WORKFLOW.md')
     expect(snapshot.topology).toEqual(topology)
-    expect(snapshot.issues).toEqual([])
+    expect(snapshot.selectedNodeId).toBe('input')
     expect(Object.isFrozen(snapshot)).toBe(true)
     expect(Object.isFrozen(snapshot.topology)).toBe(true)
-    model.dispose()
   })
 
-  it('builds a laid-out topology from structure steps when topology is absent', async () => {
-    const content = [
-      '# Alpha',
-      '<!-- yolo:workflow-structure:start -->',
-      '## Structure',
-      '',
-      '- id: input',
-      '  kind: input',
-      '  label: [Input](steps/input/STEP.md)',
-      '  step: steps/input/STEP.md',
-      '- id: output',
-      '  kind: output',
-      '  label: [Output](steps/output/STEP.md)',
-      '  step: steps/output/STEP.md',
-      '<!-- yolo:workflow-structure:end -->',
-    ].join('\n')
-    const repository = createRepository(bundleFor(null, content))
-    const model = createWorkflowEditorModel(repository)
-
-    await model.load('alpha/WORKFLOW.md')
-
-    expect(model.getSnapshot().topology).toMatchObject({
-      nodes: [
-        { id: 'input', kind: 'input', stepPath: 'steps/input/STEP.md' },
-        { id: 'output', kind: 'output', stepPath: 'steps/output/STEP.md' },
-      ],
-      edges: [{ source: 'input', target: 'output' }],
-    })
-    expect(model.getSnapshot().topology?.nodes[0]?.position).toEqual({
-      x: 70,
-      y: 90,
-    })
-    model.dispose()
-  })
-
-  it('selects nodes and keeps undo and redo history coherent', async () => {
-    const repository = createRepository(bundleFor(topology))
-    const model = createWorkflowEditorModel(repository)
-    await model.load('alpha/WORKFLOW.md')
-
-    model.selectNode('agent')
-    expect(model.getSnapshot().selectedNodeId).toBe('agent')
-
-    const changedTopology: WorkflowTopology = {
+  it('tracks one topology history and supports undo and redo', async () => {
+    const model = createWorkflowEditorModel(createRepository(), en)
+    await model.load('quality/WORKFLOW.md')
+    const changed = {
       ...topology,
       nodes: [
-        topology.nodes[0],
-        { ...topology.nodes[1], label: 'Changed' },
-        topology.nodes[2],
+        { ...topology.nodes[0], label: 'Changed' },
+        ...topology.nodes.slice(1),
       ],
     }
-    expect(model.updateTopology(changedTopology)).toBe(true)
-    expect(model.getSnapshot()).toMatchObject({
-      selectedNodeId: 'agent',
-      dirty: true,
-      history: { canUndo: true, canRedo: false },
-    })
 
-    expect(model.undo()).toBe(true)
-    expect(model.getSnapshot()).toMatchObject({
-      dirty: false,
-      selectedNodeId: 'agent',
-      history: { canUndo: false, canRedo: true },
-    })
-    expect(model.getSnapshot().topology).toEqual(topology)
-
-    expect(model.redo()).toBe(true)
-    expect(model.getSnapshot().topology?.nodes[1]?.label).toBe('Changed')
+    expect(model.updateTopology(changed)).toBe(true)
     expect(model.getSnapshot().dirty).toBe(true)
-    model.dispose()
+    expect(model.getSnapshot().canUndo).toBe(true)
+    expect(model.undo()).toBe(true)
+    expect(model.getSnapshot().topology?.nodes[0]?.label).toBe('Input')
+    expect(model.getSnapshot().dirty).toBe(false)
+    expect(model.redo()).toBe(true)
+    expect(model.getSnapshot().topology?.nodes[0]?.label).toBe('Changed')
   })
 
-  it('replays multiple undo and redo steps in edit order', async () => {
-    const repository = createRepository(bundleFor(topology))
-    const model = createWorkflowEditorModel(repository)
-    await model.load('alpha/WORKFLOW.md')
-    const changedTopology: WorkflowTopology = {
+  it('loads the first listed workflow when no path is provided', async () => {
+    const model = createWorkflowEditorModel(createRepository(), en)
+
+    await expect(model.load()).resolves.toEqual({ ok: true })
+
+    expect(model.getSnapshot().status).toBe('ready')
+    expect(model.getSnapshot().path).toBe('quality/WORKFLOW.md')
+  })
+
+  it('clears the previous graph while loading another workflow', async () => {
+    const repository = createRepository()
+    repository.setList([
+      { path: 'quality/WORKFLOW.md', title: 'quality' },
+      { path: 'second/WORKFLOW.md', title: 'second' },
+    ])
+    const pending = deferred<WorkflowBundle | null>()
+    repository.read.mockImplementation(async (path) => {
+      if (path === 'second/WORKFLOW.md') return pending.promise
+      return repository.bundle
+    })
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+
+    const loading = model.load('second/WORKFLOW.md')
+
+    expect(model.getSnapshot().status).toBe('loading')
+    expect(model.getSnapshot().bundle).toBeNull()
+    expect(model.getSnapshot().topology).toBeNull()
+
+    pending.resolve(repository.bundle)
+    await expect(loading).resolves.toEqual({ ok: true })
+  })
+
+  it('publishes the refreshed list together with the cleared loading state', async () => {
+    const repository = createRepository()
+    repository.setList([
+      { path: 'quality/WORKFLOW.md', title: 'quality' },
+      { path: 'second/WORKFLOW.md', title: 'second' },
+    ])
+    const pending = deferred<WorkflowBundle | null>()
+    repository.read.mockImplementation(async (path) => {
+      if (path === 'second/WORKFLOW.md') return pending.promise
+      return repository.bundle
+    })
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    const published: WorkflowEditorSnapshot[] = []
+    model.subscribe(() => published.push(model.getSnapshot()))
+
+    const loading = model.load('second/WORKFLOW.md')
+
+    expect(published[0]).toMatchObject({
+      status: 'loading',
+      workflows: [
+        { path: 'quality/WORKFLOW.md' },
+        { path: 'second/WORKFLOW.md' },
+      ],
+      bundle: null,
+      topology: null,
+    })
+    pending.resolve(repository.bundle)
+    await loading
+  })
+
+  it('keeps edits made during a save dirty after the save completes', async () => {
+    const repository = createRepository()
+    const pending =
+      deferred<Awaited<ReturnType<WorkflowRepository['replaceFile']>>>()
+    repository.replaceFile.mockImplementationOnce(() => pending.promise)
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+
+    const savedTopology = {
       ...topology,
       nodes: [
-        topology.nodes[0],
-        { ...topology.nodes[1], label: 'Changed once' },
-        topology.nodes[2],
+        { ...topology.nodes[0], label: 'Saved' },
+        ...topology.nodes.slice(1),
       ],
     }
-    const changedAgain: WorkflowTopology = {
-      ...changedTopology,
+    const laterTopology = {
+      ...savedTopology,
       nodes: [
-        changedTopology.nodes[0],
-        { ...changedTopology.nodes[1], label: 'Changed twice' },
-        changedTopology.nodes[2],
+        { ...savedTopology.nodes[0], label: 'Later' },
+        ...savedTopology.nodes.slice(1),
       ],
     }
-    model.updateTopology(changedTopology)
-    model.updateTopology(changedAgain)
+    model.updateTopology(savedTopology)
+    const applying = model.apply()
+    model.updateTopology(laterTopology)
+    pending.resolve({
+      ok: true,
+      snapshot: {
+        path: repository.manifestPath,
+        content: repository.currentContent(),
+      },
+    })
 
-    model.undo()
-    expect(model.getSnapshot().topology?.nodes[1]?.label).toBe('Changed once')
-    model.undo()
-    expect(model.getSnapshot().topology).toEqual(topology)
-    model.redo()
-    expect(model.getSnapshot().topology?.nodes[1]?.label).toBe('Changed once')
-    model.redo()
-    expect(model.getSnapshot().topology?.nodes[1]?.label).toBe('Changed twice')
-    model.dispose()
+    await expect(applying).resolves.toEqual({ ok: true })
+    expect(model.getSnapshot().topology?.nodes[0]?.label).toBe('Later')
+    expect(model.getSnapshot().dirty).toBe(true)
+  })
+
+  it('recovers after a repository save rejection', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    model.updateTopology({
+      ...topology,
+      nodes: [
+        { ...topology.nodes[0], label: 'Retry' },
+        ...topology.nodes.slice(1),
+      ],
+    })
+    repository.replaceFile.mockRejectedValueOnce(new Error('write failed'))
+
+    await expect(model.apply()).rejects.toThrow('write failed')
+    expect(model.getSnapshot().status).toBe('error')
+
+    await expect(model.apply()).resolves.toEqual({ ok: true })
+    expect(model.getSnapshot().dirty).toBe(false)
+  })
+
+  it('keeps the baseline clean when a failed save is undone before rejection', async () => {
+    const repository = createRepository()
+    const pending =
+      deferred<Awaited<ReturnType<WorkflowRepository['replaceFile']>>>()
+    repository.replaceFile.mockImplementationOnce(() => pending.promise)
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    model.updateTopology({
+      ...topology,
+      nodes: [
+        { ...topology.nodes[0], label: 'Transient' },
+        ...topology.nodes.slice(1),
+      ],
+    })
+    const applying = model.apply()
+    expect(model.undo()).toBe(true)
+    pending.reject(new Error('write failed'))
+
+    await expect(applying).rejects.toThrow('write failed')
+    expect(model.getSnapshot().dirty).toBe(false)
+  })
+
+  it('refuses to save a topology with validation issues', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    model.updateTopology({
+      ...topology,
+      edges: [
+        ...topology.edges,
+        { id: 'output-input', source: 'output', target: 'input' },
+      ],
+    })
+
+    expect(model.getSnapshot().issues.map((issue) => issue.code)).toContain(
+      'cycle',
+    )
+    await expect(model.apply()).resolves.toEqual({
+      ok: false,
+      reason: 'invalid',
+    })
+    expect(repository.replaceFile).not.toHaveBeenCalled()
   })
 
   it('rejects malformed topology without replacing the displayed graph', async () => {
-    const repository = createRepository(bundleFor(topology))
-    const model = createWorkflowEditorModel(repository)
-    await model.load('alpha/WORKFLOW.md')
-
-    const malformedTopology = {
+    const model = createWorkflowEditorModel(createRepository(), en)
+    await model.load('quality/WORKFLOW.md')
+    const malformed = {
       ...topology,
-      nodes: [{ ...topology.nodes[0], position: { x: Number.NaN, y: 0 } }],
-    } as WorkflowTopology
+      nodes: [
+        { ...topology.nodes[0], position: { x: Number.NaN, y: 0 } },
+        ...topology.nodes.slice(1),
+      ],
+    }
 
-    expect(model.updateTopology(malformedTopology)).toBe(false)
+    expect(model.updateTopology(malformed)).toBe(false)
     expect(model.getSnapshot().topology).toEqual(topology)
     expect(model.getSnapshot().dirty).toBe(false)
-    model.dispose()
   })
 
-  it('applies the manifest with CAS and refreshes the saved bundle', async () => {
-    const repository = createRepository(bundleFor(topology))
-    const changedTopology: WorkflowTopology = {
+  it('rejects topology with unsupported node fields without changing state', async () => {
+    const model = createWorkflowEditorModel(createRepository(), en)
+    await model.load('quality/WORKFLOW.md')
+    const malformed = {
       ...topology,
       nodes: [
-        topology.nodes[0],
-        { ...topology.nodes[1], label: 'Changed' },
-        topology.nodes[2],
+        {
+          ...topology.nodes[0],
+          kind: 'unknown',
+          stepPath: '../escape.md',
+        },
+        ...topology.nodes.slice(1),
       ],
-    }
-    const refreshedBundle = bundleFor(changedTopology)
-    repository.read.mockResolvedValueOnce(bundleFor(topology))
-    repository.read.mockResolvedValueOnce(refreshedBundle)
-    const model = createWorkflowEditorModel(repository)
-    await model.load('alpha/WORKFLOW.md')
-    model.updateTopology(changedTopology)
+    } as unknown as WorkflowTopology
 
-    await expect(model.apply()).resolves.toBe(true)
-
-    expect(repository.replaceFile).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: 'managed/workflows/alpha/WORKFLOW.md',
-      }),
-      expect.stringContaining('"label": "Changed"'),
-    )
-    expect(model.getSnapshot()).toMatchObject({
-      status: 'ready',
-      dirty: false,
-      bundle: refreshedBundle,
-    })
-    model.dispose()
+    expect(model.updateTopology(malformed)).toBe(false)
+    expect(model.getSnapshot().topology).toEqual(topology)
   })
 
-  it('enters conflict and keeps local edits when CAS fails', async () => {
-    const repository = createRepository(bundleFor(topology))
-    repository.replaceFile.mockResolvedValue({
-      ok: false,
-      reason: 'conflict',
-    } as Awaited<ReturnType<WorkflowRepository['replaceFile']>>)
-    const model = createWorkflowEditorModel(repository)
-    await model.load('alpha/WORKFLOW.md')
-    const changedTopology: WorkflowTopology = {
-      ...topology,
-      nodes: [
-        topology.nodes[0],
-        { ...topology.nodes[1], label: 'Local edit' },
-        topology.nodes[2],
-      ],
-    }
-    model.updateTopology(changedTopology)
+  it('does not reread the deleted workflow when selecting the next empty state', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    repository.setList([])
 
-    await expect(model.apply()).resolves.toBe(false)
+    await expect(model.trashCurrent()).resolves.toBe(true)
 
-    expect(model.getSnapshot()).toMatchObject({
-      status: 'conflict',
-      dirty: true,
-      topology: changedTopology,
-    })
+    expect(model.getSnapshot().status).toBe('empty')
+    expect(model.getSnapshot().path).toBeNull()
     expect(repository.read).toHaveBeenCalledTimes(1)
-    model.dispose()
   })
 
-  it('marks dirty edits as conflicted without reloading on external changes', async () => {
-    const repository = createRepository(bundleFor(topology))
-    const model = createWorkflowEditorModel(repository)
-    await model.load('alpha/WORKFLOW.md')
-    const changedTopology: WorkflowTopology = {
+  it('selects the next workflow after the current manifest is deleted', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    repository.setList([{ path: 'second/WORKFLOW.md', title: 'second' }])
+    repository.read.mockImplementation(async (path) =>
+      path === 'quality/WORKFLOW.md' ? null : repository.bundle,
+    )
+
+    repository.emit({
+      type: 'vault',
+      event: {
+        type: 'delete',
+        entry: {
+          kind: 'folder',
+          path: 'managed/workflows/quality',
+          name: 'quality',
+        },
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(model.getSnapshot().status).toBe('ready')
+    expect(model.getSnapshot().path).toBe('second/WORKFLOW.md')
+    expect(repository.read).toHaveBeenLastCalledWith('second/WORKFLOW.md')
+  })
+
+  it('applies through the repository compare-and-swap', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    model.updateTopology({
       ...topology,
       nodes: [
-        topology.nodes[0],
-        { ...topology.nodes[1], label: 'Local edit' },
-        topology.nodes[2],
+        { ...topology.nodes[0], label: 'Saved' },
+        ...topology.nodes.slice(1),
       ],
-    }
-    model.updateTopology(changedTopology)
+    })
+
+    await expect(model.apply()).resolves.toEqual({ ok: true })
+    expect(model.getSnapshot().dirty).toBe(false)
+    expect(repository.replaceFile).toHaveBeenCalledTimes(1)
+    expect(repository.currentContent()).toContain(
+      '[Saved](steps/input/STEP.md)',
+    )
+  })
+
+  it('keeps dirty edits when another writer changes the manifest', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    model.updateTopology({
+      ...topology,
+      nodes: [
+        { ...topology.nodes[0], label: 'Local' },
+        ...topology.nodes.slice(1),
+      ],
+    })
     repository.emit({
       type: 'vault',
       event: {
         type: 'modify',
         entry: {
           kind: 'file',
-          path: 'managed/workflows/alpha/WORKFLOW.md',
+          path: repository.manifestPath,
           name: 'WORKFLOW.md',
           ctime: 1,
           mtime: 2,
@@ -281,66 +366,128 @@ describe('workflow editor model', () => {
       },
     })
 
+    expect(model.getSnapshot().status).toBe('conflict')
+    expect(model.getSnapshot().topology?.nodes[0]?.label).toBe('Local')
+    await expect(model.apply()).resolves.toEqual({
+      ok: false,
+      reason: 'conflict',
+    })
+  })
+
+  it('does not reread a clean workflow for an unrelated vault event', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+
+    repository.emit({
+      type: 'vault',
+      event: {
+        type: 'modify',
+        entry: {
+          kind: 'file',
+          path: 'managed/workflows/other/WORKFLOW.md',
+          name: 'WORKFLOW.md',
+          ctime: 1,
+          mtime: 2,
+        },
+      },
+    })
     await Promise.resolve()
 
     expect(repository.read).toHaveBeenCalledTimes(1)
-    expect(model.getSnapshot()).toMatchObject({
-      status: 'conflict',
-      dirty: true,
-      topology: changedTopology,
-    })
-    model.dispose()
   })
 })
 
-function bundleFor(
-  currentTopology: WorkflowTopology | null,
-  content = currentTopology
-    ? updateWorkflowManagedBlocks('# Alpha', currentTopology, en)
-    : '# Alpha',
-): WorkflowBundle {
-  const document = parseWorkflowDocument(content)
-  return {
-    path: 'alpha/WORKFLOW.md',
-    document,
+function createRepository(): WorkflowRepository & {
+  emit(event: WorkflowRepositoryEvent): void
+  currentContent(): string
+  manifestPath: string
+  replaceFile: jest.Mock
+  read: jest.Mock
+  setList(entries: readonly { path: string; title: string }[]): void
+  bundle: WorkflowBundle
+} {
+  const manifestPath = 'managed/workflows/quality/WORKFLOW.md'
+  let content = updateWorkflowManagedBlocks('', topology, en)
+  let entries: readonly { path: string; title: string }[] = [
+    { path: 'quality/WORKFLOW.md', title: 'quality' },
+  ]
+  let listener: ((event: WorkflowRepositoryEvent) => void) | null = null
+  const bundle: WorkflowBundle = {
+    path: 'quality/WORKFLOW.md',
+    document: {
+      title: 'quality',
+      content,
+      steps: topology.nodes.map((node) => ({
+        nodeId: node.id,
+        label: node.label,
+        stepPath: node.stepPath,
+      })),
+      topology,
+      issues: [],
+    },
     files: [
       {
         nodeId: 'workflow',
-        relativePath: 'alpha/WORKFLOW.md',
-        snapshot: {
-          path: 'managed/workflows/alpha/WORKFLOW.md',
-          content,
-        },
+        relativePath: 'quality/WORKFLOW.md',
+        snapshot: { path: manifestPath, content },
       },
     ],
   }
+  const replaceFile = jest.fn(async (expected, nextContent: string) => {
+    if (expected.content !== content) return { ok: false, reason: 'conflict' }
+    content = nextContent
+    return { ok: true, snapshot: { path: manifestPath, content } }
+  })
+  const read = jest.fn(async () => ({
+    ...bundle,
+    document: { ...bundle.document, content },
+    files: [{ ...bundle.files[0], snapshot: { path: manifestPath, content } }],
+  }))
+  return {
+    manifestPath,
+    list: () => entries,
+    read,
+    create: async () => ({ ok: false, reason: 'target-exists' }),
+    importBundle: async () => ({ ok: false, reason: 'target-exists' }),
+    replaceFile,
+    trash: async () => true,
+    subscribe: (nextListener: (event: WorkflowRepositoryEvent) => void) => {
+      listener = nextListener
+      return () => {
+        listener = null
+      }
+    },
+    emit: (event: WorkflowRepositoryEvent) => {
+      content = `${content}\nexternal change`
+      listener?.(event)
+    },
+    currentContent: () => content,
+    setList: (nextEntries: readonly { path: string; title: string }[]) => {
+      entries = nextEntries
+    },
+    bundle,
+  } as unknown as WorkflowRepository & {
+    emit(event: WorkflowRepositoryEvent): void
+    currentContent(): string
+    manifestPath: string
+    replaceFile: jest.Mock
+    read: jest.Mock
+    setList(entries: readonly { path: string; title: string }[]): void
+    bundle: WorkflowBundle
+  }
 }
 
-function createRepository(initialBundle: WorkflowBundle) {
-  let currentBundle: WorkflowBundle | null = initialBundle
-  const listeners = new Set<(event: WorkflowRepositoryEvent) => void>()
-  const replaceFile: jest.MockedFunction<WorkflowRepository['replaceFile']> =
-    jest.fn(async (expected, content) => ({
-      ok: true as const,
-      snapshot: { path: expected.path, content },
-    }))
-  const repository = {
-    list: jest.fn(() => [{ path: 'alpha/WORKFLOW.md', title: 'Alpha' }]),
-    read: jest.fn(async () => currentBundle),
-    create: jest.fn(),
-    importBundle: jest.fn(),
-    replaceFile,
-    trash: jest.fn(),
-    subscribe: jest.fn((listener: (event: WorkflowRepositoryEvent) => void) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    }),
-    emit: (event: WorkflowRepositoryEvent) => {
-      for (const listener of listeners) listener(event)
-    },
-    setBundle: (bundle: WorkflowBundle | null) => {
-      currentBundle = bundle
-    },
-  }
-  return repository as typeof repository & WorkflowRepository
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve(value: T): void
+  reject(error: unknown): void
+} {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve
+    reject = nextReject
+  })
+  return { promise, resolve, reject }
 }

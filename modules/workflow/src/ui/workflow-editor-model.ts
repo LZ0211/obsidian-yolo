@@ -1,20 +1,25 @@
-import { en, type WorkflowCopy } from '../i18n'
+import { type WorkflowCopy, en } from '../i18n'
 import {
+  type WorkflowDocument,
   parseWorkflowDocument,
   updateWorkflowManagedBlocks,
 } from '../domain/workflow-document'
 import {
-  layoutWorkflowNodes,
+  type CreateWorkflowInput,
+  type CreateWorkflowResult,
+  type WorkflowBundle,
+  type WorkflowRepository,
+  type WorkflowRepositoryEvent,
+  type WorkflowTextFile,
+} from '../domain/workflow-repository'
+import {
   type WorkflowIssue,
   type WorkflowTopology,
+  layoutWorkflowNodes,
   validateWorkflowTopology,
 } from '../domain/workflow-model'
-import type {
-  WorkflowBundle,
-  WorkflowListEntry,
-  WorkflowRepository,
-  WorkflowRepositoryEvent,
-} from '../domain/workflow-repository'
+
+const HISTORY_LIMIT = 50
 
 export type WorkflowEditorStatus =
   | 'loading'
@@ -25,327 +30,403 @@ export type WorkflowEditorStatus =
 
 export type WorkflowEditorSnapshot = Readonly<{
   status: WorkflowEditorStatus
-  workflows: readonly WorkflowListEntry[]
-  bundle: WorkflowBundle | null
+  workflows: readonly Readonly<{ path: string; title: string }>[]
   path: string | null
+  bundle: WorkflowBundle | null
   topology: WorkflowTopology | null
   selectedNodeId: string | null
   dirty: boolean
-  history: Readonly<{ canUndo: boolean; canRedo: boolean }>
+  canUndo: boolean
+  canRedo: boolean
   issues: readonly WorkflowIssue[]
-  error: unknown | null
+  error?: string
 }>
+
+export type WorkflowEditorLoadResult =
+  | Readonly<{ ok: true }>
+  | Readonly<{ ok: false; reason: 'dirty' | 'not-found' | 'stale' }>
+
+export type WorkflowEditorApplyResult =
+  | Readonly<{ ok: true }>
+  | Readonly<{
+      ok: false
+      reason: 'conflict' | 'invalid' | 'stale' | 'empty'
+    }>
 
 export type WorkflowEditorModel = Readonly<{
   getSnapshot(): WorkflowEditorSnapshot
   subscribe(listener: () => void): () => void
-  load(path: string): Promise<void>
+  load(
+    path?: string | null,
+    options?: Readonly<{ discardDirty?: boolean }>,
+  ): Promise<WorkflowEditorLoadResult>
   selectNode(nodeId: string | null): void
   updateTopology(topology: WorkflowTopology): boolean
-  apply(): Promise<boolean>
+  apply(): Promise<WorkflowEditorApplyResult>
   undo(): boolean
   redo(): boolean
   autoLayout(): boolean
-  markDirty(dirty?: boolean): void
+  create(input: CreateWorkflowInput): Promise<CreateWorkflowResult>
+  trashCurrent(): Promise<boolean>
   dispose(): void
 }>
 
-const HISTORY_LIMIT = 50
+export type WorkflowEditorCopy = WorkflowCopy | (() => WorkflowCopy)
+
+type MutableHistory = {
+  past: WorkflowTopology[]
+  future: WorkflowTopology[]
+}
 
 export function createWorkflowEditorModel(
   repository: WorkflowRepository,
-  copy: WorkflowCopy = en,
+  copy: WorkflowEditorCopy = en,
 ): WorkflowEditorModel {
-  let disposed = false
-  let applying = false
-  let loadToken = 0
+  const listeners = new Set<() => void>()
+  const history: MutableHistory = { past: [], future: [] }
+  let snapshot = initialSnapshot()
+  let currentManifest: WorkflowTextFile | null = null
+  let loadRevision = 0
   let changeVersion = 0
   let savedTopology: WorkflowTopology | null = null
-  let additionalDirty = false
-  let past: WorkflowTopology[] = []
-  let future: WorkflowTopology[] = []
-  let workflows: readonly WorkflowListEntry[] = []
-  let snapshot: WorkflowEditorSnapshot
-  const listeners = new Set<() => void>()
+  let saving = false
+  let disposed = false
+  const getCopy = typeof copy === 'function' ? copy : () => copy
 
-  try {
-    workflows = freezeWorkflows(repository.list())
-    snapshot = createSnapshot({
-      status: 'loading',
-      workflows,
-      bundle: null,
-      path: null,
-      topology: null,
-      selectedNodeId: null,
-      dirty: false,
-      history: emptyHistory(),
-      issues: [],
-      error: null,
+  const resetHistory = (): void => {
+    history.past = []
+    history.future = []
+  }
+
+  const publish = (changes: Partial<WorkflowEditorSnapshot>): void => {
+    snapshot = Object.freeze({
+      ...snapshot,
+      ...changes,
+      workflows: Object.freeze([
+        ...((changes.workflows ?? snapshot.workflows) as readonly {
+          path: string
+          title: string
+        }[]),
+      ]),
+      issues: Object.freeze([...(changes.issues ?? snapshot.issues)]),
     })
-  } catch (error) {
-    snapshot = createSnapshot({
-      status: 'error',
-      workflows: [],
-      bundle: null,
-      path: null,
-      topology: null,
-      selectedNodeId: null,
-      dirty: false,
-      history: emptyHistory(),
-      issues: [],
-      error,
+    for (const listener of listeners) listener()
+  }
+
+  const refreshWorkflows = (): void => {
+    publish({ workflows: repository.list() })
+  }
+
+  const dirtyFor = (topology: WorkflowTopology | null): boolean =>
+    topology !== null &&
+    (savedTopology === null || !sameTopology(savedTopology, topology))
+
+  const setTopology = (
+    topology: WorkflowTopology,
+    changes: Readonly<{
+      dirty?: boolean
+      status?: WorkflowEditorStatus
+      selectedNodeId?: string | null
+    }>,
+  ): void => {
+    const next = cloneTopology(topology)
+    if (!next) return
+    const selectedNodeId =
+      changes.selectedNodeId === undefined
+        ? snapshot.selectedNodeId
+        : changes.selectedNodeId
+    publish({
+      topology: next,
+      dirty: changes.dirty ?? dirtyFor(next),
+      status:
+        changes.status ??
+        (snapshot.status === 'conflict' ? 'conflict' : 'ready'),
+      selectedNodeId:
+        selectedNodeId && next.nodes.some((node) => node.id === selectedNodeId)
+          ? selectedNodeId
+          : null,
+      canUndo: history.past.length > 0,
+      canRedo: history.future.length > 0,
+      issues: collectIssues(snapshot.bundle?.document ?? null, next),
+      error: undefined,
     })
   }
 
-  const disposeRepository = repository.subscribe(handleRepositoryEvent)
+  const load = async (
+    requestedPath?: string | null,
+    options: Readonly<{ discardDirty?: boolean }> = {},
+  ): Promise<WorkflowEditorLoadResult> => {
+    if (disposed) return { ok: false, reason: 'stale' }
+    if (snapshot.dirty && !options.discardDirty)
+      return { ok: false, reason: 'dirty' }
 
-  function getSnapshot(): WorkflowEditorSnapshot {
-    return snapshot
-  }
-
-  function subscribe(listener: () => void): () => void {
-    if (disposed) return () => undefined
-    listeners.add(listener)
-    return () => listeners.delete(listener)
-  }
-
-  async function load(path: string): Promise<void> {
-    if (disposed) return
-    if (snapshot.dirty) {
-      if (snapshot.path === path) publish({ status: 'conflict', error: null })
-      return
-    }
-    const token = ++loadToken
+    const revision = ++loadRevision
     changeVersion += 1
-    past = []
-    future = []
-    savedTopology = null
-    additionalDirty = false
+    let workflows: readonly { path: string; title: string }[]
     try {
+      workflows = repository.list()
+    } catch (error) {
+      currentManifest = null
+      savedTopology = null
+      resetHistory()
       publish({
-        status: 'loading',
-        workflows: readWorkflows(),
+        status: 'error',
+        workflows: [],
+        path: null,
         bundle: null,
-        path,
         topology: null,
         selectedNodeId: null,
         dirty: false,
-        history: emptyHistory(),
+        canUndo: false,
+        canRedo: false,
         issues: [],
-        error: null,
+        error: error instanceof Error ? error.message : String(error),
       })
-      const bundle = await repository.read(path)
-      if (disposed || token !== loadToken) return
-      if (!bundle) {
-        publish({ status: 'empty', bundle: null, topology: null, issues: [] })
-        return
-      }
-      const normalizedBundle = freezeBundle(bundle)
-      const topology = topologyForBundle(normalizedBundle)
-      savedTopology = topology
-      publish({
-        status: 'ready',
-        workflows,
-        bundle: normalizedBundle,
-        topology,
-        selectedNodeId: null,
-        dirty: false,
-        history: emptyHistory(),
-        issues: issuesFor(normalizedBundle, topology),
-        error: null,
-      })
+      throw error
+    }
+    const target =
+      requestedPath !== undefined
+        ? requestedPath
+        : snapshot.path &&
+            workflows.some((workflow) => workflow.path === snapshot.path)
+          ? snapshot.path
+          : (workflows[0]?.path ?? null)
+    currentManifest = null
+    savedTopology = null
+    resetHistory()
+    publish({
+      workflows,
+      status: target ? 'loading' : 'empty',
+      path: target,
+      bundle: null,
+      topology: null,
+      selectedNodeId: null,
+      dirty: false,
+      canUndo: false,
+      canRedo: false,
+      issues: [],
+      error: undefined,
+    })
+    if (!target) {
+      return { ok: true }
+    }
+
+    let bundle: WorkflowBundle | null
+    try {
+      bundle = await repository.read(target)
     } catch (error) {
-      if (disposed || token !== loadToken) return
+      if (disposed || revision !== loadRevision)
+        return { ok: false, reason: 'stale' }
       publish({
         status: 'error',
         bundle: null,
         topology: null,
         selectedNodeId: null,
         dirty: false,
-        history: emptyHistory(),
+        canUndo: false,
+        canRedo: false,
         issues: [],
-        error,
+        error: error instanceof Error ? error.message : String(error),
       })
+      throw error
     }
+    if (disposed || revision !== loadRevision)
+      return { ok: false, reason: 'stale' }
+    if (!bundle) {
+      publish({
+        status: 'error',
+        path: target,
+        bundle: null,
+        topology: null,
+        selectedNodeId: null,
+        dirty: false,
+        canUndo: false,
+        canRedo: false,
+        issues: [],
+        error: 'workflow-not-found',
+      })
+      return { ok: false, reason: 'not-found' }
+    }
+
+    const topology = topologyFor(bundle.document)
+    currentManifest =
+      bundle.files.find((file) => file.nodeId === 'workflow') ?? null
+    savedTopology = topology
+    resetHistory()
+    publish({
+      status: 'ready',
+      path: target,
+      bundle,
+      topology,
+      selectedNodeId: topology?.nodes[0]?.id ?? null,
+      dirty: false,
+      canUndo: false,
+      canRedo: false,
+      issues: collectIssues(bundle.document, topology),
+      error: undefined,
+    })
+    return { ok: true }
   }
 
-  function selectNode(nodeId: string | null): void {
-    if (disposed || !snapshot.topology) return
-    const nextNodeId =
-      nodeId && snapshot.topology.nodes.some((node) => node.id === nodeId)
-        ? nodeId
-        : null
-    if (nextNodeId === snapshot.selectedNodeId) return
-    publish({ selectedNodeId: nextNodeId })
-  }
-
-  function updateTopology(nextTopology: WorkflowTopology): boolean {
-    if (disposed || !snapshot.topology || !isDisplayable(nextTopology))
+  const updateTopology = (topology: WorkflowTopology): boolean => {
+    if (disposed) return false
+    const next = cloneTopology(topology)
+    if (!next || !snapshot.topology || sameTopology(snapshot.topology, next))
       return false
-    const topology = freezeTopology(nextTopology)
-    if (sameTopology(snapshot.topology, topology)) return false
-    past = appendHistory(past, snapshot.topology)
-    future = []
+    history.past = [...history.past, snapshot.topology].slice(-HISTORY_LIMIT)
+    history.future = []
     changeVersion += 1
-    publishTopology(topology)
+    setTopology(next, {})
     return true
   }
 
-  async function apply(): Promise<boolean> {
-    if (
-      disposed ||
-      !snapshot.dirty ||
-      !snapshot.path ||
-      !snapshot.bundle ||
-      !snapshot.topology
+  const undo = (): boolean => {
+    if (disposed) return false
+    const previous = history.past.at(-1)
+    if (!previous || !snapshot.topology) return false
+    history.past = history.past.slice(0, -1)
+    history.future = [snapshot.topology, ...history.future].slice(
+      0,
+      HISTORY_LIMIT,
     )
-      return !snapshot.dirty
+    changeVersion += 1
+    setTopology(previous, {})
+    return true
+  }
 
-    const path = snapshot.path
-    const bundle = snapshot.bundle
-    const topology = snapshot.topology
-    const version = changeVersion
-    const manifest = bundle.files.find(
-      (file) =>
-        file.nodeId === 'workflow' || file.relativePath === bundle.path,
-    )
-    if (!manifest) {
-      publish({ status: 'error', error: new Error('Workflow manifest is missing') })
-      return false
-    }
+  const redo = (): boolean => {
+    if (disposed) return false
+    const next = history.future[0]
+    if (!next || !snapshot.topology) return false
+    history.future = history.future.slice(1)
+    history.past = [...history.past, snapshot.topology].slice(-HISTORY_LIMIT)
+    changeVersion += 1
+    setTopology(next, {})
+    return true
+  }
+
+  const apply = async (): Promise<WorkflowEditorApplyResult> => {
+    if (disposed) return { ok: false, reason: 'stale' }
+    if (!snapshot.bundle || !snapshot.topology || !currentManifest)
+      return { ok: false, reason: 'empty' }
+    if (!snapshot.dirty) return { ok: true }
+    if (saving) return { ok: false, reason: 'stale' }
+    const basePath = snapshot.path
+    const baseTopology = snapshot.topology
+    if (validateWorkflowTopology(baseTopology).length > 0)
+      return { ok: false, reason: 'invalid' }
+    const expected = currentManifest.snapshot
     const content = updateWorkflowManagedBlocks(
-      bundle.document.content,
-      topology,
-      copy,
+      snapshot.bundle.document.content,
+      baseTopology,
+      getCopy(),
     )
-    applying = true
+    saving = true
+    const revision = loadRevision
+    const version = changeVersion
+    let result: Awaited<ReturnType<WorkflowRepository['replaceFile']>>
     try {
-      const result = await repository.replaceFile(manifest.snapshot, content)
-      if (!result.ok) {
-        publish({ status: 'conflict', error: null })
-        return false
-      }
-      const refreshed = await repository.read(path)
-      if (!refreshed) {
-        publish({ status: 'error', error: new Error('Workflow disappeared') })
-        return false
-      }
-      if (disposed) return false
-      const normalizedBundle = freezeBundle(refreshed)
-      const refreshedTopology = topologyForBundle(normalizedBundle)
-      savedTopology = refreshedTopology
-      if (version !== changeVersion) {
+      result = await repository.replaceFile(expected, content)
+    } catch (error) {
+      if (!disposed && revision === loadRevision && snapshot.path === basePath)
         publish({
-          status: 'ready',
-          bundle: normalizedBundle,
+          status: 'error',
           dirty: dirtyFor(snapshot.topology),
-          issues: issuesFor(normalizedBundle, snapshot.topology),
-          error: null,
+          error: error instanceof Error ? error.message : String(error),
         })
-        return true
-      }
-      past = []
-      future = []
-      additionalDirty = false
+      throw error
+    } finally {
+      saving = false
+    }
+    if (disposed || revision !== loadRevision || snapshot.path !== basePath)
+      return { ok: false, reason: 'stale' }
+    if (!result || !result.ok) {
+      publish({ status: 'conflict', dirty: dirtyFor(snapshot.topology) })
+      return { ok: false, reason: 'conflict' }
+    }
+
+    currentManifest = {
+      ...currentManifest,
+      snapshot: result.snapshot,
+    }
+    const document = parseWorkflowDocument(content, getCopy())
+    const bundle: WorkflowBundle = Object.freeze({
+      ...snapshot.bundle,
+      document,
+      files: Object.freeze(
+        snapshot.bundle.files.map((file) =>
+          file.nodeId === 'workflow'
+            ? { ...file, snapshot: result.snapshot }
+            : file,
+        ),
+      ),
+    })
+    savedTopology = baseTopology
+    const changedDuringSave =
+      version !== changeVersion &&
+      (!snapshot.topology || !sameTopology(snapshot.topology, baseTopology))
+    if (changedDuringSave) {
       publish({
         status: 'ready',
-        bundle: normalizedBundle,
-        topology: refreshedTopology,
-        dirty: false,
-        history: emptyHistory(),
-        issues: issuesFor(normalizedBundle, refreshedTopology),
-        error: null,
+        bundle,
+        dirty: true,
+        issues: collectIssues(document, snapshot.topology),
+        error: undefined,
       })
-      return true
-    } catch (error) {
-      publish({ status: 'error', error })
-      return false
-    } finally {
-      applying = false
+    } else {
+      resetHistory()
+      publish({
+        status: 'ready',
+        bundle,
+        dirty: false,
+        canUndo: false,
+        canRedo: false,
+        issues: collectIssues(document, baseTopology),
+        error: undefined,
+      })
     }
+    return { ok: true }
   }
 
-  function undo(): boolean {
-    if (disposed || !snapshot.topology || past.length === 0) return false
-    const previous = past[past.length - 1]
-    past = past.slice(0, -1)
-    future = appendHistory(future, snapshot.topology)
-    changeVersion += 1
-    publishTopology(previous)
-    return true
+  const create = async (
+    input: CreateWorkflowInput,
+  ): Promise<CreateWorkflowResult> => {
+    const result = await repository.create(input)
+    if (result.ok)
+      await load(`${input.slug}/WORKFLOW.md`, { discardDirty: true })
+    refreshWorkflows()
+    return result
   }
 
-  function redo(): boolean {
-    if (disposed || !snapshot.topology || future.length === 0) return false
-    const next = future[future.length - 1]
-    future = future.slice(0, -1)
-    past = appendHistory(past, snapshot.topology)
-    changeVersion += 1
-    publishTopology(next)
-    return true
+  const trashCurrent = async (): Promise<boolean> => {
+    const path = snapshot.path
+    if (!path) return false
+    const deleted = await repository.trash(path)
+    if (deleted) await load(undefined, { discardDirty: true })
+    return deleted
   }
 
-  function autoLayout(): boolean {
-    if (disposed || !snapshot.topology) return false
+  const selectNode = (nodeId: string | null): void => {
+    if (disposed) return
+    if (
+      nodeId !== null &&
+      !snapshot.topology?.nodes.some((node) => node.id === nodeId)
+    )
+      return
+    publish({ selectedNodeId: nodeId })
+  }
+
+  const autoLayout = (): boolean => {
+    if (disposed) return false
+    if (!snapshot.topology) return false
     return updateTopology(layoutWorkflowNodes(snapshot.topology))
   }
 
-  function markDirty(dirty = true): void {
-    if (disposed) return
-    additionalDirty = dirty
-    changeVersion += 1
-    publish({ dirty: dirtyFor(snapshot.topology) })
-  }
-
-  function dispose(): void {
-    if (disposed) return
-    disposed = true
-    loadToken += 1
-    changeVersion += 1
-    disposeRepository()
-    listeners.clear()
-  }
-
-  function publishTopology(topology: WorkflowTopology): void {
-    const selectedNodeId = snapshot.selectedNodeId
-      ? topology.nodes.some((node) => node.id === snapshot.selectedNodeId)
-        ? snapshot.selectedNodeId
-        : null
-      : null
-    publish({
-      status: snapshot.status === 'conflict' ? 'conflict' : 'ready',
-      topology,
-      selectedNodeId,
-      dirty: dirtyFor(topology),
-      history: historySnapshot(past, future),
-      issues: snapshot.bundle ? issuesFor(snapshot.bundle, topology) : [],
-      error: null,
-    })
-  }
-
-  function handleRepositoryEvent(event: WorkflowRepositoryEvent): void {
-    if (disposed || applying) return
-    if (event.type === 'root-changed') {
-      handleCurrentExternalChange()
-      return
-    }
-    if (affectsCurrentWorkflow(event)) handleCurrentExternalChange()
-    else refreshWorkflows()
-  }
-
-  function handleCurrentExternalChange(): void {
-    if (snapshot.dirty) {
-      publish({ status: 'conflict', error: null })
-      return
-    }
-    if (snapshot.path) void load(snapshot.path)
-    else refreshWorkflows()
-  }
-
-  function affectsCurrentWorkflow(event: Extract<WorkflowRepositoryEvent, { type: 'vault' }>): boolean {
+  const isRelevantEvent = (event: WorkflowRepositoryEvent): boolean => {
+    if (event.type === 'root-changed') return true
     if (!snapshot.bundle) return false
     const manifest = snapshot.bundle.files.find(
-      (file) => file.nodeId === 'workflow' || file.relativePath === snapshot.path,
+      (file) => file.nodeId === 'workflow',
     )
     if (!manifest) return false
     const folder = manifest.snapshot.path.slice(0, -'/WORKFLOW.md'.length)
@@ -353,40 +434,39 @@ export function createWorkflowEditorModel(
       event.event.type === 'rename'
         ? [event.event.entry.path, event.event.oldPath]
         : [event.event.entry.path]
-    return paths.some((path) => path === manifest.snapshot.path || path.startsWith(`${folder}/`))
-  }
-
-  function refreshWorkflows(): void {
-    try {
-      workflows = readWorkflows()
-      publish({ workflows })
-    } catch (error) {
-      publish({ status: 'error', error })
-    }
-  }
-
-  function readWorkflows(): readonly WorkflowListEntry[] {
-    workflows = freezeWorkflows(repository.list())
-    return workflows
-  }
-
-  function publish(changes: Partial<WorkflowEditorSnapshot>): void {
-    snapshot = createSnapshot({ ...snapshot, ...changes })
-    for (const listener of [...listeners]) listener()
-  }
-
-  function dirtyFor(topology: WorkflowTopology | null): boolean {
-    return (
-      additionalDirty ||
-      (topology !== null &&
-        savedTopology !== null &&
-        !sameTopology(topology, savedTopology))
+    return paths.some(
+      (path) =>
+        path === folder ||
+        path === manifest.snapshot.path ||
+        path.startsWith(`${folder}/`),
     )
   }
 
+  const onRepositoryEvent = (event: WorkflowRepositoryEvent): void => {
+    if (saving) {
+      refreshWorkflows()
+      return
+    }
+    if (snapshot.dirty) {
+      refreshWorkflows()
+      if (isRelevantEvent(event)) publish({ status: 'conflict' })
+      return
+    }
+    if (!isRelevantEvent(event)) {
+      refreshWorkflows()
+      return
+    }
+    void load(undefined, { discardDirty: true }).catch(() => undefined)
+  }
+
+  const unsubscribeRepository = repository.subscribe(onRepositoryEvent)
+
   return Object.freeze({
-    getSnapshot,
-    subscribe,
+    getSnapshot: () => snapshot,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
     load,
     selectNode,
     updateTopology,
@@ -394,180 +474,166 @@ export function createWorkflowEditorModel(
     undo,
     redo,
     autoLayout,
-    markDirty,
-    dispose,
+    create,
+    trashCurrent,
+    dispose: () => {
+      if (disposed) return
+      disposed = true
+      unsubscribeRepository()
+      listeners.clear()
+    },
   })
 }
 
-function createSnapshot(
-  snapshot: Omit<WorkflowEditorSnapshot, never>,
-): WorkflowEditorSnapshot {
+function initialSnapshot(): WorkflowEditorSnapshot {
   return Object.freeze({
-    ...snapshot,
-    workflows: freezeWorkflows(snapshot.workflows),
-    history: Object.freeze({ ...snapshot.history }),
-    issues: freezeIssues(snapshot.issues),
+    status: 'loading',
+    workflows: Object.freeze([]),
+    path: null,
+    bundle: null,
+    topology: null,
+    selectedNodeId: null,
+    dirty: false,
+    canUndo: false,
+    canRedo: false,
+    issues: Object.freeze([]),
   })
 }
 
-function emptyHistory(): Readonly<{ canUndo: false; canRedo: false }> {
-  return { canUndo: false, canRedo: false }
+function topologyFor(document: WorkflowDocument): WorkflowTopology | null {
+  if (document.topology) return cloneTopology(document.topology)
+  if (document.steps.length === 0) return null
+  const nodes = document.steps.map((step, index) => ({
+    id: step.nodeId,
+    kind:
+      index === 0
+        ? ('input' as const)
+        : index === document.steps.length - 1
+          ? ('output' as const)
+          : ('agent' as const),
+    label: step.label,
+    stepPath: step.stepPath,
+    position: { x: 70 + index * 245, y: 90 },
+  }))
+  return freezeTopology({
+    revision: 1,
+    nodes,
+    edges: nodes.slice(1).map((node, index) => ({
+      id: `${nodes[index]?.id ?? 'node'}-${node.id}`,
+      source: nodes[index]?.id ?? '',
+      target: node.id,
+    })),
+  })
 }
 
-function historySnapshot(
-  past: readonly WorkflowTopology[],
-  future: readonly WorkflowTopology[],
-): Readonly<{ canUndo: boolean; canRedo: boolean }> {
-  return Object.freeze({ canUndo: past.length > 0, canRedo: future.length > 0 })
+function collectIssues(
+  document: WorkflowDocument | null,
+  topology: WorkflowTopology | null,
+): readonly WorkflowIssue[] {
+  const issues: WorkflowIssue[] = document
+    ? document.issues.map((code) => ({ code }))
+    : []
+  if (topology) issues.push(...validateWorkflowTopology(topology))
+  return Object.freeze(issues.map((issue) => Object.freeze({ ...issue })))
 }
 
-function appendHistory(
-  history: WorkflowTopology[],
-  topology: WorkflowTopology,
-): WorkflowTopology[] {
-  const next = [...history, topology]
-  return next.length > HISTORY_LIMIT ? next.slice(-HISTORY_LIMIT) : next
+function cloneTopology(value: WorkflowTopology): WorkflowTopology | null {
+  if (!isRecord(value) || value.revision !== 1) return null
+  if (!Array.isArray(value.nodes) || !Array.isArray(value.edges)) return null
+  if (!isJsonSerializable(value)) return null
+  const nodes = value.nodes.map(cloneNode)
+  const edges = value.edges.map(cloneEdge)
+  if (
+    nodes.some((node) => node === null) ||
+    edges.some((edge) => edge === null)
+  )
+    return null
+  const next = freezeTopology({
+    revision: 1,
+    nodes: nodes as WorkflowTopology['nodes'],
+    edges: edges as WorkflowTopology['edges'],
+  })
+  return validateWorkflowTopology(next).some(
+    (issue) => issue.code === 'invalidTopology',
+  )
+    ? null
+    : next
 }
 
-function isDisplayable(topology: WorkflowTopology): boolean {
+function cloneNode(value: unknown): WorkflowTopology['nodes'][number] | null {
+  if (!isRecord(value)) return null
+  if (
+    typeof value.id !== 'string' ||
+    typeof value.kind !== 'string' ||
+    typeof value.label !== 'string' ||
+    typeof value.stepPath !== 'string' ||
+    !isRecord(value.position) ||
+    !isFiniteNumber(value.position.x) ||
+    !isFiniteNumber(value.position.y)
+  )
+    return null
+  if (
+    value.inputPredicates !== undefined &&
+    !isStringRecord(value.inputPredicates)
+  )
+    return null
+  return {
+    ...(value as WorkflowTopology['nodes'][number]),
+    position: { x: value.position.x, y: value.position.y },
+    ...(isStringRecord(value.inputPredicates)
+      ? { inputPredicates: { ...value.inputPredicates } }
+      : {}),
+  }
+}
+
+function cloneEdge(value: unknown): WorkflowTopology['edges'][number] | null {
+  if (!isRecord(value)) return null
+  if (
+    typeof value.id !== 'string' ||
+    typeof value.source !== 'string' ||
+    typeof value.target !== 'string' ||
+    (value.branch !== undefined && typeof value.branch !== 'string') ||
+    (value.label !== undefined && typeof value.label !== 'string')
+  )
+    return null
+  return { ...(value as WorkflowTopology['edges'][number]) }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function isStringRecord(
+  value: unknown,
+): value is Readonly<Record<string, string>> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every((entry) => typeof entry === 'string')
+  )
+}
+
+function isJsonSerializable(value: unknown): boolean {
   try {
-    return !validateWorkflowTopology(topology).some(
-      (issue) => issue.code === 'invalidTopology',
-    )
+    JSON.stringify(value)
+    return true
   } catch {
     return false
   }
 }
 
-function topologyForBundle(bundle: WorkflowBundle): WorkflowTopology {
-  if (bundle.document.topology) return freezeTopology(bundle.document.topology)
-  return layoutWorkflowNodes(fallbackTopology(bundle.document))
-}
-
-function fallbackTopology(
-  document: ReturnType<typeof parseWorkflowDocument>,
-): WorkflowTopology {
-  const lastIndex = document.steps.length - 1
-  const nodes = document.steps.map((step, index) => ({
-    id: step.nodeId,
-    kind:
-      document.steps.length > 1 && index === 0
-        ? ('input' as const)
-        : document.steps.length > 1 && index === lastIndex
-          ? ('output' as const)
-          : ('agent' as const),
-    label: step.label,
-    stepPath: step.stepPath,
-    position: { x: 0, y: 0 },
-  }))
-  return {
-    revision: 1,
-    nodes,
-    edges: nodes.slice(1).map((node, index) => ({
-      id: `edge-${index}-${nodes[index]?.id ?? 'source'}-${node.id}`,
-      source: nodes[index]?.id ?? '',
-      target: node.id,
-    })),
-  }
-}
-
-function issuesFor(
-  bundle: WorkflowBundle,
-  topology: WorkflowTopology,
-): readonly WorkflowIssue[] {
-  const issues = [
-    ...bundle.document.issues.map((code): WorkflowIssue => ({ code })),
-    ...validateWorkflowTopology(topology),
-  ]
-  const seen = new Set<string>()
-  return freezeIssues(
-    issues.filter((issue) => {
-      const key = `${issue.code}:${issue.nodeId ?? ''}:${issue.edgeId ?? ''}`
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    }),
-  )
+function freezeTopology(value: WorkflowTopology): WorkflowTopology {
+  return deepFreeze(value)
 }
 
 function sameTopology(
-  left: WorkflowTopology | null,
-  right: WorkflowTopology | null,
+  left: WorkflowTopology,
+  right: WorkflowTopology,
 ): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
-}
-
-function freezeWorkflows(
-  entries: readonly WorkflowListEntry[],
-): readonly WorkflowListEntry[] {
-  return Object.freeze(
-    entries.map((entry) => Object.freeze({ path: entry.path, title: entry.title })),
-  )
-}
-
-function freezeIssues(issues: readonly WorkflowIssue[]): readonly WorkflowIssue[] {
-  return Object.freeze(issues.map((issue) => Object.freeze({ ...issue })))
-}
-
-function freezeBundle(bundle: WorkflowBundle): WorkflowBundle {
-  return Object.freeze({
-    ...bundle,
-    document: Object.freeze({
-      ...bundle.document,
-      steps: Object.freeze(
-        bundle.document.steps.map((step) => Object.freeze({ ...step })),
-      ),
-      topology: bundle.document.topology
-        ? freezeTopology(bundle.document.topology)
-        : null,
-      issues: Object.freeze([...bundle.document.issues]),
-    }),
-    files: Object.freeze(
-      bundle.files.map((file) =>
-        Object.freeze({
-          ...file,
-          snapshot: Object.freeze({ ...file.snapshot }),
-        }),
-      ),
-    ),
-  })
-}
-
-function freezeTopology(topology: WorkflowTopology): WorkflowTopology {
-  return deepFreeze({
-    revision: 1,
-    nodes: topology.nodes.map((node) => ({
-      ...node,
-      position: { ...node.position },
-      ...(node.inputPredicates === undefined
-        ? {}
-        : { inputPredicates: { ...node.inputPredicates } }),
-      ...(Object.prototype.hasOwnProperty.call(node, 'outputSchema')
-        ? { outputSchema: cloneValue(node.outputSchema) }
-        : {}),
-    })),
-    edges: topology.edges.map((edge) => ({ ...edge })),
-  })
-}
-
-function cloneValue(
-  value: unknown,
-  seen = new WeakMap<object, unknown>(),
-): unknown {
-  if (!value || typeof value !== 'object') return value
-  const existing = seen.get(value)
-  if (existing) return existing
-  if (Array.isArray(value)) {
-    const clone: unknown[] = []
-    seen.set(value, clone)
-    for (const entry of value) clone.push(cloneValue(entry, seen))
-    return clone
-  }
-  const clone: Record<string, unknown> = {}
-  seen.set(value, clone)
-  for (const [key, entry] of Object.entries(value))
-    clone[key] = cloneValue(entry, seen)
-  return clone
 }
 
 function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
