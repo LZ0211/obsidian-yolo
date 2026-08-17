@@ -3,12 +3,18 @@
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 
+import {
+  getInstalledInjectionBridge,
+  installYoloInjectionBridge,
+  uninstallYoloInjectionBridge,
+} from '../../../core/mcp/injectionBridge'
 import { yoloSettingsSchema } from '../../../settings/schema/setting.types'
 import type { Assistant } from '../../../types/assistant.types'
+import type { McpTool } from '../../../types/mcp.types'
 
 const mockUseSettings = jest.fn()
 const mockSkillEntries: never[] = []
-const mockListAvailableTools = jest.fn(async () => [])
+const mockListAvailableTools = jest.fn(async (): Promise<McpTool[]> => [])
 let mockToolCatalogListener: (() => void) | undefined
 const mockSubscribeToolCatalog = jest.fn((listener: () => void) => {
   mockToolCatalogListener = listener
@@ -33,6 +39,11 @@ jest.mock('@radix-ui/react-dropdown-menu', () => ({
   Portal: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   Content: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   Item: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  RadioGroup: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  RadioItem: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  ItemIndicator: ({ children }: { children?: React.ReactNode }) => (
+    <>{children}</>
+  ),
 }))
 
 jest.mock('../../../contexts/settings-context', () => ({
@@ -183,5 +194,63 @@ describe('AgentsSectionContent workspace agent tabs', () => {
     expect(mockListAvailableTools).toHaveBeenCalledTimes(1)
     expect(mockSubscribeToolCatalog).toHaveBeenCalledTimes(1)
     expect(mockToolCatalogListener).toBeUndefined()
+  })
+
+  it('does not offer Full access for an injected tool that requires approval', async () => {
+    installYoloInjectionBridge()
+    getInstalledInjectionBridge()?.registerTool(
+      {
+        name: 'plugin_delete',
+        description: 'Delete through plugin',
+        inputSchema: { type: 'object', properties: {} },
+        requiresApproval: true,
+      },
+      async () => 'ok',
+      'external-plugin',
+      'External plugin tools',
+    )
+    mockListAvailableTools.mockResolvedValue([
+      {
+        name: 'yolo_bridge__plugin_delete',
+        description: 'Delete through plugin',
+        inputSchema: { type: 'object', properties: {} },
+      },
+    ])
+
+    const settings = yoloSettingsSchema.parse({
+      assistants: [template],
+      workspaceAgents: [],
+    })
+    mockUseSettings.mockReturnValue({ settings, setSettings: jest.fn() })
+
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    await act(async () => {
+      root.render(
+        <AgentsSectionContent
+          app={{} as never}
+          onClose={() => undefined}
+          initialAssistantId={template.id}
+        />,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const toolsTab = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('.yolo-agent-editor-tab'),
+    ).find((button) => button.textContent?.includes('Tools'))
+    expect(toolsTab).toBeDefined()
+    await act(async () => {
+      toolsTab?.click()
+      await Promise.resolve()
+    })
+
+    expect(container.textContent).toContain('External plugin tools')
+    expect(container.textContent).toContain('Require approval')
+    expect(container.textContent).not.toContain('Full access')
+
+    act(() => root.unmount())
+    uninstallYoloInjectionBridge()
   })
 })

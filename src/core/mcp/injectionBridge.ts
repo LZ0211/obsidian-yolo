@@ -1,7 +1,7 @@
 import { McpTool } from '../../types/mcp.types'
 import {
-  ToolCallResponseStatus,
   type ToolCallResponse,
+  ToolCallResponseStatus,
 } from '../../types/tool-call.types'
 
 import type {
@@ -328,6 +328,12 @@ export function isInjectedBridgeToolName(toolName: string): boolean {
 /** 注入工具的自定义插件能力分组名（未提供时回退到"外部能力"分组）。 */
 export function getInjectedToolGroupName(toolName: string): string | undefined {
   return injectedToolRegistry.getGroupName(toolName)
+}
+
+export function getInjectedToolApprovalPolicy(
+  toolName: string,
+): InProcessToolApprovalPolicy | undefined {
+  return injectedToolRegistry.getApprovalPolicy(toolName)
 }
 
 export function callInjectedBridgeTool(

@@ -1,14 +1,21 @@
 import { Settings } from 'lucide-react'
 import { App } from 'obsidian'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { useLanguage } from '../../../contexts/language-context'
 import {
   SettingsProvider,
   useSettings,
 } from '../../../contexts/settings-context'
+import {
+  getInjectedToolGroup,
+  getInjectedToolGroupKey,
+} from '../../../core/mcp/injectedToolGroup'
+import { YOLO_BRIDGE_TOOL_SERVER_NAME } from '../../../core/mcp/injectionBridge'
+import { parseToolName } from '../../../core/mcp/tool-name-utils'
 import type { BuiltinCapabilityId } from '../../../core/tools/registry'
 import YoloPlugin from '../../../main'
+import type { McpTool } from '../../../types/mcp.types'
 import { ObsidianToggle } from '../../common/ObsidianToggle'
 import { ReactModal } from '../../common/ReactModal'
 import { CollapsibleToolDescription } from '../common/CollapsibleToolDescription'
@@ -53,6 +60,48 @@ const CAPABILITY_SETTINGS_BUTTON_ARIA_LABEL: Partial<
   },
 }
 
+type InjectedToolGroup = {
+  key: string
+  title: string
+  tools: Array<{ name: string; description: string }>
+}
+
+function buildInjectedToolGroups(
+  tools: readonly McpTool[],
+  t: (keyPath: string, fallback?: string) => string,
+): InjectedToolGroup[] {
+  const groups = new Map<string, InjectedToolGroup>()
+
+  for (const tool of tools) {
+    let serverName: string
+    let toolName: string
+    try {
+      const parsed = parseToolName(tool.name)
+      serverName = parsed.serverName
+      toolName = parsed.toolName
+    } catch {
+      continue
+    }
+    if (serverName !== YOLO_BRIDGE_TOOL_SERVER_NAME) {
+      continue
+    }
+
+    const injectedGroup = getInjectedToolGroup(toolName)
+    const title =
+      injectedGroup?.name ??
+      t('settings.agent.toolsGroupBuiltinInjected', 'Injected tools')
+    const key = getInjectedToolGroupKey(title)
+    const group = groups.get(key) ?? { key, title, tools: [] }
+    group.tools.push({
+      name: toolName,
+      description: tool.description ?? '',
+    })
+    groups.set(key, group)
+  }
+
+  return Array.from(groups.values())
+}
+
 export class AgentToolsModal extends ReactModal<AgentToolsModalProps> {
   constructor(app: App, plugin: YoloPlugin) {
     super({
@@ -95,6 +144,47 @@ function AgentToolsModalContent({
 }) {
   const { t } = useLanguage()
   const { settings, setSettings } = useSettings()
+  const [availableTools, setAvailableTools] = useState<readonly McpTool[]>([])
+
+  useEffect(() => {
+    let mounted = true
+    let unsubscribe: (() => void) | undefined
+
+    const loadTools = async (
+      manager: Awaited<ReturnType<typeof plugin.getMcpManager>>,
+    ) => {
+      try {
+        const tools = await manager.listAvailableTools({
+          includeBuiltinTools: true,
+        })
+        if (mounted) {
+          setAvailableTools(tools)
+        }
+      } catch (error: unknown) {
+        console.error('Failed to load available tools for tools modal', error)
+      }
+    }
+
+    void plugin
+      .getMcpManager()
+      .then((manager) => {
+        if (!mounted) {
+          return
+        }
+        void loadTools(manager)
+        unsubscribe = manager.subscribeToolCatalog(() => {
+          void loadTools(manager)
+        })
+      })
+      .catch((error: unknown) => {
+        console.error('Failed to load available tools for tools modal', error)
+      })
+
+    return () => {
+      mounted = false
+      unsubscribe?.()
+    }
+  }, [plugin])
 
   const builtinToolGroups = useMemo(() => {
     // Every registered capability is listed unconditionally: this page shows
@@ -114,6 +204,11 @@ function AgentToolsModalContent({
     })
     return groupCapabilityRowsByCategory(rows, t)
   }, [settings.mcp.builtinCapabilityOptions, t])
+
+  const injectedToolGroups = useMemo(
+    () => buildInjectedToolGroups(availableTools, t),
+    [availableTools, t],
+  )
 
   const handleToggleBuiltinTool = (
     capabilityId: BuiltinCapabilityId,
@@ -200,6 +295,41 @@ function AgentToolsModalContent({
                   </div>
                 )
               })}
+            </div>
+          </div>
+        </div>
+      ))}
+
+      {injectedToolGroups.map((group) => (
+        <div key={group.key}>
+          <div className="yolo-settings-sub-header">
+            <span className="yolo-agent-tools-section-title">
+              <span>{group.title}</span>
+            </span>
+          </div>
+          <div className="yolo-mcp-servers-container yolo-builtin-tools-table">
+            <div className="yolo-mcp-servers-header yolo-builtin-tools-table-header">
+              <div>{t('settings.mcp.tools', 'Tools')}</div>
+              <div>{t('settings.agent.descriptionColumn', 'Description')}</div>
+              <div />
+              <div />
+            </div>
+            <div className="yolo-mcp-server yolo-builtin-tools-table-body">
+              {group.tools.map((tool) => (
+                <div
+                  key={tool.name}
+                  className="yolo-mcp-server-row yolo-builtin-tools-table-row"
+                >
+                  <div className="yolo-mcp-server-name">{tool.name}</div>
+                  <div className="yolo-mcp-server-status yolo-builtin-tools-table-description">
+                    <CollapsibleToolDescription
+                      description={tool.description}
+                    />
+                  </div>
+                  <div />
+                  <div />
+                </div>
+              ))}
             </div>
           </div>
         </div>

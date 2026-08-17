@@ -101,7 +101,9 @@ jest.mock('./AgentCliPathSection', () => ({ AgentCliPathSection: () => null }))
 jest.mock('./AgentImageReadingSection', () => ({
   AgentImageReadingSection: () => null,
 }))
-jest.mock('./AgentMcpServerSection', () => ({ AgentMcpServerSection: () => null }))
+jest.mock('./AgentMcpServerSection', () => ({
+  AgentMcpServerSection: () => null,
+}))
 jest.mock('./NotificationSettingsSection', () => ({
   NotificationSettingsSection: () => null,
 }))
@@ -136,6 +138,100 @@ beforeEach(() => {
 })
 
 describe('AgentSection builtin tool rows', () => {
+  it('restores the Workspace Agents settings entry', () => {
+    mockUseSettings.mockReturnValue({
+      settings: {
+        assistants: [
+          {
+            id: 'template-1',
+            name: 'Workspace template',
+            description: 'Template description',
+            icon: 'bot',
+            enableTools: true,
+          },
+        ],
+        workspaceAgents: [
+          {
+            id: 'workspace-agent-1',
+            name: 'Workspace agent',
+            templateId: 'template-1',
+            workspacePolicy: {
+              workspaceRoot: 'D:/workspace',
+              readAllowlist: [],
+              readDenylist: [],
+              writeDenylist: [],
+            },
+            shareTokens: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        mcp: {
+          builtinCapabilityOptions: {},
+          servers: [],
+          enableToolDisclosure: false,
+        },
+        skills: { disabledSkillIds: [] },
+      },
+      setSettings: jest.fn(),
+    })
+
+    const html = renderAgentSection()
+
+    expect(html).toContain('Workspace Agents')
+    expect(html).toContain('Workspace agent')
+    expect(html).toContain('New workspace agent')
+  })
+
+  it('uses translated labels for workspace agent capability counts', () => {
+    mockUseSettings.mockReturnValue({
+      settings: {
+        assistants: [
+          {
+            id: 'template-1',
+            name: 'Workspace template',
+            enableTools: false,
+          },
+        ],
+        workspaceAgents: [
+          {
+            id: 'workspace-agent-1',
+            name: 'Workspace agent',
+            templateId: 'template-1',
+            workspacePolicy: {
+              workspaceRoot: 'D:/workspace',
+              readAllowlist: [],
+              readDenylist: [],
+              writeDenylist: [],
+            },
+            shareTokens: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        mcp: {
+          builtinCapabilityOptions: {},
+          servers: [],
+          enableToolDisclosure: false,
+        },
+        skills: { disabledSkillIds: [] },
+      },
+      setSettings: jest.fn(),
+    })
+    mockUseLanguage.mockReturnValue({
+      t: (key: string, fallback: string) => {
+        if (key === 'settings.agent.toolsCount') return 'translated tools {count}'
+        if (key === 'settings.agent.skillsCount') return 'translated skills {count}'
+        return fallback
+      },
+    })
+
+    const html = renderAgentSection()
+
+    expect(html).toContain('translated tools 0')
+    expect(html).toContain('translated skills 0')
+  })
+
   it('keeps internal memory operations out of the global settings rows', () => {
     mockGetLocalFileTools.mockReturnValue([
       { name: 'fs_read' },

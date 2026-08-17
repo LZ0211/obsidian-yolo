@@ -1,6 +1,6 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { BookOpen, Copy, Cpu, Plus, Trash2, Wrench } from 'lucide-react'
-import { App, Platform } from 'obsidian'
+import { BookOpen, Copy, Cpu, Folder, Plus, Trash2, Wrench } from 'lucide-react'
+import { App, Platform, SuggestModal } from 'obsidian'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { useLanguage } from '../../../contexts/language-context'
@@ -13,6 +13,7 @@ import { McpManager } from '../../../core/mcp/mcpManager'
 import { humanizeSkillName } from '../../../core/skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../../../core/skills/skillPolicy'
 import { useLiteSkillEntries } from '../../../hooks/useLiteSkillEntries'
+import { WorkspaceAgent } from '../../../settings/schema/setting.types'
 import { Assistant } from '../../../types/assistant.types'
 import { McpServerState, McpServerStatus } from '../../../types/mcp.types'
 import { renderAssistantIcon } from '../../../utils/assistant-icon'
@@ -35,11 +36,47 @@ type AgentSectionProps = {
   app: App
 }
 
+class TemplatePickerModal extends SuggestModal<Assistant> {
+  constructor(
+    app: App,
+    private assistants: Assistant[],
+    private onPick: (id: string) => void,
+    placeholder: string,
+  ) {
+    super(app)
+    this.setPlaceholder(placeholder)
+  }
+
+  getSuggestions(query: string): Assistant[] {
+    const normalizedQuery = query.toLowerCase()
+    return this.assistants.filter(
+      (assistant) =>
+        assistant.name.toLowerCase().includes(normalizedQuery) ||
+        (assistant.description ?? '').toLowerCase().includes(normalizedQuery),
+    )
+  }
+
+  renderSuggestion(assistant: Assistant, element: HTMLElement) {
+    element.createEl('div', { text: assistant.name })
+    if (assistant.description) {
+      element.createEl('small', {
+        text: assistant.description,
+        cls: 'yolo-settings-desc',
+      })
+    }
+  }
+
+  onChooseSuggestion(assistant: Assistant) {
+    this.onPick(assistant.id)
+  }
+}
+
 export function AgentSection({ app }: AgentSectionProps) {
   const { settings, setSettings } = useSettings()
   const { t } = useLanguage()
   const plugin = usePlugin()
   const assistants = settings.assistants || []
+  const workspaceAgents = settings.workspaceAgents || []
   const [mcpManager, setMcpManager] = useState<McpManager | null>(null)
   const [mcpServers, setMcpServers] = useState<McpServerState[]>([])
   const [mcpManagerLoading, setMcpManagerLoading] = useState(true)
@@ -155,6 +192,77 @@ export function AgentSection({ app }: AgentSectionProps) {
         })
       })().catch((error: unknown) => {
         console.error('Failed to delete agent', error)
+      })
+    }
+
+    modal.open()
+  }
+
+  const handleOpenWorkspaceAgentModal = (workspaceAgentId?: string) => {
+    const modal = new AssistantsModal(app, plugin, undefined, false, {
+      workspaceAgentId,
+    })
+    modal.open()
+  }
+
+  const handleNewWorkspaceAgent = () => {
+    if (assistants.length === 0) {
+      handleOpenAssistantsModal(undefined, true)
+      return
+    }
+    if (assistants.length === 1) {
+      const modal = new AssistantsModal(app, plugin, undefined, false, {
+        workspaceAgentTemplateId: assistants[0].id,
+      })
+      modal.open()
+      return
+    }
+    new TemplatePickerModal(
+      app,
+      assistants,
+      (templateId) => {
+        const modal = new AssistantsModal(app, plugin, undefined, false, {
+          workspaceAgentTemplateId: templateId,
+        })
+        modal.open()
+      },
+      t('settings.workspaceAgents.pickTemplate', 'Pick a template'),
+    ).open()
+  }
+
+  const handleDeleteWorkspaceAgent = (agent: WorkspaceAgent) => {
+    let confirmed = false
+
+    const modal = new ConfirmModal(app, {
+      title: t(
+        'settings.agent.deleteWorkspaceAgentTitle',
+        'Confirm delete workspace agent',
+      ),
+      message: `${t('settings.agent.deleteWorkspaceAgentMessagePrefix', 'Are you sure you want to delete workspace agent')} "${agent.name}"${t('settings.agent.deleteWorkspaceAgentMessageSuffix', '? This action cannot be undone.')}`,
+      ctaText: t('common.delete'),
+      onConfirm: () => {
+        confirmed = true
+      },
+    })
+
+    modal.onClose = () => {
+      if (!confirmed) {
+        return
+      }
+      void (async () => {
+        const updatedAgents = workspaceAgents.filter(
+          (candidate) => candidate.id !== agent.id,
+        )
+        await setSettings({
+          ...settings,
+          workspaceAgents: updatedAgents,
+          currentWorkspaceAgentId:
+            settings.currentWorkspaceAgentId === agent.id
+              ? updatedAgents[0]?.id
+              : settings.currentWorkspaceAgentId,
+        })
+      })().catch((error: unknown) => {
+        console.error('Failed to delete workspace agent', error)
       })
     }
 
@@ -408,6 +516,179 @@ export function AgentSection({ app }: AgentSectionProps) {
             onChange={(value) => void handleToggleToolDisclosure(value)}
           />
         </ObsidianSetting>
+      </section>
+
+      <section className="yolo-agent-block">
+        <div className="yolo-agent-block-head">
+          <div className="yolo-agent-block-head-title-row">
+            <div className="yolo-settings-sub-header">
+              {t('settings.agent.workspaceAgents', 'Workspace Agents')}
+            </div>
+            <ObsidianButton
+              text={t(
+                'settings.agent.newWorkspaceAgent',
+                'New workspace agent',
+              )}
+              onClick={handleNewWorkspaceAgent}
+              cta
+            />
+          </div>
+          <div className="yolo-settings-desc">
+            {t(
+              'settings.agent.workspaceAgentsDesc',
+              'Agent instances bound to working directories. Each derives from a template and limits its file access to a workspace root.',
+            )}
+          </div>
+        </div>
+
+        <div className="yolo-agent-grid">
+          {workspaceAgents.map((agent) => {
+            const template = assistants.find(
+              (assistant) => assistant.id === agent.templateId,
+            )
+            const templateToolCount = template?.enableTools
+              ? getEnabledAssistantToolNames(template).length
+              : 0
+            const templateSkillCount = template
+              ? allSkillEntries.filter((skill) =>
+                  isSkillEnabledForAssistant({
+                    assistant: template,
+                    skillName: skill.name,
+                    disabledSkillNames: disabledSkillIds,
+                  }),
+                ).length
+              : 0
+            return (
+              <article
+                key={agent.id}
+                className="yolo-agent-card yolo-agent-card--clickable"
+                role="button"
+                tabIndex={0}
+                onClick={() => handleOpenWorkspaceAgentModal(agent.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    handleOpenWorkspaceAgentModal(agent.id)
+                  }
+                }}
+              >
+                <div className="yolo-agent-card-top">
+                  <div className="yolo-agent-card-top-main">
+                    <div className="yolo-agent-avatar">
+                      {renderAssistantIcon(template?.icon, 16)}
+                    </div>
+                    <div className="yolo-agent-main">
+                      <div className="yolo-agent-name-row">
+                        <div className="yolo-agent-name">{agent.name}</div>
+                        {agent.disabled && (
+                          <span className="yolo-agent-card-badge yolo-agent-card-badge--disabled">
+                            {t('settings.agent.disabledBadge', 'disabled')}
+                          </span>
+                        )}
+                      </div>
+                      <div className="yolo-agent-desc">
+                        <span className="yolo-agent-card-badge yolo-agent-card-badge--template">
+                          {t('settings.agent.templateBadge', 'Template')}
+                        </span>
+                        <span className="yolo-agent-template-name">
+                          {template?.name ?? agent.templateId}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <DropdownMenu.Root>
+                    <DropdownMenu.Trigger
+                      className="yolo-agent-card-menu-trigger"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <span
+                        className="yolo-agent-card-menu-trigger-dots"
+                        aria-hidden="true"
+                      >
+                        ...
+                      </span>
+                    </DropdownMenu.Trigger>
+                    <DropdownMenu.Portal container={portalContainer}>
+                      <DropdownMenu.Content
+                        className="yolo-agent-card-menu-popover"
+                        align="end"
+                        sideOffset={8}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <ul className="yolo-agent-card-menu-list">
+                          <DropdownMenu.Item
+                            asChild
+                            onSelect={() => handleDeleteWorkspaceAgent(agent)}
+                          >
+                            <li className="yolo-agent-card-menu-item yolo-agent-card-menu-danger">
+                              <span className="yolo-agent-card-menu-icon">
+                                <Trash2 size={16} />
+                              </span>
+                              {t('common.delete')}
+                            </li>
+                          </DropdownMenu.Item>
+                        </ul>
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Portal>
+                  </DropdownMenu.Root>
+                </div>
+                <div className="yolo-agent-meta-row">
+                  {template ? (
+                    <>
+                      <span className="yolo-agent-meta-item">
+                        <Cpu size={12} />
+                        {getAssistantModelDisplayLabel(
+                          template.modelId,
+                          t(
+                            'settings.agent.followDefaultModel',
+                            'Follow default model',
+                          ),
+                        )}
+                      </span>
+                      <span className="yolo-agent-meta-item">
+                        <Wrench size={12} />
+                        {t('settings.agent.toolsCount', '{count} tools').replace(
+                          '{count}',
+                          String(templateToolCount),
+                        )}
+                      </span>
+                      <span className="yolo-agent-meta-item">
+                        <BookOpen size={12} />
+                        {t('settings.agent.skillsCount', '{count} skills').replace(
+                          '{count}',
+                          String(templateSkillCount),
+                        )}
+                      </span>
+                    </>
+                  ) : null}
+                  <span className="yolo-agent-meta-item">
+                    <Folder size={12} />
+                    {agent.workspacePolicy.workspaceRoot}
+                  </span>
+                </div>
+              </article>
+            )
+          })}
+          <article
+            className="yolo-agent-create-card"
+            role="button"
+            tabIndex={0}
+            onClick={handleNewWorkspaceAgent}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                handleNewWorkspaceAgent()
+              }
+            }}
+          >
+            <div className="yolo-agent-create-card-icon">
+              <Plus size={28} />
+            </div>
+            <div className="yolo-agent-create-card-text">
+              {t('settings.agent.newWorkspaceAgent', 'New workspace agent')}
+            </div>
+          </article>
+        </div>
       </section>
 
       <section className="yolo-agent-block">

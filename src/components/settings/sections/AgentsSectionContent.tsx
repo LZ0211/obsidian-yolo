@@ -53,12 +53,13 @@ import {
   filterApprovalOptionsForWorkspaceAgent,
   resolveWorkspaceAgentAssistant,
 } from '../../../core/agent/workspaceAgentResolver'
-import { getJsSandboxSettings } from '../../../core/mcp/jsSandboxSettings'
 import {
+  getInjectedToolApprovalPolicy,
   getInjectedToolGroup,
   getInjectedToolGroupKey,
 } from '../../../core/mcp/injectedToolGroup'
 import { YOLO_BRIDGE_TOOL_SERVER_NAME } from '../../../core/mcp/injectionBridge'
+import { getJsSandboxSettings } from '../../../core/mcp/jsSandboxSettings'
 import { getLocalFileToolServerName } from '../../../core/mcp/localFileTools'
 import { getToolName, parseToolName } from '../../../core/mcp/tool-name-utils'
 import { getYoloSkillsDir } from '../../../core/paths/yoloPaths'
@@ -151,6 +152,7 @@ type AgentToolView = {
    * hardcoded two-option literal.
    */
   capabilityId?: BuiltinCapabilityId
+  requiresApproval?: boolean
 }
 
 type AgentToolGroupView = {
@@ -159,6 +161,7 @@ type AgentToolGroupView = {
   title: string
   tools: AgentToolView[]
   isBuiltin: boolean
+  hasHardApproval: boolean
 }
 
 type SkillRowView = LiteSkillEntry & {
@@ -1281,6 +1284,9 @@ export function AgentsSectionContent({
         serverName === YOLO_BRIDGE_TOOL_SERVER_NAME
           ? getInjectedToolGroup(toolName)
           : null
+      const requiresApproval =
+        serverName === YOLO_BRIDGE_TOOL_SERVER_NAME &&
+        getInjectedToolApprovalPolicy(toolName) === 'always-require-user'
       const key = injectedGroup
         ? getInjectedToolGroupKey(injectedGroup.name)
         : serverName
@@ -1290,12 +1296,15 @@ export function AgentsSectionContent({
         tools: [],
         isBuiltin: false,
         key,
+        hasHardApproval: false,
       }
+      group.hasHardApproval ||= requiresApproval
       group.tools.push({
         fullName: tool.name,
         toggleTargets: [tool.name],
         displayName: toolName,
         description: tool.description || t('common.none', 'None'),
+        requiresApproval,
       })
       groups.set(key, group)
     })
@@ -1324,6 +1333,7 @@ export function AgentsSectionContent({
           title,
           tools: [],
           isBuiltin: true,
+          hasHardApproval: false,
         }
         group.tools.push({
           // Only used as a React list key — any present member's own FQN is
@@ -2152,8 +2162,15 @@ export function AgentsSectionContent({
                       : disclosureModeLabel(disclosureSelectionValue)
                   const showServerApproval = !group.isBuiltin
                   const serverApprovalMode: AssistantToolApprovalMode =
-                    draftAgent.toolServerPreferences?.[group.serverName]
-                      ?.approvalMode ?? 'require_approval'
+                    group.hasHardApproval
+                      ? 'require_approval'
+                      : (draftAgent.toolServerPreferences?.[group.serverName]
+                          ?.approvalMode ?? 'require_approval')
+                  const serverApprovalOptions = group.hasHardApproval
+                    ? toolApprovalOptions.filter(
+                        (option) => option.value === 'require_approval',
+                      )
+                    : toolApprovalOptions
                   const groupFullyDisabled =
                     !group.isBuiltin &&
                     group.tools.length > 0 &&
@@ -2321,7 +2338,7 @@ export function AgentsSectionContent({
                                       }
                                     }}
                                   >
-                                    {toolApprovalOptions.map((option) => (
+                                    {serverApprovalOptions.map((option) => (
                                       <DropdownMenu.RadioItem
                                         key={option.value}
                                         className="yolo-simple-select__item"

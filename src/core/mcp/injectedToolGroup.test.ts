@@ -1,15 +1,16 @@
 import {
+  getInjectedToolApprovalPolicy,
   getInjectedToolGroup,
   getInjectedToolGroupKey,
   isLocalToolConfigurableInEditor,
 } from './injectedToolGroup'
 import {
+  YOLO_BRIDGE_TOOL_SERVER_NAME,
   createInjectionBridgeToolServer,
   getInjectedBridgeTools,
   getInstalledInjectionBridge,
   installYoloInjectionBridge,
   uninstallYoloInjectionBridge,
-  YOLO_BRIDGE_TOOL_SERVER_NAME,
 } from './injectionBridge'
 import { getToolName, parseToolName } from './tool-name-utils'
 
@@ -21,13 +22,18 @@ describe('injected tool grouping in the agent settings render chain', () => {
     getInstalledInjectionBridge()?.unregisterBySource(TEST_SOURCE)
   })
 
-  const registerTestTool = (name: string, groupName?: string) => {
+  const registerTestTool = (
+    name: string,
+    groupName?: string,
+    requiresApproval = false,
+  ) => {
     const uninstall = installYoloInjectionBridge()
     getInstalledInjectionBridge()?.registerTool(
       {
         name,
         description: `${name} description`,
         inputSchema: { type: 'object', properties: {} },
+        ...(requiresApproval ? { requiresApproval: true } : {}),
       },
       async () => 'ok',
       'test',
@@ -67,6 +73,17 @@ describe('injected tool grouping in the agent settings render chain', () => {
       .listTools()
       .map((tool) => tool.name)
     expect(names).toContain('browser_tools_open_url')
+  })
+
+  it('exposes the injector-declared hard approval policy', () => {
+    registerTestTool('plugin_delete', 'Plugin tools', true)
+    registerTestTool('plugin_read', 'Plugin tools')
+
+    expect(getInjectedToolApprovalPolicy('plugin_delete')).toBe(
+      'always-require-user',
+    )
+    expect(getInjectedToolApprovalPolicy('plugin_read')).toBeUndefined()
+    expect(getInjectedToolApprovalPolicy('unknown')).toBeUndefined()
   })
 
   it('keeps builtin tools configurable and bot-only builtins filtered', () => {
