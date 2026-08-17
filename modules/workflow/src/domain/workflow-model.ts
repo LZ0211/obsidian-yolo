@@ -61,6 +61,7 @@ export type WorkflowIssueCode =
   | 'invalidGateArity'
   | 'missingInput'
   | 'missingOutput'
+  | 'missingStep'
   | 'unreachable'
   | 'cycle'
 
