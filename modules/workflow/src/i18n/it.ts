@@ -7,6 +7,14 @@ export const it = {
   },
   mode: {
     description: 'Progetta e gestisci flussi di agenti basati su documenti.',
+    persona:
+      'Leggi il flusso richiesto con workflow_read prima di discuterlo o modificarlo. Usa workflow_create solo quando l’utente chiede esplicitamente di creare un flusso. La modifica dei flussi resta basata sui file in Workflow Studio; l’esecuzione avviene nella Session corrente.',
+  },
+  chatTool: {
+    readDescription:
+      'Legge un flusso di lavoro basato su documenti e i file dei passaggi dichiarati.',
+    createDescription:
+      'Crea un nuovo flusso di lavoro basato su documenti dopo una richiesta esplicita dell’utente.',
   },
   studio: {
     title: 'Studio del flusso di lavoro',
@@ -126,5 +134,8 @@ export const it = {
     invalidDocument: 'Il documento del flusso non è valido.',
     importFailed: 'L’importazione del flusso non è valida.',
     applyFailed: 'Non è stato possibile applicare il flusso.',
+    invalidInput: 'L’input dello strumento del flusso non è valido.',
+    notFound: 'Il flusso di lavoro richiesto non è stato trovato.',
+    targetExists: 'La destinazione del flusso di lavoro esiste già.',
   },
 } as const satisfies WorkflowCopy

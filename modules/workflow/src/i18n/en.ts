@@ -2,7 +2,17 @@ import type { WorkflowCopy } from './index'
 
 export const en = {
   module: { name: 'Workflow Studio', open: 'Open Workflow Studio' },
-  mode: { description: 'Design and maintain document-driven agent workflows.' },
+  mode: {
+    description: 'Design and maintain document-driven agent workflows.',
+    persona:
+      'Read the requested workflow with workflow_read before discussing or changing it. Use workflow_create only when the user explicitly asks to create a workflow. Workflow editing remains file-based in Workflow Studio; execution happens in the current Session.',
+  },
+  chatTool: {
+    readDescription:
+      'Read a document-driven workflow and its declared step files.',
+    createDescription:
+      'Create a new document-driven workflow after the user explicitly asks for it.',
+  },
   studio: {
     title: 'Workflow Studio',
     editorOnly: 'Edit only',
@@ -120,5 +130,8 @@ export const en = {
     invalidDocument: 'The workflow document is invalid.',
     importFailed: 'The workflow import is invalid.',
     applyFailed: 'The workflow could not be applied.',
+    invalidInput: 'The workflow tool input is invalid.',
+    notFound: 'The requested workflow was not found.',
+    targetExists: 'The workflow target already exists.',
   },
 } as const satisfies WorkflowCopy

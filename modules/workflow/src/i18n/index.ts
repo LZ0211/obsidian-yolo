@@ -1,7 +1,11 @@
 export type WorkflowSeverity = 'error' | 'warning' | 'info'
 export type WorkflowCopy = Readonly<{
   module: Readonly<{ name: string; open: string }>
-  mode: Readonly<{ description: string }>
+  mode: Readonly<{ description: string; persona: string }>
+  chatTool: Readonly<{
+    readDescription: string
+    createDescription: string
+  }>
   studio: Readonly<{
     title: string
     editorOnly: string
@@ -117,7 +121,10 @@ export type WorkflowCopy = Readonly<{
       | 'missingWorkflow'
       | 'invalidDocument'
       | 'importFailed'
-      | 'applyFailed',
+      | 'applyFailed'
+      | 'invalidInput'
+      | 'notFound'
+      | 'targetExists',
       string
     >
   >
