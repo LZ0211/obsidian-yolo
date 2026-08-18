@@ -21,6 +21,7 @@ export type WorkflowCopy = Readonly<{
     retry: string
     saving: string
     deleteConfirm: string
+    deleteFailed: string
     discardConfirm: string
     discardAction: string
   }>
@@ -73,7 +74,8 @@ export type WorkflowCopy = Readonly<{
       | 'source'
       | 'target'
       | 'markdownContent'
-      | 'deleteNode',
+      | 'deleteNode'
+      | 'deleteEdge',
       string
     >
   >
@@ -132,6 +134,9 @@ export type WorkflowCopy = Readonly<{
       | 'optimizeDocument'
       | 'optimizeWorkflow'
       | 'proposalEmpty'
+      | 'instructionPlaceholder'
+      | 'noModel'
+      | 'running'
       | 'changes',
       string
     >

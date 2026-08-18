@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 
 import { createWorkflowEditorModel } from './ui/workflow-editor-model'
 import { WorkflowStudio } from './ui/workflow-studio'
@@ -31,6 +31,7 @@ yolo.registerModule({
     }
     const tools = createWorkflowChatTools(repository, getCopy)
     const openView = (): Promise<void> => host.workspace.openView()
+    const readStyle = (): Promise<string> => host.assets.readText('style.css')
 
     host.workspace.registerView({
       type: VIEW_TYPE,
@@ -42,6 +43,10 @@ yolo.registerModule({
           getCopy={getCopy}
           getLocaleSnapshot={host.i18n.getSnapshot}
           subscribeLocale={host.i18n.subscribe}
+          agent={host.agent}
+          getModelSnapshot={host.settings.getModelSnapshot}
+          subscribeModels={host.settings.subscribeModels}
+          readStyle={readStyle}
           openFile={async (path) => {
             await host.ui.openFileAt({ path })
           }}
@@ -75,7 +80,7 @@ yolo.registerModule({
       description: createWorkflowLocalizedText('mode.description'),
       icon: 'workflow',
       personaPrompt: getCopy().mode.persona,
-      capability: 'none',
+      capability: 'vault-write',
       skills: ['skills/workflow/SKILL.md'],
       tools: [tools.read, tools.create],
     })
@@ -87,6 +92,10 @@ function WorkflowModuleView({
   getCopy,
   getLocaleSnapshot,
   subscribeLocale,
+  agent,
+  getModelSnapshot,
+  subscribeModels,
+  readStyle,
   openFile,
   notice,
   confirm,
@@ -95,6 +104,10 @@ function WorkflowModuleView({
   getCopy(): ReturnType<typeof createWorkflowCopy>
   getLocaleSnapshot(): Readonly<{ locale: string }>
   subscribeLocale(listener: () => void): () => void
+  agent: YoloModuleHostApiV1['agent']
+  getModelSnapshot(): YoloModuleHostModelSnapshotV1
+  subscribeModels(listener: () => void): () => void
+  readStyle(): Promise<string>
   openFile(path: string): void | Promise<void>
   notice(message: string): void
   confirm(
@@ -106,15 +119,39 @@ function WorkflowModuleView({
     }>,
   ): Promise<boolean>
 }>) {
+  const [styleText, setStyleText] = useState('')
   useSyncExternalStore(subscribeLocale, getLocaleSnapshot, getLocaleSnapshot)
+  const models = useSyncExternalStore(
+    subscribeModels,
+    getModelSnapshot,
+    getModelSnapshot,
+  )
+  useEffect(() => {
+    let active = true
+    void readStyle()
+      .then((css) => {
+        if (active) setStyleText(css)
+      })
+      .catch((error: unknown) => {
+        if (active) console.error('Workflow module style failed to load', error)
+      })
+    return () => {
+      active = false
+    }
+  }, [readStyle])
   return (
     <div className="yolo-workflow-module-root">
+      {styleText ? (
+        <style data-yolo-workflow-style="true">{styleText}</style>
+      ) : null}
       <WorkflowStudio
         model={editor}
         copy={getCopy()}
         openFile={openFile}
         notice={notice}
         confirm={confirm}
+        agent={agent}
+        models={models}
       />
     </div>
   )

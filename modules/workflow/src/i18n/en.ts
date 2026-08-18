@@ -28,6 +28,7 @@ export const en = {
     retry: 'Retry',
     saving: 'Saving…',
     deleteConfirm: 'Delete this workflow?',
+    deleteFailed: 'The workflow could not be deleted.',
     discardConfirm: 'Discard unsaved changes?',
     discardAction: 'Discard',
   },
@@ -74,6 +75,7 @@ export const en = {
     target: 'Target',
     markdownContent: 'Markdown content',
     deleteNode: 'Delete node',
+    deleteEdge: 'Delete connection',
   },
   nodeKind: {
     input: 'Input',
@@ -137,6 +139,9 @@ export const en = {
     optimizeDocument: 'Optimize doc',
     optimizeWorkflow: 'Optimize workflow',
     proposalEmpty: 'No proposal yet. Choose an assistant action.',
+    instructionPlaceholder: 'Optional guidance for this review',
+    noModel: 'No assistant model is configured.',
+    running: 'Reviewing the workflow…',
     changes: 'changes',
   },
   document: {

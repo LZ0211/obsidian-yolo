@@ -131,11 +131,14 @@ export function createWorkflowEditorModel(
     publish({ workflows: repository.list() })
   }
 
-  const dirtyFor = (topology: WorkflowTopology | null): boolean => {
+  const dirtyFor = (
+    topology: WorkflowTopology | null,
+    bundle: WorkflowBundle | null = snapshot.bundle,
+  ): boolean => {
     const topologyDirty =
       topology !== null &&
       (savedTopology === null || !sameTopology(savedTopology, topology))
-    const filesDirty = snapshot.bundle?.files.some(
+    const filesDirty = bundle?.files.some(
       (file) => savedFiles.get(file.nodeId)?.content !== file.snapshot.content,
     )
     return Boolean(topologyDirty || filesDirty)
@@ -151,13 +154,17 @@ export function createWorkflowEditorModel(
   ): void => {
     const next = cloneTopology(topology)
     if (!next) return
+    const nextBundle = snapshot.bundle
+      ? syncBundleTopology(snapshot.bundle, next, getCopy())
+      : null
     const selectedNodeId =
       changes.selectedNodeId === undefined
         ? snapshot.selectedNodeId
         : changes.selectedNodeId
     publish({
+      bundle: nextBundle,
       topology: next,
-      dirty: changes.dirty ?? dirtyFor(next),
+      dirty: changes.dirty ?? dirtyFor(next, nextBundle),
       status:
         changes.status ??
         (snapshot.status === 'conflict' ? 'conflict' : 'ready'),
@@ -167,7 +174,7 @@ export function createWorkflowEditorModel(
           : null,
       canUndo: history.past.length > 0,
       canRedo: history.future.length > 0,
-      issues: collectIssues(snapshot.bundle?.document ?? null, next),
+      issues: collectIssues(nextBundle?.document ?? null, next),
       error: undefined,
     })
   }
@@ -522,6 +529,10 @@ export function createWorkflowEditorModel(
     const version = changeVersion
     const basePath = snapshot.path
     const content = file.snapshot.content
+    const savedFileTopology =
+      nodeId === 'workflow'
+        ? topologyFor(parseWorkflowDocument(content, getCopy()))
+        : null
     saving = true
     let result: Awaited<ReturnType<WorkflowRepository['replaceFile']>>
     try {
@@ -543,6 +554,7 @@ export function createWorkflowEditorModel(
       return { ok: false, reason: 'conflict' }
     }
     savedFiles.set(nodeId, result.snapshot)
+    if (nodeId === 'workflow') savedTopology = savedFileTopology
     const changedDuringSave = version !== changeVersion
     if (changedDuringSave) {
       publish({ dirty: dirtyFor(snapshot.topology), error: undefined })
@@ -599,6 +611,7 @@ export function createWorkflowEditorModel(
       nodes: [...snapshot.topology.nodes, node],
     }
     if (!updateTopology(nextTopology)) return false
+    savedFiles.set(node.id, result.snapshot)
     const prefix = snapshot.path.slice(0, -'WORKFLOW.md'.length)
     const documentContent = updateWorkflowManagedBlocks(
       snapshot.bundle.document.content,
@@ -767,6 +780,30 @@ export function createWorkflowEditorModel(
       unsubscribeRepository()
       listeners.clear()
     },
+  })
+}
+
+function syncBundleTopology(
+  bundle: WorkflowBundle,
+  topology: WorkflowTopology,
+  copy: WorkflowCopy,
+): WorkflowBundle {
+  const content = updateWorkflowManagedBlocks(
+    bundle.document.content,
+    topology,
+    copy,
+  )
+  const document = parseWorkflowDocument(content, copy)
+  return Object.freeze({
+    ...bundle,
+    document,
+    files: Object.freeze(
+      bundle.files.map((file) =>
+        file.nodeId === 'workflow'
+          ? { ...file, snapshot: { ...file.snapshot, content } }
+          : file,
+      ),
+    ),
   })
 }
 

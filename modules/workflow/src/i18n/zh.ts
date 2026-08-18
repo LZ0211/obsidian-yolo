@@ -29,6 +29,7 @@ export const zh = {
     retry: '重试',
     saving: '正在保存…',
     deleteConfirm: '删除当前工作流？',
+    deleteFailed: '无法删除工作流。',
     discardConfirm: '放弃未保存的修改？',
     discardAction: '放弃',
   },
@@ -75,6 +76,7 @@ export const zh = {
     target: '终点',
     markdownContent: 'Markdown 内容',
     deleteNode: '删除节点',
+    deleteEdge: '删除连接',
   },
   nodeKind: {
     input: '输入',
@@ -142,6 +144,9 @@ export const zh = {
     optimizeDocument: '优化文档',
     optimizeWorkflow: '优化工作流',
     proposalEmpty: '还没有提案，请选择一个助手操作。',
+    instructionPlaceholder: '可选：告诉助手本次审查重点',
+    noModel: '尚未配置助手模型。',
+    running: '正在审查工作流…',
     changes: '项变更',
   },
   document: {

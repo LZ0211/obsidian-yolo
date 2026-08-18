@@ -62,7 +62,6 @@ export function createWorkflowChatTools(
       name: 'workflow_create',
       description: initialCopy.chatTool.createDescription,
       inputSchema: CREATE_INPUT_SCHEMA,
-      requiresApproval: true,
       handler: (input) => createWorkflow(repository, getCopy(), input),
     },
   })

@@ -31,6 +31,7 @@ export const it = {
     retry: 'Riprova',
     saving: 'Salvataggio…',
     deleteConfirm: 'Eliminare questo flusso?',
+    deleteFailed: 'Non è stato possibile eliminare il flusso.',
     discardConfirm: 'Scartare le modifiche non salvate?',
     discardAction: 'Scarta',
   },
@@ -77,6 +78,7 @@ export const it = {
     target: 'Destinazione',
     markdownContent: 'Contenuto Markdown',
     deleteNode: 'Elimina nodo',
+    deleteEdge: 'Elimina connessione',
   },
   nodeKind: {
     input: 'Input',
@@ -141,6 +143,9 @@ export const it = {
     optimizeDocument: 'Ottimizza doc',
     optimizeWorkflow: 'Ottimizza flusso',
     proposalEmpty: 'Nessuna proposta. Scegli un’azione dell’assistente.',
+    instructionPlaceholder: 'Indicazioni opzionali per questa revisione',
+    noModel: 'Nessun modello assistente configurato.',
+    running: 'Revisione del flusso in corso…',
     changes: 'modifiche',
   },
   document: {

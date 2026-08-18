@@ -47,9 +47,8 @@ import {
   type WorkflowNodeKind,
   type WorkflowTopology,
   connectionProblem,
-  layoutWorkflowNodes,
-  topologicalWorkflowOrder,
 } from '../domain/workflow-model'
+import { runWorkflowReview } from '../assistant/workflow-review'
 import {
   exportDshFlowJson,
   parseDshFlowJson,
@@ -76,6 +75,8 @@ export type WorkflowStudioProps = Readonly<{
       cancelText?: string
     }>,
   ): Promise<boolean>
+  agent: YoloModuleHostApiV1['agent']
+  models: YoloModuleHostModelSnapshotV1
 }>
 
 type PendingConnection = Readonly<{
@@ -93,6 +94,7 @@ type AssistantAction = 'validation' | 'document' | 'workflow'
 type AssistantProposal = Readonly<{
   action: Exclude<AssistantAction, 'validation'>
   baseContent: string
+  baseTopology: WorkflowTopology
   content: string
 }>
 
@@ -121,6 +123,8 @@ export function WorkflowStudio({
   openFile,
   notice,
   confirm,
+  agent,
+  models,
 }: WorkflowStudioProps) {
   const snapshot = useSyncExternalStore(
     model.subscribe,
@@ -151,7 +155,20 @@ export function WorkflowStudio({
     useState<AssistantAction>('validation')
   const [assistantProposal, setAssistantProposal] =
     useState<AssistantProposal | null>(null)
+  const [assistantInstruction, setAssistantInstruction] = useState('')
+  const [assistantModelId, setAssistantModelId] = useState(() =>
+    defaultAssistantModelId(models),
+  )
+  const [assistantRunning, setAssistantRunning] = useState(false)
+  const assistantAbortRef = useRef<AbortController | null>(null)
   const [saving, setSaving] = useState(false)
+
+  const cancelAssistant = useCallback(() => {
+    const controller = assistantAbortRef.current
+    assistantAbortRef.current = null
+    controller?.abort()
+    setAssistantRunning(false)
+  }, [])
 
   useEffect(() => {
     void model.load().catch((error: unknown) => {
@@ -182,7 +199,25 @@ export function WorkflowStudio({
     setMarkdownTarget('workflow')
     setAssistantAction('validation')
     setAssistantProposal(null)
-  }, [snapshot.path, snapshot.status])
+    setAssistantInstruction('')
+    cancelAssistant()
+  }, [cancelAssistant, snapshot.path, snapshot.status])
+
+  useEffect(() => {
+    setAssistantModelId((current) =>
+      models.models.some((model) => model.id === current)
+        ? current
+        : defaultAssistantModelId(models),
+    )
+  }, [models])
+
+  useEffect(
+    () => () => {
+      assistantAbortRef.current?.abort()
+      assistantAbortRef.current = null
+    },
+    [],
+  )
 
   const selectedNode = useMemo(
     () =>
@@ -200,11 +235,14 @@ export function WorkflowStudio({
 
   const showNotice = useCallback(
     (message: string) => {
-      setConnectionMessage(message)
       notice(message)
     },
     [notice],
   )
+
+  const showConnectionMessage = useCallback((message: string) => {
+    setConnectionMessage(message)
+  }, [])
 
   const retryWorkflow = useCallback(() => {
     void model
@@ -289,7 +327,7 @@ export function WorkflowStudio({
       if (!topology) return
       const problem = connectionProblem(topology, candidate)
       if (problem) {
-        setConnectionMessage(connectionMessageFor(problem.code, copy))
+        showConnectionMessage(connectionMessageFor(problem.code, copy))
         if (problem.code === 'branchRequired' && problem.available) {
           setPendingConnection({ candidate, available: problem.available })
         }
@@ -310,7 +348,7 @@ export function WorkflowStudio({
         : [...topology.edges, edge]
       updateTopology({ ...topology, edges })
     },
-    [copy, snapshot.topology, updateTopology],
+    [copy, showConnectionMessage, snapshot.topology, updateTopology],
   )
 
   const chooseConnectionBranch = useCallback(
@@ -321,13 +359,19 @@ export function WorkflowStudio({
       if (!topology) return
       const problem = connectionProblem(topology, candidate)
       if (problem) {
-        setConnectionMessage(connectionMessageFor(problem.code, copy))
+        showConnectionMessage(connectionMessageFor(problem.code, copy))
         return
       }
       addConnection(candidate)
       setPendingConnection(null)
     },
-    [addConnection, copy, pendingConnection, snapshot.topology],
+    [
+      addConnection,
+      copy,
+      pendingConnection,
+      showConnectionMessage,
+      snapshot.topology,
+    ],
   )
 
   const focusIssue = useCallback(
@@ -467,6 +511,10 @@ export function WorkflowStudio({
           if (result.reason === 'conflict') showNotice(copy.state.conflict)
           else if (result.reason === 'invalid')
             showNotice(copy.chatToolError.applyFailed)
+        } else {
+          const current = model.getSnapshot()
+          if (current.status === 'error' && current.error)
+            showNotice(current.error)
         }
       })
       .catch((error: unknown) =>
@@ -497,7 +545,7 @@ export function WorkflowStudio({
         }))
       )
         return
-      await model.trashCurrent()
+      if (!(await model.trashCurrent())) showNotice(copy.state.deleteFailed)
     })().catch((error: unknown) =>
       showNotice(error instanceof Error ? error.message : String(error)),
     )
@@ -508,8 +556,10 @@ export function WorkflowStudio({
       void model
         .removeNode(nodeId)
         .then((removed) => {
-          if (removed) selectNode(null)
-          else showNotice(copy.chatToolError.applyFailed)
+          if (removed) {
+            selectNode(null)
+            setMarkdownTarget('workflow')
+          } else showNotice(copy.chatToolError.applyFailed)
         })
         .catch((error: unknown) =>
           showNotice(error instanceof Error ? error.message : String(error)),
@@ -544,41 +594,90 @@ export function WorkflowStudio({
 
   const runAssistant = useCallback(
     (action: AssistantAction) => {
+      cancelAssistant()
       setAssistantAction(action)
+      setAssistantProposal(null)
       if (action === 'validation') {
-        setAssistantProposal(null)
         return
       }
-      if (!snapshot.bundle || !snapshot.topology) return
-      if (action === 'document') {
-        setAssistantProposal({
-          action,
-          baseContent: snapshot.bundle.document.content,
-          content: documentProposal(
-            snapshot.bundle.document.content,
-            snapshot.topology,
-          ),
-        })
+      const bundle = snapshot.bundle
+      const topology = snapshot.topology
+      if (!bundle || !topology) return
+      const availableModel = models.models.find(
+        (model) => model.id === assistantModelId,
+      )
+      if (!availableModel) {
+        showNotice(copy.assistant.noModel)
         return
       }
-      const topology = layoutWorkflowNodes(snapshot.topology)
-      setAssistantProposal({
-        action,
-        baseContent: snapshot.bundle.document.content,
-        content: updateWorkflowManagedBlocks(
-          snapshot.bundle.document.content,
-          topology,
-          copy,
-        ),
+      const controller = new AbortController()
+      const baseContent = bundle.document.content
+      const baseTopology = topology
+      assistantAbortRef.current = controller
+      setAssistantRunning(true)
+      void runWorkflowReview({
+        agent,
+        bundle,
+        copy,
+        modelId: availableModel.id,
+        target: action,
+        instruction: assistantInstruction,
+        signal: controller.signal,
       })
+        .then((result) => {
+          if (assistantAbortRef.current !== controller) return
+          if (!result.ok) {
+            if (result.reason !== 'aborted') showNotice(result.message)
+            return
+          }
+          const current = model.getSnapshot()
+          if (
+            current.path !== bundle.path ||
+            current.bundle?.document.content !== baseContent ||
+            !sameTopology(current.topology, baseTopology)
+          ) {
+            showNotice(copy.assistant.stale)
+            return
+          }
+          setAssistantProposal({
+            action,
+            baseContent,
+            baseTopology,
+            content: result.content,
+          })
+        })
+        .catch((error: unknown) => {
+          if (assistantAbortRef.current !== controller) return
+          if (!controller.signal.aborted)
+            showNotice(error instanceof Error ? error.message : String(error))
+        })
+        .finally(() => {
+          if (assistantAbortRef.current !== controller) return
+          assistantAbortRef.current = null
+          setAssistantRunning(false)
+        })
     },
-    [copy, snapshot.bundle, snapshot.topology],
+    [
+      agent,
+      assistantInstruction,
+      assistantModelId,
+      cancelAssistant,
+      copy,
+      model,
+      models,
+      showNotice,
+      snapshot.bundle,
+      snapshot.topology,
+    ],
   )
 
   const acceptAssistantProposal = useCallback(() => {
     if (!assistantProposal) return
     if (!snapshot.bundle) return
-    if (snapshot.bundle.document.content !== assistantProposal.baseContent) {
+    if (
+      snapshot.bundle.document.content !== assistantProposal.baseContent ||
+      !sameTopology(snapshot.topology, assistantProposal.baseTopology)
+    ) {
       setAssistantProposal(null)
       showNotice(copy.assistant.stale)
       return
@@ -596,6 +695,7 @@ export function WorkflowStudio({
     model,
     showNotice,
     snapshot.bundle,
+    snapshot.topology,
   ])
 
   const saveFile = useCallback(
@@ -701,7 +801,10 @@ export function WorkflowStudio({
 
   const statusMessage = statusText(snapshot, copy)
   return (
-    <div ref={rootRef} className="yolo-workflow-studio">
+    <div
+      ref={rootRef}
+      className={`yolo-workflow-studio${panels.rail ? '' : ' yolo-workflow-studio--rail-closed'}${panels.inspector ? '' : ' yolo-workflow-studio--inspector-closed'}`}
+    >
       <header className="yolo-workflow-toolbar">
         <div className="yolo-workflow-toolbar__identity">
           <span className="yolo-workflow-toolbar__mark">
@@ -721,9 +824,11 @@ export function WorkflowStudio({
           <span className={snapshot.dirty ? 'is-dirty' : undefined}>
             {saving
               ? copy.state.saving
-              : snapshot.dirty
-                ? copy.toolbar.save
-                : statusMessage}
+              : snapshot.status === 'conflict' || snapshot.status === 'error'
+                ? statusMessage
+                : snapshot.dirty
+                  ? copy.toolbar.save
+                  : statusMessage}
           </span>
           <div className="yolo-workflow-toolbar__panel-toggle">
             <button
@@ -732,7 +837,11 @@ export function WorkflowStudio({
               aria-label={copy.rail.workflows}
               title={copy.rail.workflows}
               onClick={() =>
-                setPanels((value) => ({ ...value, rail: !value.rail }))
+                setPanels((value) => {
+                  if (!compactLayout || value.rail)
+                    return { ...value, rail: !value.rail }
+                  return { rail: true, inspector: false }
+                })
               }
             >
               <PanelLeft size={15} />
@@ -745,10 +854,11 @@ export function WorkflowStudio({
               aria-label={copy.inspector.title}
               title={copy.inspector.title}
               onClick={() =>
-                setPanels((value) => ({
-                  ...value,
-                  inspector: !value.inspector,
-                }))
+                setPanels((value) => {
+                  if (!compactLayout || value.inspector)
+                    return { ...value, inspector: !value.inspector }
+                  return { rail: false, inspector: true }
+                })
               }
             >
               <PanelRight size={15} />
@@ -993,7 +1103,14 @@ export function WorkflowStudio({
         copy={copy}
         action={assistantAction}
         proposal={assistantProposal}
+        modelId={assistantModelId}
+        models={models}
+        instruction={assistantInstruction}
+        running={assistantRunning}
         onAction={runAssistant}
+        onModelChange={setAssistantModelId}
+        onInstructionChange={setAssistantInstruction}
+        onCancel={cancelAssistant}
         onFocus={focusIssue}
         onAccept={acceptAssistantProposal}
         onReject={() => setAssistantProposal(null)}
@@ -1247,7 +1364,7 @@ function WorkflowInspector({
             </InspectorField>
             <button type="button" onClick={onDeleteEdge}>
               <Trash2 size={13} />
-              {copy.toolbar.delete}
+              {copy.inspector.deleteEdge}
             </button>
           </div>
         ) : null}
@@ -1453,7 +1570,14 @@ function WorkflowAssistant({
   copy,
   action,
   proposal,
+  modelId,
+  models,
+  instruction,
+  running,
   onAction,
+  onModelChange,
+  onInstructionChange,
+  onCancel,
   onFocus,
   onAccept,
   onReject,
@@ -1462,7 +1586,14 @@ function WorkflowAssistant({
   copy: WorkflowCopy
   action: AssistantAction
   proposal: AssistantProposal | null
+  modelId: string
+  models: YoloModuleHostModelSnapshotV1
+  instruction: string
+  running: boolean
   onAction(action: AssistantAction): void
+  onModelChange(modelId: string): void
+  onInstructionChange(instruction: string): void
+  onCancel(): void
   onFocus(nodeId?: string, edgeId?: string): void
   onAccept(): void
   onReject(): void
@@ -1479,11 +1610,14 @@ function WorkflowAssistant({
             <small>{copy.assistant.manual}</small>
           </div>
         </div>
-        <span className="yolo-workflow-assistant__target">WORKFLOW.md</span>
+        <span className="yolo-workflow-assistant__target">
+          {snapshot.bundle?.path ?? 'WORKFLOW.md'}
+        </span>
         <div className="yolo-workflow-assistant__actions">
           <button
             type="button"
             className={action === 'validation' ? 'is-active' : undefined}
+            disabled={running}
             onClick={() => onAction('validation')}
           >
             {copy.assistant.validate}
@@ -1491,7 +1625,7 @@ function WorkflowAssistant({
           <button
             type="button"
             className={action === 'document' ? 'is-active' : undefined}
-            disabled={!snapshot.bundle}
+            disabled={running || !snapshot.bundle}
             onClick={() => onAction('document')}
           >
             {copy.assistant.optimizeDocument}
@@ -1499,13 +1633,56 @@ function WorkflowAssistant({
           <button
             type="button"
             className={action === 'workflow' ? 'is-active' : undefined}
-            disabled={!snapshot.topology}
+            disabled={running || !snapshot.topology}
             onClick={() => onAction('workflow')}
           >
             {copy.assistant.optimizeWorkflow}
           </button>
         </div>
       </header>
+      <div className="yolo-workflow-assistant__controls">
+        <label className="yolo-workflow-assistant__field yolo-workflow-assistant__model-field">
+          <span className="yolo-workflow-eyebrow">{copy.assistant.model}</span>
+          <select
+            aria-label={copy.assistant.model}
+            value={modelId}
+            disabled={running || models.models.length === 0}
+            onChange={(event) => onModelChange(event.currentTarget.value)}
+          >
+            {models.models.length === 0 ? (
+              <option value="">{copy.assistant.noModel}</option>
+            ) : (
+              models.models.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.name}
+                </option>
+              ))
+            )}
+          </select>
+        </label>
+        <label className="yolo-workflow-assistant__field yolo-workflow-assistant__instruction-field">
+          <span className="yolo-workflow-eyebrow">
+            {copy.assistant.instruction}
+          </span>
+          <input
+            aria-label={copy.assistant.instruction}
+            value={instruction}
+            disabled={running}
+            placeholder={copy.assistant.instructionPlaceholder}
+            onChange={(event) => onInstructionChange(event.currentTarget.value)}
+          />
+        </label>
+        {running ? (
+          <button
+            type="button"
+            className="yolo-workflow-assistant__cancel"
+            onClick={onCancel}
+          >
+            <CircleStop size={13} />
+            {copy.assistant.cancel}
+          </button>
+        ) : null}
+      </div>
       <div className="yolo-workflow-assistant__body">
         <div className="yolo-workflow-assistant__findings">
           <div className="yolo-workflow-assistant__section-heading">
@@ -1544,7 +1721,11 @@ function WorkflowAssistant({
           ) : (
             <div className="yolo-workflow-assistant__proposal-empty">
               <WandSparkles size={15} />
-              <span>{copy.assistant.proposalEmpty}</span>
+              <span>
+                {running
+                  ? copy.assistant.running
+                  : copy.assistant.proposalEmpty}
+              </span>
             </div>
           )}
         </div>
@@ -1628,13 +1809,21 @@ function nodeKindIcon(kind: WorkflowNodeKind): React.ReactNode {
   return <CircleStop size={13} />
 }
 
-function documentProposal(content: string, topology: WorkflowTopology): string {
-  if (/^##\s+Execution order\s*$/im.test(content)) return content
-  const executionOrder = topologicalWorkflowOrder(topology)
-    .map((node, index) => `${index + 1}. ${node.label}`)
-    .join('\n')
-  const base = content.trimEnd()
-  return `${base}${base ? '\n\n' : ''}## Execution order\n\n${executionOrder}\n`
+function defaultAssistantModelId(
+  models: YoloModuleHostModelSnapshotV1,
+): string {
+  return (
+    models.models.find((model) => model.id === models.defaultModelId)?.id ??
+    models.models[0]?.id ??
+    ''
+  )
+}
+
+function sameTopology(
+  left: WorkflowTopology | null,
+  right: WorkflowTopology | null,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
 }
 
 function initialTopology(copy: WorkflowCopy): WorkflowTopology {
