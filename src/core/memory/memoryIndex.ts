@@ -600,6 +600,11 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
           changedLocalIds.add(entry.localId)
         }
       }
+      logFlightEvent('memory-index', 'reconcile-diag', {
+        id: input.partition.partitionKey,
+        detail: `entries=${snapshot.entries.length} priorRows=${priorFingerprintById.size} changed=${changedLocalIds.size} parserMatch=${priorParserVersion === snapshot.parserVersion}`,
+        consoleOutput: 'none',
+      })
       const embeddingsByLocalId = new Map<string, number[]>()
       const embedContent = this.options.embedContent
       if (embedContent) {
