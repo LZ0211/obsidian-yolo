@@ -1602,6 +1602,87 @@ describe('RequestContextBuilder generateRequestMessages', () => {
     })
   })
 
+  it('retainRecentTurns compaction replaces only the window before the retention start', async () => {
+    const app = {
+      vault: {
+        adapter: {
+          exists: jest.fn().mockResolvedValue(false),
+          mkdir: jest.fn().mockResolvedValue(undefined),
+          read: jest.fn().mockResolvedValue(''),
+          write: jest.fn().mockResolvedValue(undefined),
+        },
+      },
+    } as unknown as ReturnType<typeof createMockApp>
+
+    const builder = new RequestContextBuilder(app as never, settings)
+
+    const requestMessages = await builder.generateRequestMessages({
+      systemPromptSnapshotMode: 'create',
+      messages: [
+        {
+          role: 'user',
+          id: 'user-1',
+          content: null,
+          promptContent: 'old phase prompt',
+          mentionables: [],
+        },
+        {
+          role: 'assistant',
+          id: 'assistant-1',
+          content: 'old phase answer',
+        },
+        {
+          role: 'user',
+          id: 'user-2',
+          content: null,
+          promptContent: 'retained turn prompt',
+          mentionables: [],
+        },
+        {
+          role: 'assistant',
+          id: 'assistant-2',
+          content: 'retained turn answer',
+        },
+      ],
+      hasTools: true,
+      hasMemoryTools: false,
+      model: {
+        provider: 'openai',
+        model: 'gpt-test',
+        name: 'gpt-test',
+      } as never,
+      conversationId: 'conversation-1',
+      // retainRecentTurns anchors at the message before the retention start
+      // and records no trigger tool call id.
+      compaction: {
+        anchorMessageId: 'assistant-1',
+        summary: 'Earlier phase summary',
+        compactedAt: 1,
+      },
+    })
+
+    const summaryIndex = requestMessages.findIndex(
+      (message) =>
+        message.role === 'user' &&
+        typeof message.content === 'string' &&
+        message.content.includes('Earlier phase summary'),
+    )
+    expect(summaryIndex).toBeGreaterThanOrEqual(0)
+    // The retained window (user-2 onward) must survive after the summary.
+    const retainedIndex = requestMessages.findIndex(
+      (message) =>
+        message.role === 'user' &&
+        message.content === 'retained turn prompt',
+    )
+    expect(retainedIndex).toBeGreaterThan(summaryIndex)
+    expect(
+      requestMessages.some(
+        (message) =>
+          message.role === 'assistant' && message.content === 'old phase answer',
+      ),
+    ).toBe(false)
+  })
+
   it('uses the latest compaction entry when multiple compactions exist', async () => {
     const app = {
       vault: {

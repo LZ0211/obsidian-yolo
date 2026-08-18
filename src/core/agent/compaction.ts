@@ -400,6 +400,9 @@ Do not ask the user for permission to compact. Do not mention this internal noti
   }
 }
 
+/** Upper bound for `retainRecentTurns`; larger values are clamped. */
+export const MAX_RETAIN_RECENT_TURNS = 20
+
 const parseCompactOperationResult = (
   text: string,
 ): {
@@ -407,6 +410,7 @@ const parseCompactOperationResult = (
   toolCallId: string | null
   operation: string
   instruction: string | null
+  retainRecentTurns: number | null
 } | null => {
   try {
     const parsed = JSON.parse(text) as {
@@ -414,7 +418,14 @@ const parseCompactOperationResult = (
       toolCallId?: unknown
       operation?: unknown
       instruction?: unknown
+      retainRecentTurns?: unknown
     }
+    const retainRecentTurns =
+      typeof parsed.retainRecentTurns === 'number' &&
+      Number.isInteger(parsed.retainRecentTurns) &&
+      parsed.retainRecentTurns > 0
+        ? Math.min(parsed.retainRecentTurns, MAX_RETAIN_RECENT_TURNS)
+        : null
     return typeof parsed.tool === 'string' &&
       parsed.tool === CONTEXT_COMPACT_TOOL_NAME
       ? {
@@ -428,6 +439,7 @@ const parseCompactOperationResult = (
             parsed.instruction.trim().length > 0
               ? parsed.instruction.trim()
               : null,
+          retainRecentTurns,
         }
       : null
   } catch {
@@ -460,6 +472,7 @@ export const findCompactTrigger = (
   triggerToolCallId: string
   anchorMessageId: string
   retainedStartIndex: number
+  retainRecentTurns: number | null
 } | null => {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
@@ -467,25 +480,26 @@ export const findCompactTrigger = (
       continue
     }
 
-    const compactToolCall = message.toolCalls.find((toolCall) => {
+    for (const toolCall of message.toolCalls) {
       if (toolCall.response.status !== ToolCallResponseStatus.Success) {
-        return false
+        continue
       }
       const parsed = parseCompactOperationResult(toolCall.response.data.text)
-      return parsed?.operation === 'compact_restart'
-    })
+      if (parsed?.operation !== 'compact_restart') {
+        continue
+      }
 
-    if (!compactToolCall) {
-      continue
-    }
+      const retainedStartIndex =
+        index > 0 && messages[index - 1]?.role === 'assistant'
+          ? index - 1
+          : index
 
-    const retainedStartIndex =
-      index > 0 && messages[index - 1]?.role === 'assistant' ? index - 1 : index
-
-    return {
-      triggerToolCallId: compactToolCall.request.id,
-      anchorMessageId: message.id,
-      retainedStartIndex,
+      return {
+        triggerToolCallId: toolCall.request.id,
+        anchorMessageId: message.id,
+        retainedStartIndex,
+        retainRecentTurns: parsed.retainRecentTurns,
+      }
     }
   }
 
@@ -576,6 +590,41 @@ export const buildCompactedConversationState = async ({
     await filterPersistableLoadedDeferredToolSchemas(
       extractLoadedDeferredToolSchemas({ messages }),
     )
+
+  // `retainRecentTurns`: keep the most recent N user turns verbatim and
+  // compact only what precedes them. The anchor is set to the message before
+  // the retention start so the request builder (which retains from
+  // anchor+1) keeps exactly the requested window. No triggerToolCallId is
+  // recorded: the boundary is a plain message index, not a tool boundary.
+  if (trigger.retainRecentTurns !== null) {
+    let seenUserTurns = 0
+    let retentionStartIndex = -1
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index]?.role !== 'user') continue
+      seenUserTurns += 1
+      if (seenUserTurns === trigger.retainRecentTurns) {
+        retentionStartIndex = index
+        break
+      }
+    }
+    if (retentionStartIndex <= 0) {
+      // Nothing to compact: the retention window covers the whole history.
+      return null
+    }
+    const anchorMessageId = messages[retentionStartIndex - 1]?.id
+    if (!anchorMessageId) return null
+    return {
+      anchorMessageId,
+      summary,
+      compactedAt: Date.now(),
+      summaryModelId,
+      compactedMessageCount: retentionStartIndex,
+      ...(loadedDeferredToolNames.length > 0 ? { loadedDeferredToolNames } : {}),
+      ...(loadedDeferredToolSchemas.length > 0
+        ? { loadedDeferredToolSchemas }
+        : {}),
+    }
+  }
 
   return {
     anchorMessageId: trigger.anchorMessageId,

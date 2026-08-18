@@ -12,6 +12,7 @@ import type { BaseLLMProvider } from '../llm/base'
 
 import {
   buildAutoContextCompactionNoticeMessage,
+  buildCompactedConversationState,
   buildCompactionInstructionMessage,
   buildCompactionResumeMessage,
   buildCompactionSummaryMessage,
@@ -1100,5 +1101,95 @@ describe('getLatestAssistantContextUsage', () => {
         ratio: null,
       }),
     )
+  })
+})
+
+describe('buildCompactedConversationState retainRecentTurns', () => {
+  const compactToolMsg = (id: string, text: string): ChatMessage => ({
+    role: 'tool',
+    id,
+    toolCalls: [
+      {
+        request: {
+          id: 'tc-compact',
+          name: 'context_compact',
+          arguments: createCompleteToolCallArguments({ value: {} }),
+        },
+        response: {
+          status: ToolCallResponseStatus.Success,
+          data: { type: 'text', text },
+        },
+      },
+    ],
+    metadata: {},
+  })
+
+  const compactResult = (retainRecentTurns: number): string =>
+    JSON.stringify({
+      tool: 'context_compact',
+      operation: 'compact_restart',
+      retainRecentTurns,
+    })
+
+  it('keeps the most recent N user turns and compacts only what precedes them', async () => {
+    const messages = [
+      userMsg('u1'),
+      assistantMsg('a1'),
+      userMsg('u2'),
+      compactToolMsg('t1', compactResult(2)),
+      userMsg('u3'),
+      assistantMsg('a3'),
+      userMsg('u4'),
+    ]
+
+    const compacted = await buildCompactedConversationState({
+      messages,
+      summary: '摘要',
+      summaryModelId: 'm',
+    })
+
+    expect(compacted).not.toBeNull()
+    // Retention starts at u3 (index 4); the anchor is the message before it.
+    expect(compacted?.anchorMessageId).toBe('t1')
+    expect(compacted?.compactedMessageCount).toBe(4)
+    expect(compacted?.triggerToolCallId).toBeUndefined()
+    expect(compacted?.summary).toBe('摘要')
+  })
+
+  it('returns null when the retention window covers the whole history', async () => {
+    const messages = [
+      userMsg('u1'),
+      compactToolMsg('t1', compactResult(10)),
+      userMsg('u2'),
+    ]
+
+    const compacted = await buildCompactedConversationState({
+      messages,
+      summary: '摘要',
+    })
+
+    expect(compacted).toBeNull()
+  })
+
+  it('ignores invalid retainRecentTurns values and falls back to full compaction', async () => {
+    const messages = [
+      userMsg('u1'),
+      compactToolMsg(
+        't1',
+        JSON.stringify({
+          tool: 'context_compact',
+          operation: 'compact_restart',
+          retainRecentTurns: 'two',
+        }),
+      ),
+    ]
+
+    const compacted = await buildCompactedConversationState({
+      messages,
+      summary: '摘要',
+    })
+
+    expect(compacted).not.toBeNull()
+    expect(compacted?.triggerToolCallId).toBe('tc-compact')
   })
 })

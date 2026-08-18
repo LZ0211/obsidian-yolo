@@ -1,5 +1,6 @@
 import type { McpTool } from '../../../types/mcp.types'
 import { ToolCallResponseStatus } from '../../../types/tool-call.types'
+import { MAX_RETAIN_RECENT_TURNS } from '../../agent/compaction'
 import { defineTool } from '../define'
 import { formatJsonResult, getOptionalTextArg } from '../tool-args'
 
@@ -20,8 +21,29 @@ const CONTEXT_COMPACT_MCP_TOOL: Omit<McpTool, 'name'> = {
         type: 'string',
         description: 'Optional focus hint for the summary.',
       },
+      retainRecentTurns: {
+        type: 'integer',
+        minimum: 1,
+        maximum: MAX_RETAIN_RECENT_TURNS,
+        description:
+          `Optional: keep the most recent N user turns verbatim and compact only what precedes them. ` +
+          `Use this when a distinct earlier task phase is no longer needed but the current task still is. ` +
+          `Omit to compact all history before the current turn.`,
+      },
     },
   },
+}
+
+const parseRetainRecentTurns = (args: Record<string, unknown>): number | null => {
+  const value = args.retainRecentTurns
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value <= 0
+  ) {
+    return null
+  }
+  return Math.min(value, MAX_RETAIN_RECENT_TURNS)
 }
 
 export const contextCompactDefinition = defineTool({
@@ -41,6 +63,7 @@ export const contextCompactDefinition = defineTool({
   // Error-status result — those are dispatcher responsibilities (master.md
   // §3.4), not tool semantics.
   execute: async (args, ctx) => {
+    const retainRecentTurns = parseRetainRecentTurns(args)
     return {
       status: ToolCallResponseStatus.Success,
       text: formatJsonResult({
@@ -49,6 +72,7 @@ export const contextCompactDefinition = defineTool({
         operation: 'compact_restart',
         reason: getOptionalTextArg(args, 'reason')?.trim() || null,
         instruction: getOptionalTextArg(args, 'instruction')?.trim() || null,
+        ...(retainRecentTurns !== null ? { retainRecentTurns } : {}),
       }),
     }
   },
