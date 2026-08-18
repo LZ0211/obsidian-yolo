@@ -1,6 +1,9 @@
 import type { Annotation } from '../../types/llm/response'
 
-import { injectAnnotationMarkers } from './inject-annotation-markers'
+import {
+  injectAnnotationMarkers,
+  normalizeCitationUrl,
+} from './inject-annotation-markers'
 
 const url = (end: number, suffix = ''): Annotation => ({
   type: 'url_citation',
@@ -225,5 +228,41 @@ describe('injectAnnotationMarkers', () => {
       url_citation: { url: 'x', end_index: NaN },
     }
     expect(injectAnnotationMarkers('hello', [bad])).toBe('hello')
+  })
+
+  it('normalizes schemeless citation URLs to external https links', () => {
+    // A schemeless URL would render as an Obsidian internal link; clicking
+    // it calls openLinkText on a nonexistent vault path, creating a new
+    // empty document. Every injected marker must stay an external link.
+    expect(normalizeCitationUrl('www.example.com/page')).toBe(
+      'https://www.example.com/page',
+    )
+    expect(normalizeCitationUrl('example.com/page')).toBe(
+      'https://example.com/page',
+    )
+    expect(normalizeCitationUrl('//example.com/page')).toBe(
+      'https://example.com/page',
+    )
+    expect(normalizeCitationUrl('https://example.com/page')).toBe(
+      'https://example.com/page',
+    )
+    expect(normalizeCitationUrl('http://example.com/page')).toBe(
+      'http://example.com/page',
+    )
+    expect(normalizeCitationUrl('')).toBeNull()
+    expect(normalizeCitationUrl('   ')).toBeNull()
+  })
+
+  it('injects a schemeless citation URL with an https scheme', () => {
+    const ann: Annotation = {
+      type: 'url_citation',
+      url_citation: {
+        url: 'www.example.com/页',
+        end_index: 4,
+      },
+    }
+    expect(injectAnnotationMarkers('test', [ann])).toBe(
+      'test[1](https://www.example.com/页?yolo-cite=1)',
+    )
   })
 })

@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 import { memo, useRef, useState } from 'react'
 
 import { Annotation } from '../../types/llm/response'
+import { normalizeCitationUrl } from '../../utils/chat/inject-annotation-markers'
 
 const AssistantMessageAnnotations = memo(function AssistantMessageAnnotations({
   annotations,
@@ -38,17 +39,20 @@ const AssistantMessageAnnotations = memo(function AssistantMessageAnnotations({
         <div className="yolo-assistant-message-metadata-content">
           <div className="yolo-assistant-message-metadata-annotations">
             {annotations.map((annotation, index) => {
+              // Schemeless URLs would resolve as vault-relative paths in the
+              // Electron window; normalize so the source opens externally.
+              const url = normalizeCitationUrl(annotation.url_citation.url)
+              if (!url) return null
               return (
-                <div key={annotation.url_citation.url}>
+                <div key={url}>
                   <span className="yolo-url-citation-text">
                     [{index + 1}]{' '}
                     <a
-                      href={annotation.url_citation.url}
+                      href={url}
                       target="_blank"
                       rel="noopener noreferrer"
                     >
-                      {annotation.url_citation.title ??
-                        annotation.url_citation.url}
+                      {annotation.url_citation.title ?? url}
                     </a>
                   </span>
                 </div>

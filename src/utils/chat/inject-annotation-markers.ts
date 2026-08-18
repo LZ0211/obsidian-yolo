@@ -52,8 +52,8 @@ export function injectAnnotationMarkers(
       // Streaming hasn't caught up yet; wait for the next render tick.
       return
     }
-    const url = annotation.url_citation.url
-    if (typeof url !== 'string' || url.length === 0) return
+    const url = normalizeCitationUrl(annotation.url_citation.url)
+    if (!url) return
     const snapped = snapToClauseBoundary(content, end)
     const insertAt = pushPastProtectedRange(snapped, protectedRanges)
     markers.push({
@@ -137,6 +137,23 @@ const CLAUSE_BREAK_PATTERN = /[\s.,!?;:。，！？；：、“”‘’]/
 
 function isClauseBreak(ch: string): boolean {
   return CLAUSE_BREAK_PATTERN.test(ch)
+}
+
+/**
+ * Normalize a provider-supplied citation URL so the rendered `[N](url)` link
+ * is always an external link. Providers occasionally omit the scheme
+ * (`www.example.com/x` or `//example.com/x`); Obsidian's markdown renderer
+ * treats a schemeless link as an internal vault path, and clicking one calls
+ * `openLinkText` on a nonexistent file — which creates a new empty document.
+ * Returns null for blank input so callers can drop the marker entirely.
+ */
+export function normalizeCitationUrl(url: string): string | null {
+  const trimmed = url.trim()
+  if (!trimmed) return null
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
+    return trimmed
+  }
+  return trimmed.startsWith('//') ? `https:${trimmed}` : `https://${trimmed}`
 }
 
 /**
