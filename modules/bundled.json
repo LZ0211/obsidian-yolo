@@ -36,6 +36,36 @@
         "byteSize": 1910,
         "sha256": "911049dcae9e39ad29b46084c6d98cfeccf5c44196bbd2e60ed366880c1701cb"
       }
+    },
+    {
+      "id": "workflow",
+      "version": "0.1.1-dev.1",
+      "icon": "git-branch",
+      "localizations": {
+        "en": {
+          "name": "Workflow mode",
+          "description": "Visualize and maintain Markdown-first agent workflows."
+        },
+        "zh": {
+          "name": "工作流模式",
+          "description": "可视化并维护 Markdown 优先的智能体工作流。"
+        },
+        "it": {
+          "name": "Modalita workflow",
+          "description": "Visualizza e gestisce workflow agentici basati su Markdown."
+        }
+      },
+      "hostApi": "^1.7.0",
+      "dataSchemas": {},
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "manifestUrl": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/module.json",
+      "manifest": {
+        "byteSize": 11410,
+        "sha256": "c5efb09484d4fae8ed4252759c9b057b9a2fcee6843f7a12fd58db811e1c195a"
+      }
     }
   ]
 }

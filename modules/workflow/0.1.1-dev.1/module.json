@@ -13,8 +13,8 @@
           "role": "entry",
           "name": "entry.js",
           "path": "entry.js",
-          "byteSize": 66636,
-          "sha256": "cc3ce228b9fbe4e03382e7fc97b91a68594cda3f0791e7f197047c6817fc8662",
+          "byteSize": 83323,
+          "sha256": "c792d40f17c12b6783fbcec1e9b7bc1b14ff7d46cec6a2eb4d1f5e90505ae75b",
           "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/entry.js",
           "storage": "module"
         },
@@ -22,8 +22,8 @@
           "role": "style",
           "name": "style.css",
           "path": "style.css",
-          "byteSize": 18959,
-          "sha256": "dbcfd0e31f5e452f5209bce2e5334479cbb15619b2a142774d99709e2000e146",
+          "byteSize": 30597,
+          "sha256": "c9818721968a71c36c2e2322c7ea5570837409dba9c17c14dea0afabfc2eb47a",
           "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/style.css",
           "storage": "module"
         },
@@ -118,8 +118,8 @@
           "role": "entry",
           "name": "entry.js",
           "path": "entry.js",
-          "byteSize": 66636,
-          "sha256": "cc3ce228b9fbe4e03382e7fc97b91a68594cda3f0791e7f197047c6817fc8662",
+          "byteSize": 83323,
+          "sha256": "c792d40f17c12b6783fbcec1e9b7bc1b14ff7d46cec6a2eb4d1f5e90505ae75b",
           "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/entry.js",
           "storage": "module"
         },
@@ -127,8 +127,8 @@
           "role": "style",
           "name": "style.css",
           "path": "style.css",
-          "byteSize": 18959,
-          "sha256": "dbcfd0e31f5e452f5209bce2e5334479cbb15619b2a142774d99709e2000e146",
+          "byteSize": 30597,
+          "sha256": "c9818721968a71c36c2e2322c7ea5570837409dba9c17c14dea0afabfc2eb47a",
           "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/style.css",
           "storage": "module"
         },
