@@ -55,7 +55,7 @@
           "description": "Visualizza e gestisce workflow agentici basati su Markdown."
         }
       },
-      "hostApi": "^1.7.0",
+      "hostApi": "^1.8.0",
       "dataSchemas": {},
       "platforms": [
         "desktop",
@@ -64,7 +64,7 @@
       "manifestUrl": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/module.json",
       "manifest": {
         "byteSize": 11410,
-        "sha256": "c5efb09484d4fae8ed4252759c9b057b9a2fcee6843f7a12fd58db811e1c195a"
+        "sha256": "b0af3a3c9af930e47ca3bebc846736adb631bc6a5bf286cb29071241274e77cb"
       }
     }
   ]

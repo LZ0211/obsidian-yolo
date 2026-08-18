@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "workflow",
   "version": "0.1.1-dev.1",
-  "hostApi": "^1.7.0",
+  "hostApi": "^1.8.0",
   "dataSchemas": {},
   "variants": [
     {
@@ -13,8 +13,8 @@
           "role": "entry",
           "name": "entry.js",
           "path": "entry.js",
-          "byteSize": 83323,
-          "sha256": "c792d40f17c12b6783fbcec1e9b7bc1b14ff7d46cec6a2eb4d1f5e90505ae75b",
+          "byteSize": 85618,
+          "sha256": "941b2ef0ad3961b133a6fe2a01d81915090d721334cdf510a35afb119443f8be",
           "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/entry.js",
           "storage": "module"
         },
@@ -22,8 +22,8 @@
           "role": "style",
           "name": "style.css",
           "path": "style.css",
-          "byteSize": 30597,
-          "sha256": "c9818721968a71c36c2e2322c7ea5570837409dba9c17c14dea0afabfc2eb47a",
+          "byteSize": 30663,
+          "sha256": "0a7bba532792f13b8e853420d7f2d6b901cc2c5d48c59231ae48baacafff16d3",
           "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/style.css",
           "storage": "module"
         },
@@ -118,8 +118,8 @@
           "role": "entry",
           "name": "entry.js",
           "path": "entry.js",
-          "byteSize": 83323,
-          "sha256": "c792d40f17c12b6783fbcec1e9b7bc1b14ff7d46cec6a2eb4d1f5e90505ae75b",
+          "byteSize": 85618,
+          "sha256": "941b2ef0ad3961b133a6fe2a01d81915090d721334cdf510a35afb119443f8be",
           "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/entry.js",
           "storage": "module"
         },
@@ -127,8 +127,8 @@
           "role": "style",
           "name": "style.css",
           "path": "style.css",
-          "byteSize": 30597,
-          "sha256": "c9818721968a71c36c2e2322c7ea5570837409dba9c17c14dea0afabfc2eb47a",
+          "byteSize": 30663,
+          "sha256": "0a7bba532792f13b8e853420d7f2d6b901cc2c5d48c59231ae48baacafff16d3",
           "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/style.css",
           "storage": "module"
         },
