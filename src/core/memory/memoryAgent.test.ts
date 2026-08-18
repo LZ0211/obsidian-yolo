@@ -29,7 +29,6 @@ import {
   memoryAdd,
   memoryUpdate,
 } from './memoryManager'
-import type { MemoryRecallTarget } from './memoryRecallTarget'
 import { extractMemoryQueryKeywords } from './memoryTokenizer'
 
 const mockExecuteSingleTurn = jest.mocked(executeSingleTurn)
@@ -91,16 +90,16 @@ describe('MemoryAgent', () => {
     expect(rankMemoryEntries(entries, '今天天气怎么样')).toEqual([])
   })
 
-
   it('extracts local keywords without an agent or tool call', () => {
     expect(extractMemoryQueryKeywords('正在开发 Obsidian 插件')).toEqual(
       expect.arrayContaining(['obsidian', '插件', '开发']),
     )
   })
 
-  it('parses structured operations and only processes durable signals', () => {
+  it('lets the extraction model decide whether a non-empty turn is durable', () => {
     expect(shouldProcessMemoryTurn('以后请始终用中文回答')).toBe(true)
-    expect(shouldProcessMemoryTurn('帮我打开这个文件')).toBe(false)
+    expect(shouldProcessMemoryTurn('帮我打开这个文件')).toBe(true)
+    expect(shouldProcessMemoryTurn('   ')).toBe(false)
     expect(
       parseMemoryAgentOperations(
         '```json\n{"operations":[{"op":"add","content":"用户喜欢中文","keywords":["中文"]}]}\n```',
@@ -113,6 +112,25 @@ describe('MemoryAgent', () => {
         sector: 'episodic',
       },
     ])
+  })
+
+  it('runs extraction for an ordinary completed turn', async () => {
+    mockExecuteSingleTurn.mockResolvedValue({
+      content: '{"operations":[]}',
+      toolCalls: [],
+    })
+
+    await expect(
+      runMemoryAgentAfterTurn({
+        app: {} as never,
+        userText: '帮我打开这个文件',
+        assistantText: '我来帮你打开。',
+        providerClient: {} as never,
+        model: { id: 'model', model: 'model' } as never,
+      }),
+    ).resolves.toEqual([])
+
+    expect(mockExecuteSingleTurn).toHaveBeenCalledTimes(1)
   })
 
   it('drops independently malformed memory operations', () => {
@@ -136,9 +154,64 @@ describe('MemoryAgent', () => {
         category: 'other',
         sector: 'episodic',
       },
+      {
+        op: 'add',
+        content: 'bad category',
+        category: 'other',
+        sector: 'episodic',
+      },
       { op: 'delete', id: 'Memory_2' },
       { op: 'delete', id: 'Memory_3', scope: 'global' },
     ])
+  })
+
+  it('normalizes model category aliases and sector/category confusion', () => {
+    expect(
+      parseMemoryAgentOperations(`Model response:
+\`\`\`json
+{"operations":[
+  {"op":"add","content":"用户使用中文","category":"preference",},
+  {"op":"add","content":"用户正在开发插件","category":"semantic"}
+]}
+\`\`\``),
+    ).toEqual([
+      {
+        op: 'add',
+        content: '用户使用中文',
+        category: 'preferences',
+        sector: 'semantic',
+      },
+      {
+        op: 'add',
+        content: '用户正在开发插件',
+        category: 'other',
+        sector: 'semantic',
+      },
+    ])
+  })
+
+  it('keeps extraction context ordering stable across entry order', () => {
+    const entries: MemoryAgentEntry[] = [
+      {
+        id: 'Memory_1',
+        content: 'alpha project',
+        keywords: ['alpha'],
+        category: 'other',
+        scope: 'assistant',
+      },
+      {
+        id: 'Memory_2',
+        content: 'beta project',
+        keywords: ['beta'],
+        category: 'other',
+        scope: 'assistant',
+      },
+    ]
+
+    expect(buildBoundedMemoryExtractionContext(entries, 1_000).content).toBe(
+      buildBoundedMemoryExtractionContext([...entries].reverse(), 1_000)
+        .content,
+    )
   })
 
   it('accepts extraction sectors, applies add defaults, and rejects reflective operations', () => {
@@ -244,11 +317,7 @@ describe('MemoryAgent', () => {
       },
     ]
 
-    const result = buildBoundedMemoryExtractionContext(
-      entries,
-      'preference',
-      80,
-    )
+    const result = buildBoundedMemoryExtractionContext(entries, 80)
     expect(result.content.length).toBeLessThanOrEqual(80)
     expect(result.omittedEntryCount).toBeGreaterThan(0)
     expect(result.content).toContain('memory entries omitted')
@@ -535,6 +604,26 @@ describe('MemoryAgent', () => {
         },
       }),
     ).resolves.toEqual([])
+    expect(mockExecuteSingleTurn).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries a transient failure from the current model once', async () => {
+    mockExecuteSingleTurn
+      .mockRejectedValueOnce(new Error('temporary provider failure'))
+      .mockResolvedValueOnce({ content: '{"operations":[]}', toolCalls: [] })
+
+    await expect(
+      runMemoryAgentWithFallback({
+        input: {
+          app: {} as never,
+          userText: '帮我打开这个文件',
+          assistantText: '文件已打开。',
+          providerClient: {} as never,
+          model: { id: 'chat-model', model: 'chat-model' } as never,
+        },
+      }),
+    ).resolves.toEqual([])
+
     expect(mockExecuteSingleTurn).toHaveBeenCalledTimes(2)
   })
 })

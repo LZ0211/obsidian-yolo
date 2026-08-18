@@ -13,7 +13,7 @@ const MAX_PENDING_EXTRACTIONS = 32
 const MAX_ACTIVE_EXTRACTION_LANES = 2
 
 type ExtractionLane<T> = {
-  pending: T | null
+  pending: T[]
   active: Promise<void> | null
   controller: AbortController | null
 }
@@ -33,19 +33,21 @@ export class MemoryExtractionQueue<T extends MemoryExtractionQueueTask> {
     if (this.stopped) return
     const key = queueKey(task.assistantId)
     const lane = this.lanes.get(key) ?? {
-      pending: null,
+      pending: [],
       active: null,
       controller: null,
     }
     this.lanes.set(key, lane)
-    lane.pending = task
+    lane.pending.push(task)
     this.scheduleLanes()
     this.trimPendingLanes()
   }
 
   async drain(): Promise<void> {
     while (
-      [...this.lanes.values()].some((lane) => lane.active || lane.pending)
+      [...this.lanes.values()].some(
+        (lane) => lane.active || lane.pending.length > 0,
+      )
     ) {
       await Promise.all(
         [...this.lanes.values()]
@@ -59,7 +61,7 @@ export class MemoryExtractionQueue<T extends MemoryExtractionQueueTask> {
     this.stopped = true
     const active = [...this.lanes.values()]
       .map((lane) => {
-        lane.pending = null
+        lane.pending = []
         lane.controller?.abort()
         return lane.active
       })
@@ -80,10 +82,10 @@ export class MemoryExtractionQueue<T extends MemoryExtractionQueueTask> {
 
   private trimPendingLanes(): void {
     const pendingLanes = [...this.lanes.entries()].filter(
-      ([, lane]) => lane.pending,
+      ([, lane]) => lane.pending.length > 0,
     )
     for (const [key, lane] of pendingLanes.slice(MAX_PENDING_EXTRACTIONS)) {
-      lane.pending = null
+      lane.pending = []
       if (!lane.active) this.lanes.delete(key)
     }
   }
@@ -91,12 +93,11 @@ export class MemoryExtractionQueue<T extends MemoryExtractionQueueTask> {
   private scheduleLanes(): void {
     while (!this.stopped && this.activeLaneCount < this.maxActiveLanes) {
       const next = [...this.lanes.entries()].find(
-        ([, lane]) => !lane.active && lane.pending,
+        ([, lane]) => !lane.active && lane.pending.length > 0,
       )
       if (!next) return
       const [key, lane] = next
-      const task = lane.pending
-      lane.pending = null
+      const task = lane.pending.shift()
       if (task) this.startLane(key, lane, task)
     }
   }
@@ -114,7 +115,7 @@ export class MemoryExtractionQueue<T extends MemoryExtractionQueueTask> {
         lane.active = null
         lane.controller = null
         this.activeLaneCount -= 1
-        if (!lane.pending || this.stopped) {
+        if (lane.pending.length === 0 || this.stopped) {
           this.lanes.delete(key)
         }
         this.scheduleLanes()

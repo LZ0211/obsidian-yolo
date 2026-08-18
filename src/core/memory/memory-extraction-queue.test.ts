@@ -27,7 +27,7 @@ describe('MemoryExtractionQueue', () => {
     expect(started).toEqual(['first', 'second'])
   })
 
-  it('coalesces pending work for the same assistant', async () => {
+  it('preserves pending work for the same assistant in FIFO order', async () => {
     const first = deferred()
     const started: string[] = []
     const queue = new MemoryExtractionQueue(async (task) => {
@@ -42,7 +42,7 @@ describe('MemoryExtractionQueue', () => {
     first.resolve()
     await queue.drain()
 
-    expect(started).toEqual(['first', 'latest'])
+    expect(started).toEqual(['first', 'stale', 'latest'])
   })
 
   it('does not make a foreground completion wait for extraction work', async () => {

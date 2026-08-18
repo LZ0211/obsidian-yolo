@@ -77,8 +77,6 @@ export const MAX_EXTRACTION_MEMORY_CHARS = 12_000
 
 const MEMORY_ENTRY_RE = /^\s*[-*]\s+([^:：]+)\s*[:：]\s*(.*?)\s*$/
 const MEMORY_KEYWORDS_RE = /\s*<!--\s*keywords:\s*(.*?)\s*-->\s*$/i
-const MEMORY_SIGNAL_RE =
-  /(记住|记得|以后|总是|习惯|偏好|喜欢|不喜欢|不要再|我的|我叫|我在|remember|preference|prefer|always|never|i am|i'm|that's wrong|you misunderstood)/i
 
 const normalizeText = (value: string): string =>
   value.trim().toLowerCase().replace(/\s+/g, ' ')
@@ -154,64 +152,184 @@ export const rankMemoryEntries = (
 }
 
 export const shouldProcessMemoryTurn = (userText: string): boolean =>
-  MEMORY_SIGNAL_RE.test(userText.trim())
+  Boolean(userText.trim())
 
-const extractJsonObject = (content: string): string | null => {
-  const start = content.indexOf('{')
-  const end = content.lastIndexOf('}')
-  return start >= 0 && end > start ? content.slice(start, end + 1) : null
+const extractJsonCandidates = (content: string): string[] => {
+  const candidates: string[] = []
+  let start = -1
+  let depth = 0
+  let quote: string | null = null
+  let escaped = false
+
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index]
+    if (quote) {
+      if (escaped) {
+        escaped = false
+      } else if (character === '\\') {
+        escaped = true
+      } else if (character === quote) {
+        quote = null
+      }
+      continue
+    }
+
+    if (character === '"') {
+      quote = character
+      continue
+    }
+
+    if (depth === 0 && (character === '{' || character === '[')) {
+      start = index
+      depth = 1
+      continue
+    }
+
+    if (depth === 0) continue
+    if (character === '{' || character === '[') depth += 1
+    if (character !== '}' && character !== ']') continue
+
+    depth -= 1
+    if (depth === 0 && start >= 0) {
+      candidates.push(content.slice(start, index + 1))
+      start = -1
+    }
+  }
+
+  return candidates
+}
+
+const parseJsonCandidate = (candidate: string): unknown => {
+  const variants = [candidate, candidate.replace(/,\s*([}\]])/g, '$1')]
+  for (const variant of variants) {
+    try {
+      return JSON.parse(variant) as unknown
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
+const parseMemoryAgentPayload = (content: string): unknown[] => {
+  const source = content.replace(/^\uFEFF/, '').trim()
+  const payloads: unknown[] = []
+  for (const candidate of [source, ...extractJsonCandidates(source)]) {
+    const payload = parseJsonCandidate(candidate)
+    if (payload !== null) payloads.push(payload)
+  }
+  return payloads
+}
+
+const normalizeOperationName = (
+  value: unknown,
+): 'add' | 'update' | 'delete' | null => {
+  if (typeof value !== 'string') return null
+  switch (value.trim().toLowerCase()) {
+    case 'add':
+    case 'create':
+      return 'add'
+    case 'update':
+    case 'replace':
+      return 'update'
+    case 'delete':
+    case 'remove':
+      return 'delete'
+    default:
+      return null
+  }
+}
+
+const normalizeAutomaticSector = (
+  value: unknown,
+): AutomaticMemorySector | null | undefined => {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase()
+  return isAutomaticMemorySector(normalized) ? normalized : null
+}
+
+const normalizeCategory = (
+  value: unknown,
+): {
+  category?: MemoryAgentEntry['category']
+  sector?: AutomaticMemorySector
+} | null => {
+  if (value === undefined) return {}
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'profile' || normalized === 'user_profile') {
+    return { category: 'profile' }
+  }
+  if (normalized === 'preference' || normalized === 'preferences') {
+    return { category: 'preferences' }
+  }
+  if (normalized === 'reflective') return null
+  if (isAutomaticMemorySector(normalized)) {
+    return { category: 'other', sector: normalized }
+  }
+  if (
+    normalized === 'other' ||
+    normalized === 'memory' ||
+    normalized === 'fact'
+  ) {
+    return { category: 'other' }
+  }
+  return { category: 'other' }
+}
+
+const normalizeKeywords = (value: unknown): string[] | null | undefined => {
+  if (value === undefined) return undefined
+  if (Array.isArray(value)) {
+    return value.every((keyword) => typeof keyword === 'string')
+      ? value.map((keyword) => keyword.trim()).filter(Boolean)
+      : null
+  }
+  if (typeof value === 'string') {
+    return value
+      .split(/[,，]/)
+      .map((keyword) => keyword.trim())
+      .filter(Boolean)
+  }
+  return null
+}
+
+const normalizeScope = (value: unknown): MemoryScope | null | undefined => {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'global' || normalized === 'user') return 'global'
+  if (normalized === 'assistant') return 'assistant'
+  return null
 }
 
 export const parseMemoryAgentOperations = (
   content: string,
 ): MemoryAgentOperation[] => {
-  const raw = extractJsonObject(content)
-  if (!raw) return []
-
-  let decoded: unknown
-  try {
-    decoded = JSON.parse(raw)
-  } catch {
-    return []
-  }
-  if (!decoded || typeof decoded !== 'object') return []
-  const operations = (decoded as { operations?: unknown }).operations
-  if (!Array.isArray(operations)) return []
+  const payloads = parseMemoryAgentPayload(content)
+  const operations = payloads
+    .map((payload) => {
+      if (Array.isArray(payload)) return payload
+      if (!payload || typeof payload !== 'object') return []
+      const value = payload as Record<string, unknown>
+      if (Array.isArray(value.operations)) return value.operations
+      return normalizeOperationName(value.op ?? value.action) ? [payload] : []
+    })
+    .find((candidate) => candidate.length > 0)
+  if (!operations) return []
 
   return operations.flatMap((operation): MemoryAgentOperation[] => {
     if (!operation || typeof operation !== 'object') return []
     const value = operation as Record<string, unknown>
-    const scope =
-      value.scope === undefined
-        ? undefined
-        : value.scope === 'global' || value.scope === 'assistant'
-          ? value.scope
-          : null
-    const keywords =
-      value.keywords === undefined
-        ? undefined
-        : Array.isArray(value.keywords) &&
-            value.keywords.every((keyword) => typeof keyword === 'string')
-          ? value.keywords
-          : null
+    const op = normalizeOperationName(value.op ?? value.action)
+    const scope = normalizeScope(value.scope)
+    const keywords = normalizeKeywords(value.keywords)
     if (scope === null || keywords === null) return []
-    if (value.op === 'add') {
-      if (
-        typeof value.content !== 'string' ||
-        !value.content.trim() ||
-        (value.category !== undefined &&
-          value.category !== 'profile' &&
-          value.category !== 'preferences' &&
-          value.category !== 'other')
-      ) {
-        return []
-      }
-      if (
-        value.sector !== undefined &&
-        !isAutomaticMemorySector(value.sector)
-      ) {
-        return []
-      }
+    if (op === 'add') {
+      if (typeof value.content !== 'string' || !value.content.trim()) return []
+      const category = normalizeCategory(value.category)
+      const sector = normalizeAutomaticSector(value.sector)
+      if (!category || sector === null) return []
       const reason =
         value.reason === undefined
           ? undefined
@@ -222,33 +340,32 @@ export const parseMemoryAgentOperations = (
       return [
         {
           op: 'add',
-          content: value.content,
-          ...(value.category === undefined ? {} : { category: value.category }),
+          content: value.content.trim(),
+          ...(category.category === undefined
+            ? {}
+            : { category: category.category }),
           ...(scope === undefined ? {} : { scope }),
           ...(keywords === undefined ? {} : { keywords }),
           ...(reason === undefined ? {} : { reason }),
           sector:
-            value.sector === undefined
-              ? defaultSectorForCategory(value.category)
-              : value.sector,
+            sector ??
+            category.sector ??
+            defaultSectorForCategory(category.category),
         },
       ]
     }
-    if (value.op === 'update') {
+    if (op === 'update') {
+      const newContent = value.new_content ?? value.newContent ?? value.content
       if (
         typeof value.id !== 'string' ||
-        typeof value.new_content !== 'string' ||
+        typeof newContent !== 'string' ||
         !value.id.trim() ||
-        !value.new_content.trim()
+        !newContent.trim()
       ) {
         return []
       }
-      if (
-        value.sector !== undefined &&
-        !isAutomaticMemorySector(value.sector)
-      ) {
-        return []
-      }
+      const sector = normalizeAutomaticSector(value.sector)
+      if (sector === null) return []
       const reason =
         value.reason === undefined
           ? undefined
@@ -259,26 +376,22 @@ export const parseMemoryAgentOperations = (
       return [
         {
           op: 'update',
-          id: value.id,
-          new_content: value.new_content,
+          id: value.id.trim(),
+          new_content: newContent.trim(),
           ...(scope === undefined ? {} : { scope }),
           ...(keywords === undefined ? {} : { keywords }),
-          ...(value.sector === undefined ? {} : { sector: value.sector }),
+          ...(sector === undefined ? {} : { sector }),
           ...(reason === undefined ? {} : { reason }),
         },
       ]
     }
-    if (
-      value.op !== 'delete' ||
-      typeof value.id !== 'string' ||
-      !value.id.trim()
-    ) {
+    if (op !== 'delete' || typeof value.id !== 'string' || !value.id.trim()) {
       return []
     }
     return [
       {
         op: 'delete',
-        id: value.id,
+        id: value.id.trim(),
         ...(scope === undefined ? {} : { scope }),
       },
     ]
@@ -339,22 +452,29 @@ export const loadMemoryAgentEntries = async ({
 
 export const buildBoundedMemoryExtractionContext = (
   entries: MemoryAgentEntry[],
-  query: string,
   maxChars = MAX_EXTRACTION_MEMORY_CHARS,
 ): { content: string; omittedEntryCount: number } => {
+  const stableEntries = [...entries].sort((left, right) => {
+    if (left.scope !== right.scope) {
+      return left.scope === 'assistant' ? -1 : 1
+    }
+    if (left.category !== right.category) {
+      return left.category < right.category ? -1 : 1
+    }
+    if (left.id < right.id) return -1
+    if (left.id > right.id) return 1
+    return 0
+  })
   const ordered = [
-    ...entries.filter(
+    ...stableEntries.filter(
       (entry) =>
         entry.scope === 'assistant' && entry.category === 'preferences',
     ),
-    ...entries.filter(
+    ...stableEntries.filter(
       (entry) => entry.scope === 'global' && entry.category === 'preferences',
     ),
-    ...entries.filter((entry) => entry.category === 'profile'),
-    ...rankMemoryEntries(
-      entries.filter((entry) => entry.category === 'other'),
-      query,
-    ),
+    ...stableEntries.filter((entry) => entry.category === 'profile'),
+    ...stableEntries.filter((entry) => entry.category === 'other'),
   ]
   const selected: MemoryAgentEntry[] = []
   let usedChars = 0
@@ -495,23 +615,26 @@ const buildMemoryAgentPrompt = ({
   currentMemory: string
   userText: string
   assistantText: string
-}): string => `Current memory:
-<memory>
+}): string => `<memory_context>
 ${escapeMemoryValue(currentMemory || '(empty)')}
-</memory>
+</memory_context>
 
-User turn:
+<conversation_turn>
+<user>
 ${escapeMemoryValue(userText)}
+</user>
 
-Assistant turn:
-${escapeMemoryValue(assistantText)}`
+<assistant>
+${escapeMemoryValue(assistantText)}
+</assistant>
+</conversation_turn>`
 
 const buildMemoryAgentSystemPrompt = (): string =>
   `${DEFAULT_MEMORY_AGENT_PROMPT.en}
 
 ${buildMemoryExtractionContract()}
 
-Use scope "global" for user-wide facts/preferences and "assistant" only for assistant-specific context. Prefer updating an existing entry instead of creating a duplicate. Return {"operations":[{"op":"add|update|delete", ...}]}; for add use content, category, scope, keywords, sector; for update use id, new_content, scope, keywords, sector; for delete use id, scope.
+Use scope "global" for user-wide facts/preferences and "assistant" only for assistant-specific context. Prefer updating an existing entry instead of creating a duplicate.
 
 Extract durable memory operations. Never call tools. Return strict JSON.`
 
@@ -526,17 +649,20 @@ export const runMemoryAgentAfterTurn = async ({
   signal,
   onSourceCommitted,
 }: MemoryAgentTurnInput): Promise<MemoryAgentOperation[]> => {
-  if (!shouldProcessMemoryTurn(userText) || signal?.aborted) return []
+  if (
+    !shouldProcessMemoryTurn(userText) ||
+    !assistantText.trim() ||
+    signal?.aborted
+  ) {
+    return []
+  }
 
   const visibleEntries = await loadMemoryAgentEntries({
     app,
     settings,
     assistantId,
   })
-  const currentMemory = buildBoundedMemoryExtractionContext(
-    visibleEntries,
-    userText,
-  )
+  const currentMemory = buildBoundedMemoryExtractionContext(visibleEntries)
   const response = await executeSingleTurn({
     providerClient,
     model,
@@ -645,8 +771,8 @@ export const runMemoryAgentAfterTurn = async ({
 
 /**
  * Run the hidden memory pass without allowing a provider outage to affect the
- * user-facing turn. A configured lightweight model gets one retry on the
- * current conversation model; the current model itself is never retried.
+ * user-facing turn. A configured lightweight model falls back to the current
+ * conversation model; an unconfigured current model gets one retry.
  */
 export const runMemoryAgentWithFallback = async ({
   input,
@@ -658,24 +784,29 @@ export const runMemoryAgentWithFallback = async ({
   try {
     return await runMemoryAgentAfterTurn(input)
   } catch (error) {
-    if (
-      !fallback ||
-      input.signal?.aborted ||
-      fallback.model.id === input.model.id
-    ) {
+    if (input.signal?.aborted) {
       console.warn('[YOLO][MemoryAgent] background extraction failed', error)
       return []
     }
 
+    const useFallback = Boolean(
+      fallback && fallback.model.id !== input.model.id,
+    )
     console.warn(
-      '[YOLO][MemoryAgent] configured model failed; retrying with current model',
+      useFallback
+        ? '[YOLO][MemoryAgent] configured model failed; retrying with current model'
+        : '[YOLO][MemoryAgent] memory extraction failed; retrying once',
       error,
     )
     try {
       return await runMemoryAgentAfterTurn({
         ...input,
-        providerClient: fallback.providerClient,
-        model: fallback.model,
+        ...(useFallback && fallback
+          ? {
+              providerClient: fallback.providerClient,
+              model: fallback.model,
+            }
+          : {}),
       })
     } catch (fallbackError) {
       console.warn(

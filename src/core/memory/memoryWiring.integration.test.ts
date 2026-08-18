@@ -8,6 +8,7 @@ import { executeSingleTurn } from '../ai/single-turn'
 import { getEmbeddingModelClient } from '../../core/rag/embedding'
 import { RequestContextBuilder } from '../../utils/chat/requestContextBuilder'
 import { loadMemorySourceSnapshot, memoryAdd } from './memoryManager'
+import { MemoryExtractionQueue } from './memoryExtractionQueue'
 import { openMemoryIndexStore } from './memoryIndex'
 import { getMemoryIndexRuntimeHandle, closeMemoryIndexRuntime } from './memoryIndexRuntime'
 
@@ -261,6 +262,67 @@ describe('memory wiring integration (extract → persist → reconcile → recal
     expect(indexed.map((entry) => entry.content)).toEqual(
       expect.arrayContaining(['用户是前端工程师']),
     )
+  })
+
+  it('runs a completed conversation through the queue and persists tolerant extraction output', async () => {
+    executeSingleTurnMock.mockResolvedValue({
+      content:
+        '提取结果：```json\n{"operations":[{"op":"add","content":"用户正在处理工作流","category":"semantic","scope":"global",}]}\n```',
+      toolCalls: [],
+    })
+
+    const builder = new RequestContextBuilder(app, settings as never, {
+      memoryIndexRuntime: getMemoryIndexRuntimeHandle(app, () => settings),
+    })
+    const providerClient = {} as never
+    const model = { id: 'test-model', model: 'test-model' } as never
+    const messages = [
+      {
+        role: 'user',
+        id: 'u-no-keyword',
+        content: {
+          root: {
+            children: [
+              {
+                children: [
+                  {
+                    text: '帮我打开这个文件',
+                    type: 'text',
+                  },
+                ],
+                type: 'paragraph',
+              },
+            ],
+            type: 'root',
+          },
+        },
+        mtime: Date.now(),
+      },
+      {
+        role: 'assistant',
+        id: 'a-no-keyword',
+        content: '文件已打开。',
+        mtime: Date.now(),
+      },
+    ] as never
+    const queue = new MemoryExtractionQueue(async (_task, signal) => {
+      await builder.processMemoryTurn({
+        messages,
+        providerClient,
+        model,
+        signal,
+      })
+    })
+
+    queue.enqueue({ assistantId: 'assistant-1', id: 'turn-1' })
+    await queue.drain()
+
+    const memoryFile = app.vault.getAbstractFileByPath('YOLO/memory/global.md')
+    expect(memoryFile).not.toBeNull()
+    expect(await app.vault.read(memoryFile as never)).toContain(
+      '用户正在处理工作流',
+    )
+    expect(executeSingleTurnMock).toHaveBeenCalledTimes(1)
   })
 
   it('hidden extraction persists an optional reason annotation on added memory', async () => {

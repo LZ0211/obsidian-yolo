@@ -15,6 +15,11 @@ Use semantic for profile and preferences, and episodic for other when adding mem
 For updates, omit sector to preserve the existing indexed sector.
 Never use reflective for ordinary extraction.
 For add and update operations, reason is an optional short phrase explaining why this memory matters or when to apply it (e.g. "user corrected this twice"). Omit it for self-evident entries.
+category must be exactly one of: profile, preferences, other. Never use a sector value as the category.
+For add, use this shape: {"op":"add","content":"...","category":"preferences","scope":"global","keywords":["..."],"sector":"semantic"}.
+For update, use this shape: {"op":"update","id":"Preference_1","new_content":"..."}.
+If nothing is durable, return exactly {"operations":[]}.
+Do not wrap the JSON in Markdown or add an explanation.
 Never call tools. Return strict JSON only.
 </memory_extraction_contract>"
 `)
@@ -36,5 +41,17 @@ Never call tools. Return strict JSON only.
     expect(contract).toContain('Never call tools.')
     expect(contract).not.toContain('SQLite')
     expect(contract).not.toContain('D&D')
+  })
+
+  it('shows the exact category schema and representative JSON outputs', () => {
+    const contract = buildMemoryExtractionContract()
+
+    expect(contract).toContain(
+      'category must be exactly one of: profile, preferences, other.',
+    )
+    expect(contract).toContain('Never use a sector value as the category.')
+    expect(contract).toContain('If nothing is durable, return exactly')
+    expect(contract).toContain('"category":"preferences"')
+    expect(contract).toContain('"operations":[]')
   })
 })
