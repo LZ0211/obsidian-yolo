@@ -657,6 +657,13 @@ export const buildCompactionInstructionMessage = (
 - Summarize only the CONVERSATION facts needed to resume. Ignore the system
   prompt, tool schemas, and tool-disclosure boilerplate — do not summarize them.
 
+0. 保护集 (PROTECTED) — 以下内容永不压缩，必须完整保留、不得省略或改写：
+   - 当前正在执行的步骤与未完成的操作（进行中的工具调用、待续任务）。
+   - 用户最近 ${VERBATIM_RECENT_USER_MESSAGE_COUNT} 条消息，逐字保留。
+   - 用户显式约束、偏好覆盖与更正。
+   - 关键文件路径、版本号、ID、错误串，原样保留。
+   其余内容才进入下面的固定 section。
+
 Produce a high-signal summary that loses nothing needed to resume. Sections:
 
 1. 当前目标 (Current Goal) — 用户最新的显式意图，逐字引用关键句。

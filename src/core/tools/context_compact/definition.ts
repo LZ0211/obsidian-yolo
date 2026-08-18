@@ -7,7 +7,8 @@ import { formatJsonResult, getOptionalTextArg } from '../tool-args'
 // `getLocalFileTools()` (`src/core/mcp/localFileTools.ts:744`).
 const CONTEXT_COMPACT_MCP_TOOL: Omit<McpTool, 'name'> = {
   description:
-    'Compact earlier conversation history into a summary and continue in a fresh context window while preserving visible chat history.',
+    'Compact earlier conversation history into a summary and continue in a fresh context window while preserving visible chat history. ' +
+    'Recent user messages, explicit constraints, and the active task context are preserved verbatim — only older history is distilled.',
   inputSchema: {
     type: 'object',
     properties: {

@@ -380,6 +380,14 @@ describe('buildCompactionInstructionMessage selective retention rules', () => {
     expect(text).toContain('显式约束、硬性要求、拍板决定')
   })
 
+  it('states the PROTECTED set that is never compressed', () => {
+    expect(text).toContain('保护集 (PROTECTED)')
+    expect(text).toContain('当前正在执行的步骤与未完成的操作')
+    expect(text).toContain('用户最近 3 条消息，逐字保留')
+    expect(text).toContain('用户显式约束、偏好覆盖与更正')
+    expect(text).toContain('关键文件路径、版本号、ID、错误串，原样保留')
+  })
+
   it('states the DROP rule: repeated reads / polling / logs keep only the conclusion plus a reference', () => {
     expect(text).toContain('可丢弃 (DROP)')
     expect(text).toContain('只留结论 + 引用')
