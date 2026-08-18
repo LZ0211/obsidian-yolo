@@ -313,6 +313,7 @@ import {
   setFlightLogSink,
 } from './utils/debug/flightLog'
 import { stableStringify } from './utils/json/stableStringify'
+import { loadDesktopNodeModuleSync } from './utils/platform/desktopNodeModule'
 import { applyKnownMaxContextTokensToChatModels } from './utils/llm/model-capability-registry'
 import { getMentionableBlockData } from './utils/obsidian'
 import { resetMinerUSessionState } from './utils/pdf/mineruClient'
@@ -1325,9 +1326,11 @@ export default class YoloPlugin extends Plugin {
   }
 
   /**
-   * Serialized read-append-write on the vault adapter (it has no append API).
-   * The file rolls by day; the sink disables itself past 5MB so a long session
-   * cannot grow it unboundedly — the in-memory buffer and manual export remain
+   * Appends flight-log chunks. Desktop uses a direct atomic append on the
+   * absolute path — the read-append-write dance on the vault adapter can
+   * race across a plugin reload and lose (or truncate) content. The file
+   * rolls by day; the sink disables itself past 5MB so a long session cannot
+   * grow it unboundedly — the in-memory buffer and manual export remain
    * available.
    */
   private appendFlightLogChunk(chunk: string): Promise<void> {
@@ -1335,16 +1338,27 @@ export default class YoloPlugin extends Plugin {
     const write = this.flightLogWriteQueue.then(async () => {
       if (this.flightLogSinkDisabled) return
       try {
-        const adapter = this.app.vault.adapter
-        if (!this.flightLogFilePath) {
-          const debugDir = `${getYoloBaseDir(this.settings)}/debug`
-          if (!(await adapter.exists(debugDir))) {
-            await this.app.vault.createFolder(debugDir)
+        const path = await this.resolveFlightLogPath()
+        if (Platform.isDesktop) {
+          const fs = loadDesktopNodeModuleSync<typeof import('node:fs')>(
+            'node:fs',
+          )
+          const nodePath = loadDesktopNodeModuleSync<typeof import('node:path')>(
+            'node:path',
+          )
+          fs.mkdirSync(nodePath.dirname(path), { recursive: true })
+          const stat = fs.statSync(path, { throwIfNoEntry: false })
+          if (stat && stat.size > 5 * 1024 * 1024) {
+            this.flightLogSinkDisabled = true
+            console.warn(
+              '[YOLO][Flight] flight log exceeded 5MB; live file sink disabled',
+            )
+            return
           }
-          const stamp = new Date().toISOString().slice(0, 10)
-          this.flightLogFilePath = `${debugDir}/flight-log-${stamp}.md`
+          fs.appendFileSync(path, chunk, 'utf8')
+          return
         }
-        const path = this.flightLogFilePath
+        const adapter = this.app.vault.adapter
         const stat = await adapter.stat(path)
         if (stat && stat.size > 5 * 1024 * 1024) {
           this.flightLogSinkDisabled = true
@@ -1362,6 +1376,22 @@ export default class YoloPlugin extends Plugin {
     })
     this.flightLogWriteQueue = write
     return write
+  }
+
+  private async resolveFlightLogPath(): Promise<string> {
+    const stamp = new Date().toISOString().slice(0, 10)
+    const debugDir = `${getYoloBaseDir(this.settings)}/debug`
+    if (!this.flightLogFilePath) {
+      this.flightLogFilePath = `${debugDir}/flight-log-${stamp}.md`
+    }
+    if (!Platform.isDesktop) {
+      return this.flightLogFilePath
+    }
+    const vaultBasePath = this.resolveVaultBasePath()
+    if (!vaultBasePath) {
+      throw new Error('Cannot resolve the vault base path for the flight log')
+    }
+    return `${vaultBasePath}/${this.flightLogFilePath}`
   }
 
   private async exportFlightLogToFile(): Promise<void> {
