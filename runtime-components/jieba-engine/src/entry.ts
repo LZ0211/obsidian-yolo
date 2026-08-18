@@ -28,10 +28,11 @@ type WorkerResponse =
 const createWorker = (): Worker => {
   const blob = new Blob([workerSource], { type: 'text/javascript' })
   const worker = new Worker(URL.createObjectURL(blob))
-  worker.onerror = () => {
+  worker.onerror = (event) => {
     // Surface as a rejected pending request; the next call retries a fresh
     // worker.
-    failAll('jieba worker error')
+    console.warn('[YOLO][jieba-engine] worker error', event.message)
+    failAll(`jieba worker error: ${event.message}`)
     worker.terminate()
     if (currentWorker === worker) currentWorker = null
   }
@@ -69,12 +70,37 @@ const getWorker = (): Worker => {
   return currentWorker
 }
 
+/** A cut is normally sub-100ms; past this the worker is wedged. */
+const CUT_TIMEOUT_MS = 2_000
+
 export const jiebaEngineComponent = {
   cutForSearch(text: string): Promise<string[]> {
     const worker = getWorker()
     const id = nextRequestId++
     return new Promise<string[]>((resolve, reject) => {
-      pending.set(id, { resolve, reject })
+      const timeoutId = setTimeout(() => {
+        pending.delete(id)
+        // The worker is wedged (WASM init or cut never returns, no error
+        // event fires). Kill it so the next call starts a fresh worker, and
+        // reject the remaining pending requests.
+        console.warn(
+          `[YOLO][jieba-engine] cut timed out after ${CUT_TIMEOUT_MS}ms; recycling worker`,
+        )
+        failAll(`jieba cut timed out after ${CUT_TIMEOUT_MS}ms`)
+        currentWorker?.terminate()
+        currentWorker = null
+        reject(new Error(`jieba cut timed out after ${CUT_TIMEOUT_MS}ms`))
+      }, CUT_TIMEOUT_MS)
+      pending.set(id, {
+        resolve: (tokens) => {
+          clearTimeout(timeoutId)
+          resolve(tokens)
+        },
+        reject: (error) => {
+          clearTimeout(timeoutId)
+          reject(error)
+        },
+      })
       const request: WorkerRequest = { type: 'cut_for_search', id, text }
       worker.postMessage(request)
     })
