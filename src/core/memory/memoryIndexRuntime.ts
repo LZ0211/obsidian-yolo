@@ -58,13 +58,11 @@ export type MemoryRenameResolution = Readonly<{
 /**
  * Periodic maintenance cadence: salience decay + cold archive + reflection.
  * Decay is exponential with SALIENCE_DECAY_LAMBDA = 0.05/day — roughly 0.2%
- * per hour — so an hourly pass would only ever write sub-percent corrections.
- * Four hours keeps the stored salience within ~1% of the continuous curve
- * while cutting the per-partition fan-out (every known assistant partition)
- * by 4x. Reflection has its own 24h gate and simply runs on the first pass
- * after its threshold, so the coarser cadence does not delay it materially.
+ * per hour — so each hourly pass writes only sub-percent corrections, which
+ * keeps stored salience tight to the continuous curve. Reflection has its
+ * own 24h gate and runs on whichever pass comes after its threshold.
  */
-const MEMORY_MAINTENANCE_INTERVAL_MS = 4 * 60 * 60 * 1000
+const MEMORY_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000
 
 const getOptionalVault = (app: App): VaultWithOptionalEvents | undefined =>
   (app as Partial<App>).vault as VaultWithOptionalEvents | undefined
@@ -350,12 +348,13 @@ export class MemoryIndexRuntime {
   }
 
   /**
-   * Start the hourly maintenance cadence once (first sqlite queue creation):
-   * an immediate catch-up run for partitions known so far, then the interval.
+   * Start the maintenance cadence once (first sqlite queue creation). No
+   * catch-up pass at startup: the first run happens after one full interval,
+   * so loading the plugin does not fan out decay/archive work across every
+   * partition. Sub-percent salience drift over the first hour is immaterial.
    */
   private ensurePeriodicMaintenance(): void {
     if (this.maintenanceTimer !== null || this.closed) return
-    void this.runPeriodicMaintenance().catch(() => undefined)
     this.maintenanceTimer = setInterval(() => {
       void this.runPeriodicMaintenance().catch(() => undefined)
     }, MEMORY_MAINTENANCE_INTERVAL_MS)

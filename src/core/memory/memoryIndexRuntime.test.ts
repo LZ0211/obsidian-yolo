@@ -307,7 +307,7 @@ describe('memory index runtime adapter', () => {
     await runtime.close()
   })
 
-  it('queues the initial reconcile before startup maintenance', async () => {
+  it('does not run maintenance at startup — only the reconcile is queued', async () => {
     const partition = buildMemoryPartition({ scope: 'global' })
     const order: string[] = []
     const store = {
@@ -339,7 +339,9 @@ describe('memory index runtime adapter', () => {
       })
       await new Promise<void>((resolve) => setImmediate(resolve))
 
-      expect(order).toEqual(['reconcile', 'maintenance'])
+      // Startup must not fan decay/archive work out across partitions; the
+      // first maintenance pass is scheduled on the interval instead.
+      expect(order).toEqual(['reconcile'])
     } finally {
       enqueueMaintenance.mockRestore()
       enqueueReconcile.mockRestore()
