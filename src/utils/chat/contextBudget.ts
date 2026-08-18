@@ -1,5 +1,7 @@
 import type { ContentPart, RequestMessage } from '../../types/llm/request'
 
+import { compressToolResult } from './contentCompressor'
+
 export const DEFAULT_TOOL_RESULT_MAX_CHARS = 16_000
 export const MIN_TOOL_RESULT_MAX_CHARS = 1_024
 export const MAX_TOOL_RESULT_MAX_CHARS = 200_000
@@ -147,11 +149,7 @@ export function boundRequestMessagesForContext(
       return {
         ...message,
         tool_call: boundedToolCallRequest,
-        content: truncateContextText(
-          message.content,
-          normalizedToolResultMaxChars,
-          'tool result',
-        ),
+        content: compressToolResult(message.content, normalizedToolResultMaxChars),
       }
     }
 
