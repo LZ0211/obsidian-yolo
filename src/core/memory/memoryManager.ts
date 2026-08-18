@@ -646,24 +646,41 @@ const readVaultFileCached = async <T>(
   purpose = 'content',
 ): Promise<T | null> => {
   const existing = app.vault.getAbstractFileByPath(canonicalPath)
-  if (!existing || !(existing instanceof TFile)) {
-    return null
+  if (existing && existing instanceof TFile) {
+    const mtime = existing.stat.mtime
+    let perApp = vaultFileReadCache.get(app)
+    if (!perApp) {
+      perApp = new Map()
+      vaultFileReadCache.set(app, perApp)
+    }
+    const cacheKey = `${purpose}::${canonicalPath}`
+    const cached = perApp.get(cacheKey)
+    if (cached && cached.mtime === mtime) {
+      return cached.value as T
+    }
+    const content = await app.vault.read(existing)
+    const value = await read(content)
+    perApp.set(cacheKey, { mtime, value })
+    return value
   }
-  const mtime = existing.stat.mtime
-  let perApp = vaultFileReadCache.get(app)
-  if (!perApp) {
-    perApp = new Map()
-    vaultFileReadCache.set(app, perApp)
+  // The in-memory file index lags the disk while Obsidian finishes loading
+  // the vault (plugin onload reconciles run in this window): a file that
+  // exists can read as "missing", which a memory reconcile would treat as a
+  // valid empty snapshot and wipe the indexed rows. Query the filesystem
+  // adapter directly — it is always current — instead of trusting the index.
+  const adapter = app.vault.adapter
+  if (
+    adapter &&
+    typeof adapter.stat === 'function' &&
+    typeof adapter.read === 'function'
+  ) {
+    const stat = await adapter.stat(canonicalPath)
+    if (stat && stat.type === 'file') {
+      const content = await adapter.read(canonicalPath)
+      return await read(content)
+    }
   }
-  const cacheKey = `${purpose}::${canonicalPath}`
-  const cached = perApp.get(cacheKey)
-  if (cached && cached.mtime === mtime) {
-    return cached.value as T
-  }
-  const content = await app.vault.read(existing)
-  const value = await read(content)
-  perApp.set(cacheKey, { mtime, value })
-  return value
+  return null
 }
 
 const readMemoryContentIfExists = async ({
@@ -1104,6 +1121,61 @@ export async function loadMemorySourceSnapshotAtPath({
   sourcePath: string
 }): Promise<MemorySourceSnapshot> {
   return await readMemorySourceSnapshot({ app, partition, sourcePath })
+}
+
+export type MemorySourceFingerprint = {
+  fingerprint: string
+  parserVersion: string
+}
+
+const readMemorySourceFingerprint = async (
+  app: App,
+  sourcePath: string,
+): Promise<MemorySourceFingerprint> => {
+  const canonicalPath = normalizeMemoryPath(sourcePath)
+  // Raw content only — no parsing, no entry extraction. The reconcile uses
+  // this as a cheap probe to skip partitions whose source file did not
+  // change, so the parser never runs for partitions the settings flow
+  // re-triggered wholesale.
+  const content = await readVaultFileCached(
+    app,
+    canonicalPath,
+    (value) => value,
+    'fingerprint',
+  )
+  return {
+    fingerprint: await sha256Hex(content ?? ''),
+    parserVersion: MEMORY_PARSER_VERSION,
+  }
+}
+
+export const loadMemorySourceFingerprint = async ({
+  app,
+  settings,
+  scope,
+  assistantId,
+}: {
+  app: App
+  settings?: MemorySettingsLike
+  scope: MemoryScope
+  assistantId?: string
+}): Promise<MemorySourceFingerprint> => {
+  const { path } = getScopeFilePath({
+    settings,
+    scope: normalizeMemoryScope(scope),
+    assistantId,
+  })
+  return readMemorySourceFingerprint(app, path)
+}
+
+export const loadMemorySourceFingerprintAtPath = async ({
+  app,
+  sourcePath,
+}: {
+  app: App
+  sourcePath: string
+}): Promise<MemorySourceFingerprint> => {
+  return readMemorySourceFingerprint(app, sourcePath)
 }
 
 export async function loadMemorySourceSnapshots({

@@ -24,6 +24,9 @@ type MockVault = {
   app: App
   readByPath: (path: string) => string
   setModifyHook: (hook: (() => Promise<void> | void) | undefined) => void
+  /** Drop a file from the in-memory index while it stays on "disk" — simulates
+   *  the vault index lagging the filesystem during plugin startup. */
+  dropFromIndex: (path: string) => void
 }
 
 const createMockVaultApp = (): MockVault => {
@@ -33,8 +36,16 @@ const createMockVaultApp = (): MockVault => {
   let mtimeCounter = 0
   const nextMtime = (): number => (mtimeCounter += 1)
 
+  const adapter = {
+    stat: jest.fn(async (path: string) => {
+      if (!contents.has(path)) return null
+      return { type: 'file', size: contents.get(path)?.length ?? 0 }
+    }),
+    read: jest.fn(async (path: string) => contents.get(path) ?? ''),
+  }
   const vault = {
     getAbstractFileByPath: jest.fn((path: string) => entries.get(path) ?? null),
+    adapter,
     createFolder: jest.fn(async (path: string) => {
       const folder = Object.assign(new TFolder(), {
         path,
@@ -70,6 +81,9 @@ const createMockVaultApp = (): MockVault => {
     readByPath: (path: string) => contents.get(path) ?? '',
     setModifyHook: (hook) => {
       modifyHook = hook
+    },
+    dropFromIndex: (path) => {
+      entries.delete(path)
     },
   }
 }
@@ -238,6 +252,40 @@ describe('memoryManager', () => {
     })
     expect(snapshot.valid).toBe(true)
     expect(snapshot.entries[0]?.content).toBe(content)
+  })
+
+  it('reads an existing memory file through the adapter while the vault index lags the disk', async () => {
+    const { app, dropFromIndex } = createMockVaultApp()
+    const settings = {
+      yolo: { baseDir: 'YOLO' },
+    }
+    await memoryAdd({
+      app,
+      settings,
+      content: 'survives the startup window',
+      scope: 'global',
+    })
+    // Plugin onload runs the first reconcile while Obsidian is still building
+    // its file index: the file exists on disk but getAbstractFileByPath does
+    // not see it yet. A snapshot must still see the entries — otherwise the
+    // reconcile treats the file as deleted, wipes the indexed rows, and the
+    // next event re-embeds everything (the churn observed in flight logs).
+    dropFromIndex('YOLO/memory/global.md')
+
+    const snapshot = await loadMemorySourceSnapshot({
+      app,
+      settings,
+      scope: 'global',
+    })
+
+    expect(snapshot.valid).toBe(true)
+    expect(snapshot.entries).toHaveLength(1)
+    expect(snapshot.entries[0]?.content).toBe('survives the startup window')
+    // The fingerprint is the real content hash, not the empty-file hash, so
+    // an unchanged partition reconciles as a no-op instead of wiping rows.
+    expect(snapshot.sourceFileFingerprint).not.toBe(
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    )
   })
 
   it('throws when assistant-scoped memory targets a missing assistant', async () => {
