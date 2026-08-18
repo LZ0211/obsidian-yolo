@@ -1,7 +1,10 @@
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import type { McpTool } from '../../types/mcp.types'
 
-import { buildRequestTools, selectAllowedTools } from './tool-selection'
+import {
+  buildRequestTools,
+  selectAllowedTools,
+} from './tool-selection'
 
 describe('selectAllowedTools', () => {
   it('bounds oversized external tool descriptions and schemas', () => {
@@ -362,6 +365,93 @@ describe('selectAllowedTools', () => {
 
     expect(JSON.stringify(before.requestTools)).toEqual(
       JSON.stringify(after.requestTools),
+    )
+  })
+
+  it('injects the subagent allowed model list into the delegate tool schema', async () => {
+    const settings = {
+      chatModels: [
+        { id: 'model-a', providerId: 'p', model: 'model-a' },
+        { id: 'model-b', providerId: 'p', model: 'model-b' },
+      ],
+      chatModelId: 'model-a',
+      mcp: {
+        builtinCapabilityOptions: {
+          subagent_delegation: {
+            allowedModelIds: ['model-a', 'model-b'],
+            preferredModelId: 'model-a',
+          },
+        },
+      },
+    } as unknown as YoloSettings
+    const delegateTool: McpTool = {
+      name: 'yolo_local__delegate_subagent',
+      description: 'Dispatch an isolated temporary sub-agent',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          description: { type: 'string' },
+          modelId: { type: 'string' },
+        },
+      },
+    }
+
+    const result = await selectAllowedTools({
+      availableTools: [delegateTool],
+      allowedToolNames: ['yolo_local__delegate_subagent'],
+      toolPreferences: {
+        'yolo_local__delegate_subagent': { enabled: true },
+      },
+      settings,
+    })
+
+    const requestTool = result.requestTools?.[0]
+    const modelParam = (
+      requestTool?.function.parameters as {
+        properties?: { modelId?: { enum?: string[] } }
+      }
+    )?.properties?.modelId
+    expect(modelParam).toMatchObject({
+      type: 'string',
+      enum: ['model-a', 'model-b'],
+    })
+    // The full list lives in the parameter description; the tool description
+    // carries the policy line with the recommended default.
+    expect(requestTool?.function.description).toContain('model-a')
+    expect((modelParam as { description?: string }).description).toContain(
+      'model-b',
+    )
+    expect((modelParam as { description?: string }).description).toContain(
+      'Allowed modelIds',
+    )
+  })
+
+  it('leaves the delegate tool schema static when settings are absent', async () => {
+    const delegateTool: McpTool = {
+      name: 'yolo_local__delegate_subagent',
+      description: 'Dispatch an isolated temporary sub-agent',
+      inputSchema: {
+        type: 'object',
+        properties: { modelId: { type: 'string' } },
+      },
+    }
+
+    const result = await selectAllowedTools({
+      availableTools: [delegateTool],
+      allowedToolNames: ['yolo_local__delegate_subagent'],
+      toolPreferences: {
+        'yolo_local__delegate_subagent': { enabled: true },
+      },
+    })
+
+    const modelParam = (
+      result.requestTools?.[0]?.function.parameters as {
+        properties?: { modelId?: { enum?: string[] } }
+      }
+    )?.properties?.modelId
+    expect(modelParam?.enum).toBeUndefined()
+    expect(result.requestTools?.[0]?.function.description).not.toContain(
+      'Allowed modelIds',
     )
   })
 })

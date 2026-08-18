@@ -16,7 +16,7 @@ describe('delegate_subagent tool registration', () => {
         description: { type: 'string' },
         prompt: { type: 'string' },
         delegatedRoleId: { type: 'string' },
-        modelPreferenceId: { type: 'string' },
+        modelId: { type: 'string' },
       },
     })
     expect(tool?.inputSchema.properties).not.toHaveProperty('mode')

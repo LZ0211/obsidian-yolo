@@ -4,12 +4,12 @@ import { assertProjectTaskDispatchable } from '../../agent/project/delivery'
 import { buildReviewPrompt } from '../../agent/project/review-prompt'
 import { ProjectStore } from '../../agent/project/store'
 import type { ProjectTaskBinding, TaskRecord } from '../../agent/project/types'
+import { resolveSubagentModelConfig } from '../../agent/subagent/model-config'
 import {
   SUBAGENT_DELEGATION_BLOCKED_REASON,
   clearParentSubagentDeadline,
   isParentSubagentDelegationBlocked,
 } from '../../agent/subagent/pending-timeout-registry'
-import { resolveSubagentModelConfig } from '../../agent/subagent/model-config'
 import { defineTool } from '../define'
 import { getOptionalTextArg, getTextArg } from '../tool-args'
 
@@ -35,9 +35,10 @@ const DELEGATE_SUBAGENT_MCP_TOOL: Omit<McpTool, 'name'> = {
         description:
           'Optional delegatable assistant id to use as the child role.',
       },
-      modelPreferenceId: {
+      modelId: {
         type: 'string',
-        description: 'Optional preferred model id for this dispatch.',
+        description:
+          'Optional model id for this dispatch; the live catalog injects the allowed modelIds list and the recommended default.',
       },
       forkContext: {
         type: 'string',
@@ -235,6 +236,8 @@ export const delegateSubagentDefinition = defineTool({
 
     const delegatedRoleId =
       getOptionalTextArg(args, 'delegatedRoleId')?.trim() ?? ''
+    // `modelPreferenceId` is a legacy alias kept for already-cached tool calls;
+    // the live schema only exposes `modelId`.
     const modelPreferenceId =
       getOptionalTextArg(args, 'modelPreferenceId')?.trim() ?? ''
     const requestedForkContext = getOptionalTextArg(args, 'forkContext')?.trim()
@@ -274,7 +277,7 @@ export const delegateSubagentDefinition = defineTool({
       selectedModelId = profile.modelId
     } else {
       const requestedModelId =
-        modelPreferenceId || (getOptionalTextArg(args, 'modelId')?.trim() ?? '')
+        (getOptionalTextArg(args, 'modelId')?.trim() ?? '') || modelPreferenceId
       const config = resolveSubagentModelConfig(settings)
       if (config.allowedModelIds.length === 0) {
         throw new Error(
