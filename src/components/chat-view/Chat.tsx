@@ -528,6 +528,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
     for (const leaf of app.workspace.getLeavesOfType(CHAT_VIEW_TYPE)) {
       const view = leaf.view as {
         getConversationId?: () => string | undefined
+        getDisplayText?: () => string
       }
       const conversationId = view.getConversationId?.()
       if (!conversationId || conversationId === currentConversationId) {
@@ -535,8 +536,16 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
       }
       const messages = agentService.getConversationMessages(conversationId)
       if (messages.length === 0) continue
+      const displayTitle = view.getDisplayText?.()
       result.push(
-        buildConversationMentionSnapshot({ messages, conversationId }),
+        buildConversationMentionSnapshot({
+          messages,
+          conversationId,
+          title:
+            displayTitle && displayTitle !== 'Yolo chat'
+              ? displayTitle
+              : undefined,
+        }),
       )
     }
     return result
