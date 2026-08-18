@@ -146,13 +146,27 @@ export function registerAuthRoutes(
             context.vaultIdentity,
           )
 
+    // The session lifetime follows the token's configured deadline: a token
+    // with an expiry keeps the session valid until that deadline (idle and
+    // absolute alike), so "按截止日期" holds in the UI. Tokens without a
+    // deadline fall back to the default idle/absolute windows.
+    const tokenRemainingMs =
+      matched.token.expiresAt != null
+        ? Math.max(0, matched.token.expiresAt - now())
+        : null
     const session = context.sessionStore.create({
       tokenRecordId: matched.token.id,
       tokenScope: matched.token.scope,
       activeAgentId,
       rootHash,
-      idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS,
-      absoluteTimeoutMs: DEFAULT_ABSOLUTE_TIMEOUT_MS,
+      idleTimeoutMs:
+        tokenRemainingMs !== null && tokenRemainingMs > 0
+          ? tokenRemainingMs
+          : DEFAULT_IDLE_TIMEOUT_MS,
+      absoluteTimeoutMs:
+        tokenRemainingMs !== null && tokenRemainingMs > 0
+          ? tokenRemainingMs
+          : DEFAULT_ABSOLUTE_TIMEOUT_MS,
     })
     const resolved = context.resolver.resolve({ sessionId: session.id })
     if (!resolved.ok) {

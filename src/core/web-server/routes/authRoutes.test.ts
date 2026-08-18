@@ -418,6 +418,72 @@ describe('authRoutes', () => {
     }
   })
 
+  it('aligns the session lifetime with the token expiry deadline', async () => {
+    const now = 1_000
+    const deadline = now + 30 * 24 * 60 * 60 * 1000
+    const router = new WebRouter()
+    const sessionStore = new WebSessionStore({ now: () => now })
+    const settings = createSettings({
+      workspaceAgents: createSettings().workspaceAgents.map((agent) =>
+        agent.id === 'agent-1'
+          ? {
+              ...agent,
+              shareTokens: (agent.shareTokens ?? []).map((token) => ({
+                ...token,
+                expiresAt: deadline,
+              })),
+            }
+          : agent,
+      ),
+    })
+    const resolver = createResolver(settings, sessionStore)
+
+    registerAuthRoutes(router, {
+      getSettings: () => settings,
+      pepper: PEPPER,
+      sessionStore,
+      resolver,
+      vaultIdentity: 'vault-a',
+      now: () => now,
+    })
+
+    const login = await dispatch(router, 'POST', '/api/web/auth/login', {
+      token: VALID_TOKEN,
+    })
+    expect(login.statusCode).toBe(200)
+    const sessionId = login.headers['x-yolo-web-session-id']
+    const session = sessionStore.resolve(sessionId)
+    expect(session).not.toBeNull()
+    expect(session?.absoluteExpiresAt).toBe(deadline)
+    expect(session?.idleTimeoutMs).toBe(deadline - now)
+  })
+
+  it('falls back to the default session windows when the token has no deadline', async () => {
+    const now = 1_000
+    const router = new WebRouter()
+    const sessionStore = new WebSessionStore({ now: () => now })
+    const settings = createSettings()
+    const resolver = createResolver(settings, sessionStore)
+
+    registerAuthRoutes(router, {
+      getSettings: () => settings,
+      pepper: PEPPER,
+      sessionStore,
+      resolver,
+      vaultIdentity: 'vault-a',
+      now: () => now,
+    })
+
+    const login = await dispatch(router, 'POST', '/api/web/auth/login', {
+      token: VALID_TOKEN,
+    })
+    const session = sessionStore.resolve(
+      login.headers['x-yolo-web-session-id'],
+    )
+    expect(session?.absoluteExpiresAt).toBe(now + 7 * 24 * 60 * 60 * 1000)
+    expect(session?.idleTimeoutMs).toBe(12 * 60 * 60 * 1000)
+  })
+
   it('disabled status takes precedence over expiry in the rejection reason', async () => {
     // When a token is both expired AND disabled, we surface the disabled
     // status — that's the more recent admin action and matches the
