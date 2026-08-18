@@ -187,6 +187,21 @@ export class ModuleSettingsCapabilityProvider
     let active = true
     let activationComplete = false
     let committed = false
+    let modelSnapshot: YoloModuleModelSnapshotV1 | null = null
+    let unsubscribeHostModels: (() => void) | null = null
+    const modelListeners = new Set<() => void>()
+    const ensureModelSubscription = (): YoloModuleModelSnapshotV1 => {
+      if (!modelSnapshot)
+        modelSnapshot = snapshotModels(this.options.getModelSnapshot())
+      if (!unsubscribeHostModels) {
+        unsubscribeHostModels = this.options.subscribeModels(() => {
+          if (!active || !activationComplete) return
+          modelSnapshot = snapshotModels(this.options.getModelSnapshot())
+          for (const listener of modelListeners) listener()
+        })
+      }
+      return modelSnapshot
+    }
     const assertActive = (): void => {
       if (!active)
         throw new Error(`Module "${moduleId}" settings are not active`)
@@ -194,6 +209,10 @@ export class ModuleSettingsCapabilityProvider
     lifecycle.add(() => {
       active = false
       activationComplete = false
+      unsubscribeHostModels?.()
+      unsubscribeHostModels = null
+      modelSnapshot = null
+      modelListeners.clear()
       for (const unsubscribe of subscriptions) unsubscribe()
       subscriptions.clear()
       for (const id of published) this.options.sink.remove(moduleId, id)
@@ -217,7 +236,7 @@ export class ModuleSettingsCapabilityProvider
         assertActive()
         if (!activationComplete)
           throw new Error(`Module "${moduleId}" settings are not active`)
-        return snapshotModels(this.options.getModelSnapshot())
+        return ensureModelSubscription()
       },
       subscribeModels: (listener) => {
         assertActive()
@@ -225,15 +244,14 @@ export class ModuleSettingsCapabilityProvider
           throw new Error(`Module "${moduleId}" settings are not active`)
         if (typeof listener !== 'function')
           throw new TypeError('Model listener must be a function')
+        ensureModelSubscription()
+        modelListeners.add(listener)
         let subscribed = true
-        const unsubscribeHost = this.options.subscribeModels(() => {
-          if (active && activationComplete && subscribed) listener()
-        })
         const unsubscribe = () => {
           if (!subscribed) return
           subscribed = false
+          modelListeners.delete(listener)
           subscriptions.delete(unsubscribe)
-          unsubscribeHost()
         }
         subscriptions.add(unsubscribe)
         return unsubscribe

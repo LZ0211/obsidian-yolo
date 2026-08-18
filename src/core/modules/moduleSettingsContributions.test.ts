@@ -65,11 +65,13 @@ describe('ModuleSettingsCapabilityProvider', () => {
     const listener = jest.fn()
     activation.api.subscribeModels(listener)
 
-    expect(activation.api.getModelSnapshot()).toEqual({
+    const firstSnapshot = activation.api.getModelSnapshot()
+    expect(firstSnapshot).toEqual({
       defaultModelId: 'provider/model',
       models: [{ id: 'provider/model', name: 'Model', providerId: 'provider' }],
     })
-    expect(activation.api.getModelSnapshot().models[0]).not.toBe(models[0])
+    expect(activation.api.getModelSnapshot()).toBe(firstSnapshot)
+    expect(firstSnapshot.models[0]).not.toBe(models[0])
     hostListener?.()
     expect(listener).toHaveBeenCalledTimes(1)
 
