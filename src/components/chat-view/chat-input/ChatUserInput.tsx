@@ -1,5 +1,4 @@
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { findUnifiedAgentById, getUnifiedAgentList } from '../../../core/agent/workspaceAgentResolver'
 import { SerializedEditorState } from 'lexical'
 import { FilePlus2 } from 'lucide-react'
 import { Notice } from 'obsidian'
@@ -21,6 +20,7 @@ import {
 import { useApp } from '../../../contexts/app-context'
 import { useLanguage } from '../../../contexts/language-context'
 import { useSettings } from '../../../contexts/settings-context'
+import { getUnifiedAgentList } from '../../../core/agent/workspaceAgentResolver'
 import type { CliContextUsageCategory } from '../../../core/cli-runtime/types'
 import { getYoloSnippetsPath } from '../../../core/paths/yoloPaths'
 import type { LiteSkillEntry } from '../../../core/skills/liteSkills'
@@ -34,7 +34,7 @@ import {
 } from '../../../styles/tokens/motion'
 import { ChatSelectedSkill } from '../../../types/chat'
 import { ChatModel } from '../../../types/chat-model.types'
-import { Mentionable } from '../../../types/mentionable'
+import { Mentionable, MentionableConversation } from '../../../types/mentionable'
 import {
   ReasoningLevel,
   getDefaultReasoningLevel,
@@ -84,6 +84,8 @@ export type ChatUserInputControlLayout = 'composer-toolbar' | 'inline'
 
 export type ChatUserInputProps = {
   initialSerializedEditorState: SerializedEditorState | null
+  /** Snapshots of other open conversations available as mention sources. */
+  openConversationMentions?: MentionableConversation[]
   getInitialSerializedEditorState?: () => SerializedEditorState | null
   replacementVersion?: number
   onChange: (content: SerializedEditorState) => void
@@ -174,6 +176,7 @@ const ChatUserInput = forwardRef<ChatUserInputRef, ChatUserInputProps>(
       onFocus,
       mentionables,
       setMentionables,
+      openConversationMentions,
       selectedSkills = [],
       setSelectedSkills,
       enableSkills = true,
@@ -892,6 +895,7 @@ const ChatUserInput = forwardRef<ChatUserInputRef, ChatUserInputProps>(
               autoFocus={autoFocus}
               mentionables={mentionables}
               setMentionables={setMentionables}
+              openConversationMentions={openConversationMentions}
               mentionDisplayMode={mentionDisplayMode}
               onDeleteFromAll={onDeleteFromAll}
               displayMentionablesForDelete={effectiveMentionables}

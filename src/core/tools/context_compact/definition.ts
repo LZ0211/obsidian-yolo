@@ -1,6 +1,6 @@
+import { MAX_RETAIN_RECENT_TURNS } from '../../../constants/contextCompaction'
 import type { McpTool } from '../../../types/mcp.types'
 import { ToolCallResponseStatus } from '../../../types/tool-call.types'
-import { MAX_RETAIN_RECENT_TURNS } from '../../agent/compaction'
 import { defineTool } from '../define'
 import { formatJsonResult, getOptionalTextArg } from '../tool-args'
 

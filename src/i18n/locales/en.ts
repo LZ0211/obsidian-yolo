@@ -2778,6 +2778,7 @@ export const en: TranslationKeys = {
       entryModel: 'Model',
       entryFile: 'File',
       entryFolder: 'Folder',
+            entryConversation: 'Open conversations',
       categoryEmpty: 'Nothing here yet',
     },
     slashCommands: {

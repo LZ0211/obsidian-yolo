@@ -72,6 +72,7 @@ import type {
   Mentionable,
   MentionableAssistantQuote,
   MentionableBlock,
+  MentionableConversation,
   MentionableFile,
   MentionableFolder,
   MentionableImage,
@@ -1184,6 +1185,9 @@ export class RequestContextBuilder {
     const assistantQuotes = message.mentionables.filter(
       (m): m is MentionableAssistantQuote => m.type === 'assistant-quote',
     )
+    const conversationMentions = message.mentionables.filter(
+      (m): m is MentionableConversation => m.type === 'conversation',
+    )
     const pdfs = message.mentionables.filter(
       (m): m is MentionablePDF => m.type === 'pdf',
     )
@@ -1202,6 +1206,8 @@ export class RequestContextBuilder {
     const localFolderPrompt = this.buildLocalFolderPrompt(localFolders)
     const blockPrompt = this.buildUserSelectedContentPrompt(blocks)
     const assistantQuotePrompt = this.buildAssistantQuotePrompt(assistantQuotes)
+    const conversationMentionPrompt =
+      this.buildConversationMentionPrompt(conversationMentions)
     const webSelectionPrompt = this.buildWebSelectionPrompt(webSelections)
     const officePrompt = offices
       .map((doc) =>
@@ -1230,7 +1236,7 @@ export class RequestContextBuilder {
       message.selectedSkills,
       scope,
     )
-    const textContent = `${localFolderPrompt}${blockPrompt}${assistantQuotePrompt}${webSelectionPrompt}${officePrompt}${textAttachmentPrompt}${legacyPdfFallbackText}${selectedSkillsPrompt}\n\n${query}\n\n`
+    const textContent = `${localFolderPrompt}${blockPrompt}${assistantQuotePrompt}${conversationMentionPrompt}${webSelectionPrompt}${officePrompt}${textAttachmentPrompt}${legacyPdfFallbackText}${selectedSkillsPrompt}\n\n${query}\n\n`
     if (imageParts.length === 0 && pdfDocumentParts.length === 0) {
       return withTimeContext(textContent)
     }
@@ -1256,7 +1262,8 @@ export class RequestContextBuilder {
           mentionable.type === 'web-selection' ||
           mentionable.type === 'office' ||
           mentionable.type === 'text-attachment' ||
-          mentionable.type === 'assistant-quote',
+          mentionable.type === 'assistant-quote' ||
+          mentionable.type === 'conversation',
       )
     )
   }
@@ -1633,6 +1640,9 @@ ${message.annotations
     const assistantQuotes = mentionables.filter(
       (m): m is MentionableAssistantQuote => m.type === 'assistant-quote',
     )
+    const conversationMentions = mentionables.filter(
+      (m): m is MentionableConversation => m.type === 'conversation',
+    )
     const pdfs = mentionables.filter(
       (m): m is MentionablePDF => m.type === 'pdf',
     )
@@ -1651,6 +1661,8 @@ ${message.annotations
     const localFolderPrompt = this.buildLocalFolderPrompt(localFolders)
     const blockPrompt = this.buildUserSelectedContentPrompt(blocks)
     const assistantQuotePrompt = this.buildAssistantQuotePrompt(assistantQuotes)
+    const conversationMentionPrompt =
+      this.buildConversationMentionPrompt(conversationMentions)
     const webSelectionPrompt = this.buildWebSelectionPrompt(webSelections)
     const officePrompt = offices
       .map((doc) =>
@@ -1726,7 +1738,7 @@ ${message.annotations
       ...pdfDocumentParts,
       {
         type: 'text',
-        text: `${filePrompt.text}${localFolderPrompt}${blockPrompt}${assistantQuotePrompt}${webSelectionPrompt}${officePrompt}${textAttachmentPrompt}${legacyPdfFallbackText}${selectedSkillsPrompt}\n\n${query}\n\n`,
+        text: `${filePrompt.text}${localFolderPrompt}${blockPrompt}${assistantQuotePrompt}${conversationMentionPrompt}${webSelectionPrompt}${officePrompt}${textAttachmentPrompt}${legacyPdfFallbackText}${selectedSkillsPrompt}\n\n${query}\n\n`,
       },
     ]
   }
@@ -1825,6 +1837,22 @@ ${quotes
       index,
     ) =>
       `<assistant_quote index="${annotationNumber ?? index + 1}" conversationId="${conversationId}" messageId="${messageId}">\n<quote>\n${content}\n</quote>${comment?.trim() ? `\n<comment>\n${comment.trim()}\n</comment>` : ''}\n</assistant_quote>`,
+  )
+  .join('\n\n')}\n\n`
+  }
+
+  private buildConversationMentionPrompt(
+    mentions: MentionableConversation[],
+  ): string {
+    if (mentions.length === 0) {
+      return ''
+    }
+
+    return `## Referenced conversation snapshots
+${mentions
+  .map(
+    ({ conversationId, title, content }) =>
+      `<conversation_context conversationId="${conversationId}"${title?.trim() ? ` title="${escapeXmlAttr(title.trim())}"` : ''}>\n${content}\n</conversation_context>`,
   )
   .join('\n\n')}\n\n`
   }

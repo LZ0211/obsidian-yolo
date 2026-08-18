@@ -110,6 +110,11 @@ const describeMentionable = (
         'assistant_quote',
         `${mentionable.annotationNumber !== undefined ? `<annotation_number>${mentionable.annotationNumber}</annotation_number>\n` : ''}<quote>\n${mentionable.content}\n</quote>${mentionable.comment?.trim() ? `\n<comment>\n${mentionable.comment.trim()}\n</comment>` : ''}`,
       )
+    case 'conversation':
+      return section(
+        'conversation_context',
+        `conversationId=${JSON.stringify(mentionable.conversationId)}${mentionable.title?.trim() ? ` title=${JSON.stringify(mentionable.title.trim())}` : ''}\n${mentionable.content}`,
+      )
     case 'url':
       return `<url>${mentionable.url}</url>`
     case 'web-selection':

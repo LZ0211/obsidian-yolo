@@ -16,6 +16,7 @@ import type { CSSProperties } from 'react'
 import { flushSync } from 'react-dom'
 import { v4 as uuidv4 } from 'uuid'
 
+import { CHAT_VIEW_TYPE } from '../../constants'
 import { useApp } from '../../contexts/app-context'
 import { useLanguage } from '../../contexts/language-context'
 import { usePlugin } from '../../contexts/plugin-context'
@@ -60,6 +61,7 @@ import type { YoloRuntime } from '../../runtime/yoloRuntime.types'
 import { useOptionalYoloRuntime } from '../../runtime/YoloRuntimeProvider'
 import type { ChatMessage, ChatUserMessage } from '../../types/chat'
 import type { ConversationOverrideSettings } from '../../types/conversation-settings.types'
+import type { MentionableConversation } from '../../types/mentionable'
 import type {
   Mentionable,
   MentionableAssistantQuote,
@@ -74,6 +76,7 @@ import {
   normalizeStoredReasoningLevel,
 } from '../../types/reasoning'
 import { deriveChatCompactionStatus } from '../../utils/chat/chatCompactionStatus'
+import { buildConversationMentionSnapshot } from '../../utils/chat/conversationSnapshot'
 import {
   getMentionableKey,
   serializeMentionable,
@@ -508,6 +511,36 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
   const currentConversationId =
     sessionControllerRef.current?.getSnapshot().currentConversationId ??
     initialConversationId
+  // Conversation mention sources: other open chat leaves, snapshotted at
+  // mention time (same contract as assistant-quote).
+  const [openLeafSignature, setOpenLeafSignature] = useState(0)
+  useEffect(() => {
+    const refresh = () => setOpenLeafSignature((count) => count + 1)
+    refresh()
+    app.workspace.on('layout-change', refresh)
+    return () => {
+      app.workspace.off('layout-change', refresh)
+    }
+  }, [app])
+  const openConversationMentions = useMemo<MentionableConversation[]>(() => {
+    if (!openLeafSignature) return []
+    const result: MentionableConversation[] = []
+    for (const leaf of app.workspace.getLeavesOfType(CHAT_VIEW_TYPE)) {
+      const view = leaf.view as {
+        getConversationId?: () => string | undefined
+      }
+      const conversationId = view.getConversationId?.()
+      if (!conversationId || conversationId === currentConversationId) {
+        continue
+      }
+      const messages = agentService.getConversationMessages(conversationId)
+      if (messages.length === 0) continue
+      result.push(
+        buildConversationMentionSnapshot({ messages, conversationId }),
+      )
+    }
+    return result
+  }, [app, agentService, currentConversationId, openLeafSignature])
   // normalizeReasoningLevel / initialReasoningLevel / getReasoningLevelForModelId
   // 只依赖全局 settings（与 conversationAssistantId 等会话级偏好无关），提到
   // useChatRuntimePreferences 调用之前计算好传入——这是消灭原环 1 里
@@ -2310,6 +2343,7 @@ const Chat = forwardRef<ChatRef, ChatProps>((props, ref) => {
         onFocus={handleMainInputFocus}
         mentionables={inputMessage.mentionables}
         setMentionables={handleMainInputMentionablesChange}
+        openConversationMentions={openConversationMentions}
         selectedSkills={mainInputSelectedSkills}
         setSelectedSkills={handleMainInputRuntimeSkillsChange}
         enableSkills

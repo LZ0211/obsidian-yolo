@@ -17,6 +17,7 @@ import {
   FileText,
   FolderClosedIcon,
   MessageSquare,
+  MessagesSquare,
 } from 'lucide-react'
 import { TFile } from 'obsidian'
 import {
@@ -38,6 +39,7 @@ import { Assistant } from '../../../../../types/assistant.types'
 import { ChatModel } from '../../../../../types/chat-model.types'
 import {
   Mentionable,
+  MentionableConversation,
   MentionableFolder,
   MentionableModel,
 } from '../../../../../types/mentionable'
@@ -332,6 +334,7 @@ export default function NewMentionsPlugin({
   models = [],
   selectedModelIds = [],
   searchFoldersByQuery,
+  openConversationMentions,
 }: {
   searchResultByQuery: (query: string) => SearchableMentionable[]
   onMenuOpenChange?: (isOpen: boolean) => void
@@ -339,6 +342,7 @@ export default function NewMentionsPlugin({
   placement?: 'top' | 'bottom'
   mentionDisplayMode?: 'inline' | 'badge'
   onSelectMentionable?: (mentionable: Mentionable) => void
+  openConversationMentions?: MentionableConversation[]
   menuMode?: MentionMenuMode
   assistants?: Assistant[]
   currentAssistantId?: string
@@ -545,6 +549,26 @@ export default function NewMentionsPlugin({
     return currentFileOption ? [currentFileOption, ...fileOptions] : fileOptions
   }, [currentFileOption, isRootBrowse, results, workspaceRoot])
 
+  const conversationOptions = useMemo<MentionTypeaheadOption[]>(() => {
+    if (!openConversationMentions || openConversationMentions.length === 0) {
+      return []
+    }
+    const query = normalizedQuery
+    const filtered = query
+      ? openConversationMentions.filter((mention) =>
+          (mention.title ?? '').toLowerCase().includes(query),
+        )
+      : openConversationMentions
+    return filtered.map(
+      (mention) =>
+        new MentionTypeaheadOption({
+          kind: 'mentionable',
+          mentionable: mention,
+          subtitle: mention.title ?? 'Conversation',
+        }),
+    )
+  }, [normalizedQuery, openConversationMentions])
+
   const folderCategoryOptions = useMemo(() => {
     if (!isRootBrowse) return []
     const folders = (
@@ -620,10 +644,25 @@ export default function NewMentionsPlugin({
         count: modelMentionables.length,
       })
     }
+    if (conversationOptions.length > 0) {
+      entries.push({
+        key: 'conversation',
+        label: t('chat.mentionMenu.entryConversation', '打开的对话'),
+        icon: (
+          <MessagesSquare
+            size={13}
+            className="yolo-rail-menu-rail-item-icon"
+          />
+        ),
+        options: conversationOptions,
+        count: conversationOptions.length,
+      })
+    }
     return entries
   }, [
     assistants,
     chatModeEntries,
+    conversationOptions,
     fileCategoryOptions,
     folderCategoryOptions,
     menuMode,
@@ -673,6 +712,10 @@ export default function NewMentionsPlugin({
                 : getFolderSubtitle(mentionable.folder.path, workspaceRoot),
           }),
       )
+    const flatConversationOptions =
+      normalizedQuery && conversationOptions.length > 0
+        ? conversationOptions
+        : []
 
     const assistantOptions = assistants
       .filter((assistant) => {
@@ -699,7 +742,12 @@ export default function NewMentionsPlugin({
     // 文件/文件夹的模糊搜索几乎总能塞满整个列表，直接拼接会把助手/模式/模型
     // 挤出去——类别内搜索取消后，过滤态是它们唯一的可达路径，所以先给它们留
     // 出配额，剩下的名额才归文件。
-    const others = [...assistantOptions, ...modeOptions, ...modelOptions]
+    const others = [
+      ...assistantOptions,
+      ...modeOptions,
+      ...modelOptions,
+      ...flatConversationOptions,
+    ]
     const reserved = Math.min(others.length, NON_FILE_RESULT_QUOTA)
     return [
       ...searchableMentionables.slice(
@@ -711,6 +759,7 @@ export default function NewMentionsPlugin({
   }, [
     assistants,
     chatModeEntries,
+    conversationOptions,
     matchesModelQuery,
     menuMode,
     modelMentionables,

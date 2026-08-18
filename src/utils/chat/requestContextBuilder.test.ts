@@ -329,6 +329,35 @@ describe('RequestContextBuilder compileUserMessagePrompt', () => {
     )
   })
 
+  it('renders conversation mention snapshots into the prompt', async () => {
+    const app = createMockApp({
+      files: [],
+      fileContents: new Map(),
+    })
+    const builder = new RequestContextBuilder(app as never, settings)
+
+    const result = await builder.compilePlainUserMessagePrompt({
+      prompt: '',
+      mentionables: [
+        {
+          type: 'conversation',
+          conversationId: 'conversation-2',
+          title: '打开的对话',
+          content: 'user: 之前的需求\nassistant: 已实现',
+        },
+      ],
+    })
+
+    const text = getTextContent(result.promptContent)
+    expect(text).toContain('Referenced conversation snapshots')
+    expect(text).toContain(
+      '<conversation_context conversationId="conversation-2" title="打开的对话">',
+    )
+    expect(text).toContain('user: 之前的需求')
+    expect(text).toContain('assistant: 已实现')
+    expect(text).toContain('</conversation_context>')
+  })
+
   it('marks PDF and table selections with source-specific metadata', async () => {
     const pdf = createMockFile('docs/paper.pdf')
     const table = createMockFile('notes/table.md')

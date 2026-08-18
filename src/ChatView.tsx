@@ -448,6 +448,11 @@ export class ChatView extends ItemView {
     await this.chatRef.current?.loadConversation(conversationId)
   }
 
+  /** Conversation id currently loaded in this view, if any. */
+  getConversationId(): string | undefined {
+    return this.resolvePersistableConversationId()
+  }
+
   addSelectionToChat(selectedBlock: MentionableBlockData) {
     this.plugin.getChatLeafSessionManager().touchLeafInteracted(this.leaf)
     this.chatRef.current?.addSelectionToChat(selectedBlock)

@@ -2607,6 +2607,7 @@ export const zh: TranslationKeys = {
       entryModel: '模型',
       entryFile: '文件',
       entryFolder: '文件夹',
+            entryConversation: '打开的对话',
       categoryEmpty: '暂无内容',
     },
     slashCommands: {

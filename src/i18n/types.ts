@@ -2365,6 +2365,7 @@ export type TranslationKeys = {
       entryModel?: string
       entryFile?: string
       entryFolder?: string
+      entryConversation?: string
       categoryEmpty?: string
     }
     slashCommands?: {

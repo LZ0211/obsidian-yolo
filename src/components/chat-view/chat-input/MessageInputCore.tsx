@@ -36,6 +36,7 @@ import { ChatSelectedSkill } from '../../../types/chat'
 import { ChatModel } from '../../../types/chat-model.types'
 import {
   Mentionable,
+  MentionableConversation,
   MentionableImage,
   MentionableOffice,
   MentionablePDF,
@@ -103,6 +104,7 @@ export type MessageInputCoreProps = {
 
   mentionables: Mentionable[]
   setMentionables: (mentionables: Mentionable[]) => void
+  openConversationMentions?: MentionableConversation[]
   mentionDisplayMode?: 'inline' | 'badge'
   onDeleteFromAll?: (mentionable: Mentionable) => void
   displayMentionablesForDelete?: Mentionable[]
@@ -161,6 +163,7 @@ const MessageInputCore = forwardRef<MessageInputCoreRef, MessageInputCoreProps>(
 
       mentionables,
       setMentionables,
+      openConversationMentions,
       mentionDisplayMode = 'inline',
       onDeleteFromAll,
       displayMentionablesForDelete,
@@ -1365,6 +1368,7 @@ const MessageInputCore = forwardRef<MessageInputCoreRef, MessageInputCoreProps>(
           contentClassName={contentClassName}
           mentionDisplayMode={mentionDisplayMode}
           onSelectMentionable={handleSelectMentionableForBadge}
+          openConversationMentions={openConversationMentions}
           mentionMenuMode={mentionMenuMode}
           assistants={assistants}
           currentAssistantId={currentAssistantId}

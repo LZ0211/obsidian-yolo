@@ -144,6 +144,21 @@ export type MentionableModel = {
   name: string
   providerId?: string
 }
+/**
+ * A snapshot of another open conversation, captured at mention time: the most
+ * recent turns rendered to plain text (bounded) plus the conversation title.
+ * Like `assistant-quote`, the content is a point-in-time snapshot — later
+ * turns in the referenced conversation are not included.
+ */
+export type MentionableConversation = {
+  type: 'conversation'
+  conversationId: string
+  title?: string
+  content: string
+  contentHash?: string
+  contentCount?: number
+  contentUnit?: 'characters' | 'words' | 'wordsCharacters'
+}
 export type Mentionable =
   | MentionableFile
   | MentionableFolder
@@ -157,6 +172,7 @@ export type Mentionable =
   | MentionableOffice
   | MentionableTextAttachment
   | MentionableModel
+  | MentionableConversation
 export type SerializedMentionableFile = {
   type: 'file'
   file: string
@@ -209,6 +225,7 @@ export type SerializedMentionablePDF = MentionablePDF
 export type SerializedMentionableOffice = MentionableOffice
 export type SerializedMentionableTextAttachment = MentionableTextAttachment
 export type SerializedMentionableModel = MentionableModel
+export type SerializedMentionableConversation = MentionableConversation
 export type SerializedMentionable =
   | SerializedMentionableFile
   | SerializedMentionableFolder
@@ -222,3 +239,4 @@ export type SerializedMentionable =
   | SerializedMentionableOffice
   | SerializedMentionableTextAttachment
   | SerializedMentionableModel
+  | SerializedMentionableConversation

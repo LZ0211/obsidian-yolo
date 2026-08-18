@@ -20,7 +20,11 @@ import { SnippetEntry } from '../../../core/snippets/snippetsManager'
 import { Assistant } from '../../../types/assistant.types'
 import { ChatModel } from '../../../types/chat-model.types'
 import { MentionableFolder } from '../../../types/mentionable'
-import { Mentionable, MentionableImage } from '../../../types/mentionable'
+import {
+  Mentionable,
+  MentionableConversation,
+  MentionableImage,
+} from '../../../types/mentionable'
 import {
   SearchableMentionable,
   fuzzySearch,
@@ -79,6 +83,7 @@ export type LexicalContentEditableProps = {
   mentionMenuPlacement?: 'top' | 'bottom'
   mentionDisplayMode?: 'inline' | 'badge'
   onSelectMentionable?: (mentionable: Mentionable) => void
+  openConversationMentions?: MentionableConversation[]
   mentionMenuMode?: 'direct-search' | 'entry'
   assistants?: Assistant[]
   currentAssistantId?: string
@@ -183,6 +188,7 @@ function LexicalContentEditable({
   mentionMenuPlacement = 'top',
   mentionDisplayMode = 'inline',
   onSelectMentionable,
+  openConversationMentions,
   mentionMenuMode = 'direct-search',
   assistants = [],
   currentAssistantId,
@@ -309,6 +315,7 @@ function LexicalContentEditable({
         placement={mentionMenuPlacement}
         mentionDisplayMode={mentionDisplayMode}
         onSelectMentionable={onSelectMentionable}
+        openConversationMentions={openConversationMentions}
         menuMode={mentionMenuMode}
         assistants={assistants}
         currentAssistantId={currentAssistantId}

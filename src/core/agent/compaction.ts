@@ -1,3 +1,4 @@
+import { MAX_RETAIN_RECENT_TURNS } from '../../constants/contextCompaction'
 import {
   type ChatAssistantMessage,
   type ChatConversationCompaction,
@@ -399,9 +400,6 @@ Do not ask the user for permission to compact. Do not mention this internal noti
 </auto_context_compaction_notice>`,
   }
 }
-
-/** Upper bound for `retainRecentTurns`; larger values are clamped. */
-export const MAX_RETAIN_RECENT_TURNS = 20
 
 const parseCompactOperationResult = (
   text: string,

@@ -1447,6 +1447,11 @@ export class AgentService {
     )
   }
 
+  getConversationMessages(conversationId: string): ChatMessage[] {
+    const state = this.conversationEntries.get(conversationId)?.state
+    return state ? [...state.messages] : []
+  }
+
   getConversationRunSummary(
     conversationId: string,
   ): AgentConversationRunSummary {
