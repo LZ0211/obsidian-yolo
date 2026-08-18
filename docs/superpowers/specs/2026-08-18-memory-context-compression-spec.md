@@ -91,6 +91,10 @@ Markdown memory
 ### 4.2 动态召回路径
 
 - 动态召回以最新用户问题为主，最多结合现有 recent-user-message 和 compaction summary。
+- 每次实际生成模型请求时，词法路径都基于最新 query 重新执行；语义路径复用
+  `requestContextBuilder.ts` 已有的 `QueryEmbeddingMemoryCache`，同一 embedding
+  model 与规范化 query 不重复调用 embedding provider。三路检索仍受候选上限和
+  请求构建 P95 延迟监控约束，缓存只减少 embedding 成本，不冻结动态召回结果。
 - 动态召回不得参与 system prompt snapshot 的创建或复用。
 - 动态 block 只修改即将发送的 `RequestMessage[]` 副本，不修改 `ChatMessage`、会话快照或已发布状态。
 - 将 block 合并到最近一条真实 user message；如果请求尾部是 assistant/tool 消息，也不能在 tool 消息之后凭空追加一个破坏顺序的 user message。
@@ -114,7 +118,10 @@ Markdown memory
 
 调整 request context builder 的职责：
 
-1. system snapshot builder 只装配稳定 memory section；
+1. system snapshot builder 继续装配 `getMemoryPromptContext` 返回的稳定 Markdown
+   memory section；其中 global/assistant 的 `profile`、`preferences` 内容仍然参与
+   system snapshot。只有 `MemoryRecallOrchestrator.render` 产生的动态
+   `<recalled_memory>` block 移出 snapshot；不能把稳定侧和动态侧整体搬走；
 2. request assembly 在 snapshot 取得后，使用最新消息调用动态 recall；
 3. 动态结果通过请求副本注入最近真实 user message；
 4. `generateRequestMessages` 和 `generateRequestSections` 必须共享同一份动态结果，避免估算路径和真实请求路径召回不同内容。
