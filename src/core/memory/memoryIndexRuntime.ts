@@ -1,5 +1,6 @@
 import type { App, EventRef, TAbstractFile, Vault } from 'obsidian'
 
+import { logFlightEvent } from '../../utils/debug/flightLog'
 import {
   getEmbeddingModelClient,
   withEmbeddingTimeout,
@@ -380,19 +381,24 @@ export class MemoryIndexRuntime {
     partition: MemoryPartition,
   ): Promise<Awaited<ReturnType<typeof loadMemorySourceSnapshot>>> {
     const sourcePath = this.sourcePathOverrides.get(partition.partitionKey)
-    if (sourcePath) {
-      return await loadMemorySourceSnapshotAtPath({
-        app: this.app,
-        partition,
-        sourcePath,
-      })
-    }
-    return await loadMemorySourceSnapshot({
-      app: this.app,
-      settings: this.settingsGetter(),
-      scope: partition.scope,
-      assistantId: partition.assistantId ?? undefined,
+    const snapshot = sourcePath
+      ? await loadMemorySourceSnapshotAtPath({
+          app: this.app,
+          partition,
+          sourcePath,
+        })
+      : await loadMemorySourceSnapshot({
+          app: this.app,
+          settings: this.settingsGetter(),
+          scope: partition.scope,
+          assistantId: partition.assistantId ?? undefined,
+        })
+    logFlightEvent('memory-index', 'snapshot-diag', {
+      id: partition.partitionKey,
+      detail: `path=${snapshot.sourcePath} entries=${snapshot.entries.length} valid=${snapshot.valid}`,
+      consoleOutput: 'none',
     })
+    return snapshot
   }
 
   private async closeStoreAndQueue(): Promise<void> {
