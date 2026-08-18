@@ -215,6 +215,23 @@ describe('workflow studio UI interactions', () => {
     expect(trashCurrent).toHaveBeenCalledTimes(1)
   })
 
+  it('reports a failed workflow deletion', async () => {
+    const { model } = createModel({ bundle: createBundle() })
+    const notice = jest.fn()
+    await renderStudio(model, notice)
+
+    await act(async () => {
+      testContainer
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Delete workflow"]',
+        )
+        ?.click()
+      await Promise.resolve()
+    })
+
+    expect(notice).toHaveBeenCalledWith('The workflow could not be deleted.')
+  })
+
   it('keeps imported STEP markdown when creating a workflow', async () => {
     const { model } = createModel()
     await renderStudio(model)
@@ -319,14 +336,17 @@ describe('workflow studio UI interactions', () => {
   })
 
   it('accepts a local workflow optimization proposal through updateFile', async () => {
-    const { model, updateFile } = createModel({ bundle: createBundle() })
+    const { model, updateFile } = createModel({ bundle: createValidBundle() })
     await renderStudio(model)
 
     const optimize = Array.from(testContainer.querySelectorAll('button')).find(
       (button) => button.textContent === 'Optimize workflow',
     )
     expect(optimize).not.toBeUndefined()
-    act(() => optimize!.click())
+    await act(async () => {
+      optimize!.click()
+      await flushAssistant()
+    })
 
     const accept = Array.from(testContainer.querySelectorAll('button')).find(
       (button) => button.textContent === 'Accept',
@@ -337,9 +357,193 @@ describe('workflow studio UI interactions', () => {
     expect(updateFile).toHaveBeenCalledWith('workflow', expect.any(String))
   })
 
+  it('runs an assistant review with the selected model and keeps it as a draft', async () => {
+    const { model, updateFile } = createModel({ bundle: createValidBundle() })
+    const source = model.getSnapshot().bundle!.document.content
+    const notice = jest.fn()
+    const stream = jest.fn(async function* (request: AgentRequest) {
+      expect(request.modelId).toBe('provider/slow')
+      expect(request.prompt).toContain('Tighten the instructions')
+      const result = await request.tools![0]!.handler({
+        content: `${source}\nReviewed by the assistant.\n`,
+      })
+      expect(result.isError).toBeUndefined()
+      yield { type: 'completed' as const, text: '' }
+    })
+    const modelSelect = {
+      defaultModelId: 'provider/fast',
+      models: [
+        { id: 'provider/fast', name: 'Fast', providerId: 'provider' },
+        { id: 'provider/slow', name: 'Slow', providerId: 'provider' },
+      ],
+    }
+    await renderStudio(
+      model,
+      notice,
+      jest.fn(async () => true),
+      {
+        agent: { stream },
+        models: modelSelect,
+      },
+    )
+
+    const select = testContainer.querySelector<HTMLSelectElement>(
+      'select[aria-label="Assistant model"]',
+    )
+    const instruction = testContainer.querySelector<HTMLInputElement>(
+      'input[aria-label="Instruction"]',
+    )
+    expect(select).not.toBeNull()
+    expect(instruction).not.toBeNull()
+    await act(async () => {
+      select!.value = 'provider/slow'
+      select!.dispatchEvent(new Event('change', { bubbles: true }))
+      await Promise.resolve()
+    })
+    await act(async () => {
+      setInputValue(instruction!, 'Tighten the instructions')
+      await Promise.resolve()
+    })
+    await act(async () => {
+      findButton(testContainer, 'Optimize workflow')!.click()
+      await flushAssistant()
+    })
+
+    expect(stream).toHaveBeenCalledTimes(1)
+    expect(
+      testContainer.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Proposal"]',
+      )?.value,
+    ).toContain('Reviewed by the assistant.')
+    expect(updateFile).not.toHaveBeenCalled()
+
+    await act(async () => {
+      findButton(testContainer, 'Accept')!.click()
+      await Promise.resolve()
+    })
+    expect(updateFile).toHaveBeenCalledWith(
+      'workflow',
+      expect.stringContaining('Reviewed by the assistant.'),
+    )
+  })
+
+  it('does not cancel a running assistant review on ordinary rerenders', async () => {
+    const { model } = createModel({ bundle: createValidBundle() })
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let signal: AbortSignal | undefined
+    const agent = {
+      stream: jest.fn(async function* (request: AgentRequest) {
+        signal = request.signal
+        await pending
+        await request.tools![0]!.handler({
+          content: model.getSnapshot().bundle!.document.content,
+        })
+        yield { type: 'completed' as const, text: '' }
+      }),
+    }
+
+    await renderStudio(
+      model,
+      jest.fn(),
+      jest.fn(async () => true),
+      { agent },
+    )
+
+    await act(async () => {
+      findButton(testContainer, 'Optimize workflow')!.click()
+      await flushAssistant()
+    })
+
+    expect(signal?.aborted).toBe(false)
+
+    await act(async () => {
+      release()
+      await pending
+      await Promise.resolve()
+    })
+  })
+
+  it('reports when no assistant model is configured', async () => {
+    const { model } = createModel({ bundle: createBundle() })
+    const notice = jest.fn()
+    await renderStudio(
+      model,
+      notice,
+      jest.fn(async () => true),
+      {
+        models: { defaultModelId: '', models: [] },
+      },
+    )
+
+    await act(async () => {
+      findButton(testContainer, 'Optimize workflow')!.click()
+      await Promise.resolve()
+      await flushAssistant()
+    })
+
+    expect(notice).toHaveBeenCalledWith('No assistant model is configured.')
+  })
+
+  it('ignores a late proposal after the assistant review is cancelled', async () => {
+    const { model } = createModel({ bundle: createValidBundle() })
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const agent = {
+      stream: jest.fn(async function* (request: AgentRequest) {
+        await pending
+        await request.tools![0]!.handler({
+          content: model.getSnapshot().bundle!.document.content,
+        })
+        yield { type: 'completed' as const, text: '' }
+      }),
+    }
+    await renderStudio(
+      model,
+      jest.fn(),
+      jest.fn(async () => true),
+      { agent },
+    )
+
+    await act(async () => {
+      findButton(testContainer, 'Optimize workflow')!.click()
+      await flushAssistant()
+    })
+    expect(findButton(testContainer, 'Cancel')).not.toBeNull()
+
+    await act(async () => {
+      findButton(testContainer, 'Cancel')!.click()
+      release()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(
+      testContainer.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Proposal"]',
+      ),
+    ).toBeNull()
+  })
+
   it('uses graph order when proposing an execution-order document section', async () => {
-    const { model, setSnapshot } = createModel({ bundle: createBundle() })
-    await renderStudio(model)
+    const { model, setSnapshot } = createModel({ bundle: createValidBundle() })
+    const agent = {
+      stream: jest.fn(async function* (request: AgentRequest) {
+        const content = `${model.getSnapshot().bundle!.document.content}\n1. Input\n2. Agent\n3. Output\n`
+        await request.tools![0]!.handler({ content })
+        yield { type: 'completed' as const, text: '' }
+      }),
+    }
+    await renderStudio(
+      model,
+      jest.fn(),
+      jest.fn(async () => true),
+      { agent },
+    )
     const source = createTopology()
     const output: WorkflowNode = {
       id: 'output',
@@ -362,7 +566,10 @@ describe('workflow studio UI interactions', () => {
       (button) => button.textContent === 'Optimize doc',
     )
     expect(optimize).not.toBeUndefined()
-    act(() => optimize!.click())
+    await act(async () => {
+      optimize!.click()
+      await flushAssistant()
+    })
 
     const proposal = testContainer.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Proposal"]',
@@ -372,7 +579,7 @@ describe('workflow studio UI interactions', () => {
 
   it('clears workflow-local assistant state when another workflow starts loading', async () => {
     const { model, setSnapshot } = createModel({
-      bundle: createBundle(),
+      bundle: createValidBundle(),
       selectedNodeId: 'agent',
     })
     await renderStudio(model)
@@ -381,7 +588,10 @@ describe('workflow studio UI interactions', () => {
       (button) => button.textContent === 'Optimize workflow',
     )
     expect(optimize).not.toBeUndefined()
-    act(() => optimize!.click())
+    await act(async () => {
+      optimize!.click()
+      await flushAssistant()
+    })
     expect(
       testContainer.querySelector('textarea[aria-label="Proposal"]'),
     ).not.toBeNull()
@@ -594,18 +804,28 @@ describe('workflow studio UI interactions', () => {
     act(() => railToggle!.click())
     act(() => inspectorToggle!.click())
 
-    expect(testContainer.querySelector('.yolo-workflow-rail')).not.toBeNull()
+    expect(testContainer.querySelector('.yolo-workflow-rail')).toBeNull()
     expect(
       testContainer.querySelector('.yolo-workflow-inspector'),
     ).not.toBeNull()
     expect(
-      testContainer.querySelector<HTMLElement>('.yolo-workflow-rail')!.style
-        .display,
-    ).toBe('flex')
-    expect(
       testContainer.querySelector<HTMLElement>('.yolo-workflow-inspector')!
         .style.display,
     ).toBe('flex')
+  })
+
+  it('surfaces a conflict while local changes are still dirty', async () => {
+    const { model } = createModel({
+      bundle: createBundle(),
+      status: 'conflict',
+      dirty: true,
+    })
+    await renderStudio(model)
+
+    expect(
+      testContainer.querySelector('.yolo-workflow-toolbar__status')
+        ?.textContent,
+    ).toContain('This workflow changed elsewhere.')
   })
 
   it('surfaces workflow load failures through the notice callback', async () => {
@@ -734,12 +954,43 @@ describe('workflow studio UI interactions', () => {
 
     expect(notice).toHaveBeenCalledWith('save failed')
   })
+
+  it('surfaces STEP cleanup failures after the manifest save succeeds', async () => {
+    const { model, setSnapshot } = createModel({
+      bundle: createBundle(),
+      dirty: true,
+    })
+    const notice = jest.fn()
+    ;(model.apply as jest.Mock).mockImplementationOnce(async () => {
+      setSnapshot({
+        ...model.getSnapshot(),
+        status: 'error',
+        error: 'workflow-step-cleanup-failed',
+        dirty: true,
+      })
+      return { ok: true as const }
+    })
+    await renderStudio(model, notice)
+
+    await act(async () => {
+      testContainer
+        .querySelector<HTMLButtonElement>('button[aria-label="Apply changes"]')
+        ?.click()
+      await Promise.resolve()
+    })
+
+    expect(notice).toHaveBeenCalledWith('workflow-step-cleanup-failed')
+  })
 })
 
 async function renderStudio(
   model: WorkflowEditorModel,
   notice: jest.Mock = jest.fn(),
   confirm: jest.Mock = jest.fn(async () => true),
+  options: Readonly<{
+    agent?: YoloModuleHostApiV1['agent']
+    models?: YoloModuleHostModelSnapshotV1
+  }> = {},
 ): Promise<void> {
   await act(async () => {
     testRoot.render(
@@ -749,10 +1000,50 @@ async function renderStudio(
         openFile={jest.fn()}
         notice={notice}
         confirm={confirm}
+        agent={options.agent ?? createDefaultReviewAgent(model)}
+        models={
+          options.models ?? {
+            defaultModelId: 'provider/model',
+            models: [
+              { id: 'provider/model', name: 'Model', providerId: 'provider' },
+            ],
+          }
+        }
       />,
     )
     await Promise.resolve()
   })
+}
+
+type AgentRequest = Parameters<YoloModuleHostApiV1['agent']['stream']>[0]
+
+function createDefaultReviewAgent(
+  model: WorkflowEditorModel,
+): YoloModuleHostApiV1['agent'] {
+  return {
+    stream: async function* (request: AgentRequest) {
+      const content = model.getSnapshot().bundle?.document.content
+      if (content) {
+        await request.tools?.[0]?.handler({
+          content: `${content}\nReviewed by the assistant.\n`,
+        })
+      }
+      yield { type: 'completed' as const, text: '' }
+    },
+  }
+}
+
+async function flushAssistant(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+}
+
+function setInputValue(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value',
+  )?.set
+  setter?.call(input, value)
+  input.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
 async function renderGraph(
@@ -888,6 +1179,50 @@ function createTopology(): WorkflowTopology {
 function createBundle(): WorkflowBundle {
   const copy = createWorkflowCopy('en')
   const topology = createTopology()
+  const content = updateWorkflowManagedBlocks('# Demo\n', topology, copy)
+  const document = parseWorkflowDocument(content, copy)
+  return {
+    path: 'demo/WORKFLOW.md',
+    document,
+    files: [
+      {
+        nodeId: 'workflow',
+        relativePath: 'demo/WORKFLOW.md',
+        snapshot: {
+          path: 'managed/workflows/demo/WORKFLOW.md',
+          content,
+        },
+      },
+      ...topology.nodes.map((node) => ({
+        nodeId: node.id,
+        relativePath: `demo/${node.stepPath}`,
+        snapshot: {
+          path: `managed/workflows/demo/${node.stepPath}`,
+          content: `# ${node.label}\n`,
+        },
+      })),
+    ],
+  } as WorkflowBundle
+}
+
+function createValidBundle(): WorkflowBundle {
+  const copy = createWorkflowCopy('en')
+  const source = createTopology()
+  const output: WorkflowNode = {
+    id: 'output',
+    kind: 'output',
+    label: 'Output',
+    stepPath: 'steps/output/STEP.md',
+    position: { x: 560, y: 90 },
+  }
+  const topology: WorkflowTopology = {
+    revision: 1,
+    nodes: [...source.nodes, output],
+    edges: [
+      ...source.edges,
+      { id: 'agent-output', source: 'agent', target: 'output' },
+    ],
+  }
   const content = updateWorkflowManagedBlocks('# Demo\n', topology, copy)
   const document = parseWorkflowDocument(content, copy)
   return {

@@ -81,6 +81,27 @@ describe('workflow editor model', () => {
     expect(model.getSnapshot().topology?.nodes[0]?.label).toBe('Changed')
   })
 
+  it('keeps the live workflow document aligned with draft topology changes', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    const changed = {
+      ...topology,
+      nodes: [
+        { ...topology.nodes[0], label: 'Changed' },
+        ...topology.nodes.slice(1),
+      ],
+    }
+
+    model.updateTopology(changed)
+
+    const snapshot = model.getSnapshot()
+    expect(snapshot.bundle?.document.topology).toEqual(changed)
+    expect(snapshot.bundle?.document.content).toBe(
+      updateWorkflowManagedBlocks(repository.currentContent(), changed, en),
+    )
+  })
+
   it('loads the first listed workflow when no path is provided', async () => {
     const model = createWorkflowEditorModel(createRepository(), en)
 
@@ -430,6 +451,30 @@ describe('workflow editor model', () => {
     expect(model.getSnapshot().dirty).toBe(false)
   })
 
+  it('clears dirty after saving a Markdown topology edit', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    const nextTopology = {
+      ...topology,
+      nodes: [
+        { ...topology.nodes[0], label: 'Renamed input' },
+        ...topology.nodes.slice(1),
+      ],
+    }
+    const nextContent = updateWorkflowManagedBlocks(
+      repository.currentContent(),
+      nextTopology,
+      en,
+    )
+
+    expect(model.updateFile('workflow', nextContent)).toBe(true)
+    await expect(model.saveFile('workflow')).resolves.toEqual({ ok: true })
+
+    expect(model.getSnapshot().topology).toEqual(nextTopology)
+    expect(model.getSnapshot().dirty).toBe(false)
+  })
+
   it('creates a STEP before adding a node to the draft', async () => {
     const repository = createRepository()
     const model = createWorkflowEditorModel(repository, en)
@@ -450,6 +495,41 @@ describe('workflow editor model', () => {
     )
     expect(model.getSnapshot().topology?.nodes).toEqual(
       expect.arrayContaining([node]),
+    )
+  })
+
+  it('saves a newly created STEP from the inspector', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    const node = {
+      id: 'review',
+      kind: 'agent' as const,
+      label: 'Review',
+      stepPath: 'steps/review/STEP.md',
+      position: { x: 800, y: 90 },
+    }
+
+    await expect(model.addNode(node, '# Review\n')).resolves.toBe(true)
+    const draftTopology = model.getSnapshot().topology!
+    expect(
+      model.updateTopology({
+        ...draftTopology,
+        edges: [
+          ...draftTopology.edges,
+          { id: 'agent-review', source: 'agent', target: 'review' },
+        ],
+      }),
+    ).toBe(true)
+    expect(model.updateFile('review', '# Edited review\n')).toBe(true)
+
+    await expect(model.saveFile('review')).resolves.toEqual({ ok: true })
+    expect(repository.replaceFile).toHaveBeenCalledWith(
+      {
+        path: 'managed/workflows/quality/steps/review/STEP.md',
+        content: '# Review\n',
+      },
+      '# Edited review\n',
     )
   })
 
@@ -585,6 +665,7 @@ function createRepository(): WorkflowRepository & {
 } {
   const manifestPath = 'managed/workflows/quality/WORKFLOW.md'
   let content = updateWorkflowManagedBlocks('', topology, en)
+  const fileContents = new Map<string, string>([[manifestPath, content]])
   let entries: readonly { path: string; title: string }[] = [
     { path: 'quality/WORKFLOW.md', title: 'quality' },
   ]
@@ -611,18 +692,21 @@ function createRepository(): WorkflowRepository & {
     ],
   }
   const replaceFile = jest.fn(async (expected, nextContent: string) => {
-    if (expected.content !== content) return { ok: false, reason: 'conflict' }
-    content = nextContent
-    return { ok: true, snapshot: { path: manifestPath, content } }
+    if (fileContents.get(expected.path) !== expected.content)
+      return { ok: false, reason: 'conflict' }
+    fileContents.set(expected.path, nextContent)
+    if (expected.path === manifestPath) content = nextContent
+    return { ok: true, snapshot: { path: expected.path, content: nextContent } }
   })
   const createStep = jest.fn(
-    async (_path, relativePath: string, nextContent: string) => ({
-      ok: true as const,
-      snapshot: {
-        path: `managed/workflows/quality/${relativePath}`,
-        content: nextContent,
-      },
-    }),
+    async (_path, relativePath: string, nextContent: string) => {
+      const path = `managed/workflows/quality/${relativePath}`
+      fileContents.set(path, nextContent)
+      return {
+        ok: true as const,
+        snapshot: { path, content: nextContent },
+      }
+    },
   )
   const trashStep = jest.fn(async () => true)
   const read = jest.fn(async () => ({

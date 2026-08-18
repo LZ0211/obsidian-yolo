@@ -46,7 +46,7 @@ describe('workflow module chat mode', () => {
           it: 'Progetta e gestisci flussi di agenti basati su documenti.',
         },
         icon: 'workflow',
-        capability: 'none',
+        capability: 'vault-write',
         personaPrompt: expect.stringContaining('workflow_read'),
         skills: ['skills/workflow/SKILL.md'],
       }),
@@ -62,7 +62,7 @@ describe('workflow module chat mode', () => {
       'workflow_create',
     ])
     expect(mode.tools[0]?.requiresApproval).toBeUndefined()
-    expect(mode.tools[1]?.requiresApproval).toBe(true)
+    expect(mode.tools[1]?.requiresApproval).toBeUndefined()
   })
 
   it('keeps dirty editor state when the host restores the current view state', async () => {
@@ -138,6 +138,7 @@ function createViewContext(id: string) {
 
 function fakeHost(): RegistrationHost {
   return {
+    agent: { stream: jest.fn() },
     chat: { registerMode: jest.fn() },
     lifecycle: { add: jest.fn() },
     workspace: {
@@ -157,6 +158,10 @@ function fakeHost(): RegistrationHost {
     paths: {
       getSnapshot: () => ({ contentRoot: 'managed/workflows' }),
       subscribe: jest.fn(() => () => undefined),
+    },
+    settings: {
+      getModelSnapshot: () => ({ defaultModelId: '', models: [] }),
+      subscribeModels: jest.fn(() => () => undefined),
     },
     vault: {
       listChildren: jest.fn(() => []),

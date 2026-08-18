@@ -67,19 +67,22 @@ describe('workflow chat tools', () => {
     { path: null },
     { path: '   ' },
     { path: 'alpha/WORKFLOW.md', extra: true },
-  ])('rejects invalid read input %p without repository access', async (input) => {
-    const repository = fakeRepository()
-    const tools = createWorkflowChatTools(repository, en)
+  ])(
+    'rejects invalid read input %p without repository access',
+    async (input) => {
+      const repository = fakeRepository()
+      const tools = createWorkflowChatTools(repository, en)
 
-    const result = await tools.read.handler(input as Record<string, unknown>)
+      const result = await tools.read.handler(input as Record<string, unknown>)
 
-    expect(result.isError).toBe(true)
-    expect(parseResult(result)).toMatchObject({
-      ok: false,
-      reason: 'invalid-input',
-    })
-    expect(repository.read).not.toHaveBeenCalled()
-  })
+      expect(result.isError).toBe(true)
+      expect(parseResult(result)).toMatchObject({
+        ok: false,
+        reason: 'invalid-input',
+      })
+      expect(repository.read).not.toHaveBeenCalled()
+    },
+  )
 
   it('returns a machine-readable error when a workflow is missing', async () => {
     const repository = fakeRepository()
@@ -101,7 +104,9 @@ describe('workflow chat tools', () => {
     const tools = createWorkflowChatTools(repository, () => copy)
 
     const invalidInput = await tools.read.handler({})
-    expect(parseResult(invalidInput).message).toBe(en.chatToolError.invalidInput)
+    expect(parseResult(invalidInput).message).toBe(
+      en.chatToolError.invalidInput,
+    )
 
     repository.read.mockResolvedValue(null)
     const notFound = await tools.read.handler({ path: 'missing/WORKFLOW.md' })
@@ -110,7 +115,9 @@ describe('workflow chat tools', () => {
     repository.create.mockResolvedValue({ ok: false, reason: 'target-exists' })
     const input = validCreateInput()
     const targetExists = await tools.create.handler(input)
-    expect(parseResult(targetExists).message).toBe(en.chatToolError.targetExists)
+    expect(parseResult(targetExists).message).toBe(
+      en.chatToolError.targetExists,
+    )
 
     copy = zh
 
@@ -121,7 +128,9 @@ describe('workflow chat tools', () => {
     const notFoundInChinese = await tools.read.handler({
       path: 'missing/WORKFLOW.md',
     })
-    expect(parseResult(notFoundInChinese).message).toBe(zh.chatToolError.notFound)
+    expect(parseResult(notFoundInChinese).message).toBe(
+      zh.chatToolError.notFound,
+    )
     const targetExistsInChinese = await tools.create.handler(input)
     expect(parseResult(targetExistsInChinese).message).toBe(
       zh.chatToolError.targetExists,
@@ -217,7 +226,9 @@ describe('workflow chat tools', () => {
     {
       slug: 'alpha',
       manifestContent: '# Alpha',
-      stepFiles: [{ relativePath: 'steps/input/STEP.md', content: 'Input', extra: true }],
+      stepFiles: [
+        { relativePath: 'steps/input/STEP.md', content: 'Input', extra: true },
+      ],
     },
     {
       slug: 'alpha',
@@ -225,33 +236,44 @@ describe('workflow chat tools', () => {
       stepFiles: [],
       extra: true,
     },
-  ])('rejects invalid create input %p without repository access', async (input) => {
-    const repository = fakeRepository()
-    const tools = createWorkflowChatTools(repository, en)
+  ])(
+    'rejects invalid create input %p without repository access',
+    async (input) => {
+      const repository = fakeRepository()
+      const tools = createWorkflowChatTools(repository, en)
 
-    const result = await tools.create.handler(input as Record<string, unknown>)
+      const result = await tools.create.handler(
+        input as Record<string, unknown>,
+      )
 
-    expect(result.isError).toBe(true)
-    expect(parseResult(result)).toMatchObject({
-      ok: false,
-      reason: 'invalid-input',
-    })
-    expect(repository.create).not.toHaveBeenCalled()
-  })
+      expect(result.isError).toBe(true)
+      expect(parseResult(result)).toMatchObject({
+        ok: false,
+        reason: 'invalid-input',
+      })
+      expect(repository.create).not.toHaveBeenCalled()
+    },
+  )
 
   it.each([
     { ok: false, reason: 'invalid-input' },
     { ok: false, reason: 'target-exists' },
-  ] satisfies CreateWorkflowResult[])('maps repository create failure %p', async (failure) => {
-    const repository = fakeRepository()
-    repository.create.mockResolvedValue(failure)
-    const tools = createWorkflowChatTools(repository, en)
+  ] satisfies CreateWorkflowResult[])(
+    'maps repository create failure %p',
+    async (failure) => {
+      const repository = fakeRepository()
+      repository.create.mockResolvedValue(failure)
+      const tools = createWorkflowChatTools(repository, en)
 
-    const result = await tools.create.handler(validCreateInput())
+      const result = await tools.create.handler(validCreateInput())
 
-    expect(result.isError).toBe(true)
-    expect(parseResult(result)).toMatchObject({ ok: false, reason: failure.reason })
-  })
+      expect(result.isError).toBe(true)
+      expect(parseResult(result)).toMatchObject({
+        ok: false,
+        reason: failure.reason,
+      })
+    },
+  )
 
   it('propagates Host errors from create', async () => {
     const repository = fakeRepository()
@@ -259,9 +281,7 @@ describe('workflow chat tools', () => {
     repository.create.mockRejectedValue(failure)
     const tools = createWorkflowChatTools(repository, en)
 
-    await expect(
-      tools.create.handler(validCreateInput()),
-    ).rejects.toBe(failure)
+    await expect(tools.create.handler(validCreateInput())).rejects.toBe(failure)
   })
 
   it('publishes strict schemas and approval policy', () => {
@@ -276,7 +296,7 @@ describe('workflow chat tools', () => {
       additionalProperties: false,
     })
     expect(tools.create.name).toBe('workflow_create')
-    expect(tools.create.requiresApproval).toBe(true)
+    expect(tools.create.requiresApproval).toBeUndefined()
     expect(tools.create.inputSchema).toEqual({
       type: 'object',
       properties: {
