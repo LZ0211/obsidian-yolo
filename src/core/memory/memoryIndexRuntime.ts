@@ -1,6 +1,9 @@
 import type { App, EventRef, TAbstractFile, Vault } from 'obsidian'
 
-import { getEmbeddingModelClient } from '../rag/embedding'
+import {
+  getEmbeddingModelClient,
+  withEmbeddingTimeout,
+} from '../rag/embedding'
 
 import {
   type MemoryIndexMaintenanceStore,
@@ -360,7 +363,10 @@ export class MemoryIndexRuntime {
         settings: settings as never,
         embeddingModelId,
       })
-      return await client.getEmbedding(content)
+      // Timeout: embedContent runs inside the serialized operationChain —
+      // an unbounded embedding call would stall every later index query,
+      // including the main turn's memory recall.
+      return await withEmbeddingTimeout(client, content)
     } catch (error) {
       console.warn(
         '[YOLO][Memory] embedding unavailable during reconcile',

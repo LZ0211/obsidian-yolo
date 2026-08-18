@@ -2,6 +2,7 @@ import { type App, FileSystemAdapter } from 'obsidian'
 
 import type { SqliteNativeRuntimeFacade } from '../../database/sqlite/sqliteNativeRuntime'
 import { sha256Hex } from '../../utils/common/content-hash'
+import { logFlightEvent } from '../../utils/debug/flightLog'
 import { getAbsoluteYoloMemoryIndexPath } from '../paths/yoloPaths'
 import { acquireRuntimeComponent } from '../runtime-components/runtimeComponentAccess'
 
@@ -52,6 +53,40 @@ import {
 type MemoryPartitionInput = {
   scope: MemoryPartition['scope']
   assistantId?: string | null
+}
+
+/**
+ * Final line of defense for the serialized operationChain: `reconcilePartition`
+ * runs inside `enqueue`, and every later `store.query` awaits the chain — an
+ * unbounded injected embedContent would stall the whole memory index and, with
+ * it, the main turn's recall. Bound the call here regardless of who injected
+ * the embedder; a timeout degrades to "no vector" like any other failure.
+ */
+const RECONCILE_EMBED_TIMEOUT_MS = 8_000
+
+const boundedEmbed = async (
+  embed: ((content: string) => Promise<number[] | null>) | null | undefined,
+  content: string,
+  timeoutMs: number,
+): Promise<number[] | null> => {
+  if (!embed) return null
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      embed(content),
+      new Promise<null>((resolve) => {
+        timeoutId = setTimeout(() => {
+          logFlightEvent('memory-index', 'embed-timeout', {
+            detail: `${timeoutMs}ms`,
+            consoleOutput: 'warn',
+          })
+          resolve(null)
+        }, timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
+  }
 }
 
 const encodeBase64Url = (value: string): string => {
@@ -170,6 +205,8 @@ type MemoryIndexStoreOptions = {
    * semantic recall path has data to search.
    */
   embedContent?: (content: string) => Promise<number[] | null>
+  /** Test seam: shorten the per-embedding bound of the operationChain. */
+  embedTimeoutMs?: number
   clock?: () => number
 }
 
@@ -579,7 +616,11 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
           const embedded = await Promise.all(
             batch.map(async (entry): Promise<[string, number[]] | null> => {
               if (!changedLocalIds.has(entry.localId)) return null
-              const embedding = await embedContent(entry.content)
+              const embedding = await boundedEmbed(
+                embedContent,
+                entry.content,
+                this.options.embedTimeoutMs ?? RECONCILE_EMBED_TIMEOUT_MS,
+              )
               return embedding && embedding.length > 0
                 ? [entry.localId, embedding]
                 : null

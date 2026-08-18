@@ -37,7 +37,10 @@ import {
   getProjectInstructionsSection,
   resolveProjectInstructionFilePaths,
 } from '../../core/project-instructions'
-import { getEmbeddingModelClient } from '../../core/rag/embedding'
+import {
+  getEmbeddingModelClient,
+  withEmbeddingTimeout,
+} from '../../core/rag/embedding'
 import { QueryEmbeddingMemoryCache } from '../../core/rag/queryEmbeddingMemoryCache'
 import {
   type LiteSkillScope,
@@ -3123,7 +3126,9 @@ ${previewLines.join('\n')}`)
               settings: this.settings,
               embeddingModelId,
             })
-            const embedding = await client.getEmbedding(query)
+            // Timeout: this runs inside the main turn's context build — a
+            // hung embedding call would pin the turn at "requesting" forever.
+            const embedding = await withEmbeddingTimeout(client, query)
             this.memoryEmbeddingQueryCache.set(cacheKey, embedding)
             return embedding
           } catch (error) {

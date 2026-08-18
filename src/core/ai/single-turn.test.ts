@@ -1416,4 +1416,40 @@ describe('executeSingleTurn', () => {
       jest.useRealTimers()
     }
   })
+
+  it('times out a non-streaming request that never responds', async () => {
+    jest.useFakeTimers()
+    try {
+      const provider = new MockProvider()
+      provider.generateResponseMock.mockImplementation(
+        () => new Promise<LLMResponseNonStreaming>(() => undefined),
+      )
+
+      const requestPromise = executeSingleTurn({
+        providerClient: provider,
+        model: TEST_MODEL,
+        request: TEST_REQUEST,
+        deliveryMode: 'buffered',
+        primaryRequestTimeoutMs: 25,
+      }).catch((error: unknown) => error)
+      // Guard: without the fix the promise never settles; the 1s fallback
+      // timer resolves first and the assertion below fails fast.
+      const guarded = Promise.race([
+        requestPromise,
+        new Promise<unknown>((resolve) =>
+          setTimeout(() => resolve(undefined), 1_000),
+        ),
+      ])
+      await jest.advanceTimersByTimeAsync(1_100)
+
+      const caught = await guarded
+      expect(caught).toBeInstanceOf(Error)
+      expect((caught as Error).name).toBe('ModelRequestTimeoutError')
+      expect(isRequestErrorNonRetryable(caught)).toBe(true)
+      expect(provider.generateResponseMock).toHaveBeenCalledTimes(1)
+      expect(provider.streamResponseMock).not.toHaveBeenCalled()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
 })

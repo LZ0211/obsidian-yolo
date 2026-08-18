@@ -24,6 +24,12 @@ jest.mock('../../core/rag/embedding', () => ({
   getEmbeddingModelClient: jest.fn(() => ({
     getEmbedding: jest.fn(async () => Array(8).fill(0.1)),
   })),
+  withEmbeddingTimeout: jest.fn(
+    async (
+      client: { getEmbedding: (text: string) => Promise<number[]> },
+      text: string,
+    ) => client.getEmbedding(text),
+  ),
 }))
 
 jest.mock('../../core/skills/liteSkills', () => ({

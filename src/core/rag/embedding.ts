@@ -1,6 +1,37 @@
 import { YoloSettings } from '../../settings/schema/setting.types'
 import { EmbeddingModelClient } from '../../types/embedding'
+import { logFlightEvent } from '../../utils/debug/flightLog'
 import { getProviderClient } from '../llm/manager'
+
+/** Embedding calls are unbounded network requests; cap them so a hung
+ * provider can never stall the request path or the memory index
+ * operationChain. */
+export const MEMORY_EMBEDDING_TIMEOUT_MS = 8_000
+
+export const withEmbeddingTimeout = async (
+  client: EmbeddingModelClient,
+  text: string,
+  timeoutMs = MEMORY_EMBEDDING_TIMEOUT_MS,
+): Promise<number[]> => {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      client.getEmbedding(text),
+      new Promise<never>((_resolve, reject) => {
+        timeoutId = setTimeout(() => {
+          logFlightEvent('llm', 'embedding-timeout', {
+            id: client.id,
+            detail: `${timeoutMs}ms without response`,
+            consoleOutput: 'warn',
+          })
+          reject(new Error(`Embedding request timed out after ${timeoutMs}ms`))
+        }, timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
+  }
+}
 
 export const getEmbeddingModelClient = ({
   settings,

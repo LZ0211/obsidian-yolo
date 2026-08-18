@@ -1149,6 +1149,54 @@ describe('vector recall path write-through', () => {
     }
   })
 
+  it('reconcile completes when embedContent never settles so the operationChain cannot stall', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-vector-hang-'))
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const fingerprint = 'file-v1'
+    const entries = [
+      makeEntry('Memory_hang', '永不返回的嵌入请求', partition),
+    ]
+    // A hung embedding call (never resolves, never rejects) must not pin
+    // the serialized operationChain — later store.query calls await it.
+    const embedContent = jest.fn(() => new Promise<number[]>(() => undefined))
+    const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
+    const store = await openMemoryIndexStore({
+      app,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot: async () => ({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: fingerprint,
+        parserVersion: 'p',
+        entries,
+        valid: true,
+      }),
+      embedContent,
+      embedTimeoutMs: 100,
+    })
+    try {
+      await store.reconcilePartition({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: fingerprint,
+        parserVersion: 'p',
+        entries,
+      })
+
+      // The chain must remain usable after the timeout degradation.
+      const runtime = await store.getRuntime()
+      const rows = runtime.query<{ memory_key: string }>(
+        'select memory_key from memory_embeddings where partition_key = ?',
+        [partition.partitionKey],
+      )
+      expect(rows).toEqual([])
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('drops vectors of removed entries and keeps embeddings of unchanged entries', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-vector-remove-'))
     const partition = buildMemoryPartition({ scope: 'global' })

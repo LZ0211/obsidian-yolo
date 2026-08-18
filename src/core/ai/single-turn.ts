@@ -395,22 +395,46 @@ export async function executeSingleTurn({
     }
     bindLLMDebugTraceToSignal(debugTraceId, requestController.signal)
 
+    // Non-streaming requests are otherwise unbounded: buffered delivery on
+    // non-obsidian transports resolves here, and a provider that ignores the
+    // abort signal would hold the caller forever (extraction lanes, the
+    // operationChain, stream-recovery fallbacks). Bound it like streaming.
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timeoutId = setTimeout(() => {
+        requestController.abort()
+        logFlightEvent('llm', 'non-streaming-timeout', {
+          id: flightId,
+          detail: `${primaryRequestTimeoutMs}ms without response`,
+          consoleOutput: 'warn',
+        })
+        reject(
+          markRequestErrorNonRetryable(
+            new ModelRequestTimeoutError(primaryRequestTimeoutMs),
+          ),
+        )
+      }, primaryRequestTimeoutMs)
+    })
+
     try {
       const response = await withDebugTrace(() =>
-        providerClient.generateResponse(
-          effectiveModel,
-          {
-            ...createRequestWithSystemHint(options?.systemHint),
-            tools,
-            tool_choice: resolvedToolChoice,
-            stream: false,
-          },
-          {
-            signal: requestController.signal,
-            debugTraceId,
-            geminiTools: effectiveProviderOptions.geminiTools,
-          },
-        ),
+        Promise.race([
+          providerClient.generateResponse(
+            effectiveModel,
+            {
+              ...createRequestWithSystemHint(options?.systemHint),
+              tools,
+              tool_choice: resolvedToolChoice,
+              stream: false,
+            },
+            {
+              signal: requestController.signal,
+              debugTraceId,
+              geminiTools: effectiveProviderOptions.geminiTools,
+            },
+          ),
+          timeoutPromise,
+        ]),
       )
 
       span.finish()
@@ -444,6 +468,7 @@ export async function executeSingleTurn({
             ) ?? [],
       }
     } finally {
+      if (timeoutId !== null) clearTimeout(timeoutId)
       span.cancel()
       signal?.removeEventListener('abort', handleRequestAbort)
     }
