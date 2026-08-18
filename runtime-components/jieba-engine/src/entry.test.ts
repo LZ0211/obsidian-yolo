@@ -18,14 +18,13 @@ type FakeWorkerInstance = {
   terminated: boolean
   requests: { id: number; text?: string }[]
   respondLatest(tokens: string[]): void
+  respondReady(): void
 }
 
-type WorkerResponseLike = {
-  type: 'result' | 'error'
-  id: number
-  tokens?: string[]
-  message?: string
-}
+type WorkerResponseLike =
+  | { type: 'result'; id: number; tokens: string[] }
+  | { type: 'error'; id: number; message: string }
+  | { type: 'ready' }
 
 class FakeWorker implements FakeWorkerInstance {
   onmessage: ((event: { data: WorkerResponseLike }) => void) | null = null
@@ -36,6 +35,9 @@ class FakeWorker implements FakeWorkerInstance {
     const request = this.requests.at(-1)
     if (!request) throw new Error('no request posted')
     this.onmessage?.({ data: { type: 'result', id: request.id, tokens } })
+  }
+  respondReady(): void {
+    this.onmessage?.({ data: { type: 'ready' } })
   }
   postMessage(request: unknown): void {
     // Default: never respond (simulates a wedged worker).
@@ -105,6 +107,8 @@ describe('jieba-engine runtime component', () => {
   it('resolves tokens from the worker response', async () => {
     const component = await loadComponent()
     const promise = component.cutForSearch('北京烤鸭')
+    workers[0]?.respondReady()
+    await Promise.resolve()
     workers[0]?.respondLatest(['北京', '烤鸭'])
     await expect(promise).resolves.toEqual(['北京', '烤鸭'])
   })
@@ -112,6 +116,8 @@ describe('jieba-engine runtime component', () => {
   it('rejects when the worker reports an error', async () => {
     const component = await loadComponent()
     const promise = component.cutForSearch('北京烤鸭')
+    workers[0]?.respondReady()
+    await Promise.resolve()
     const request = workers[0]?.requests.at(-1)
     workers[0]?.onmessage?.({
       data: { type: 'error', id: request?.id ?? 1, message: 'wasm exploded' },
@@ -128,6 +134,8 @@ describe('jieba-engine runtime component', () => {
     // Attach the assertion before advancing so the timeout rejection has a
     // handler the moment it fires.
     const promise = component.cutForSearch('北京烤鸭')
+    workers[0]?.respondReady()
+    await jest.advanceTimersByTimeAsync(0)
     const assertion = expect(promise).rejects.toThrow(/timed out/)
     await jest.advanceTimersByTimeAsync(2_100)
     await assertion
@@ -135,8 +143,19 @@ describe('jieba-engine runtime component', () => {
 
     // The next call must start a fresh worker instead of reusing the wedged one.
     const retry = component.cutForSearch('again').catch(() => undefined)
+    workers[1]?.respondReady()
+    await jest.advanceTimersByTimeAsync(0)
     workers[1]?.respondLatest(['again'])
     await retry
     expect(workers).toHaveLength(2)
+  })
+
+  it('rejects ready waiters when the worker errors before becoming ready', async () => {
+    const component = await loadComponent()
+    const promise = component.cutForSearch('北京烤鸭')
+    const assertion = expect(promise).rejects.toThrow(/worker error/)
+    workers[0]?.onerror?.({ message: 'worker crashed' })
+    await assertion
+    expect(workers[0]?.terminated).toBe(true)
   })
 })

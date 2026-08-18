@@ -24,8 +24,8 @@
       "descriptionKey": "settings.modules.runtimeComponents.jiebaEngine.description",
       "impactKey": "settings.modules.runtimeComponents.jiebaEngine.impact",
       "entry": "runtime-components/jieba-engine/dist/entry.js",
-      "byteSize": 5359693,
-      "sha256": "8076c471e1a2493def150ec99abe31d2737b637065427d06cc09c7a971586bd7"
+      "byteSize": 5369710,
+      "sha256": "a9a9b542e13fc1e2dcc87a356260ef52ed2b66df7cfd778b3ad84afb7b37a86d"
     },
     {
       "id": "pdf-engine",

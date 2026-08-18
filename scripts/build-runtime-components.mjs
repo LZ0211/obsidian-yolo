@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { readFile, readdir, writeFile, mkdir } from 'node:fs/promises'
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { builtinModules } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -300,7 +300,7 @@ function jiebaWorkerInlinePlugin() {
               JSON.stringify(wasmBase64) +
               '), (c) => c.charCodeAt(0));',
             'initSync({ module: wasmBytes });',
-            "self.onmessage = (event) => {",
+            'self.onmessage = (event) => {',
             "  const request = event.data;",
             "  try {",
             "    if (request.type !== 'cut_for_search') throw new Error('unknown request');",
@@ -310,8 +310,19 @@ function jiebaWorkerInlinePlugin() {
             "    self.postMessage({ type: 'error', id: request.id, message: String(error && error.message || error) });",
             "  }",
             "};",
+            // Handshake: postMessage immediately after `new Worker` can be
+            // dropped by Chromium before the blob script starts executing, so
+            // the component waits for this before dispatching requests.
+            "self.postMessage({ type: 'ready' });",
           ].join('\n')
-          return { contents: workerScript, loader: 'js' }
+          // Like the pdf worker: ship the script as a string default export so
+          // the component receives the actual source. Returning the script as
+          // raw module code would bundle it into the host entry (import default
+          // becomes undefined and the blob worker is an empty shell).
+          return {
+            contents: `export default ${JSON.stringify(workerScript)}`,
+            loader: 'js',
+          }
         },
       )
     },
