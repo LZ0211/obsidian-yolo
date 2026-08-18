@@ -16,6 +16,8 @@ import {
 import { MemoryIndexMaintenanceQueue } from './memoryIndexMaintenanceQueue'
 import {
   type MemorySettingsLike,
+  loadMemorySourceFingerprint,
+  loadMemorySourceFingerprintAtPath,
   loadMemorySourceSnapshot,
   loadMemorySourceSnapshotAtPath,
   resolveMemoryFilePaths,
@@ -276,6 +278,8 @@ export class MemoryIndexRuntime {
         app: this.app,
         getSettings: () => this.settingsGetter(),
         getSourceSnapshot: (partition) => this.getSourceSnapshot(partition),
+        getSourceFingerprint: (partition) =>
+          this.getSourceFingerprint(partition),
         embedContent: (content) => this.embedContent(content),
       })
     }
@@ -399,6 +403,26 @@ export class MemoryIndexRuntime {
       consoleOutput: 'none',
     })
     return snapshot
+  }
+
+  /** Mirror of {@link getSourceSnapshot} without parsing — the reconcile's
+   *  pre-probe for skipping unchanged partitions. */
+  private async getSourceFingerprint(partition: MemoryPartition): Promise<{
+    fingerprint: string
+    parserVersion: string
+  }> {
+    const sourcePath = this.sourcePathOverrides.get(partition.partitionKey)
+    return sourcePath
+      ? await loadMemorySourceFingerprintAtPath({
+          app: this.app,
+          sourcePath,
+        })
+      : await loadMemorySourceFingerprint({
+          app: this.app,
+          settings: this.settingsGetter(),
+          scope: partition.scope,
+          assistantId: partition.assistantId ?? undefined,
+        })
   }
 
   private async closeStoreAndQueue(): Promise<void> {

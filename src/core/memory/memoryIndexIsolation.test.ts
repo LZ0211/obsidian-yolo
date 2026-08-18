@@ -180,4 +180,143 @@ describe('memory index multi-tenant isolation', () => {
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 10 })
     }
   })
+
+  it('skips reconcile for a partition whose source fingerprint is unchanged', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-probe-'))
+    const global = buildMemoryPartition({ scope: 'global' })
+    const entry = makeEntry('P_Theme', ['theme'], global, '深色模式')
+    const snapshot = {
+      partition: global,
+      sourcePath: 'global.md',
+      sourceFileFingerprint: 'g-v1',
+      parserVersion: 'p',
+      entries: [entry],
+      valid: true,
+    }
+    const getSourceSnapshot = jest.fn(async () => snapshot)
+    const store = await openMemoryIndexStore({
+      app: {
+        vault: { adapter: new TestFileSystemAdapter(root) },
+      } as never,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot,
+      getSourceFingerprint: jest.fn(async () => ({
+        fingerprint: 'g-v1',
+        parserVersion: 'p',
+      })),
+      clock: () => 100,
+    })
+
+    try {
+      const input = {
+        partition: global,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: 'g-v1',
+        parserVersion: 'p',
+        entries: [entry],
+      }
+      await store.reconcilePartition(input)
+      expect(getSourceSnapshot).toHaveBeenCalledTimes(1)
+
+      // Same source content + parser version → the probe skips the read,
+      // the parse, and every write; rows stay untouched.
+      await store.reconcilePartition(input)
+      expect(getSourceSnapshot).toHaveBeenCalledTimes(1)
+
+      const results = await store.query({
+        partition: global,
+        sourceFileFingerprint: 'g-v1',
+        target: {
+          query: 'theme',
+          keywords: ['theme'],
+          entities: [],
+          categories: ['preferences'],
+          scopes: ['global'],
+          sector: null,
+          confidence: 1,
+          isReferential: false,
+          source: 'lexical',
+        },
+        maxEntries: 8,
+        maxChars: 3000,
+      })
+      expect(results.map(({ id }) => id)).toEqual(['P_Theme'])
+      expect(results[0]?.content).toBe('深色模式')
+    } finally {
+      if ('close' in store && typeof store.close === 'function') {
+        await store.close()
+      }
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 10 })
+    }
+  })
+
+  it('reconciles when the source fingerprint changed even if rows exist', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-probe-'))
+    const global = buildMemoryPartition({ scope: 'global' })
+    const oldEntry = makeEntry('P_Theme', ['theme'], global, '旧内容')
+    const newEntry = makeEntry('P_Theme', ['theme'], global, '新内容')
+    let currentEntry = oldEntry
+    const getSourceSnapshot = jest.fn(async () => ({
+      partition: global,
+      sourcePath: 'global.md',
+      sourceFileFingerprint: 'g-v1',
+      parserVersion: 'p',
+      entries: [currentEntry],
+      valid: true,
+    }))
+    const store = await openMemoryIndexStore({
+      app: {
+        vault: { adapter: new TestFileSystemAdapter(root) },
+      } as never,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot,
+      getSourceFingerprint: jest.fn(async () => ({
+        fingerprint: currentEntry === oldEntry ? 'g-v1' : 'g-v2',
+        parserVersion: 'p',
+      })),
+      clock: () => 100,
+    })
+
+    try {
+      const input = {
+        partition: global,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: 'g-v1',
+        parserVersion: 'p',
+        entries: [currentEntry],
+      }
+      await store.reconcilePartition(input)
+      expect(getSourceSnapshot).toHaveBeenCalledTimes(1)
+
+      // Probe now differs from the stored state → full reconcile picks up
+      // the new content.
+      currentEntry = newEntry
+      await store.reconcilePartition(input)
+      expect(getSourceSnapshot).toHaveBeenCalledTimes(2)
+
+      const results = await store.query({
+        partition: global,
+        sourceFileFingerprint: 'g-v1',
+        target: {
+          query: 'theme',
+          keywords: ['theme'],
+          entities: [],
+          categories: ['preferences'],
+          scopes: ['global'],
+          sector: null,
+          confidence: 1,
+          isReferential: false,
+          source: 'lexical',
+        },
+        maxEntries: 8,
+        maxChars: 3000,
+      })
+      expect(results[0]?.content).toBe('新内容')
+    } finally {
+      if ('close' in store && typeof store.close === 'function') {
+        await store.close()
+      }
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 10 })
+    }
+  })
 })

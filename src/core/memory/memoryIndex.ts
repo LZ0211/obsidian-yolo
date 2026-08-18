@@ -30,7 +30,11 @@ import {
   initializeMemoryIndexSchema,
   trimMemoryMaintenanceLog,
 } from './memoryIndexSchema'
-import type { MemorySettingsLike, MemorySourceSnapshot } from './memoryManager'
+import type {
+  MemorySettingsLike,
+  MemorySourceFingerprint,
+  MemorySourceSnapshot,
+} from './memoryManager'
 import { normalizeMemoryText } from './memoryTokenizer'
 import type {
   IndexedMemoryEntry,
@@ -205,6 +209,15 @@ type MemoryIndexStoreOptions = {
    * semantic recall path has data to search.
    */
   embedContent?: (content: string) => Promise<number[] | null>
+  /**
+   * Cheap pre-reconcile probe: content hash + parser version WITHOUT parsing
+   * the source file. When it matches the stored partition state, the whole
+   * reconcile is skipped — the settings flow re-triggers every partition
+   * wholesale, and only changed partitions should pay the parse+write cost.
+   */
+  getSourceFingerprint?: (
+    partition: MemoryPartition,
+  ) => Promise<MemorySourceFingerprint>
   /** Test seam: shorten the per-embedding bound of the operationChain. */
   embedTimeoutMs?: number
   clock?: () => number
@@ -524,6 +537,44 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
     return this.enqueue(async () => {
       throwIfMemoryIndexAborted(input.signal)
       const runtime = await this.getRuntime()
+      // Fingerprint probe: the settings flow reconciles every partition
+      // wholesale; when the source file and parser version are unchanged,
+      // skip the read-parse-write entirely instead of re-indexing rows that
+      // cannot have drifted. Requires existing rows — an empty-but-ready
+      // partition (fresh install, or one healed after an old empty-snapshot
+      // wipe) must still run the reconcile to (re)build its rows.
+      const getSourceFingerprint = this.options.getSourceFingerprint
+      if (getSourceFingerprint) {
+        const priorFingerprintState = runtime.queryOne<{
+          source_file_fingerprint: string
+          parser_version: string
+        }>(
+          'select source_file_fingerprint, parser_version from memory_partition_state where partition_key = ?',
+          [input.partition.partitionKey],
+        )
+        if (priorFingerprintState) {
+          const priorRowCount =
+            runtime.queryOne<{ count: number }>(
+              'select count(*) as count from memory_index where partition_key = ?',
+              [input.partition.partitionKey],
+            )?.count ?? 0
+          if (priorRowCount > 0) {
+            const probe = await getSourceFingerprint(input.partition)
+            if (
+              probe.fingerprint ===
+                priorFingerprintState.source_file_fingerprint &&
+              probe.parserVersion === priorFingerprintState.parser_version
+            ) {
+              logFlightEvent('memory-index', 'reconcile-skip', {
+                id: input.partition.partitionKey,
+                detail: `fingerprint unchanged rows=${priorRowCount}`,
+                consoleOutput: 'none',
+              })
+              return
+            }
+          }
+        }
+      }
       let snapshot: MemorySourceSnapshot
       try {
         snapshot = await this.options.getSourceSnapshot(input.partition)
