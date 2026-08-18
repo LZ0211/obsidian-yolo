@@ -12,11 +12,11 @@ import {
   type ObsidianWebShell,
   createObsidianWebShell,
 } from './obsidianShellDom'
+import { createWebAgentSelector } from './webAgentSelector'
 import { renderLightweightModalView } from './webAuthModal'
 import { createChatTabManager } from './webChatTabs'
 import { renderHistoryPane } from './webHistoryPane'
 import { createMockTransport } from './webMockTransport'
-import { createWebAgentSelector } from './webAgentSelector'
 import type {
   HistoryClient,
   LeftPaneMode,
@@ -108,6 +108,36 @@ function resolveAgentModeAllowed(
   return match?.agentModeAllowed
 }
 
+// The share token is a durable credential (stored in Obsidian settings); the
+// web *session* is in-memory on the host and dies on plugin reload. Persist
+// the token so a reload can silently re-authenticate instead of forcing the
+// user to paste it again.
+const SHARE_TOKEN_STORAGE_KEY = 'yolo-web-share-token'
+
+function rememberShareToken(token: string): void {
+  try {
+    window.localStorage?.setItem(SHARE_TOKEN_STORAGE_KEY, token)
+  } catch {
+    // localStorage may be unavailable; the user can just log in again.
+  }
+}
+
+function forgetShareToken(): void {
+  try {
+    window.localStorage?.removeItem(SHARE_TOKEN_STORAGE_KEY)
+  } catch {
+    // ignore
+  }
+}
+
+function readRememberedShareToken(): string | null {
+  try {
+    return window.localStorage?.getItem(SHARE_TOKEN_STORAGE_KEY) ?? null
+  } catch {
+    return null
+  }
+}
+
 function App(): void {
   // Restore the persisted theme as early as possible so users don't see a
   // dark-light flash on reload. The ribbon button below writes the choice.
@@ -182,6 +212,33 @@ function App(): void {
 
       const authState = await realClient.getWebAuthState()
       if (!authState?.session) {
+        // The host session is in-memory and dies on plugin reload; the share
+        // token itself is durable, so silently re-authenticate with it.
+        const rememberedToken = readRememberedShareToken()
+        if (rememberedToken) {
+          try {
+            const restored = await realClient.loginWithShareToken(
+              rememberedToken,
+            )
+            const mockShell = isMockBootstrap(bootstrap)
+            const runtime = await createRuntime(realClient, bootstrap)
+            setState({
+              status: 'ready',
+              client: realClient,
+              historyClient: buildHistoryClient(runtime),
+              runtime,
+              allowedAgents:
+                restored.allowedAgents ?? bootstrap.allowedAgents ?? [],
+              agentId: restored.session.agentId,
+              mock: mockShell,
+              workspaceRoot: resolveWorkspaceRoot(bootstrap, mockShell),
+            })
+            return
+          } catch {
+            // Token revoked or host changed — fall through to the login form;
+            // keep the stored token so a transient failure can retry next time.
+          }
+        }
         setState({
           status: 'login',
           client: realClient,
@@ -352,6 +409,7 @@ function App(): void {
         setState({ ...loginState, loginError: null, loggingIn: true })
 
         try {
+          rememberShareToken(token)
           const auth = await loginState.client.loginWithShareToken(token)
           const bootstrap = await loginState.client.getBootstrap()
           const mockShell = loginState.mock || isMockBootstrap(bootstrap)
@@ -859,6 +917,7 @@ function App(): void {
 
   async function handleLogout(): Promise<void> {
     const readyState = state as ReadyShellState
+    forgetShareToken()
     try {
       await readyState.client.logout()
     } catch (err) {

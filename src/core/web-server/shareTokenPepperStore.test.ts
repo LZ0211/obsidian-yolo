@@ -13,6 +13,11 @@ import * as fs from 'node:fs'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 
+import {
+  createShareToken,
+  hashShareToken,
+  verifyShareToken,
+} from './shareTokenCrypto'
 import { loadOrCreateShareTokenPepper } from './shareTokenPepperStore'
 
 describe('shareTokenPepperStore', () => {
@@ -28,6 +33,31 @@ describe('shareTokenPepperStore', () => {
 
     expect(source).not.toMatch(/from 'node:(crypto|fs|path)'/)
     expect(source).toContain('loadDesktopNodeModuleSync')
+  })
+
+  it('authenticates a token created before a host reload', () => {
+    // The full lifecycle: create a token under the initial pepper, then
+    // simulate a plugin reload (same base dir → same pepper file) and verify
+    // the token still validates. This pins the invariant that a reload must
+    // not invalidate previously created share tokens.
+    const dir = mkdtempSync(path.join(tmpdir(), 'yolo-pepper-reload-'))
+    try {
+      const pepper = loadOrCreateShareTokenPepper(dir)
+      const created = createShareToken()
+      const tokenHash = hashShareToken(created.plaintext, pepper)
+
+      // Reload: re-resolve the pepper from the same base dir.
+      const reloadedPepper = loadOrCreateShareTokenPepper(dir)
+      expect(reloadedPepper).toBe(pepper)
+      expect(
+        verifyShareToken(created.plaintext, tokenHash, reloadedPepper),
+      ).toBe(true)
+      expect(verifyShareToken('tampered-token', tokenHash, reloadedPepper)).toBe(
+        false,
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('creates and reuses a plugin-private pepper file', () => {
