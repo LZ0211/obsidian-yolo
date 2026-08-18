@@ -37,6 +37,7 @@
     "lint:fix": "npm run prettier:write && eslint --cache --cache-location node_modules/.cache/.eslintcache-runtime-components --fix src __mocks__ modules/*/src runtime-components/*/src",
     "type:check": "tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/tsconfig.typecheck.tsbuildinfo",
     "test": "jest --maxWorkers=50%",
+    "test:workflow:e2e": "playwright test --config scripts/qa-workflow-harness/playwright.config.ts",
     "test:watch": "jest --watch",
     "test:changed": "jest -o",
     "models:update:openrouter": "node scripts/update-openrouter-model-capabilities.mjs",
