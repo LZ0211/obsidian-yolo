@@ -24,8 +24,10 @@ export type WorkflowGraphController = Readonly<{
 export type WorkflowGraphProps = Readonly<{
   topology: WorkflowTopology
   selectedNodeId: string | null
+  selectedEdgeId?: string | null
   copy: WorkflowCopy
   onSelectNode(nodeId: string | null): void
+  onSelectEdge?(edgeId: string | null): void
   onMoveNode(nodeId: string, position: Readonly<{ x: number; y: number }>): void
   onConnect(candidate: WorkflowConnectionCandidate): void
   onReady?(controller: WorkflowGraphController): void
@@ -53,8 +55,10 @@ type PanState = Readonly<{
 export function WorkflowGraph({
   topology,
   selectedNodeId,
+  selectedEdgeId = null,
   copy,
   onSelectNode,
+  onSelectEdge,
   onMoveNode,
   onConnect,
   onReady,
@@ -404,7 +408,6 @@ export function WorkflowGraph({
           width={worldWidth}
           height={worldHeight}
           viewBox={`0 0 ${worldWidth} ${worldHeight}`}
-          aria-hidden="true"
         >
           <defs>
             <marker
@@ -423,7 +426,29 @@ export function WorkflowGraph({
             const geometry = edgeGeometry(edge, nodesById)
             if (!geometry) return null
             return (
-              <g key={edge.id} className="yolo-workflow-graph__edge">
+              <g
+                key={edge.id}
+                className={`yolo-workflow-graph__edge${
+                  edge.id === selectedEdgeId ? ' is-selected' : ''
+                }`}
+              >
+                <path
+                  d={geometry.path}
+                  className="yolo-workflow-graph__edge-hitbox"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${copy.inspector.title}: ${edge.source} → ${edge.target}`}
+                  onPointerDown={(event) => {
+                    event.stopPropagation()
+                    onSelectEdge?.(edge.id)
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      onSelectEdge?.(edge.id)
+                    }
+                  }}
+                />
                 <path
                   d={geometry.path}
                   markerEnd={`url(#${markerId})`}

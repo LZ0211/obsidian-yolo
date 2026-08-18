@@ -7,6 +7,7 @@ import {
 import type { WorkflowTopology } from '../domain/workflow-model'
 import { updateWorkflowManagedBlocks } from '../domain/workflow-document'
 import {
+  type WorkflowEditorModel,
   type WorkflowEditorSnapshot,
   createWorkflowEditorModel,
 } from './workflow-editor-model'
@@ -182,6 +183,76 @@ describe('workflow editor model', () => {
     expect(model.getSnapshot().dirty).toBe(true)
   })
 
+  it('does not clean removed STEP files after a topology change during save', async () => {
+    const repository = createRepository()
+    const pending =
+      deferred<Awaited<ReturnType<WorkflowRepository['replaceFile']>>>()
+    repository.replaceFile.mockImplementationOnce(() => pending.promise)
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    const node = {
+      id: 'review',
+      kind: 'agent' as const,
+      label: 'Review',
+      stepPath: 'steps/review/STEP.md',
+      position: { x: 800, y: 90 },
+    }
+    await expect(model.addNode(node, '# Review\n')).resolves.toBe(true)
+    await expect(model.removeNode('review')).resolves.toBe(true)
+
+    const applying = model.apply()
+    expect(model.undo()).toBe(true)
+    pending.resolve({
+      ok: true,
+      snapshot: {
+        path: repository.manifestPath,
+        content: repository.currentContent(),
+      },
+    })
+
+    await expect(applying).resolves.toEqual({ ok: true })
+
+    expect(repository.trashStep).not.toHaveBeenCalled()
+    expect(model.getSnapshot().topology?.nodes).toEqual(
+      expect.arrayContaining([node]),
+    )
+    expect(model.getSnapshot().bundle?.files).toEqual(
+      expect.arrayContaining([expect.objectContaining({ nodeId: 'review' })]),
+    )
+    expect(model.getSnapshot().dirty).toBe(true)
+  })
+
+  it('keeps Markdown edits made during a topology save in the live bundle', async () => {
+    const repository = createRepository()
+    const pending =
+      deferred<Awaited<ReturnType<WorkflowRepository['replaceFile']>>>()
+    repository.replaceFile.mockImplementationOnce(() => pending.promise)
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    model.updateTopology({
+      ...topology,
+      nodes: [
+        { ...topology.nodes[0], label: 'Saved' },
+        ...topology.nodes.slice(1),
+      ],
+    })
+
+    const applying = model.apply()
+    const liveContent = `${repository.currentContent()}\nHuman note.\n`
+    model.updateFile('workflow', liveContent)
+    pending.resolve({
+      ok: true,
+      snapshot: {
+        path: repository.manifestPath,
+        content: repository.currentContent(),
+      },
+    })
+
+    await expect(applying).resolves.toEqual({ ok: true })
+    expect(model.getSnapshot().bundle?.document.content).toBe(liveContent)
+    expect(model.getSnapshot().dirty).toBe(true)
+  })
+
   it('recovers after a repository save rejection', async () => {
     const repository = createRepository()
     const model = createWorkflowEditorModel(repository, en)
@@ -341,6 +412,110 @@ describe('workflow editor model', () => {
     )
   })
 
+  it('edits and saves the active Markdown document without losing the graph', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    const nextContent = `${repository.currentContent()}\nA human note.\n`
+
+    expect(model.updateFile('workflow', nextContent)).toBe(true)
+    expect(model.getSnapshot().bundle?.document.content).toBe(nextContent)
+    expect(model.getSnapshot().topology).toEqual(topology)
+
+    await expect(model.saveFile('workflow')).resolves.toEqual({ ok: true })
+    expect(repository.replaceFile).toHaveBeenCalledWith(
+      { path: repository.manifestPath, content: expect.any(String) },
+      nextContent,
+    )
+    expect(model.getSnapshot().dirty).toBe(false)
+  })
+
+  it('creates a STEP before adding a node to the draft', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    const node = {
+      id: 'review',
+      kind: 'agent' as const,
+      label: 'Review',
+      stepPath: 'steps/review/STEP.md',
+      position: { x: 800, y: 90 },
+    }
+
+    await expect(model.addNode(node, '# Review\n')).resolves.toBe(true)
+    expect(repository.createStep).toHaveBeenCalledWith(
+      'quality/WORKFLOW.md',
+      'steps/review/STEP.md',
+      '# Review\n',
+    )
+    expect(model.getSnapshot().topology?.nodes).toEqual(
+      expect.arrayContaining([node]),
+    )
+  })
+
+  it('defers STEP cleanup until apply so node deletion remains undoable', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    const node = {
+      id: 'review',
+      kind: 'agent' as const,
+      label: 'Review',
+      stepPath: 'steps/review/STEP.md',
+      position: { x: 800, y: 90 },
+    }
+    await expect(model.addNode(node, '# Review\n')).resolves.toBe(true)
+
+    await expect(model.removeNode('review')).resolves.toBe(true)
+
+    expect(repository.trashStep).not.toHaveBeenCalled()
+    expect(model.getSnapshot().bundle?.files).toEqual(
+      expect.arrayContaining([expect.objectContaining({ nodeId: 'review' })]),
+    )
+    expect(model.undo()).toBe(true)
+    expect(model.getSnapshot().topology?.nodes).toEqual(
+      expect.arrayContaining([node]),
+    )
+    expect(repository.trashStep).not.toHaveBeenCalled()
+    expect(model.redo()).toBe(true)
+    await expect(model.apply()).resolves.toEqual({ ok: true })
+
+    expect(repository.trashStep).toHaveBeenCalledWith(
+      'quality/WORKFLOW.md',
+      'steps/review/STEP.md',
+    )
+    expect(model.getSnapshot().topology?.nodes).not.toEqual(
+      expect.arrayContaining([node]),
+    )
+    expect(model.getSnapshot().bundle?.files).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ nodeId: 'review' })]),
+    )
+  })
+
+  it('keeps a removed STEP pending when cleanup reports failure', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    const node = {
+      id: 'review',
+      kind: 'agent' as const,
+      label: 'Review',
+      stepPath: 'steps/review/STEP.md',
+      position: { x: 800, y: 90 },
+    }
+    await expect(model.addNode(node, '# Review\n')).resolves.toBe(true)
+    await expect(model.removeNode('review')).resolves.toBe(true)
+    repository.trashStep.mockResolvedValueOnce(false)
+
+    await expect(model.apply()).resolves.toEqual({ ok: true })
+
+    expect(model.getSnapshot().status).toBe('error')
+    expect(model.getSnapshot().dirty).toBe(true)
+    expect(model.getSnapshot().bundle?.files).toEqual(
+      expect.arrayContaining([expect.objectContaining({ nodeId: 'review' })]),
+    )
+  })
+
   it('keeps dirty edits when another writer changes the manifest', async () => {
     const repository = createRepository()
     const model = createWorkflowEditorModel(repository, en)
@@ -404,6 +579,7 @@ function createRepository(): WorkflowRepository & {
   manifestPath: string
   replaceFile: jest.Mock
   read: jest.Mock
+  trashStep: jest.Mock
   setList(entries: readonly { path: string; title: string }[]): void
   bundle: WorkflowBundle
 } {
@@ -439,6 +615,16 @@ function createRepository(): WorkflowRepository & {
     content = nextContent
     return { ok: true, snapshot: { path: manifestPath, content } }
   })
+  const createStep = jest.fn(
+    async (_path, relativePath: string, nextContent: string) => ({
+      ok: true as const,
+      snapshot: {
+        path: `managed/workflows/quality/${relativePath}`,
+        content: nextContent,
+      },
+    }),
+  )
+  const trashStep = jest.fn(async () => true)
   const read = jest.fn(async () => ({
     ...bundle,
     document: { ...bundle.document, content },
@@ -450,8 +636,10 @@ function createRepository(): WorkflowRepository & {
     read,
     create: async () => ({ ok: false, reason: 'target-exists' }),
     importBundle: async () => ({ ok: false, reason: 'target-exists' }),
+    createStep,
     replaceFile,
     trash: async () => true,
+    trashStep,
     subscribe: (nextListener: (event: WorkflowRepositoryEvent) => void) => {
       listener = nextListener
       return () => {
@@ -472,6 +660,8 @@ function createRepository(): WorkflowRepository & {
     currentContent(): string
     manifestPath: string
     replaceFile: jest.Mock
+    createStep: jest.Mock
+    trashStep: jest.Mock
     read: jest.Mock
     setList(entries: readonly { path: string; title: string }[]): void
     bundle: WorkflowBundle

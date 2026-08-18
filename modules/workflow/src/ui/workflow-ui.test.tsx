@@ -10,6 +10,11 @@ import type {
   WorkflowEditorModel,
   WorkflowEditorSnapshot,
 } from './workflow-editor-model'
+import type { WorkflowBundle } from '../domain/workflow-repository'
+import {
+  parseWorkflowDocument,
+  updateWorkflowManagedBlocks,
+} from '../domain/workflow-document'
 import { WorkflowGraph } from './workflow-graph'
 import { WorkflowStudio } from './workflow-studio'
 
@@ -93,32 +98,295 @@ describe('workflow studio UI interactions', () => {
 
   it('exposes an Add node control and adds the selected node kind', async () => {
     const topology = createTopology()
-    const { model, updateTopology, selectNode } = createModel({ topology })
+    const { model, addNode, selectNode } = createModel({ topology })
     await renderStudio(model)
 
-    const kindSelect = testContainer.querySelector<HTMLSelectElement>(
-      'select[aria-label="Add node"]',
-    )
     const addButton = testContainer.querySelector<HTMLButtonElement>(
-      'button[aria-label="Add node"]',
+      'button[aria-label="Add node: Condition"]',
     )
-    expect(kindSelect).not.toBeNull()
     expect(addButton).not.toBeNull()
 
-    act(() => {
-      kindSelect!.value = 'condition'
-      kindSelect!.dispatchEvent(new Event('change', { bubbles: true }))
+    await act(async () => {
+      addButton!.click()
+      await Promise.resolve()
     })
-    act(() => addButton!.click())
 
-    expect(updateTopology).toHaveBeenCalledWith(
+    expect(addNode).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'condition-1', kind: 'condition' }),
+      '# Condition\n',
+    )
+    expect(selectNode).toHaveBeenCalledWith('condition-1')
+  })
+
+  it('renders the dsh workbench regions and markdown inspector', async () => {
+    const { model } = createModel({ bundle: createBundle() })
+    await renderStudio(model)
+
+    expect(
+      testContainer.querySelector('.yolo-workflow-add-node-bar'),
+    ).not.toBeNull()
+    for (const label of [
+      'Input',
+      'Agent',
+      'Map agent',
+      'Condition',
+      'Merge',
+      'Output',
+    ])
+      expect(
+        testContainer.querySelector(`button[aria-label="Add node: ${label}"]`),
+      ).not.toBeNull()
+    expect(
+      testContainer.querySelector('.yolo-workflow-assistant'),
+    ).not.toBeNull()
+    expect(
+      testContainer.querySelector('textarea[aria-label="Markdown content"]'),
+    ).not.toBeNull()
+    expect(testContainer.textContent).toContain(
+      'Run workflows from the current session.',
+    )
+  })
+
+  it('keeps workflow lifecycle controls in the canvas toolbar', async () => {
+    const { model, trashCurrent } = createModel({ bundle: createBundle() })
+    await renderStudio(model)
+
+    const canvasToolbar = testContainer.querySelector(
+      '.yolo-workflow-canvas-toolbar',
+    )
+    expect(canvasToolbar).not.toBeNull()
+    expect(findButton(canvasToolbar!, 'New workflow')).not.toBeNull()
+    expect(findButton(canvasToolbar!, 'Delete workflow')).not.toBeNull()
+    expect(
+      testContainer.querySelector('.yolo-workflow-toolbar__legacy-actions'),
+    ).toBeNull()
+
+    await act(async () => {
+      findButton(canvasToolbar!, 'New workflow')!.click()
+      await Promise.resolve()
+    })
+    expect(
+      testContainer.querySelector('input[placeholder="New workflow"]'),
+    ).not.toBeNull()
+
+    await act(async () => {
+      findButton(canvasToolbar!, 'Delete workflow')!.click()
+      await Promise.resolve()
+    })
+    expect(trashCurrent).toHaveBeenCalled()
+  })
+
+  it('keeps imported STEP markdown when creating a workflow', async () => {
+    const { model } = createModel()
+    await renderStudio(model)
+
+    const topology = {
+      ...createTopology(),
+      nodes: [
+        ...createTopology().nodes,
+        {
+          id: 'output',
+          kind: 'output' as const,
+          label: 'Output',
+          stepPath: 'steps/output/STEP.md',
+          position: { x: 560, y: 90 },
+        },
+      ],
+      edges: [
+        ...createTopology().edges,
+        { id: 'agent-output', source: 'agent', target: 'output' },
+      ],
+    }
+    const stepContents = {
+      input: '# Input instructions\n\nKeep this text.\n',
+      agent: '# Agent instructions\n',
+      output: '# Output instructions\n',
+    }
+    const fileContent = JSON.stringify({
+      name: 'Imported',
+      workflowContent: '# Imported\n',
+      nodes: topology.nodes.map((node) => ({
+        id: node.id,
+        kind: node.kind,
+        position: node.position,
+        data: { label: node.label },
+      })),
+      edges: topology.edges,
+      docs: Object.fromEntries(
+        topology.nodes.map((node) => [node.id, node.stepPath]),
+      ),
+      stepContents,
+    })
+    const file = {
+      text: async () => fileContent,
+    } as unknown as File
+    const input =
+      testContainer.querySelector<HTMLInputElement>('input[type="file"]')
+    expect(input).not.toBeNull()
+    Object.defineProperty(input!, 'files', {
+      configurable: true,
+      value: [file],
+    })
+
+    await act(async () => {
+      input!.dispatchEvent(new Event('change', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(model.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        nodes: expect.arrayContaining([
-          expect.objectContaining({ id: 'condition-1', kind: 'condition' }),
+        stepFiles: expect.arrayContaining([
+          {
+            relativePath: 'steps/input/STEP.md',
+            content: stepContents.input,
+          },
         ]),
       }),
     )
-    expect(selectNode).toHaveBeenCalledWith('condition-1')
+  })
+
+  it('updates the selected markdown file from the inspector', async () => {
+    const { model, updateFile } = createModel({ bundle: createBundle() })
+    await renderStudio(model)
+
+    const editor = testContainer.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Markdown content"]',
+    )
+    expect(editor).not.toBeNull()
+
+    await act(async () => {
+      editor!.value = '# Updated workflow\n'
+      editor!.dispatchEvent(new Event('input', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(updateFile).toHaveBeenCalledWith('workflow', '# Updated workflow\n')
+  })
+
+  it('selects an edge from the canvas for inspection', async () => {
+    const onSelectEdge = jest.fn()
+    await renderGraph(createTopology(), onSelectEdge)
+
+    const edge = testContainer.querySelector<SVGPathElement>(
+      '.yolo-workflow-graph__edge-hitbox',
+    )
+    expect(edge).not.toBeNull()
+    expect(edge!.closest('svg')?.getAttribute('aria-hidden')).toBeNull()
+
+    act(() => edge!.dispatchEvent(new Event('pointerdown', { bubbles: true })))
+
+    expect(onSelectEdge).toHaveBeenCalledWith('input-agent')
+  })
+
+  it('accepts a local workflow optimization proposal through updateFile', async () => {
+    const { model, updateFile } = createModel({ bundle: createBundle() })
+    await renderStudio(model)
+
+    const optimize = Array.from(testContainer.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Optimize workflow',
+    )
+    expect(optimize).not.toBeUndefined()
+    act(() => optimize!.click())
+
+    const accept = Array.from(testContainer.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Accept',
+    )
+    expect(accept).not.toBeUndefined()
+    act(() => accept!.click())
+
+    expect(updateFile).toHaveBeenCalledWith('workflow', expect.any(String))
+  })
+
+  it('clears workflow-local assistant state when another workflow starts loading', async () => {
+    const { model, setSnapshot } = createModel({
+      bundle: createBundle(),
+      selectedNodeId: 'agent',
+    })
+    await renderStudio(model)
+
+    const optimize = Array.from(testContainer.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Optimize workflow',
+    )
+    expect(optimize).not.toBeUndefined()
+    act(() => optimize!.click())
+    expect(
+      testContainer.querySelector(
+        'textarea[aria-label="Proposal"]',
+      ),
+    ).not.toBeNull()
+
+    act(() =>
+      setSnapshot({
+        ...model.getSnapshot(),
+        status: 'loading',
+        path: 'second/WORKFLOW.md',
+        bundle: null,
+        topology: null,
+        selectedNodeId: null,
+        dirty: false,
+        canUndo: false,
+        canRedo: false,
+        issues: [],
+      }),
+    )
+
+    expect(
+      testContainer.querySelector(
+        'textarea[aria-label="Proposal"]',
+      ),
+    ).toBeNull()
+  })
+
+  it('renders draft topology labels in the workflow rail before apply', async () => {
+    const { model, setSnapshot } = createModel({ bundle: createBundle() })
+    await renderStudio(model)
+    const review: WorkflowNode = {
+      id: 'review',
+      kind: 'agent',
+      label: 'Review',
+      stepPath: 'steps/review/STEP.md',
+      position: { x: 560, y: 90 },
+    }
+    const topology = model.getSnapshot().topology!
+    act(() => {
+      setSnapshot({
+        ...model.getSnapshot(),
+        topology: {
+          ...topology,
+          nodes: [...topology.nodes, review],
+          edges: [
+            ...topology.edges,
+            { id: 'agent-review', source: 'agent', target: 'review' },
+          ],
+        },
+        dirty: true,
+      })
+    })
+
+    expect(findButton(testContainer, 'Review')).not.toBeNull()
+  })
+
+  it('recreates the canvas when switching workflows', async () => {
+    const { model, setSnapshot } = createModel({ bundle: createBundle() })
+    await renderStudio(model)
+    const previousGraph = testContainer.querySelector('.yolo-workflow-graph')
+    expect(previousGraph).not.toBeNull()
+
+    act(() =>
+      setSnapshot({
+        ...model.getSnapshot(),
+        path: 'second/WORKFLOW.md',
+        workflows: [
+          { path: 'demo/WORKFLOW.md', title: 'Demo' },
+          { path: 'second/WORKFLOW.md', title: 'Second' },
+        ],
+      }),
+    )
+
+    expect(testContainer.querySelector('.yolo-workflow-graph')).not.toBe(
+      previousGraph,
+    )
   })
 
   it('does not expose stepPath as an editable inspector field', async () => {
@@ -138,6 +406,23 @@ describe('workflow studio UI interactions', () => {
       stepPath!.dispatchEvent(new Event('change', { bubbles: true }))
     })
     expect(updateTopology).not.toHaveBeenCalled()
+  })
+
+  it('exposes node deletion through the inspector for editable nodes', async () => {
+    const { model, removeNode } = createModel({ selectedNodeId: 'agent' })
+    await renderStudio(model)
+
+    const deleteButton = testContainer.querySelector<HTMLButtonElement>(
+      'button[aria-label="Delete node"]',
+    )
+    expect(deleteButton).not.toBeNull()
+
+    await act(async () => {
+      deleteButton!.click()
+      await Promise.resolve()
+    })
+
+    expect(removeNode).toHaveBeenCalledWith('agent')
   })
 
   it.each(['pointercancel', 'lostpointercapture'])(
@@ -264,7 +549,10 @@ async function renderStudio(
   })
 }
 
-async function renderGraph(topology: WorkflowTopology): Promise<void> {
+async function renderGraph(
+  topology: WorkflowTopology,
+  onSelectEdge: jest.Mock = jest.fn(),
+): Promise<void> {
   await act(async () => {
     testRoot.render(
       <WorkflowGraph
@@ -272,6 +560,7 @@ async function renderGraph(topology: WorkflowTopology): Promise<void> {
         selectedNodeId={null}
         copy={createWorkflowCopy('en')}
         onSelectNode={jest.fn()}
+        onSelectEdge={onSelectEdge}
         onMoveNode={jest.fn()}
         onConnect={jest.fn()}
       />,
@@ -285,17 +574,34 @@ function createModel(
 ): Readonly<{
   model: WorkflowEditorModel
   updateTopology: jest.Mock
+  updateFile: jest.Mock
+  addNode: jest.Mock
   selectNode: jest.Mock
+  removeNode: jest.Mock
+  trashCurrent: jest.Mock
+  setSnapshot(next: WorkflowEditorSnapshot): void
 }> {
-  const snapshot = createSnapshot(overrides)
+  let snapshot = createSnapshot(overrides)
+  const listeners = new Set<() => void>()
   const updateTopology = jest.fn(() => true)
+  const updateFile = jest.fn(() => true)
+  const addNode = jest.fn(async () => true)
   const selectNode = jest.fn()
+  const removeNode = jest.fn(async () => true)
+  const trashCurrent = jest.fn(async () => false)
   const model = {
     getSnapshot: () => snapshot,
-    subscribe: jest.fn(() => () => undefined),
+    subscribe: jest.fn((listener: () => void) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    }),
     load: jest.fn(async () => ({ ok: true as const })),
     selectNode,
     updateTopology,
+    updateFile,
+    saveFile: jest.fn(async () => ({ ok: true as const })),
+    addNode,
+    removeNode,
     apply: jest.fn(async () => ({ ok: true as const })),
     undo: jest.fn(() => false),
     redo: jest.fn(() => false),
@@ -304,10 +610,33 @@ function createModel(
       ok: false as const,
       reason: 'invalid-input' as const,
     })),
-    trashCurrent: jest.fn(async () => false),
+    trashCurrent,
     dispose: jest.fn(),
   } as unknown as WorkflowEditorModel
-  return { model, updateTopology, selectNode }
+  return {
+    model,
+    updateTopology,
+    updateFile,
+    addNode,
+    selectNode,
+    removeNode,
+    trashCurrent,
+    setSnapshot: (next) => {
+      snapshot = next
+      for (const listener of listeners) listener()
+    },
+  }
+}
+
+function findButton(
+  container: Element,
+  label: string,
+): HTMLButtonElement | null {
+  return (
+    Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.includes(label),
+    ) ?? null
+  )
 }
 
 function createSnapshot(
@@ -348,6 +677,35 @@ function createTopology(): WorkflowTopology {
     nodes: [input, agent],
     edges: [{ id: 'input-agent', source: 'input', target: 'agent' }],
   }
+}
+
+function createBundle(): WorkflowBundle {
+  const copy = createWorkflowCopy('en')
+  const topology = createTopology()
+  const content = updateWorkflowManagedBlocks('# Demo\n', topology, copy)
+  const document = parseWorkflowDocument(content, copy)
+  return {
+    path: 'demo/WORKFLOW.md',
+    document,
+    files: [
+      {
+        nodeId: 'workflow',
+        relativePath: 'demo/WORKFLOW.md',
+        snapshot: {
+          path: 'managed/workflows/demo/WORKFLOW.md',
+          content,
+        },
+      },
+      ...topology.nodes.map((node) => ({
+        nodeId: node.id,
+        relativePath: `demo/${node.stepPath}`,
+        snapshot: {
+          path: `managed/workflows/demo/${node.stepPath}`,
+          content: `# ${node.label}\n`,
+        },
+      })),
+    ],
+  } as WorkflowBundle
 }
 
 function dispatchPointer(
