@@ -62,7 +62,16 @@ export type MemoryRenameResolution = Readonly<{
  * keeps stored salience tight to the continuous curve. Reflection has its
  * own 24h gate and runs on whichever pass comes after its threshold.
  */
-const MEMORY_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000
+export const MEMORY_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000
+
+/**
+ * Obsidian shuts down between sessions, so a bare interval timer may never
+ * fire (any session shorter than the interval dies before its first pass).
+ * The first maintenance pass is deferred past the startup window instead of
+ * running synchronously at load: it guarantees at least one decay/archive
+ * pass per session without doing work while the app is still starting up.
+ */
+export const MEMORY_MAINTENANCE_STARTUP_DELAY_MS = 2 * 60 * 1000
 
 const getOptionalVault = (app: App): VaultWithOptionalEvents | undefined =>
   (app as Partial<App>).vault as VaultWithOptionalEvents | undefined
@@ -348,16 +357,24 @@ export class MemoryIndexRuntime {
   }
 
   /**
-   * Start the maintenance cadence once (first sqlite queue creation). No
-   * catch-up pass at startup: the first run happens after one full interval,
-   * so loading the plugin does not fan out decay/archive work across every
-   * partition. Sub-percent salience drift over the first hour is immaterial.
+   * Start the maintenance cadence once (first sqlite queue creation): a
+   * one-time pass after the startup delay, then the hourly interval. The
+   * deferred first pass covers the shutdown case — Obsidian closes between
+   * sessions, so a timer alone can starve short sessions — without doing
+   * decay/archive work inside the load window.
    */
   private ensurePeriodicMaintenance(): void {
     if (this.maintenanceTimer !== null || this.closed) return
-    this.maintenanceTimer = setInterval(() => {
+    const runPass = (): void => {
       void this.runPeriodicMaintenance().catch(() => undefined)
-    }, MEMORY_MAINTENANCE_INTERVAL_MS)
+    }
+    this.maintenanceTimer = setTimeout(() => {
+      runPass()
+      this.maintenanceTimer = setInterval(
+        runPass,
+        MEMORY_MAINTENANCE_INTERVAL_MS,
+      )
+    }, MEMORY_MAINTENANCE_STARTUP_DELAY_MS)
   }
 
   /**

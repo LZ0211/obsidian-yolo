@@ -13,6 +13,8 @@ import { openMemoryIndexStore } from './memoryIndex'
 import { buildMemoryPartition } from './memoryIndex'
 import type { MemoryIndexMaintenanceStore } from './memoryIndex'
 import {
+  MEMORY_MAINTENANCE_INTERVAL_MS,
+  MEMORY_MAINTENANCE_STARTUP_DELAY_MS,
   MemoryIndexRuntime,
   closeMemoryIndexRuntime,
   getMemoryIndexRuntime,
@@ -307,7 +309,8 @@ describe('memory index runtime adapter', () => {
     await runtime.close()
   })
 
-  it('does not run maintenance at startup — only the reconcile is queued', async () => {
+  it('defers the first maintenance pass past the startup window, then runs hourly', async () => {
+    jest.useFakeTimers()
     const partition = buildMemoryPartition({ scope: 'global' })
     const order: string[] = []
     const store = {
@@ -337,12 +340,22 @@ describe('memory index runtime adapter', () => {
         partition,
         sourcePath: 'YOLO/memory/global.md',
       })
-      await new Promise<void>((resolve) => setImmediate(resolve))
+      await Promise.resolve()
+      await Promise.resolve()
 
-      // Startup must not fan decay/archive work out across partitions; the
-      // first maintenance pass is scheduled on the interval instead.
+      // Startup must not fan decay/archive work out across partitions.
       expect(order).toEqual(['reconcile'])
+
+      // After the startup delay the first pass runs — Obsidian shuts down
+      // between sessions, so the interval alone could starve short sessions.
+      jest.advanceTimersByTime(MEMORY_MAINTENANCE_STARTUP_DELAY_MS)
+      expect(order).toEqual(['reconcile', 'maintenance'])
+
+      // Then the hourly cadence continues.
+      jest.advanceTimersByTime(MEMORY_MAINTENANCE_INTERVAL_MS)
+      expect(order).toEqual(['reconcile', 'maintenance', 'maintenance'])
     } finally {
+      jest.useRealTimers()
       enqueueMaintenance.mockRestore()
       enqueueReconcile.mockRestore()
       await runtime.close()
