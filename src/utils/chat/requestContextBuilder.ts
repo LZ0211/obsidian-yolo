@@ -8,12 +8,12 @@ import {
   buildCompactionResumeMessage,
   buildCompactionSummaryMessage,
 } from '../../core/agent/compaction'
-import { findUnifiedAgentById } from '../../core/agent/workspaceAgentResolver'
 import { listDelegatableAssistantRoles } from '../../core/agent/subagent/delegatable-assistant'
 import type {
   SystemPromptSnapshot,
   SystemPromptSnapshotStore,
 } from '../../core/agent/systemPromptSnapshotStore'
+import { findUnifiedAgentById } from '../../core/agent/workspaceAgentResolver'
 import { executeSingleTurn } from '../../core/ai/single-turn'
 import type { BaseLLMProvider } from '../../core/llm/base'
 import { getChatModelClient } from '../../core/llm/manager'
@@ -85,6 +85,7 @@ import {
   getToolCallArgumentsObject,
 } from '../../types/tool-call.types'
 import { ToolCallResponseStatus } from '../../types/tool-call.types'
+import { logFlightEvent } from '../../utils/debug/flightLog'
 import { stableStringify } from '../json/stableStringify'
 import { collectWikilinkPaths } from '../llm/annotate-wikilinks'
 import { isImageTFile, tFileToImageDataUrl } from '../llm/image'
@@ -104,6 +105,15 @@ import { isMinerUEnabled, resolveMinerUImageRefs } from '../pdf/mineruClient'
 import { prefixTimeContext } from '../prompt/timeContext'
 
 import {
+  MAX_ASSISTANT_CONTENT_CONTEXT_CHARS,
+  MAX_ASSISTANT_REASONING_CONTEXT_CHARS,
+  MAX_TOOL_ARGUMENT_CONTEXT_CHARS,
+  boundRequestMessagesForContext,
+  resolveToolResultMaxChars,
+  truncateContextText,
+  truncateJsonStrings,
+} from './contextBudget'
+import {
   type ContextualInjection,
   appendContextualInjectionsToLastUserMessage,
 } from './contextual-injections'
@@ -119,15 +129,6 @@ import {
   filterContextPrunedAssistantToolCalls,
   filterContextPrunedToolCalls,
 } from './tool-context-pruning'
-import {
-  MAX_ASSISTANT_CONTENT_CONTEXT_CHARS,
-  MAX_ASSISTANT_REASONING_CONTEXT_CHARS,
-  MAX_TOOL_ARGUMENT_CONTEXT_CHARS,
-  boundRequestMessagesForContext,
-  resolveToolResultMaxChars,
-  truncateContextText,
-  truncateJsonStrings,
-} from './contextBudget'
 
 /** Regex matching the `<user_selected_skills>...</user_selected_skills>` block
  * produced by `buildSelectedSkillsPrompt`. Used by the breakdown estimator to
@@ -2936,7 +2937,41 @@ ${previewLines.join('\n')}`)
         ? assistantMessage.content
         : ''
     if (!userText.trim() || !assistantText.trim()) return
+    logFlightEvent('memory', 'turn-start', {
+      id: assistantId ?? 'global',
+      detail: `userChars=${userText.length} assistantChars=${assistantText.length}`,
+    })
+    try {
+      await this.runMemoryTurn({
+        assistantId,
+        userText,
+        assistantText,
+        providerClient,
+        model,
+        signal,
+      })
+    } finally {
+      logFlightEvent('memory', 'turn-done', {
+        id: assistantId ?? 'global',
+      })
+    }
+  }
 
+  private async runMemoryTurn({
+    assistantId,
+    userText,
+    assistantText,
+    providerClient,
+    model,
+    signal,
+  }: {
+    assistantId?: string
+    userText: string
+    assistantText: string
+    providerClient: BaseLLMProvider<LLMProvider>
+    model: ChatModel
+    signal?: AbortSignal
+  }): Promise<void> {
     let memoryProviderClient = providerClient
     let memoryModel = model
     const configuredMemoryModelId = this.settings.memoryAgentModelId?.trim()

@@ -1,3 +1,5 @@
+import { logFlightEvent } from '../../utils/debug/flightLog'
+
 import type { MemoryIndexMaintenanceStore } from './memoryIndex'
 import type { MemorySourceSnapshot } from './memoryManager'
 import type { MemoryPartition, MemorySector } from './memoryTypes'
@@ -269,6 +271,24 @@ export class MemoryIndexMaintenanceQueue {
   }
 
   private async runTask(
+    task: MaintenanceTask,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const taskStartedAt = Date.now()
+    logFlightEvent('memory-index', `task-${task.kind}-start`, {
+      id: task.partition.partitionKey,
+    })
+    try {
+      await this.runTaskInner(task, signal)
+    } finally {
+      logFlightEvent('memory-index', `task-${task.kind}-done`, {
+        id: task.partition.partitionKey,
+        detail: `took ${Date.now() - taskStartedAt}ms`,
+      })
+    }
+  }
+
+  private async runTaskInner(
     task: MaintenanceTask,
     signal: AbortSignal,
   ): Promise<void> {

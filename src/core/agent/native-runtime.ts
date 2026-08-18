@@ -16,6 +16,7 @@ import {
   ToolCallResponseStatus,
   getToolCallArgumentsObject,
 } from '../../types/tool-call.types'
+import { logFlightEvent } from '../../utils/debug/flightLog'
 import { runWithLLMDebugTrace } from '../llm/debugCapture'
 
 import { composeAgentInjections } from './agent-injections'
@@ -330,6 +331,10 @@ export class NativeAgentRuntime implements AgentRuntime {
           .then(async () => {
             switch (message.type) {
               case 'llm_request': {
+                logFlightEvent('worker', 'llm-request', {
+                  id: input.conversationId,
+                  detail: `runId=${runId} iteration=${message.iteration}`,
+                })
                 if (abortSignal.aborted) {
                   worker.postMessage({ type: 'abort', runId })
                   return
@@ -483,6 +488,10 @@ export class NativeAgentRuntime implements AgentRuntime {
                 }
 
                 const turnResult = await runTurnWithContinuationFallback()
+                logFlightEvent('worker', 'llm-result', {
+                  id: input.conversationId,
+                  detail: `runId=${runId} toolCalls=${turnResult.toolCallRequests.length}`,
+                })
                 pendingToolMessageId = null
                 pendingToolCallCount = turnResult.toolCallRequests.length
                 currentDebugTraceId = turnResult.debugTraceId
@@ -503,6 +512,10 @@ export class NativeAgentRuntime implements AgentRuntime {
                 return
               }
               case 'tool_phase': {
+                logFlightEvent('worker', 'tool-phase', {
+                  id: input.conversationId,
+                  detail: `runId=${runId} pendingToolCalls=${pendingToolCallCount}`,
+                })
                 if (abortSignal.aborted) {
                   worker.postMessage({ type: 'abort', runId })
                   return
@@ -589,6 +602,10 @@ export class NativeAgentRuntime implements AgentRuntime {
                 const compactToolCallId =
                   findCompactToolCallId(guardedToolMessage)
                 if (compactToolCallId) {
+                  logFlightEvent('compact', 'trigger', {
+                    id: input.conversationId,
+                    detail: `toolCall=${compactToolCallId}`,
+                  })
                   this.pendingCompactionAnchorMessageId = guardedToolMessage.id
                   this.notifySubscribers()
 
@@ -701,8 +718,17 @@ export class NativeAgentRuntime implements AgentRuntime {
                     // The model compacted: allow fresh auto-compaction
                     // notices again (per-run tier dedup reset).
                     promptedAutoCompactionTier = null
+                    logFlightEvent('compact', 'done', {
+                      id: input.conversationId,
+                      detail: `summaryChars=${summary.length}`,
+                    })
                     this.notifySubscribers()
                   } catch (error) {
+                    logFlightEvent('compact', 'error', {
+                      id: input.conversationId,
+                      detail: error instanceof Error ? error.message : String(error),
+                      consoleOutput: 'warn',
+                    })
                     this.pendingCompactionAnchorMessageId = null
                     this.notifySubscribers()
                     throw error
@@ -738,11 +764,20 @@ export class NativeAgentRuntime implements AgentRuntime {
                 return
               }
               case 'done': {
+                logFlightEvent('worker', 'done', {
+                  id: input.conversationId,
+                  detail: `runId=${runId} reason=${message.reason}`,
+                })
                 runSettled = true
                 resolve()
                 return
               }
               case 'error': {
+                logFlightEvent('worker', 'error', {
+                  id: input.conversationId,
+                  detail: message.error,
+                  consoleOutput: 'warn',
+                })
                 runSettled = true
                 reject(new Error(message.error))
                 return
@@ -788,6 +823,10 @@ export class NativeAgentRuntime implements AgentRuntime {
 
     try {
       await runCompletion
+      logFlightEvent('run', 'worker-complete', {
+        id: input.conversationId,
+        detail: `messages=${this.messages.length}`,
+      })
       this.scheduleMemoryAgent(input, abortSignal)
     } finally {
       if (abortListener) {
@@ -813,6 +852,10 @@ export class NativeAgentRuntime implements AgentRuntime {
     // extract memory; aborted runs skip extraction too.
     if (Boolean(input.systemPromptOverride) || signal.aborted) return
 
+    logFlightEvent('memory', 'extraction-scheduled', {
+      id: input.assistantId ?? 'global',
+      detail: `messages=${input.messages.length + this.messages.length}`,
+    })
     input.enqueueMemoryExtraction?.({
       messages: [...input.messages, ...this.messages],
       providerClient: input.providerClient,

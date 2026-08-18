@@ -18,6 +18,10 @@ import {
   ToolCallResponseStatus,
   getToolCallArgumentsObject,
 } from '../../types/tool-call.types'
+import {
+  logFlightEvent,
+  watchFlight,
+} from '../../utils/debug/flightLog'
 import { formatErrorMessageWithCauses } from '../../utils/error-message'
 import {
   acquireBackgroundExecution,
@@ -1199,6 +1203,10 @@ export class AgentService {
     const queue = this.pendingUserMessagesByKey.get(runKey) ?? []
     queue.push(message)
     this.pendingUserMessagesByKey.set(runKey, queue)
+    logFlightEvent('run', 'user-message-queued', {
+      id: runKey,
+      detail: `queueSize=${queue.length} message=${message.id.slice(0, 8)}`,
+    })
     this.notifyConversationSubscribers(conversationId)
     return 'enqueued'
   }
@@ -2508,6 +2516,12 @@ export class AgentService {
     runEntry.lastRunInput = input
     runEntry.lastLoopConfig = loopConfig
 
+    const runFlightId = `${runKey}:${runId}`
+    logFlightEvent('run', 'start', {
+      id: runFlightId,
+      detail: `messages=${input.messages.length} fastPath=${isFastPathLoopConfig(loopConfig)}`,
+    })
+    const clearRunWatch = watchFlight(runFlightId, 'run', 90_000)
     const citationRegistry = new CitationRegistry()
     // The visible-history prefix belongs to the run's original input. Keep
     // this anchor stable even when a queued user message becomes the source
@@ -2551,6 +2565,10 @@ export class AgentService {
         }
 
         this.pendingUserMessagesByKey.delete(runKey)
+        logFlightEvent('run', 'user-messages-drained', {
+          id: runKey,
+          detail: `count=${queue.length}`,
+        })
         const currentRunEntry = this.runEntriesByKey.get(runKey)
         if (currentRunEntry?.runToken === runToken) {
           currentRunEntry.sourceUserMessageId = sourceUserMessageId
@@ -2616,6 +2634,7 @@ export class AgentService {
     const backgroundExecutionReleasePromise = acquireBackgroundExecution()
     try {
       await runtime.run(runtimeInput)
+      logFlightEvent('run', 'runtime-done', { id: runFlightId })
       const trackedFileChanges = await finishFileChangeTracking()
 
       const currentRunEntry = this.runEntriesByKey.get(runKey)
@@ -2638,6 +2657,10 @@ export class AgentService {
         pendingCompactionAnchorMessageId: null,
       }
       this.recomputeConversationState(conversationId)
+      logFlightEvent('run', 'complete', {
+        id: runFlightId,
+        detail: `status=${currentRunEntry.state.status} messages=${nextMessages.length}`,
+      })
     } catch (error) {
       const currentRunEntry = this.runEntriesByKey.get(runKey)
       if (!currentRunEntry || currentRunEntry.runToken !== runToken) {
@@ -2658,10 +2681,16 @@ export class AgentService {
         errorMessage: aborted ? undefined : formatErrorMessageWithCauses(error),
       }
       this.recomputeConversationState(conversationId)
+      logFlightEvent('run', 'error', {
+        id: runFlightId,
+        detail: aborted ? 'aborted' : formatErrorMessageWithCauses(error),
+        consoleOutput: 'warn',
+      })
       if (!aborted) {
         throw error
       }
     } finally {
+      clearRunWatch()
       unsubscribe()
       void finishFileChangeTracking()
       const currentRunEntry = this.runEntriesByKey.get(runKey)
@@ -2925,6 +2954,12 @@ export class AgentService {
       this.publishConversationState(conversationId, publishMode)
       return
     }
+
+    logFlightEvent('state', 'recompute', {
+      id: conversationId,
+      detail: `runs=${runEntries.length} mode=${publishMode}`,
+      consoleOutput: 'none',
+    })
 
     const aggregateMessages = runEntries.reduce<ChatMessage[]>(
       (messages, runEntry) => {

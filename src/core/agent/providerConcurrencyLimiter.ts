@@ -1,3 +1,5 @@
+import { logFlightEvent } from '../../utils/debug/flightLog'
+
 const MAX_CONCURRENT_REQUESTS_PER_PROVIDER = 10
 
 type Waiter = () => void
@@ -10,7 +12,17 @@ export async function withProviderConcurrency<T>(
   operation: () => Promise<T>,
   signal?: AbortSignal,
 ): Promise<T> {
+  const queuedAt = Date.now()
   await acquire(providerId, signal)
+  // A direct acquire sees active === 1; anything higher means we waited for a
+  // slot, so the queue depth is exactly the reason a turn may feel stalled.
+  if ((activeByProvider.get(providerId) ?? 1) > 1) {
+    logFlightEvent('llm', 'concurrency-queued', {
+      id: providerId,
+      detail: `waited ${Date.now() - queuedAt}ms active=${activeByProvider.get(providerId)}`,
+      consoleOutput: 'warn',
+    })
+  }
   try {
     return await operation()
   } finally {

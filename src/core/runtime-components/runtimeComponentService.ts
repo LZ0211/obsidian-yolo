@@ -1,3 +1,4 @@
+import { logFlightEvent } from '../../utils/debug/flightLog'
 import {
   type AutomaticRetrySchedule,
   getNextAutomaticRetry,
@@ -166,6 +167,11 @@ export class RuntimeComponentService {
         record.error ?? `Runtime component "${id}" failed to initialize`,
       )
     }
+    const acquireStartedAt = Date.now()
+    logFlightEvent('component', 'acquire-start', {
+      id,
+      detail: `status=${record.status}`,
+    })
     try {
       if (!this.options.runtime.isActive(id)) {
         this.update(record, { status: 'loading', error: null })
@@ -191,8 +197,17 @@ export class RuntimeComponentService {
         )
       })
       this.update(record, { status: 'active', error: null })
+      logFlightEvent('component', 'acquire-done', {
+        id,
+        detail: `took ${Date.now() - acquireStartedAt}ms`,
+      })
       return lease
     } catch (error) {
+      logFlightEvent('component', 'acquire-failed', {
+        id,
+        detail: `${Date.now() - acquireStartedAt}ms: ${describe(error)}`,
+        consoleOutput: 'warn',
+      })
       // A concurrent durable disable owns the visible state. Do not replace
       // quiescing/disabled with a spurious failed status or schedule repair.
       if (

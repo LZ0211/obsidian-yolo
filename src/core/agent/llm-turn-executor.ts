@@ -22,18 +22,13 @@ import { ToolCallRequest } from '../../types/tool-call.types'
 import type { ContextualInjection } from '../../utils/chat/contextual-injections'
 import { ReasoningPhaseTracker } from '../../utils/chat/reasoningPhaseTracker'
 import { RequestContextBuilder } from '../../utils/chat/requestContextBuilder'
+import { logFlightEvent } from '../../utils/debug/flightLog'
 import { formatErrorMessageWithCauses } from '../../utils/error-message'
 import { hasHostedWebSearch } from '../../utils/llm/model-tools'
 import {
   type SingleTurnExecutionResult,
   executeSingleTurn,
 } from '../ai/single-turn'
-import { normalizeAgentFinishReason } from './finish-reason'
-import { withProviderConcurrency } from './providerConcurrencyLimiter'
-import {
-  type ResponsesContinuation,
-  supportsResponsesStatefulContinuation,
-} from './responsesContinuation'
 import { BaseLLMProvider } from '../llm/base'
 import {
   createLLMDebugTrace,
@@ -54,6 +49,12 @@ import {
 import { McpManager } from '../mcp/mcpManager'
 
 import { CONTEXT_COMPACT_TOOL_NAME } from './compaction'
+import { normalizeAgentFinishReason } from './finish-reason'
+import { withProviderConcurrency } from './providerConcurrencyLimiter'
+import {
+  type ResponsesContinuation,
+  supportsResponsesStatefulContinuation,
+} from './responsesContinuation'
 import {
   type ToolCapabilityMode,
   buildToolCapabilityPrompt,
@@ -157,6 +158,11 @@ export class AgentLlmTurnExecutor {
     const deliveryMode = this.input.requestParams?.deliveryMode ?? 'incremental'
     const executionMode =
       this.input.providerClient.resolveResponseExecutionMode(deliveryMode)
+    const turnFlightId = `${this.input.conversationId}:${this.input.sourceUserMessageId ?? 'anon'}`
+    logFlightEvent('turn', 'start', {
+      id: turnFlightId,
+      detail: `model=${model.id} messages=${this.input.messages.length} delivery=${deliveryMode}`,
+    })
     const assistantMessageId = this.input.resumeAssistantMessage?.id ?? uuidv4()
     const debugTrace = isLLMDebugCaptureEnabled()
       ? createLLMDebugTrace({
@@ -255,6 +261,10 @@ export class AgentLlmTurnExecutor {
       updateLLMDebugTrace(debugTrace?.id, {
         toolPlanDurationMs: Date.now() - toolPlanStart,
       })
+      logFlightEvent('turn', 'tools-planned', {
+        id: turnFlightId,
+        detail: `count=${tools?.length ?? 0} ${Date.now() - toolPlanStart}ms`,
+      })
 
       const contextPreparationStart = Date.now()
       const runtimeModePrompt = buildToolCapabilityPrompt({
@@ -286,6 +296,10 @@ export class AgentLlmTurnExecutor {
           : baseRequestMessages
       updateLLMDebugTrace(debugTrace?.id, {
         contextPreparationDurationMs: Date.now() - contextPreparationStart,
+      })
+      logFlightEvent('turn', 'context-ready', {
+        id: turnFlightId,
+        detail: `${Date.now() - contextPreparationStart}ms requestMessages=${requestMessages.length}`,
       })
 
       requestReasoning = resolveRequestReasoningLevel(
@@ -458,6 +472,11 @@ export class AgentLlmTurnExecutor {
         errorMessage,
       })
       this.input.onAssistantMessage(assistantMessage)
+      logFlightEvent('turn', 'error', {
+        id: turnFlightId,
+        detail: `${errorMetadata.generationState}: ${errorMessage ?? 'aborted'}`,
+        consoleOutput: 'warn',
+      })
       throw error
     }
 
@@ -526,6 +545,10 @@ export class AgentLlmTurnExecutor {
       toolCallNames: toolCallRequests.map((toolCall) => toolCall.name),
     })
     this.input.onAssistantMessage(assistantMessage)
+    logFlightEvent('turn', 'done', {
+      id: turnFlightId,
+      detail: `duration=${Date.now() - responseStart}ms toolCalls=${toolCallRequests.length} content=${assistantMessage.content.length}ch`,
+    })
 
     return {
       assistantMessage,

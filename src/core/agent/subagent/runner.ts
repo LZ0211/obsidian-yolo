@@ -13,6 +13,7 @@ import type {
 } from '../../../types/provider.types'
 import { ToolCallResponseStatus } from '../../../types/tool-call.types'
 import { collectTotalAssistantUsage } from '../../../utils/chat/llmUsage'
+import { logFlightEvent } from '../../../utils/debug/flightLog'
 import { formatErrorMessageWithCauses } from '../../../utils/error-message'
 import { runWithBackgroundExecution } from '../../background/backgroundExecutionController'
 import type { BaseLLMProvider } from '../../llm/base'
@@ -581,6 +582,10 @@ async function runChildAgent(
 
   unsubscribe()
 
+  logFlightEvent('subagent', 'completed', {
+    id: record.conversationId,
+    detail: `task=${record.taskId} status=${record.status} durationMs=${Date.now() - record.createdAt}`,
+  })
   publishBackgroundSubagentCompletion(record)
 }
 
@@ -622,6 +627,10 @@ export async function runSubagent(
     abortListener = () => abortController.abort()
     signal.addEventListener('abort', abortListener, { once: true })
   }
+  logFlightEvent('subagent', 'dispatch', {
+    id: conversationId,
+    detail: `task=${taskId} title=${title.slice(0, 60)} model=${childModel.model.model ?? childModel.model.id}`,
+  })
 
   const record: SubagentTaskRecord = {
     taskId,
@@ -668,6 +677,11 @@ export async function runSubagent(
             ? { delegatedRoleName: delegatedProfile.delegatedRole.name }
             : {}),
         },
+      })
+      logFlightEvent('subagent', 'failed', {
+        id: conversationId,
+        detail: `task=${record.taskId} status=${status}: ${errorMessage}`,
+        consoleOutput: 'warn',
       })
       publishBackgroundSubagentCompletion(record)
     })

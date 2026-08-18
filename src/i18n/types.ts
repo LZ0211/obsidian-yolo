@@ -30,6 +30,7 @@ export type TranslationKeys = {
     capturePdfRegion?: string
     exportSettings?: string
     importSettings?: string
+    exportFlightLog?: string
   }
 
   // UI Common
@@ -2750,6 +2751,8 @@ export type TranslationKeys = {
     capturePdfNoLeaf?: string
     capturePdfFailed?: string
     capturePdfInjectFailed?: string
+    flightLogExported?: string
+    flightLogEmpty?: string
   }
 
   scheduler?: {

@@ -31,6 +31,7 @@ import {
   parseAndRepairToolArguments,
   parseAndRepairToolArgumentsText,
 } from '../../utils/chat/tool-argument-parser'
+import { logFlightEvent } from '../../utils/debug/flightLog'
 import { estimateJsonTokens } from '../../utils/llm/contextTokenEstimate'
 import { captureLLMDebugOperation } from '../llm/debugCapture'
 import {
@@ -1298,28 +1299,47 @@ export class AgentToolGateway {
     params: McpToolCallParamsWithDebug,
   ): Promise<ToolCallResponse> {
     const { debugTraceId, ...toolParams } = params
-    return captureLLMDebugOperation({
-      traceId: debugTraceId,
-      signal: toolParams.signal,
-      transportMode: 'mcp',
-      url: `mcp://${toolParams.name}`,
-      method: 'callTool',
-      requestBody: {
-        name: toolParams.name,
-        args: toolParams.args,
-        id: toolParams.id,
-        conversationId: toolParams.conversationId,
-        roundId: toolParams.roundId,
-        requireReview: toolParams.requireReview,
-        chatModelId: toolParams.chatModelId,
-      },
-      responseContentType: 'application/json',
-      run: () =>
-        this.isLoadToolSchemasRequest(toolParams.name)
-          ? this.callLoadToolSchemas(toolParams.args)
-          : this.mcpManager.callTool(toolParams),
-      getResponseBody: (response) => response,
+    const toolFlightId = `${toolParams.conversationId}:${toolParams.id ?? toolParams.name}`
+    logFlightEvent('tool', 'call-start', {
+      id: toolFlightId,
+      detail: `name=${toolParams.name} requireReview=${toolParams.requireReview}`,
     })
+    try {
+      const response = await captureLLMDebugOperation({
+        traceId: debugTraceId,
+        signal: toolParams.signal,
+        transportMode: 'mcp',
+        url: `mcp://${toolParams.name}`,
+        method: 'callTool',
+        requestBody: {
+          name: toolParams.name,
+          args: toolParams.args,
+          id: toolParams.id,
+          conversationId: toolParams.conversationId,
+          roundId: toolParams.roundId,
+          requireReview: toolParams.requireReview,
+          chatModelId: toolParams.chatModelId,
+        },
+        responseContentType: 'application/json',
+        run: () =>
+          this.isLoadToolSchemasRequest(toolParams.name)
+            ? this.callLoadToolSchemas(toolParams.args)
+            : this.mcpManager.callTool(toolParams),
+        getResponseBody: (response) => response,
+      })
+      logFlightEvent('tool', 'call-done', {
+        id: toolFlightId,
+        detail: `status=${response.status}`,
+      })
+      return response
+    } catch (error) {
+      logFlightEvent('tool', 'call-error', {
+        id: toolFlightId,
+        detail: error instanceof Error ? error.message : String(error),
+        consoleOutput: 'warn',
+      })
+      throw error
+    }
   }
 
   private isLoadToolSchemasRequest(toolName: string): boolean {

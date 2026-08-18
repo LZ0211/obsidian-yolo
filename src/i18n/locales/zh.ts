@@ -23,6 +23,7 @@ export const zh: TranslationKeys = {
     capturePdfRegion: '截取 PDF 区域到聊天',
     exportSettings: '导出插件配置',
     importSettings: '导入插件配置',
+    exportFlightLog: '导出飞行日志到剪贴板',
   },
 
   common: {
@@ -3022,6 +3023,8 @@ export const zh: TranslationKeys = {
     capturePdfNoLeaf: '当前没有打开的 PDF 文件。',
     capturePdfFailed: '截取所选区域失败。',
     capturePdfInjectFailed: '无法将截图添加到聊天。',
+    flightLogExported: '飞行日志已写入：{path}',
+    flightLogEmpty: '飞行日志为空（尚未产生任何会话事件）',
   },
 
   scheduler: {

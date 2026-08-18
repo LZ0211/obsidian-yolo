@@ -18,6 +18,10 @@ import {
   getToolCallArgumentsObject,
 } from '../../types/tool-call.types'
 import { createToolCallArguments } from '../../utils/chat/tool-arguments'
+import {
+  logFlightEvent,
+  startFlightSpan,
+} from '../../utils/debug/flightLog'
 import { estimateJsonTokens } from '../../utils/llm/contextTokenEstimate'
 import { resolveEffectiveMaxContextTokens } from '../../utils/llm/model-capability-registry'
 import { BaseLLMProvider } from '../llm/base'
@@ -337,6 +341,11 @@ export async function executeSingleTurn({
       ? { ...request, reasoningLevel: undefined }
       : request
   const effectiveProviderOptions = effectivePolicy.options
+  const flightId = `llm:${model.id}`
+  logFlightEvent('llm', 'request-start', {
+    id: flightId,
+    detail: `model=${model.id} purpose=${purpose} delivery=${deliveryMode}`,
+  })
   await assertRequestFitsModelContext({
     model: effectiveModel,
     request: effectiveRequest,
@@ -376,6 +385,7 @@ export async function executeSingleTurn({
   const runNonStreaming = async (options?: {
     systemHint?: string
   }): Promise<SingleTurnExecutionResult> => {
+    const span = startFlightSpan('llm', 'non-streaming', { id: flightId })
     const requestController = new AbortController()
     const handleRequestAbort = () => requestController.abort()
     if (signal?.aborted) {
@@ -403,6 +413,7 @@ export async function executeSingleTurn({
         ),
       )
 
+      span.finish()
       return {
         content: response.choices?.[0]?.message?.content ?? '',
         reasoning: response.choices?.[0]?.message?.reasoning ?? undefined,
@@ -433,6 +444,7 @@ export async function executeSingleTurn({
             ) ?? [],
       }
     } finally {
+      span.cancel()
       signal?.removeEventListener('abort', handleRequestAbort)
     }
   }
@@ -442,6 +454,7 @@ export async function executeSingleTurn({
   }
 
   const isBufferedStreaming = executionMode === 'buffered-streaming'
+  const streamStartedAt = Date.now()
   const streamController = new AbortController()
   bindLLMDebugTraceToSignal(debugTraceId, streamController.signal)
   let rejectBufferedInterruption: ((error: Error) => void) | undefined
@@ -488,6 +501,11 @@ export async function executeSingleTurn({
   try {
     timeoutId = setTimeout(() => {
       timedOut = true
+      logFlightEvent('llm', 'stream-timeout', {
+        id: flightId,
+        detail: `${primaryRequestTimeoutMs}ms without completion`,
+        consoleOutput: 'warn',
+      })
       streamController.abort()
       if (isBufferedStreaming) {
         rejectBufferedInterruption?.(
@@ -515,6 +533,10 @@ export async function executeSingleTurn({
       for await (const chunk of streamIterator) {
         if (!hasReceivedFirstChunk) {
           hasReceivedFirstChunk = true
+          logFlightEvent('llm', 'stream-first-chunk', {
+            id: flightId,
+            detail: `waited ${Date.now() - streamStartedAt}ms`,
+          })
           if (!isBufferedStreaming) {
             clearTimeoutId()
           }
@@ -592,6 +614,10 @@ export async function executeSingleTurn({
       : consumeStream)
 
     const streamEndedAt = Date.now()
+    logFlightEvent('llm', 'stream-complete', {
+      id: flightId,
+      detail: `streamed ${streamEndedAt - streamStartedAt}ms content=${content.length}ch reasoning=${reasoning.length}ch`,
+    })
     toolCallAccumulator.sealOpenCalls('stream_end', streamEndedAt)
     toolCallAccumulator.handoff('stream_end', streamEndedAt)
 
@@ -686,6 +712,10 @@ export async function executeSingleTurn({
       )
     }
 
+    logFlightEvent('llm', 'request-complete', {
+      id: flightId,
+      detail: `total=${Date.now() - streamStartedAt}ms toolCalls=${finalToolCalls.length} finish=${finalFinishReason ?? 'none'}`,
+    })
     return {
       content,
       reasoning: reasoning || undefined,
@@ -697,6 +727,10 @@ export async function executeSingleTurn({
       toolCalls: finalToolCalls,
     }
   } catch (error) {
+    logFlightEvent('llm', 'request-error', {
+      id: flightId,
+      detail: error instanceof Error ? error.message : String(error),
+    })
     if (isBufferedStreaming) {
       throw markRequestErrorNonRetryable(error)
     }

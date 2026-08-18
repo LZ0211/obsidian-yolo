@@ -23,6 +23,7 @@ export const en: TranslationKeys = {
     capturePdfRegion: 'Capture PDF region to chat',
     exportSettings: 'Export plugin settings',
     importSettings: 'Import plugin settings',
+    exportFlightLog: 'Export flight log to clipboard',
   },
 
   common: {
@@ -3237,6 +3238,8 @@ export const en: TranslationKeys = {
     capturePdfNoLeaf: 'No PDF file is currently open.',
     capturePdfFailed: 'Failed to capture the selected region.',
     capturePdfInjectFailed: 'Failed to add the screenshot to chat.',
+    flightLogExported: 'Flight log written to: {path}',
+    flightLogEmpty: 'Flight log is empty (no conversation events recorded yet)',
   },
 
   scheduler: {

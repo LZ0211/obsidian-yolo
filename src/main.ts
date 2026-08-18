@@ -23,6 +23,7 @@ import {
 } from './components/ActionToast'
 import { MarkdownInsertionTargetTracker } from './components/chat-view/markdownInsertionTarget'
 import { ConfirmModal } from './components/modals/ConfirmModal'
+import { RAGLogModal } from './components/settings/modals/RAGLogModal'
 import { mountUpdateToast } from './components/UpdateToast'
 import { CHAT_VIEW_TYPE } from './constants'
 import { BAKED_PLUGIN_VERSION } from './constants/bakedVersion'
@@ -33,11 +34,11 @@ import {
 } from './core/agent/agentEventStore'
 import { AgentFileChangeTracker } from './core/agent/agentFileChangeTracker'
 import { ProjectDeliveryBridge } from './core/agent/project/deliveryBridge'
-import { subagentTaskRegistry } from './core/agent/subagent/task-registry'
 import type {
   AgentConversationRunSummary,
   AgentService,
 } from './core/agent/service'
+import { subagentTaskRegistry } from './core/agent/subagent/task-registry'
 import {
   clearAllChatGPTOAuthServices,
   clearChatGPTOAuthService,
@@ -56,113 +57,6 @@ import {
 } from './core/background/backgroundActivityRegistry'
 import { backgroundExecutionController } from './core/background/backgroundExecutionController'
 import { buildBackgroundStatusModel } from './core/background/backgroundStatusModel'
-import { noteWebviewLeafFocus } from './core/browser/activeWebviewProbe'
-import { WebviewSelectionBridge } from './core/browser/webviewSelectionBridge'
-import type {
-  CliConversationRunSummary,
-  CliRuntimeCoordinator,
-  CliRuntimeScope,
-} from './core/cli-runtime/coordinator'
-import { getCliRuntimeDescriptor } from './core/cli-runtime/registry'
-import type { CliActiveRunState } from './core/cli-runtime/types'
-import { CLI_RUNTIME_IDS } from './core/cli-runtime/types'
-import { DistributionFeedClient } from './core/distribution/distributionFeedClient'
-import { localeStore } from './core/i18n/localeStore'
-import {
-  isLLMDebugCaptureEnabled,
-  setLLMDebugCaptureEnabled,
-} from './core/llm/debugCapture'
-import { clearRequestTransportMemory } from './core/llm/requestTransport'
-import { installYoloInjectionBridge } from './core/mcp/injectionBridge'
-import {
-  closeMemoryIndexRuntime,
-  getMemoryIndexRuntime,
-  getMemoryIndexRuntimeHandle,
-  planMemorySettingsReconcile,
-} from './core/memory/memoryIndexRuntime'
-import type {
-  LocalMcpServerRuntime,
-  LocalMcpServerState,
-} from './core/mcp/localMcpServerConfig'
-import type { McpCoordinator } from './core/mcp/mcpCoordinator'
-import type { McpManager } from './core/mcp/mcpManager'
-import {
-  CoreModuleAgentCapabilityProvider,
-  CoreModuleChatCapabilityProvider,
-  CoreModuleHostCapabilityProvider,
-  DomBlobModuleScriptExecutor,
-  IndexedDbDataAdapter,
-  ManagedModulePathsCapabilityProvider,
-  ModuleArtifactArrivalGrace,
-  ModuleChatModeRegistry,
-  ModuleAssetsCapabilityProvider,
-  ModuleConfigCapabilityProvider,
-  ModuleDeviceStateStore,
-  ModuleIntentStore,
-  ModuleLoader,
-  ModulePrivateStorageCapabilityProvider,
-  ModuleRuntime,
-  ModuleRuntimeReservation,
-  type ModuleService,
-  ModuleSettingsCapabilityProvider,
-  ModuleSettingsContributionRegistry,
-  ModuleStore,
-  OFFICIAL_MODULE_ARTIFACT_TIMEOUT_MS,
-  ObsidianModuleContributionRegistrar,
-  ObsidianModuleUiCapabilityProvider,
-  ObsidianModuleVaultCapabilityProvider,
-  createDevModuleCatalogOverlay,
-  createModuleSkillMaterializer,
-  createObsidianModuleConfigBackendFactory,
-  createObsidianModuleConfigCreateIfAbsent,
-  createObsidianModuleIntentBackend,
-  createObsidianModuleSkillProjectionVault,
-  createOfficialModuleArtifactDownloader,
-  createOfficialModuleCatalogSource,
-  createOfficialModuleCompatibilityProvider,
-  createProductionModuleServices,
-  handoffLearningLegacySettings,
-  managedModuleDataNamespace,
-  migrateLearningLegacyInstallIntent,
-  parseModuleArtifactManifest,
-  resolveModuleSkillVaultPath,
-  runExclusive as runManagedModuleDataExclusive,
-  selectModuleManifestVariant,
-} from './core/modules'
-import { normalizeModuleCatalogLocale } from './core/modules/moduleCatalogPresentation'
-import { AgentNotificationCoordinator } from './core/notifications/agentNotificationCoordinator'
-import { NotificationService } from './core/notifications/notificationService'
-import { migrateHiddenYoloBaseDir } from './core/paths/yoloBaseDirMigration'
-import { relocateYoloBaseDir } from './core/paths/yoloBaseDirRelocation'
-import {
-  type YoloDataMeta,
-  ensureUserDataRootDir,
-  extractYoloDataMeta,
-  readVaultDataJson,
-  removeVaultDataJson,
-  stampYoloDataMeta,
-} from './core/paths/yoloManagedData'
-import {
-  getYoloBaseDir,
-  getYoloJsonDbRootDir,
-  getYoloModuleDir,
-  getYoloModuleSkillsDir,
-  getYoloModulesRootDir,
-  hasHiddenYoloBaseDirSegment,
-  resolveExternalYoloBaseDir,
-} from './core/paths/yoloPaths'
-import { RagAutoUpdateService } from './core/rag/ragAutoUpdateService'
-import { RagCoordinator } from './core/rag/ragCoordinator'
-import type { RAGEngine } from './core/rag/ragEngine'
-import {
-  RagIndexBusyError,
-  RagIndexRunSnapshot,
-  RagIndexService,
-} from './core/rag/ragIndexService'
-import {
-  captureRagIndexScope,
-  ragIndexScopeChanged,
-} from './core/rag/ragIndexScope'
 import {
   BAKED_RUNTIME_COMPONENT_REGISTRY,
   RuntimeComponentDeviceStateStore,
@@ -252,11 +146,116 @@ import {
   composeRetrievalInspectStatus,
 } from './core/rag/retrievalInspectStatus'
 import type { RetrievalInspectStatus } from './core/rag/retrievalTraceTypes'
-import { RAGLogModal } from './components/settings/modals/RAGLogModal'
 import type { DatabaseManager } from './database/DatabaseManager'
 import { ChatManager } from './database/json/chat/ChatManager'
 import type { BotService } from './core/bot/bot-service'
-import { deserializeChatMessage } from './hooks/useChatHistory'
+import { noteWebviewLeafFocus } from './core/browser/activeWebviewProbe'
+import { WebviewSelectionBridge } from './core/browser/webviewSelectionBridge'
+import type {
+  CliConversationRunSummary,
+  CliRuntimeCoordinator,
+  CliRuntimeScope,
+} from './core/cli-runtime/coordinator'
+import { getCliRuntimeDescriptor } from './core/cli-runtime/registry'
+import { CLI_RUNTIME_IDS } from './core/cli-runtime/types'
+import type { CliActiveRunState } from './core/cli-runtime/types'
+import { DistributionFeedClient } from './core/distribution/distributionFeedClient'
+import { localeStore } from './core/i18n/localeStore'
+import {
+  isLLMDebugCaptureEnabled,
+  setLLMDebugCaptureEnabled,
+} from './core/llm/debugCapture'
+import { clearRequestTransportMemory } from './core/llm/requestTransport'
+import { installYoloInjectionBridge } from './core/mcp/injectionBridge'
+import type {
+  LocalMcpServerRuntime,
+  LocalMcpServerState,
+} from './core/mcp/localMcpServerConfig'
+import type { McpCoordinator } from './core/mcp/mcpCoordinator'
+import type { McpManager } from './core/mcp/mcpManager'
+import {
+  closeMemoryIndexRuntime,
+  getMemoryIndexRuntime,
+  getMemoryIndexRuntimeHandle,
+  planMemorySettingsReconcile,
+} from './core/memory/memoryIndexRuntime'
+import {
+  CoreModuleAgentCapabilityProvider,
+  CoreModuleChatCapabilityProvider,
+  CoreModuleHostCapabilityProvider,
+  DomBlobModuleScriptExecutor,
+  IndexedDbDataAdapter,
+  ManagedModulePathsCapabilityProvider,
+  ModuleArtifactArrivalGrace,
+  ModuleChatModeRegistry,
+  ModuleAssetsCapabilityProvider,
+  ModuleConfigCapabilityProvider,
+  ModuleDeviceStateStore,
+  ModuleIntentStore,
+  ModuleLoader,
+  ModulePrivateStorageCapabilityProvider,
+  ModuleRuntime,
+  ModuleRuntimeReservation,
+  type ModuleService,
+  ModuleSettingsCapabilityProvider,
+  ModuleSettingsContributionRegistry,
+  ModuleStore,
+  OFFICIAL_MODULE_ARTIFACT_TIMEOUT_MS,
+  ObsidianModuleContributionRegistrar,
+  ObsidianModuleUiCapabilityProvider,
+  ObsidianModuleVaultCapabilityProvider,
+  createDevModuleCatalogOverlay,
+  createModuleSkillMaterializer,
+  createObsidianModuleConfigBackendFactory,
+  createObsidianModuleConfigCreateIfAbsent,
+  createObsidianModuleIntentBackend,
+  createObsidianModuleSkillProjectionVault,
+  createOfficialModuleArtifactDownloader,
+  createOfficialModuleCatalogSource,
+  createOfficialModuleCompatibilityProvider,
+  createProductionModuleServices,
+  handoffLearningLegacySettings,
+  managedModuleDataNamespace,
+  migrateLearningLegacyInstallIntent,
+  parseModuleArtifactManifest,
+  resolveModuleSkillVaultPath,
+  runExclusive as runManagedModuleDataExclusive,
+  selectModuleManifestVariant,
+} from './core/modules'
+import { normalizeModuleCatalogLocale } from './core/modules/moduleCatalogPresentation'
+import { AgentNotificationCoordinator } from './core/notifications/agentNotificationCoordinator'
+import { NotificationService } from './core/notifications/notificationService'
+import { migrateHiddenYoloBaseDir } from './core/paths/yoloBaseDirMigration'
+import { relocateYoloBaseDir } from './core/paths/yoloBaseDirRelocation'
+import {
+  type YoloDataMeta,
+  ensureUserDataRootDir,
+  extractYoloDataMeta,
+  readVaultDataJson,
+  removeVaultDataJson,
+  stampYoloDataMeta,
+} from './core/paths/yoloManagedData'
+import {
+  getYoloBaseDir,
+  getYoloJsonDbRootDir,
+  getYoloModuleDir,
+  getYoloModuleSkillsDir,
+  getYoloModulesRootDir,
+  hasHiddenYoloBaseDirSegment,
+  resolveExternalYoloBaseDir,
+} from './core/paths/yoloPaths'
+import { RagAutoUpdateService } from './core/rag/ragAutoUpdateService'
+import { RagCoordinator } from './core/rag/ragCoordinator'
+import type { RAGEngine } from './core/rag/ragEngine'
+import {
+  captureRagIndexScope,
+  ragIndexScopeChanged,
+} from './core/rag/ragIndexScope'
+import {
+  RagIndexBusyError,
+  RagIndexRunSnapshot,
+  RagIndexService,
+} from './core/rag/ragIndexService'
 import { pruneImageCache } from './database/json/chat/imageCacheStore'
 import { prunePdfTextCache } from './database/json/chat/pdfTextCacheStore'
 import type {
@@ -288,6 +287,7 @@ import { TabCompletionController } from './features/editor/tab-completion/tabCom
 import type { ContinuationModelOverride } from './features/editor/write-assist/writeAssistController'
 import { WriteAssistController } from './features/editor/write-assist/writeAssistController'
 import { enablePdfScreenshotFeature } from './features/pdf-screenshot'
+import { deserializeChatMessage } from './hooks/useChatHistory'
 import { type Language, createTranslationFunction, loadLocale } from './i18n'
 import {
   YoloSettings,
@@ -307,6 +307,11 @@ import type {
 } from './types/mentionable'
 import { MentionableFile, MentionableFolder } from './types/mentionable'
 import { isUntitledConversationTitle } from './utils/chat/conversationTitle'
+import {
+  flushFlightLog,
+  formatFlightLog,
+  setFlightLogSink,
+} from './utils/debug/flightLog'
 import { stableStringify } from './utils/json/stableStringify'
 import { applyKnownMaxContextTokensToChatModels } from './utils/llm/model-capability-registry'
 import { getMentionableBlockData } from './utils/obsidian'
@@ -1305,6 +1310,74 @@ export default class YoloPlugin extends Plugin {
     this.isContinuationInProgress = false
     this.tabCompletionController?.cancelRequest()
     this.agentService?.abortAll()
+  }
+
+  private flightLogWriteQueue: Promise<void> = Promise.resolve()
+  private flightLogFilePath: string | null = null
+  private flightLogSinkDisabled = false
+
+  private setupFlightLogSink(): void {
+    this.flightLogSinkDisabled = false
+    this.flightLogFilePath = null
+    setFlightLogSink({
+      writeChunk: (chunk) => this.appendFlightLogChunk(chunk),
+    })
+  }
+
+  /**
+   * Serialized read-append-write on the vault adapter (it has no append API).
+   * The file rolls by day; the sink disables itself past 5MB so a long session
+   * cannot grow it unboundedly — the in-memory buffer and manual export remain
+   * available.
+   */
+  private appendFlightLogChunk(chunk: string): Promise<void> {
+    if (this.flightLogSinkDisabled) return Promise.resolve()
+    const write = this.flightLogWriteQueue.then(async () => {
+      if (this.flightLogSinkDisabled) return
+      try {
+        const adapter = this.app.vault.adapter
+        if (!this.flightLogFilePath) {
+          const debugDir = `${getYoloBaseDir(this.settings)}/debug`
+          if (!(await adapter.exists(debugDir))) {
+            await this.app.vault.createFolder(debugDir)
+          }
+          const stamp = new Date().toISOString().slice(0, 10)
+          this.flightLogFilePath = `${debugDir}/flight-log-${stamp}.md`
+        }
+        const path = this.flightLogFilePath
+        const stat = await adapter.stat(path)
+        if (stat && stat.size > 5 * 1024 * 1024) {
+          this.flightLogSinkDisabled = true
+          console.warn(
+            '[YOLO][Flight] flight log exceeded 5MB; live file sink disabled',
+          )
+          return
+        }
+        const existing = stat ? await adapter.read(path) : ''
+        await adapter.write(path, `${existing}${chunk}`)
+      } catch (error) {
+        this.flightLogSinkDisabled = true
+        throw error
+      }
+    })
+    this.flightLogWriteQueue = write
+    return write
+  }
+
+  private async exportFlightLogToFile(): Promise<void> {
+    const content = formatFlightLog()
+    if (!content) {
+      new Notice(this.t('notices.flightLogEmpty'))
+      return
+    }
+    const debugDir = `${getYoloBaseDir(this.settings)}/debug`
+    if (!(await this.app.vault.adapter.exists(debugDir))) {
+      await this.app.vault.createFolder(debugDir)
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const filePath = `${debugDir}/flight-log-${stamp}.md`
+    await this.app.vault.create(filePath, `# Flight Log\n\n${content}\n`)
+    new Notice(this.t('notices.flightLogExported').replace('{path}', filePath))
   }
 
   async warmupAgentService(): Promise<AgentService> {
@@ -2350,6 +2423,7 @@ export default class YoloPlugin extends Plugin {
     addIcon(YOLO_ICON_ID, YOLO_ICON_SVG)
 
     await this.loadSettings()
+    this.setupFlightLogSink()
     this.projectDeliveryBridge = new ProjectDeliveryBridge({
       getSettings: () => this.settings,
       adapter: this.app.vault.adapter,
@@ -2752,6 +2826,14 @@ export default class YoloPlugin extends Plugin {
           view.exportCurrentConversation()
         }
         return true
+      },
+    })
+
+    this.addCommand({
+      id: 'export-flight-log',
+      name: this.t('commands.exportFlightLog'),
+      callback: () => {
+        void this.exportFlightLogToFile()
       },
     })
 
@@ -3188,6 +3270,8 @@ export default class YoloPlugin extends Plugin {
     this.clearTabCompletionTimer()
     this.cancelTabCompletionRequest()
     this.clearInlineSuggestion()
+    await flushFlightLog()
+    setFlightLogSink(null)
   }
 
   async loadSettings() {

@@ -1,3 +1,5 @@
+import { logFlightEvent } from '../../utils/debug/flightLog'
+
 export type MemoryExtractionQueueTask = {
   assistantId?: string
   id: string
@@ -39,6 +41,10 @@ export class MemoryExtractionQueue<T extends MemoryExtractionQueueTask> {
     }
     this.lanes.set(key, lane)
     lane.pending.push(task)
+    logFlightEvent('memory', 'enqueue', {
+      id: task.id,
+      detail: `pending=${lane.pending.length}`,
+    })
     this.scheduleLanes()
     this.trimPendingLanes()
   }
@@ -107,14 +113,27 @@ export class MemoryExtractionQueue<T extends MemoryExtractionQueueTask> {
     const controller = new AbortController()
     lane.controller = controller
     this.activeLaneCount += 1
+    logFlightEvent('memory', 'lane-start', {
+      id: task.id,
+      detail: `activeLanes=${this.activeLaneCount}`,
+    })
     lane.active = this.worker(task, controller.signal)
       .catch((error: unknown) => {
         console.warn('[YOLO][MemoryAgent] queued extraction failed', error)
+        logFlightEvent('memory', 'lane-failed', {
+          id: task.id,
+          detail: error instanceof Error ? error.message : String(error),
+          consoleOutput: 'warn',
+        })
       })
       .finally(() => {
         lane.active = null
         lane.controller = null
         this.activeLaneCount -= 1
+        logFlightEvent('memory', 'lane-done', {
+          id: task.id,
+          detail: `activeLanes=${this.activeLaneCount}`,
+        })
         if (lane.pending.length === 0 || this.stopped) {
           this.lanes.delete(key)
         }

@@ -3,6 +3,7 @@ import type { App } from 'obsidian'
 import { DEFAULT_MEMORY_AGENT_PROMPT } from '../../constants/memory-agent-prompt'
 import type { ChatModel } from '../../types/chat-model.types'
 import type { LLMProvider } from '../../types/provider.types'
+import { logFlightEvent } from '../../utils/debug/flightLog'
 import { buildMemoryExtractionContract } from '../agent/prompt-contracts'
 import { executeSingleTurn } from '../ai/single-turn'
 import type { BaseLLMProvider } from '../llm/base'
@@ -663,6 +664,10 @@ export const runMemoryAgentAfterTurn = async ({
     assistantId,
   })
   const currentMemory = buildBoundedMemoryExtractionContext(visibleEntries)
+  logFlightEvent('memory', 'entries-loaded', {
+    id: assistantId ?? 'global',
+    detail: `count=${visibleEntries.length} omitted=${currentMemory.omittedEntryCount}`,
+  })
   const response = await executeSingleTurn({
     providerClient,
     model,
@@ -688,6 +693,10 @@ export const runMemoryAgentAfterTurn = async ({
     purpose: 'lightweight',
   })
   const operations = parseMemoryAgentOperations(response.content)
+  logFlightEvent('memory', 'llm-response', {
+    id: assistantId ?? 'global',
+    detail: `operations=${operations.length}`,
+  })
   if (signal?.aborted) return []
 
   const latestEntries = await loadMemoryAgentEntries({
@@ -766,6 +775,10 @@ export const runMemoryAgentAfterTurn = async ({
     }
   }
 
+  logFlightEvent('memory', 'extraction-done', {
+    id: assistantId ?? 'global',
+    detail: `validOperations=${validOperations.length}`,
+  })
   return validOperations
 }
 
@@ -786,6 +799,11 @@ export const runMemoryAgentWithFallback = async ({
   } catch (error) {
     if (input.signal?.aborted) {
       console.warn('[YOLO][MemoryAgent] background extraction failed', error)
+      logFlightEvent('memory', 'extraction-aborted', {
+        id: input.assistantId ?? 'global',
+        detail: error instanceof Error ? error.message : String(error),
+        consoleOutput: 'warn',
+      })
       return []
     }
 
@@ -798,6 +816,13 @@ export const runMemoryAgentWithFallback = async ({
         : '[YOLO][MemoryAgent] memory extraction failed; retrying once',
       error,
     )
+    logFlightEvent('memory', 'extraction-failed-retry', {
+      id: input.assistantId ?? 'global',
+      detail: `${useFallback ? 'fallback model' : 'same model'}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      consoleOutput: 'warn',
+    })
     try {
       return await runMemoryAgentAfterTurn({
         ...input,
