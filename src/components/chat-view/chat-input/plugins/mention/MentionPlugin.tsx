@@ -681,7 +681,7 @@ export default function NewMentionsPlugin({
     if (queryString == null) return []
 
     if (menuMode === 'direct-search') {
-      const fileResults = results
+      return results
         .map(
           (result) =>
             new MentionTypeaheadOption({
@@ -690,11 +690,6 @@ export default function NewMentionsPlugin({
             }),
         )
         .slice(0, SUGGESTION_LIST_LENGTH_LIMIT)
-      // 打开的对话在 direct-search 下同样可达（rail 类别仅 entry 模式展示）。
-      return [...conversationOptions, ...fileResults].slice(
-        0,
-        SUGGESTION_LIST_LENGTH_LIMIT,
-      )
     }
 
     if (!normalizedQuery) return null
