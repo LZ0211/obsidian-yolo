@@ -17,6 +17,7 @@ export const en = {
     title: 'Workflow Studio',
     editorOnly: 'Edit only',
     sessionBoundary: 'Run workflows from the current session.',
+    synced: 'Markdown synced',
   },
   state: {
     loading: 'Loading workflow…',
@@ -39,12 +40,17 @@ export const en = {
     fit: 'Fit all',
     zoomIn: 'Zoom in',
     zoomOut: 'Zoom out',
+    flow: 'Flow',
   },
   rail: {
     workflows: 'Workflows',
     documents: 'Documents',
     steps: 'Steps',
     addNode: 'Add node',
+    master: 'Master',
+    stepWorkspaces: 'Step workspaces',
+    docsFirst: 'Read WORKFLOW.md, then each STEP.md',
+    dragHint: 'Drag between side handles to create an arrow',
   },
   inspector: {
     title: 'Node properties',
@@ -58,6 +64,10 @@ export const en = {
     predicate: 'Predicate',
     inputPredicates: 'Input predicates',
     outputSchema: 'Output schema',
+    source: 'Source',
+    target: 'Target',
+    markdownContent: 'Markdown content',
+    deleteNode: 'Delete node',
   },
   nodeKind: {
     input: 'Input',
@@ -117,6 +127,11 @@ export const en = {
     reject: 'Reject',
     stale: 'The proposal is stale.',
     failure: 'Assistant request failed.',
+    manual: 'Manual · one-shot · never runs the flow',
+    optimizeDocument: 'Optimize doc',
+    optimizeWorkflow: 'Optimize workflow',
+    proposalEmpty: 'No proposal yet. Choose an assistant action.',
+    changes: 'changes',
   },
   document: {
     workflowTitle: 'Workflow',

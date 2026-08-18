@@ -49,6 +49,7 @@ export type WorkflowTopology = Readonly<{
 
 export type WorkflowIssueCode =
   | 'invalidTopology'
+  | 'invalidEndpoint'
   | 'invalidStructure'
   | 'duplicateNodeId'
   | 'duplicateEdgeId'
@@ -197,6 +198,14 @@ export function validateWorkflowTopology(
   const outputs = nodes.filter((node) => node.kind === 'output')
   if (inputs.length === 0) issues.push({ code: 'missingInput' })
   if (outputs.length === 0) issues.push({ code: 'missingOutput' })
+  for (const input of inputs) {
+    if (edges.some((edge) => edge.target === input.id))
+      issues.push({ code: 'invalidEndpoint', nodeId: input.id })
+  }
+  for (const output of outputs) {
+    if (edges.some((edge) => edge.source === output.id))
+      issues.push({ code: 'invalidEndpoint', nodeId: output.id })
+  }
   for (const condition of nodes.filter((node) => node.kind === 'condition')) {
     const incoming = edges.filter((edge) => edge.target === condition.id)
     const outgoing = edges.filter((edge) => edge.source === condition.id)
@@ -244,7 +253,13 @@ export function connectionProblem(
 ): WorkflowConnectionProblem | null {
   const source = topology.nodes.find((node) => node.id === candidate.source)
   const target = topology.nodes.find((node) => node.id === candidate.target)
-  if (!source || !target || candidate.source === candidate.target)
+  if (
+    !source ||
+    !target ||
+    candidate.source === candidate.target ||
+    source.kind === 'output' ||
+    target.kind === 'input'
+  )
     return freezeProblem({ code: 'invalidConnection' })
   const otherEdges = topology.edges.filter((edge) => edge.id !== candidate.id)
   if (
@@ -379,6 +394,7 @@ function parseEdge(value: unknown): WorkflowEdge | null {
   )
     return null
   if (value.branch !== undefined && !isBranch(value.branch)) return null
+  if (value.label !== undefined && !isText(value.label)) return null
   return {
     id: value.id,
     source: value.source,
@@ -442,7 +458,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 function isText(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0
+  return (
+    typeof value === 'string' &&
+    value.trim().length > 0 &&
+    !value.includes('\n') &&
+    !value.includes('\r')
+  )
 }
 function isPosition(value: unknown): value is { x: number; y: number } {
   return (

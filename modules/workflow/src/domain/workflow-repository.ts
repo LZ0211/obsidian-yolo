@@ -28,6 +28,9 @@ export type WorkflowWriteFailure = Readonly<{
 export type RepositoryWriteResult =
   | Readonly<{ ok: true; snapshot: WorkflowTextFile['snapshot'] }>
   | WorkflowWriteFailure
+export type RepositoryCreateStepResult =
+  | Readonly<{ ok: true; snapshot: WorkflowTextFile['snapshot'] }>
+  | Readonly<{ ok: false; reason: 'target-exists' | 'invalid-input' | 'stale' }>
 export type CreateWorkflowInput = Readonly<{
   slug: string
   manifestContent: string
@@ -37,7 +40,7 @@ export type CreateWorkflowResult =
   | Readonly<{ ok: true; snapshot: WorkflowTextFile['snapshot'] }>
   | Readonly<{
       ok: false
-      reason: 'target-exists' | 'invalid-input'
+      reason: 'target-exists' | 'invalid-input' | 'stale'
     }>
 export type WorkflowRepositoryEvent =
   | Readonly<{ type: 'root-changed' }>
@@ -54,11 +57,17 @@ export type WorkflowRepository = Readonly<{
   read(path: string): Promise<WorkflowBundle | null>
   create(input: CreateWorkflowInput): Promise<CreateWorkflowResult>
   importBundle(input: CreateWorkflowInput): Promise<CreateWorkflowResult>
+  createStep(
+    manifestPath: string,
+    relativePath: string,
+    content: string,
+  ): Promise<RepositoryCreateStepResult>
   replaceFile(
     expected: WorkflowTextFile['snapshot'],
     content: string,
   ): Promise<RepositoryWriteResult>
   trash(path: string): Promise<boolean>
+  trashStep(manifestPath: string, relativePath: string): Promise<boolean>
   subscribe(listener: (event: WorkflowRepositoryEvent) => void): () => void
 }>
 
@@ -118,6 +127,8 @@ export function createWorkflowRepository(host: Host): WorkflowRepository {
     read,
     create,
     importBundle: create,
+    createStep: (manifestPath, relativePath, content) =>
+      createStepFile(host, root, manifestPath, relativePath, content),
     replaceFile: async (expected, content) => {
       const currentRoot = root()
       if (!isOwnedWorkflowPath(currentRoot, expected.path))
@@ -126,6 +137,7 @@ export function createWorkflowRepository(host: Host): WorkflowRepository {
         expected,
         content,
       )
+      if (root() !== currentRoot) return { ok: false, reason: 'conflict' }
       if (snapshot) return { ok: true, snapshot }
       return { ok: false, reason: 'conflict' }
     },
@@ -135,8 +147,53 @@ export function createWorkflowRepository(host: Host): WorkflowRepository {
             at(root(), path.slice(0, -'/WORKFLOW.md'.length)),
           )
         : Promise.resolve(false),
+    trashStep: (manifestPath, relativePath) =>
+      trashStepFile(host, root, manifestPath, relativePath),
     subscribe: (listener) => subscribeToRoot(host, root, listener),
   })
+}
+
+async function createStepFile(
+  host: Host,
+  root: () => string,
+  manifestPath: string,
+  relativePath: string,
+  content: string,
+): Promise<RepositoryCreateStepResult> {
+  if (!isManifestPath(manifestPath) || !isSafeWorkflowStepPath(relativePath))
+    return { ok: false, reason: 'invalid-input' }
+  return host.paths.runExclusive('workflows', async () => {
+    const operationRoot = root()
+    const slug = manifestPath.slice(0, -'/WORKFLOW.md'.length)
+    const target = at(at(operationRoot, slug), relativePath)
+    if (root() !== operationRoot) return { ok: false, reason: 'stale' }
+    const folder = target.slice(0, target.lastIndexOf('/'))
+    await host.vault.ensureFolder(folder)
+    const snapshot = await host.vault.createTextIfAbsent(target, content)
+    if (!snapshot) return { ok: false, reason: 'target-exists' }
+    if (root() !== operationRoot) {
+      await host.vault.removeFileExact(target).catch(() => false)
+      return { ok: false, reason: 'stale' }
+    }
+    return { ok: true, snapshot }
+  })
+}
+
+async function trashStepFile(
+  host: Host,
+  root: () => string,
+  manifestPath: string,
+  relativePath: string,
+): Promise<boolean> {
+  if (!isManifestPath(manifestPath) || !isSafeWorkflowStepPath(relativePath))
+    return false
+  const operationRoot = root()
+  const slug = manifestPath.slice(0, -'/WORKFLOW.md'.length)
+  const target = at(at(operationRoot, slug), relativePath)
+  if (!isOwnedWorkflowPath(operationRoot, target)) return false
+  const result = await host.vault.trashPath(target)
+  if (root() !== operationRoot) return false
+  return result || host.vault.getEntry(target) === null
 }
 
 async function writeBundle(
@@ -146,27 +203,60 @@ async function writeBundle(
 ): Promise<CreateWorkflowResult> {
   if (
     !isSlug(input.slug) ||
-    !input.stepFiles.every((file) => isSafeWorkflowStepPath(file.relativePath))
+    !input.stepFiles.every((file) => isSafeWorkflowStepPath(file.relativePath)) ||
+    new Set(input.stepFiles.map((file) => file.relativePath)).size !==
+      input.stepFiles.length
   )
     return { ok: false, reason: 'invalid-input' }
   return host.paths.runExclusive('workflows', async () => {
-    const folder = at(root(), input.slug)
+    const operationRoot = root()
+    const folder = at(operationRoot, input.slug)
+    const createdPaths: string[] = []
+    const cleanup = async (): Promise<void> => {
+      for (const path of createdPaths.reverse())
+        await host.vault.removeFileExact(path).catch(() => false)
+    }
+    const isStable = (): boolean => root() === operationRoot
     if (await host.vault.exists(folder))
       return { ok: false, reason: 'target-exists' }
-    await host.vault.ensureFolder(folder)
-    for (const file of input.stepFiles) {
-      const target = at(folder, file.relativePath)
-      await host.vault.ensureFolder(target.slice(0, target.lastIndexOf('/')))
-      if (!(await host.vault.createTextIfAbsent(target, file.content)))
+    try {
+      await host.vault.ensureFolder(folder)
+      for (const file of input.stepFiles) {
+        if (!isStable()) {
+          await cleanup()
+          return { ok: false, reason: 'stale' }
+        }
+        const target = at(folder, file.relativePath)
+        await host.vault.ensureFolder(target.slice(0, target.lastIndexOf('/')))
+        const created = await host.vault.createTextIfAbsent(target, file.content)
+        if (!created) {
+          await cleanup()
+          return { ok: false, reason: 'target-exists' }
+        }
+        createdPaths.push(target)
+      }
+      if (!isStable()) {
+        await cleanup()
+        return { ok: false, reason: 'stale' }
+      }
+      const snapshot = await host.vault.createTextIfAbsent(
+        at(folder, 'WORKFLOW.md'),
+        input.manifestContent,
+      )
+      if (!snapshot) {
+        await cleanup()
         return { ok: false, reason: 'target-exists' }
+      }
+      createdPaths.push(snapshot.path)
+      if (!isStable()) {
+        await cleanup()
+        return { ok: false, reason: 'stale' }
+      }
+      return { ok: true, snapshot }
+    } catch (error) {
+      await cleanup()
+      throw error
     }
-    const snapshot = await host.vault.createTextIfAbsent(
-      at(folder, 'WORKFLOW.md'),
-      input.manifestContent,
-    )
-    return snapshot
-      ? { ok: true, snapshot }
-      : { ok: false, reason: 'target-exists' }
   })
 }
 

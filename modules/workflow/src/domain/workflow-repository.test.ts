@@ -148,6 +148,82 @@ describe('workflow repository', () => {
     })
   })
 
+  it('creates and trashes one step through the workflow-owned path', async () => {
+    const fake = new MemoryHost('managed/workflows')
+    fake.file('managed/workflows/alpha/WORKFLOW.md', manifest())
+    const repository = createWorkflowRepository(fake.host)
+
+    await expect(
+      repository.createStep(
+        'alpha/WORKFLOW.md',
+        'steps/next/STEP.md',
+        '# Next\n',
+      ),
+    ).resolves.toMatchObject({ ok: true, snapshot: { content: '# Next\n' } })
+    await expect(
+      repository.createStep(
+        'alpha/WORKFLOW.md',
+        'steps/next/STEP.md',
+        '# Duplicate\n',
+      ),
+    ).resolves.toEqual({ ok: false, reason: 'target-exists' })
+    await expect(
+      repository.trashStep('alpha/WORKFLOW.md', 'steps/next/STEP.md'),
+    ).resolves.toBe(true)
+    expect(fake.trashCalls).toEqual([
+      'managed/workflows/alpha/steps/next/STEP.md',
+    ])
+  })
+
+  it('rejects duplicate step paths before writing anything', async () => {
+    const fake = new MemoryHost('managed/workflows')
+    const repository = createWorkflowRepository(fake.host)
+
+    await expect(
+      repository.create({
+        slug: 'duplicate',
+        manifestContent: manifest(),
+        stepFiles: [
+          { relativePath: 'steps/input/STEP.md', content: 'first' },
+          { relativePath: 'steps/input/STEP.md', content: 'second' },
+        ],
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'invalid-input' })
+    expect(fake.createCalls).toEqual([])
+  })
+
+  it('reports a root switch during create as stale and cleans created steps', async () => {
+    const fake = new MemoryHost('first')
+    fake.createHook = (path) => {
+      if (path === 'first/workflow/steps/input/STEP.md') fake.changeRoot('second')
+    }
+    const repository = createWorkflowRepository(fake.host)
+
+    await expect(
+      repository.create({
+        slug: 'workflow',
+        manifestContent: manifest(),
+        stepFiles: [{ relativePath: 'steps/input/STEP.md', content: 'input' }],
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'stale' })
+    expect(fake.files.has('first/workflow/steps/input/STEP.md')).toBe(false)
+    expect(fake.files.has('first/workflow/WORKFLOW.md')).toBe(false)
+  })
+
+  it('does not report a CAS write as successful after the root changes', async () => {
+    const fake = new MemoryHost('first')
+    fake.file('first/workflow/WORKFLOW.md', 'old')
+    const repository = createWorkflowRepository(fake.host)
+    fake.replaceHook = () => fake.changeRoot('second')
+
+    await expect(
+      repository.replaceFile(
+        { path: 'first/workflow/WORKFLOW.md', content: 'old' },
+        'new',
+      ),
+    ).resolves.toEqual({ ok: false, reason: 'conflict' })
+  })
+
   it('returns invalid-input for blank slugs and unsafe step paths', async () => {
     const fake = new MemoryHost('managed/workflows')
     const repository = createWorkflowRepository(fake.host)
@@ -236,6 +312,20 @@ describe('workflow repository', () => {
     expect(fake.statCalls).toBe(0)
   })
 
+  it('treats an already-missing STEP as an idempotent cleanup', async () => {
+    const fake = new MemoryHost('managed/workflows')
+    const stepPath = 'managed/workflows/a/steps/input/STEP.md'
+    fake.file(stepPath, 'old')
+    fake.trashResult = false
+    fake.trashHook = (path) => fake.delete(path)
+    const repository = createWorkflowRepository(fake.host)
+
+    await expect(
+      repository.trashStep('a/WORKFLOW.md', 'steps/input/STEP.md'),
+    ).resolves.toBe(true)
+    expect(fake.files.has(stepPath)).toBe(false)
+  })
+
   it('conflicts without CAS for snapshots outside the current workflow root', async () => {
     const fake = new MemoryHost('managed/workflows')
     const repository = createWorkflowRepository(fake.host)
@@ -271,7 +361,7 @@ describe('workflow repository', () => {
     expect(fake.replaceCalls).toBe(1)
   })
 
-  it('leaves already-created steps when a later step write throws', async () => {
+  it('cleans already-created steps when a later step write throws', async () => {
     const fake = new MemoryHost('managed/workflows')
     const repository = createWorkflowRepository(fake.host)
     const failure = new Error('step write failed')
@@ -288,11 +378,13 @@ describe('workflow repository', () => {
         ],
       }),
     ).rejects.toBe(failure)
-    expect(
-      fake.files.get('managed/workflows/partial/steps/first/STEP.md'),
-    ).toBe('first')
+    expect(fake.files.has('managed/workflows/partial/steps/first/STEP.md')).toBe(
+      false,
+    )
     expect(fake.files.has('managed/workflows/partial/WORKFLOW.md')).toBe(false)
-    expect(fake.deleteCalls).toHaveLength(0)
+    expect(fake.deleteCalls).toEqual([
+      'managed/workflows/partial/steps/first/STEP.md',
+    ])
   })
 
   it('propagates Host errors from read, create, trash, and replace', async () => {
@@ -475,6 +567,8 @@ class MemoryHost {
   readonly createResults: Array<{ ok: boolean; reason?: string }> = []
   readonly deleteCalls: string[] = []
   readonly trashCalls: string[] = []
+  trashResult = true
+  trashHook: ((path: string) => void) | undefined
   readonly lockNamespaces: string[] = []
   replaceCalls = 0
   vaultSubscribeCalls = 0
@@ -486,8 +580,10 @@ class MemoryHost {
   createError: Error | undefined
   createFailurePath: string | undefined
   createFailure: Error | undefined
+  createHook: ((path: string) => void) | undefined
   trashError: Error | undefined
   replaceError: Error | undefined
+  replaceHook: (() => void) | undefined
   maxConcurrentLocks = 0
   pathDisposes = 0
   vaultDisposes = 0
@@ -545,7 +641,7 @@ class MemoryHost {
         }
       },
     },
-    vault: {
+      vault: {
       getEntry: (path: string) => this.entry(path),
       listChildren: (folder: string) => this.children(folder),
       exists: async (path: string) =>
@@ -560,6 +656,8 @@ class MemoryHost {
         this.folder(path)
       },
       createTextIfAbsent: async (path: string, content: string) => {
+        this.createHook?.(path)
+        this.createHook = undefined
         if (this.createError) throw this.createError
         if (path === this.createFailurePath && this.createFailure)
           throw this.createFailure
@@ -581,6 +679,8 @@ class MemoryHost {
         expected: { path: string; content: string },
         content: string,
       ) => {
+        this.replaceHook?.()
+        this.replaceHook = undefined
         if (this.replaceError) throw this.replaceError
         this.replaceCalls++
         if (this.replaceResult !== undefined) return this.replaceResult
@@ -591,8 +691,15 @@ class MemoryHost {
       trashPath: async (path: string) => {
         if (this.trashError) throw this.trashError
         this.trashCalls.push(path)
-        return true
+        this.trashHook?.(path)
+        this.trashHook = undefined
+        return this.trashResult
       },
+      removeFileExact: async (path: string) => {
+        this.deleteCalls.push(path)
+        return this.files.delete(path)
+      },
+      removeEmptyFolderExact: async () => true,
       subscribe: (scope: string, listener: (event: VaultEvent) => void) => {
         this.vaultSubscribeCalls++
         const subscribeError = this.vaultSubscribeErrors.get(scope)

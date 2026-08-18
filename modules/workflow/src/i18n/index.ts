@@ -10,6 +10,7 @@ export type WorkflowCopy = Readonly<{
     title: string
     editorOnly: string
     sessionBoundary: string
+    synced: string
   }>
   state: Readonly<{
     loading: string
@@ -32,12 +33,23 @@ export type WorkflowCopy = Readonly<{
       | 'layout'
       | 'fit'
       | 'zoomIn'
-      | 'zoomOut',
+      | 'zoomOut'
+      | 'flow',
       string
     >
   >
   rail: Readonly<
-    Record<'workflows' | 'documents' | 'steps' | 'addNode', string>
+    Record<
+      | 'workflows'
+      | 'documents'
+      | 'steps'
+      | 'addNode'
+      | 'master'
+      | 'stepWorkspaces'
+      | 'docsFirst'
+      | 'dragHint',
+      string
+    >
   >
   inspector: Readonly<
     Record<
@@ -51,7 +63,11 @@ export type WorkflowCopy = Readonly<{
       | 'gate'
       | 'predicate'
       | 'inputPredicates'
-      | 'outputSchema',
+      | 'outputSchema'
+      | 'source'
+      | 'target'
+      | 'markdownContent'
+      | 'deleteNode',
       string
     >
   >
@@ -105,7 +121,12 @@ export type WorkflowCopy = Readonly<{
       | 'accept'
       | 'reject'
       | 'stale'
-      | 'failure',
+      | 'failure'
+      | 'manual'
+      | 'optimizeDocument'
+      | 'optimizeWorkflow'
+      | 'proposalEmpty'
+      | 'changes',
       string
     >
   >

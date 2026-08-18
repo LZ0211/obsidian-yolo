@@ -202,6 +202,48 @@ describe('workflow topology', () => {
     ).toBeNull()
   })
 
+  it('rejects labels and edge labels containing line breaks', () => {
+    const source = validTopology()
+
+    expect(
+      parseWorkflowTopology({
+        ...source,
+        nodes: [{ ...source.nodes[0], label: 'Request\nInjected' }, ...source.nodes.slice(1)],
+      }),
+    ).toBeNull()
+    expect(
+      parseWorkflowTopology({
+        ...source,
+        edges: [{ ...source.edges[0], label: 'edge\r\nlabel' }, ...source.edges.slice(1)],
+      }),
+    ).toBeNull()
+  })
+
+  it('rejects edges entering inputs or leaving outputs', () => {
+    const source = validTopology()
+    const invalid: WorkflowTopology = {
+      ...source,
+      edges: [
+        ...source.edges,
+        { id: 'output-input', source: 'output', target: 'input' },
+      ],
+    }
+
+    expect(validateWorkflowTopology(invalid)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'invalidEndpoint', nodeId: 'output' }),
+        expect.objectContaining({ code: 'invalidEndpoint', nodeId: 'input' }),
+      ]),
+    )
+    expect(
+      connectionProblem(source, {
+        id: 'into-input',
+        source: 'output',
+        target: 'input',
+      }),
+    ).toEqual({ code: 'invalidConnection' })
+  })
+
   it('reports malformed runtime topology values without throwing', () => {
     const malformed = {
       revision: 1,

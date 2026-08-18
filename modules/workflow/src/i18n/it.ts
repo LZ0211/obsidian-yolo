@@ -20,6 +20,7 @@ export const it = {
     title: 'Studio del flusso di lavoro',
     editorOnly: 'Solo modifica',
     sessionBoundary: 'Esegui i flussi dalla sessione corrente.',
+    synced: 'Markdown sincronizzato',
   },
   state: {
     loading: 'Caricamento del flusso…',
@@ -42,12 +43,17 @@ export const it = {
     fit: 'Adatta tutto',
     zoomIn: 'Ingrandisci',
     zoomOut: 'Riduci',
+    flow: 'Flusso',
   },
   rail: {
     workflows: 'Flussi',
     documents: 'Documenti',
     steps: 'Passaggi',
     addNode: 'Aggiungi nodo',
+    master: 'Principale',
+    stepWorkspaces: 'Aree dei passaggi',
+    docsFirst: 'Leggi WORKFLOW.md, poi ogni STEP.md',
+    dragHint: 'Trascina tra i connettori laterali per creare una freccia',
   },
   inspector: {
     title: 'Proprietà del nodo',
@@ -61,6 +67,10 @@ export const it = {
     predicate: 'Predicato',
     inputPredicates: 'Predicati di input',
     outputSchema: 'Schema di output',
+    source: 'Sorgente',
+    target: 'Destinazione',
+    markdownContent: 'Contenuto Markdown',
+    deleteNode: 'Elimina nodo',
   },
   nodeKind: {
     input: 'Input',
@@ -121,6 +131,11 @@ export const it = {
     reject: 'Rifiuta',
     stale: 'La proposta non è aggiornata.',
     failure: 'Richiesta dell’assistente non riuscita.',
+    manual: 'Manuale · una tantum · non esegue il flusso',
+    optimizeDocument: 'Ottimizza doc',
+    optimizeWorkflow: 'Ottimizza flusso',
+    proposalEmpty: 'Nessuna proposta. Scegli un’azione dell’assistente.',
+    changes: 'modifiche',
   },
   document: {
     workflowTitle: 'Flusso di lavoro',

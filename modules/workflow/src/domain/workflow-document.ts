@@ -41,6 +41,7 @@ export type DshWorkflowBundle = Readonly<{
   title: string
   content: string
   topology: WorkflowTopology
+  stepContents?: Readonly<Record<string, string>>
 }>
 
 export function parseWorkflowDocument(
@@ -121,6 +122,8 @@ export function parseDshFlowJson(
   )
     return null
   const docs = isRecord(source.docs) ? source.docs : {}
+  const stepContents = parseStepContents(source.stepContents)
+  if (source.stepContents !== undefined && stepContents === null) return null
   const nodes = source.nodes.map((node) => dshNode(node, docs))
   if (nodes.some((node) => node === null)) return null
   const topology = parseWorkflowTopology({
@@ -133,6 +136,7 @@ export function parseDshFlowJson(
     title: text(source.name) ?? copy.document.workflowTitle,
     content: text(source.workflowContent) ?? '',
     topology,
+    ...(stepContents ? { stepContents } : {}),
   })
 }
 
@@ -172,6 +176,9 @@ export function exportDshFlowJson(
     docs: Object.fromEntries(
       bundle.topology.nodes.map((node) => [node.id, node.stepPath]),
     ),
+    ...(bundle.stepContents
+      ? { stepContents: { ...bundle.stepContents } }
+      : {}),
   })
 }
 
@@ -433,4 +440,14 @@ function isText(value: unknown): value is string {
 }
 function text(value: unknown): string | undefined {
   return isText(value) ? value : undefined
+}
+
+function parseStepContents(
+  value: unknown,
+): Readonly<Record<string, string>> | null | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) return null
+  const entries = Object.entries(value)
+  if (entries.some(([, content]) => typeof content !== 'string')) return null
+  return Object.freeze(Object.fromEntries(entries) as Record<string, string>)
 }

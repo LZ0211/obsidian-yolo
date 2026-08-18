@@ -22,6 +22,7 @@ export const zh = {
     editorOnly: '\u4ec5\u7f16\u8f91',
     sessionBoundary:
       '\u8bf7\u5728\u5f53\u524d Session \u4e2d\u8fd0\u884c\u5de5\u4f5c\u6d41\u3002',
+    synced: '\u5df2\u540c\u6b65 Markdown',
   },
   state: {
     loading: '\u6b63\u5728\u52a0\u8f7d\u5de5\u4f5c\u6d41\u2026',
@@ -45,12 +46,19 @@ export const zh = {
     fit: '\u663e\u793a\u5168\u56fe',
     zoomIn: '\u653e\u5927',
     zoomOut: '\u7f29\u5c0f',
+    flow: '\u6d41\u7a0b',
   },
   rail: {
     workflows: '\u5de5\u4f5c\u6d41',
     documents: '\u6587\u6863',
     steps: '\u6b65\u9aa4',
     addNode: '\u6dfb\u52a0\u8282\u70b9',
+    master: '\u4e3b\u6587\u6863',
+    stepWorkspaces: '\u6b65\u9aa4\u5de5\u4f5c\u533a',
+    docsFirst:
+      '\u5148\u8bfb\u53d6 WORKFLOW.md\uff0c\u518d\u8bfb\u53d6\u5404\u4e2a STEP.md',
+    dragHint:
+      '\u62d6\u52a8\u4e24\u4fa7\u8fde\u63a5\u70b9\u521b\u5efa\u7bad\u5934',
   },
   inspector: {
     title: '\u8282\u70b9\u5c5e\u6027',
@@ -64,6 +72,10 @@ export const zh = {
     predicate: '\u8c13\u8bcd',
     inputPredicates: '\u8f93\u5165\u8c13\u8bcd',
     outputSchema: '\u8f93\u51fa Schema',
+    source: '\u8d77\u70b9',
+    target: '\u7ec8\u70b9',
+    markdownContent: 'Markdown \u5185\u5bb9',
+    deleteNode: '\u5220\u9664\u8282\u70b9',
   },
   nodeKind: {
     input: '\u8f93\u5165',
@@ -132,6 +144,13 @@ export const zh = {
     reject: '\u62d2\u7edd',
     stale: '\u5efa\u8bae\u5df2\u8fc7\u671f\u3002',
     failure: '\u52a9\u624b\u8bf7\u6c42\u5931\u8d25\u3002',
+    manual:
+      '\u624b\u52a8 \u00b7 \u5355\u6b21 \u00b7 \u4e0d\u4f1a\u6267\u884c\u5de5\u4f5c\u6d41',
+    optimizeDocument: '\u4f18\u5316\u6587\u6863',
+    optimizeWorkflow: '\u4f18\u5316\u5de5\u4f5c\u6d41',
+    proposalEmpty:
+      '\u8fd8\u6ca1\u6709\u63d0\u6848\uff0c\u8bf7\u9009\u62e9\u4e00\u4e2a\u52a9\u624b\u64cd\u4f5c\u3002',
+    changes: '\u9879\u53d8\u66f4',
   },
   document: {
     workflowTitle: '\u5de5\u4f5c\u6d41',
@@ -145,7 +164,8 @@ export const zh = {
     invalidDocument: '\u5de5\u4f5c\u6d41\u6587\u6863\u65e0\u6548\u3002',
     importFailed: '\u5de5\u4f5c\u6d41\u5bfc\u5165\u65e0\u6548\u3002',
     applyFailed: '\u65e0\u6cd5\u5e94\u7528\u5de5\u4f5c\u6d41\u3002',
-    invalidInput: '\u5de5\u4f5c\u6d41\u5de5\u5177\u8f93\u5165\u65e0\u6548\u3002',
+    invalidInput:
+      '\u5de5\u4f5c\u6d41\u5de5\u5177\u8f93\u5165\u65e0\u6548\u3002',
     notFound: '\u672a\u627e\u5230\u8bf7\u6c42\u7684\u5de5\u4f5c\u6d41\u3002',
     targetExists: '\u5de5\u4f5c\u6d41\u76ee\u6807\u5df2\u5b58\u5728\u3002',
   },

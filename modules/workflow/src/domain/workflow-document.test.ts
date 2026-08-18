@@ -333,10 +333,14 @@ describe('workflow document', () => {
         { id: 'false-output', source: 'false', target: 'output' },
       ],
     }
+    const stepContents = Object.fromEntries(
+      branched.nodes.map((node) => [node.id, `# ${node.label}\n\nKeep this.`]),
+    )
     const imported = parseDshFlowJson({
       id: 'flow-1',
       name: 'Imported',
       workflowContent: '# Imported',
+      stepContents,
       nodes: branched.nodes.map((node) => ({
         id: node.id,
         kind: node.kind,
@@ -359,7 +363,9 @@ describe('workflow document', () => {
 
     expect(imported?.topology).toEqual(branched)
     expect(imported?.content).toBe('# Imported')
+    expect(imported).toMatchObject({ stepContents })
     const exported = exportDshFlowJson(imported!)
+    expect(exported).toMatchObject({ stepContents })
     expect(JSON.stringify(exported)).not.toContain('provider')
     expect(parseDshFlowJson(exported)).toEqual(imported)
   })

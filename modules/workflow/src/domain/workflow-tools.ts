@@ -170,7 +170,11 @@ function result(payload: Record<string, unknown>): WorkflowToolResult {
 
 function invalidInput(
   message: string,
-  reason: 'invalid-input' | 'not-found' | 'target-exists' = 'invalid-input',
+  reason:
+    | 'invalid-input'
+    | 'not-found'
+    | 'target-exists'
+    | 'stale' = 'invalid-input',
 ): WorkflowToolResult {
   return {
     content: JSON.stringify({ ok: false, reason, message }),
