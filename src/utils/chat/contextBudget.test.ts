@@ -1,7 +1,11 @@
+import type { ContentPart } from '../../types/llm/request'
+
 import {
   DEFAULT_TOOL_RESULT_MAX_CHARS,
   MAX_TOOL_RESULT_MAX_CHARS,
+  MAX_USER_MESSAGE_CONTEXT_CHARS,
   MIN_TOOL_RESULT_MAX_CHARS,
+  boundRequestMessagesForContext,
   resolveToolResultMaxChars,
   truncateContextText,
 } from './contextBudget'
@@ -23,6 +27,39 @@ describe('context budget helpers', () => {
     expect(resolveToolResultMaxChars(1)).toBe(MIN_TOOL_RESULT_MAX_CHARS)
     expect(resolveToolResultMaxChars(MAX_TOOL_RESULT_MAX_CHARS + 1)).toBe(
       MAX_TOOL_RESULT_MAX_CHARS,
+    )
+  })
+
+  it('keeps image and document content parts intact when bounding user messages', () => {
+    const imagePart: ContentPart = {
+      type: 'image_url',
+      image_url: {
+        url: `data:image/png;base64,${'A'.repeat(500_000)}`,
+      },
+    }
+    const documentPart: ContentPart = {
+      type: 'document',
+      mediaType: 'application/pdf',
+      name: 'doc.pdf',
+      data: 'AA'.repeat(100_000),
+      pageCount: 3,
+    }
+    const oversizedText: ContentPart = {
+      type: 'text',
+      text: 'x'.repeat(300_000),
+    }
+
+    const bounded = boundRequestMessagesForContext(
+      [{ role: 'user', content: [imagePart, oversizedText, documentPart] }],
+      16_000,
+    )
+
+    expect(bounded[0].content).toHaveLength(3)
+    const content = bounded[0].content as ContentPart[]
+    expect(content[0]).toBe(imagePart)
+    expect(content[2]).toBe(documentPart)
+    expect((content[1] as { type: 'text'; text: string }).text.length).toBeLessThanOrEqual(
+      MAX_USER_MESSAGE_CONTEXT_CHARS,
     )
   })
 })
