@@ -55,8 +55,16 @@ export type MemoryRenameResolution = Readonly<{
   cleanupPartition: MemoryPartition | null
 }>
 
-/** Periodic maintenance cadence: salience decay + cold archive + reflection. */
-const MEMORY_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000
+/**
+ * Periodic maintenance cadence: salience decay + cold archive + reflection.
+ * Decay is exponential with SALIENCE_DECAY_LAMBDA = 0.05/day — roughly 0.2%
+ * per hour — so an hourly pass would only ever write sub-percent corrections.
+ * Four hours keeps the stored salience within ~1% of the continuous curve
+ * while cutting the per-partition fan-out (every known assistant partition)
+ * by 4x. Reflection has its own 24h gate and simply runs on the first pass
+ * after its threshold, so the coarser cadence does not delay it materially.
+ */
+const MEMORY_MAINTENANCE_INTERVAL_MS = 4 * 60 * 60 * 1000
 
 const getOptionalVault = (app: App): VaultWithOptionalEvents | undefined =>
   (app as Partial<App>).vault as VaultWithOptionalEvents | undefined
@@ -249,7 +257,7 @@ export class MemoryIndexRuntime {
   /**
    * Periodic maintenance catch-up for every partition the runtime knows:
    * decay + cold archive (+ reflection when configured) without a reconcile.
-   * Called on an hourly interval; also run once when the queue starts.
+   * Called on the maintenance interval; also run once when the queue starts.
    */
   async runPeriodicMaintenance(): Promise<void> {
     if (
