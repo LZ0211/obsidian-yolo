@@ -24,6 +24,12 @@ export const en = {
     empty: 'No workflow yet',
     error: 'Workflow error',
     conflict: 'This workflow changed elsewhere.',
+    invalidName: 'Enter a valid workflow name.',
+    retry: 'Retry',
+    saving: 'Saving…',
+    deleteConfirm: 'Delete this workflow?',
+    discardConfirm: 'Discard unsaved changes?',
+    discardAction: 'Discard',
   },
   toolbar: {
     create: 'New workflow',
@@ -107,7 +113,7 @@ export const en = {
     gateLimit: 'This logic gate cannot accept another outgoing connection.',
   },
   finding: {
-    title: 'Validation findings',
+    title: 'Checks & suggestions',
     none: 'No findings',
     severity: { error: 'Error', warning: 'Warning', info: 'Info' },
     invalidTopology: 'The workflow topology is invalid.',

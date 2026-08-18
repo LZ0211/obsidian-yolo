@@ -340,6 +340,21 @@ export function layoutWorkflowNodes(
   })
 }
 
+export function topologicalWorkflowOrder(
+  topology: WorkflowTopology,
+): readonly WorkflowNode[] {
+  const byId = new Map(topology.nodes.map((node) => [node.id, node]))
+  const graph = graphFor(topology, byId)
+  if (graph.order.length !== topology.nodes.length)
+    return Object.freeze([...topology.nodes])
+  return Object.freeze(
+    graph.order.flatMap((nodeId) => {
+      const node = byId.get(nodeId)
+      return node ? [node] : []
+    }),
+  )
+}
+
 function parseNode(value: unknown): WorkflowNode | null {
   if (
     !isRecord(value) ||

@@ -48,6 +48,7 @@ import {
   type WorkflowTopology,
   connectionProblem,
   layoutWorkflowNodes,
+  topologicalWorkflowOrder,
 } from '../domain/workflow-model'
 import {
   exportDshFlowJson,
@@ -67,6 +68,14 @@ export type WorkflowStudioProps = Readonly<{
   copy: WorkflowCopy
   openFile(path: string): void | Promise<void>
   notice(message: string): void
+  confirm(
+    options: Readonly<{
+      title: string
+      message: string
+      ctaText?: string
+      cancelText?: string
+    }>,
+  ): Promise<boolean>
 }>
 
 type PendingConnection = Readonly<{
@@ -111,6 +120,7 @@ export function WorkflowStudio({
   copy,
   openFile,
   notice,
+  confirm,
 }: WorkflowStudioProps) {
   const snapshot = useSyncExternalStore(
     model.subscribe,
@@ -134,12 +144,14 @@ export function WorkflowStudio({
   )
   const [newWorkflowOpen, setNewWorkflowOpen] = useState(false)
   const [newWorkflowSlug, setNewWorkflowSlug] = useState('')
+  const [newWorkflowError, setNewWorkflowError] = useState<string | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [markdownTarget, setMarkdownTarget] = useState('workflow')
   const [assistantAction, setAssistantAction] =
     useState<AssistantAction>('validation')
   const [assistantProposal, setAssistantProposal] =
     useState<AssistantProposal | null>(null)
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     void model.load().catch((error: unknown) => {
@@ -194,6 +206,14 @@ export function WorkflowStudio({
     [notice],
   )
 
+  const retryWorkflow = useCallback(() => {
+    void model
+      .load(snapshot.path ?? undefined)
+      .catch((error: unknown) =>
+        showNotice(error instanceof Error ? error.message : String(error)),
+      )
+  }, [model, showNotice, snapshot.path])
+
   const selectNode = useCallback(
     (nodeId: string | null) => {
       setSelectedEdgeId(null)
@@ -212,17 +232,26 @@ export function WorkflowStudio({
 
   const loadWorkflow = useCallback(
     (path: string) => {
-      void model
-        .load(path)
-        .then((result) => {
-          if (!result.ok && result.reason === 'dirty')
-            showNotice(copy.state.conflict)
-        })
-        .catch((error: unknown) =>
-          showNotice(error instanceof Error ? error.message : String(error)),
+      void (async () => {
+        const result = await model.load(path)
+        if (result.ok || result.reason !== 'dirty') return
+        if (
+          !(await confirm({
+            title: copy.state.discardConfirm,
+            message: path,
+            ctaText: copy.state.discardAction,
+            cancelText: copy.assistant.cancel,
+          }))
         )
+          return
+        const retry = await model.load(path, { discardDirty: true })
+        if (!retry.ok && retry.reason === 'dirty')
+          showNotice(copy.state.conflict)
+      })().catch((error: unknown) =>
+        showNotice(error instanceof Error ? error.message : String(error)),
+      )
     },
-    [copy.state.conflict, model, showNotice],
+    [confirm, copy, model, showNotice],
   )
 
   const updateTopology = useCallback(
@@ -347,7 +376,10 @@ export function WorkflowStudio({
         return
       }
       const slug = normalizeSlug(newWorkflowSlug)
-      if (!slug) return
+      if (!slug) {
+        setNewWorkflowError(copy.state.invalidName)
+        return
+      }
       const createdTopology = initialTopology(copy)
       const manifestContent = updateWorkflowManagedBlocks(
         `# ${slug}\n`,
@@ -374,6 +406,7 @@ export function WorkflowStudio({
           }
           setNewWorkflowOpen(false)
           setNewWorkflowSlug('')
+          setNewWorkflowError(null)
         })
         .catch((error: unknown) => {
           showNotice(error instanceof Error ? error.message : String(error))
@@ -425,6 +458,8 @@ export function WorkflowStudio({
   )
 
   const applyChanges = useCallback(() => {
+    if (saving) return
+    setSaving(true)
     void model
       .apply()
       .then((result) => {
@@ -437,20 +472,36 @@ export function WorkflowStudio({
       .catch((error: unknown) =>
         showNotice(error instanceof Error ? error.message : String(error)),
       )
-  }, [copy.chatToolError.applyFailed, copy.state.conflict, model, showNotice])
+      .finally(() => setSaving(false))
+  }, [
+    copy.chatToolError.applyFailed,
+    copy.state.conflict,
+    model,
+    saving,
+    showNotice,
+  ])
 
   const deleteWorkflow = useCallback(() => {
-    if (!snapshot.path) return
-    if (snapshot.dirty) {
-      showNotice(copy.state.conflict)
-      return
-    }
-    void model
-      .trashCurrent()
-      .catch((error: unknown) =>
-        showNotice(error instanceof Error ? error.message : String(error)),
+    void (async () => {
+      if (!snapshot.path) return
+      if (snapshot.dirty) {
+        showNotice(copy.state.conflict)
+        return
+      }
+      if (
+        !(await confirm({
+          title: copy.state.deleteConfirm,
+          message: snapshot.path,
+          ctaText: copy.toolbar.delete,
+          cancelText: copy.assistant.cancel,
+        }))
       )
-  }, [copy.state.conflict, model, showNotice, snapshot.dirty, snapshot.path])
+        return
+      await model.trashCurrent()
+    })().catch((error: unknown) =>
+      showNotice(error instanceof Error ? error.message : String(error)),
+    )
+  }, [confirm, copy, model, showNotice, snapshot.dirty, snapshot.path])
 
   const deleteNode = useCallback(
     (nodeId: string) => {
@@ -549,6 +600,8 @@ export function WorkflowStudio({
 
   const saveFile = useCallback(
     (nodeId: string) => {
+      if (saving) return
+      setSaving(true)
       void model
         .saveFile(nodeId)
         .then((result) => {
@@ -563,8 +616,15 @@ export function WorkflowStudio({
         .catch((error: unknown) =>
           showNotice(error instanceof Error ? error.message : String(error)),
         )
+        .finally(() => setSaving(false))
     },
-    [copy.chatToolError.applyFailed, copy.state.conflict, model, showNotice],
+    [
+      copy.chatToolError.applyFailed,
+      copy.state.conflict,
+      model,
+      saving,
+      showNotice,
+    ],
   )
 
   const exportWorkflow = useCallback(() => {
@@ -659,7 +719,11 @@ export function WorkflowStudio({
         </div>
         <div className="yolo-workflow-toolbar__status" role="status">
           <span className={snapshot.dirty ? 'is-dirty' : undefined}>
-            {snapshot.dirty ? copy.toolbar.save : statusMessage}
+            {saving
+              ? copy.state.saving
+              : snapshot.dirty
+                ? copy.toolbar.save
+                : statusMessage}
           </span>
           <div className="yolo-workflow-toolbar__panel-toggle">
             <button
@@ -698,15 +762,26 @@ export function WorkflowStudio({
           <input
             autoFocus
             value={newWorkflowSlug}
-            onChange={(event) => setNewWorkflowSlug(event.currentTarget.value)}
+            onChange={(event) => {
+              setNewWorkflowSlug(event.currentTarget.value)
+              setNewWorkflowError(null)
+            }}
             aria-label={copy.toolbar.create}
             placeholder={copy.toolbar.create}
           />
+          {newWorkflowError ? (
+            <span className="yolo-workflow-create-bar__error" role="alert">
+              {newWorkflowError}
+            </span>
+          ) : null}
           <button type="submit">{copy.toolbar.create}</button>
           <button
             type="button"
             aria-label={copy.assistant.cancel}
-            onClick={() => setNewWorkflowOpen(false)}
+            onClick={() => {
+              setNewWorkflowOpen(false)
+              setNewWorkflowError(null)
+            }}
           >
             <X size={15} />
           </button>
@@ -754,7 +829,10 @@ export function WorkflowStudio({
             <CanvasToolbarButton
               icon={<Plus size={13} />}
               label={copy.toolbar.create}
-              onClick={() => setNewWorkflowOpen(true)}
+              onClick={() => {
+                setNewWorkflowError(null)
+                setNewWorkflowOpen(true)
+              }}
             />
             <CanvasToolbarButton
               icon={<Upload size={13} />}
@@ -770,7 +848,7 @@ export function WorkflowStudio({
             <CanvasToolbarButton
               icon={<Save size={13} />}
               label={copy.toolbar.save}
-              disabled={!snapshot.dirty}
+              disabled={saving || !snapshot.dirty}
               onClick={applyChanges}
             />
             <CanvasToolbarButton
@@ -800,7 +878,11 @@ export function WorkflowStudio({
             <span
               className={`yolo-workflow-canvas-toolbar__sync${snapshot.dirty ? ' is-dirty' : ''}`}
             >
-              {snapshot.dirty ? copy.toolbar.save : copy.studio.synced}
+              {saving
+                ? copy.state.saving
+                : snapshot.dirty
+                  ? copy.toolbar.save
+                  : copy.studio.synced}
             </span>
           </div>
           {snapshot.topology ? (
@@ -817,7 +899,15 @@ export function WorkflowStudio({
               onReady={setController}
             />
           ) : (
-            <EmptyState copy={copy} onCreate={() => setNewWorkflowOpen(true)} />
+            <EmptyState
+              copy={copy}
+              status={snapshot.status}
+              onCreate={() => {
+                setNewWorkflowError(null)
+                setNewWorkflowOpen(true)
+              }}
+              onRetry={retryWorkflow}
+            />
           )}
           {pendingConnection ? (
             <div className="yolo-workflow-branch-picker" role="dialog">
@@ -885,7 +975,7 @@ export function WorkflowStudio({
           className="yolo-workflow-apply-float"
           aria-label={copy.toolbar.apply}
           title={copy.toolbar.apply}
-          disabled={!snapshot.dirty}
+          disabled={saving || !snapshot.dirty}
           onClick={applyChanges}
         >
           <Check size={14} />
@@ -1465,18 +1555,39 @@ function WorkflowAssistant({
 
 function EmptyState({
   copy,
+  status,
+  onRetry,
   onCreate,
-}: Readonly<{ copy: WorkflowCopy; onCreate(): void }>) {
+}: Readonly<{
+  copy: WorkflowCopy
+  status: WorkflowEditorSnapshot['status']
+  onRetry(): void
+  onCreate(): void
+}>) {
+  const loading = status === 'loading'
+  const error = status === 'error'
   return (
     <div className="yolo-workflow-empty-state">
       <div>
         <GitBranch size={30} />
-        <strong>{copy.state.empty}</strong>
-        <span>{copy.studio.editorOnly}</span>
-        <button type="button" onClick={onCreate}>
-          <Plus size={14} />
-          {copy.toolbar.create}
-        </button>
+        <strong>
+          {loading
+            ? copy.state.loading
+            : error
+              ? copy.state.error
+              : copy.state.empty}
+        </strong>
+        <span>{error ? copy.state.retry : copy.studio.editorOnly}</span>
+        {error ? (
+          <button type="button" aria-label={copy.state.retry} onClick={onRetry}>
+            {copy.state.retry}
+          </button>
+        ) : loading ? null : (
+          <button type="button" onClick={onCreate}>
+            <Plus size={14} />
+            {copy.toolbar.create}
+          </button>
+        )}
       </div>
     </div>
   )
@@ -1519,7 +1630,7 @@ function nodeKindIcon(kind: WorkflowNodeKind): React.ReactNode {
 
 function documentProposal(content: string, topology: WorkflowTopology): string {
   if (/^##\s+Execution order\s*$/im.test(content)) return content
-  const executionOrder = topology.nodes
+  const executionOrder = topologicalWorkflowOrder(topology)
     .map((node, index) => `${index + 1}. ${node.label}`)
     .join('\n')
   const base = content.trimEnd()

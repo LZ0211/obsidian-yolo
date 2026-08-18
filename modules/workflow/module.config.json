@@ -15,7 +15,7 @@
       "description": "Visualizza e gestisce workflow agentici basati su Markdown."
     }
   },
-  "hostApi": "^1.7.0",
+  "hostApi": "^1.8.0",
   "platforms": ["desktop", "mobile"],
   "dataSchemas": {},
   "dataFiles": [

@@ -877,6 +877,12 @@
   min-height: 28px;
 }
 
+.yolo-workflow-create-bar__error {
+  color: var(--yolo-workflow-warning);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 .yolo-workflow-create-bar button:not(:last-child) {
   padding: 6px 10px;
   border-color: var(--yolo-workflow-border-strong);
@@ -920,7 +926,7 @@
   }
 
   .yolo-workflow-toolbar__identity > div,
-  .yolo-workflow-toolbar__status > .yolo-workflow-icon-button:first-of-type {
+  .yolo-workflow-toolbar__status > span {
     display: none;
   }
 

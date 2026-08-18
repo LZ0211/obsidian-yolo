@@ -27,6 +27,12 @@ export const it = {
     empty: 'Nessun flusso',
     error: 'Errore del flusso',
     conflict: 'Questo flusso è stato modificato altrove.',
+    invalidName: 'Inserisci un nome di flusso valido.',
+    retry: 'Riprova',
+    saving: 'Salvataggio…',
+    deleteConfirm: 'Eliminare questo flusso?',
+    discardConfirm: 'Scartare le modifiche non salvate?',
+    discardAction: 'Scarta',
   },
   toolbar: {
     create: 'Nuovo flusso',
@@ -111,7 +117,7 @@ export const it = {
       'Questa porta logica non può accettare un’altra connessione in uscita.',
   },
   finding: {
-    title: 'Risultati della convalida',
+    title: 'Controlli e suggerimenti',
     none: 'Nessun risultato',
     severity: { error: 'Errore', warning: 'Avviso', info: 'Informazione' },
     invalidTopology: 'La topologia del flusso non è valida.',

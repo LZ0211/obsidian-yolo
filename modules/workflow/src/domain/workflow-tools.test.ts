@@ -1,7 +1,11 @@
 import { en, zh } from '../i18n'
 import type { WorkflowCopy } from '../i18n'
 
-import { parseWorkflowDocument } from './workflow-document'
+import {
+  parseWorkflowDocument,
+  updateWorkflowManagedBlocks,
+} from './workflow-document'
+import type { WorkflowTopology } from './workflow-model'
 import type {
   CreateWorkflowResult,
   WorkflowBundle,
@@ -104,11 +108,7 @@ describe('workflow chat tools', () => {
     expect(parseResult(notFound).message).toBe(en.chatToolError.notFound)
 
     repository.create.mockResolvedValue({ ok: false, reason: 'target-exists' })
-    const input = {
-      slug: 'alpha',
-      manifestContent: '# Alpha',
-      stepFiles: [{ relativePath: 'steps/input/STEP.md', content: 'Input' }],
-    }
+    const input = validCreateInput()
     const targetExists = await tools.create.handler(input)
     expect(parseResult(targetExists).message).toBe(en.chatToolError.targetExists)
 
@@ -149,11 +149,7 @@ describe('workflow chat tools', () => {
       },
     })
     const tools = createWorkflowChatTools(repository, en)
-    const input = {
-      slug: 'alpha',
-      manifestContent: '# Alpha',
-      stepFiles: [{ relativePath: 'steps/input/STEP.md', content: 'Input' }],
-    }
+    const input = validCreateInput()
 
     const result = await tools.create.handler(input)
 
@@ -163,6 +159,26 @@ describe('workflow chat tools', () => {
       path: 'alpha/WORKFLOW.md',
     })
     expect(result.content).not.toContain('private manifest')
+  })
+
+  it('rejects a create request whose managed document is not a valid workflow', async () => {
+    const repository = fakeRepository()
+    const tools = createWorkflowChatTools(repository, en)
+
+    const result = await tools.create.handler({
+      slug: 'alpha',
+      manifestContent:
+        '# Alpha\n\n<!-- yolo:workflow-topology:start -->\n{}\n<!-- yolo:workflow-topology:end -->',
+      stepFiles: [],
+    })
+
+    expect(result.isError).toBe(true)
+    expect(parseResult(result)).toMatchObject({
+      ok: false,
+      reason: 'invalid-input',
+      message: en.chatToolError.invalidWorkflow,
+    })
+    expect(repository.create).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -231,11 +247,7 @@ describe('workflow chat tools', () => {
     repository.create.mockResolvedValue(failure)
     const tools = createWorkflowChatTools(repository, en)
 
-    const result = await tools.create.handler({
-      slug: 'alpha',
-      manifestContent: '# Alpha',
-      stepFiles: [],
-    })
+    const result = await tools.create.handler(validCreateInput())
 
     expect(result.isError).toBe(true)
     expect(parseResult(result)).toMatchObject({ ok: false, reason: failure.reason })
@@ -248,11 +260,7 @@ describe('workflow chat tools', () => {
     const tools = createWorkflowChatTools(repository, en)
 
     await expect(
-      tools.create.handler({
-        slug: 'alpha',
-        manifestContent: '# Alpha',
-        stepFiles: [],
-      }),
+      tools.create.handler(validCreateInput()),
     ).rejects.toBe(failure)
   })
 
@@ -308,4 +316,35 @@ function fakeRepository(): WorkflowRepository & {
 
 function parseResult(result: { content: string }): Record<string, unknown> {
   return JSON.parse(result.content) as Record<string, unknown>
+}
+
+function validCreateInput() {
+  const topology: WorkflowTopology = {
+    revision: 1,
+    nodes: [
+      {
+        id: 'input',
+        kind: 'input',
+        label: 'Input',
+        stepPath: 'steps/input/STEP.md',
+        position: { x: 70, y: 90 },
+      },
+      {
+        id: 'output',
+        kind: 'output',
+        label: 'Output',
+        stepPath: 'steps/output/STEP.md',
+        position: { x: 315, y: 90 },
+      },
+    ],
+    edges: [{ id: 'input-output', source: 'input', target: 'output' }],
+  }
+  return {
+    slug: 'alpha',
+    manifestContent: updateWorkflowManagedBlocks('# Alpha\n', topology, en),
+    stepFiles: [
+      { relativePath: 'steps/input/STEP.md', content: '# Input\n' },
+      { relativePath: 'steps/output/STEP.md', content: '# Output\n' },
+    ],
+  }
 }

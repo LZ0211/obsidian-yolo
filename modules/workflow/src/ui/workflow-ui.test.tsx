@@ -145,11 +145,13 @@ describe('workflow studio UI interactions', () => {
     expect(testContainer.textContent).toContain(
       'Run workflows from the current session.',
     )
+    expect(testContainer.textContent).toContain('Checks & suggestions')
   })
 
   it('keeps workflow lifecycle controls in the canvas toolbar', async () => {
     const { model, trashCurrent } = createModel({ bundle: createBundle() })
-    await renderStudio(model)
+    const confirm = jest.fn(async () => true)
+    await renderStudio(model, jest.fn(), confirm)
 
     const canvasToolbar = testContainer.querySelector(
       '.yolo-workflow-canvas-toolbar',
@@ -174,6 +176,43 @@ describe('workflow studio UI interactions', () => {
       await Promise.resolve()
     })
     expect(trashCurrent).toHaveBeenCalled()
+  })
+
+  it('requires confirmation before deleting the current workflow', async () => {
+    const { model, trashCurrent } = createModel({ bundle: createBundle() })
+    const confirm = jest
+      .fn<Promise<boolean>, []>()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+    await renderStudio(model, jest.fn(), confirm)
+
+    await act(async () => {
+      testContainer
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Delete workflow"]',
+        )
+        ?.click()
+      await Promise.resolve()
+    })
+
+    expect(confirm).toHaveBeenCalledWith({
+      title: 'Delete this workflow?',
+      message: 'demo/WORKFLOW.md',
+      ctaText: 'Delete workflow',
+      cancelText: 'Cancel',
+    })
+    expect(trashCurrent).not.toHaveBeenCalled()
+
+    await act(async () => {
+      testContainer
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Delete workflow"]',
+        )
+        ?.click()
+      await Promise.resolve()
+    })
+
+    expect(trashCurrent).toHaveBeenCalledTimes(1)
   })
 
   it('keeps imported STEP markdown when creating a workflow', async () => {
@@ -298,6 +337,39 @@ describe('workflow studio UI interactions', () => {
     expect(updateFile).toHaveBeenCalledWith('workflow', expect.any(String))
   })
 
+  it('uses graph order when proposing an execution-order document section', async () => {
+    const { model, setSnapshot } = createModel({ bundle: createBundle() })
+    await renderStudio(model)
+    const source = createTopology()
+    const output: WorkflowNode = {
+      id: 'output',
+      kind: 'output',
+      label: 'Output',
+      stepPath: 'steps/output/STEP.md',
+      position: { x: 560, y: 90 },
+    }
+    const shuffled: WorkflowTopology = {
+      revision: 1,
+      nodes: [output, source.nodes[1], source.nodes[0]],
+      edges: [
+        ...source.edges,
+        { id: 'agent-output', source: 'agent', target: 'output' },
+      ],
+    }
+    act(() => setSnapshot({ ...model.getSnapshot(), topology: shuffled }))
+
+    const optimize = Array.from(testContainer.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Optimize doc',
+    )
+    expect(optimize).not.toBeUndefined()
+    act(() => optimize!.click())
+
+    const proposal = testContainer.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Proposal"]',
+    )
+    expect(proposal?.value).toContain('1. Input\n2. Agent\n3. Output')
+  })
+
   it('clears workflow-local assistant state when another workflow starts loading', async () => {
     const { model, setSnapshot } = createModel({
       bundle: createBundle(),
@@ -311,9 +383,7 @@ describe('workflow studio UI interactions', () => {
     expect(optimize).not.toBeUndefined()
     act(() => optimize!.click())
     expect(
-      testContainer.querySelector(
-        'textarea[aria-label="Proposal"]',
-      ),
+      testContainer.querySelector('textarea[aria-label="Proposal"]'),
     ).not.toBeNull()
 
     act(() =>
@@ -332,9 +402,7 @@ describe('workflow studio UI interactions', () => {
     )
 
     expect(
-      testContainer.querySelector(
-        'textarea[aria-label="Proposal"]',
-      ),
+      testContainer.querySelector('textarea[aria-label="Proposal"]'),
     ).toBeNull()
   })
 
@@ -387,6 +455,44 @@ describe('workflow studio UI interactions', () => {
     expect(testContainer.querySelector('.yolo-workflow-graph')).not.toBe(
       previousGraph,
     )
+  })
+
+  it('offers to discard dirty edits before switching workflows', async () => {
+    const { model } = createModel({
+      dirty: true,
+      workflows: [
+        { path: 'demo/WORKFLOW.md', title: 'Demo' },
+        { path: 'second/WORKFLOW.md', title: 'Second' },
+      ],
+    })
+    const confirm = jest.fn(async () => true)
+    await renderStudio(model, jest.fn(), confirm)
+    ;(model.load as jest.Mock).mockClear()
+    ;(model.load as jest.Mock).mockResolvedValueOnce({
+      ok: false as const,
+      reason: 'dirty' as const,
+    })
+
+    const flow = testContainer.querySelector<HTMLSelectElement>(
+      'select[aria-label="Open workflow"]',
+    )
+    expect(flow).not.toBeNull()
+    await act(async () => {
+      flow!.value = 'second/WORKFLOW.md'
+      flow!.dispatchEvent(new Event('change', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(confirm).toHaveBeenCalledWith({
+      title: 'Discard unsaved changes?',
+      message: 'second/WORKFLOW.md',
+      ctaText: 'Discard',
+      cancelText: 'Cancel',
+    })
+    expect(model.load).toHaveBeenLastCalledWith('second/WORKFLOW.md', {
+      discardDirty: true,
+    })
   })
 
   it('does not expose stepPath as an editable inspector field', async () => {
@@ -515,6 +621,104 @@ describe('workflow studio UI interactions', () => {
     expect(notice).toHaveBeenCalledWith('load failed')
   })
 
+  it('renders loading and error states instead of presenting an empty workflow', async () => {
+    const { model: loadingModel } = createModel({
+      status: 'loading',
+      topology: null,
+      bundle: null,
+    })
+    await renderStudio(loadingModel)
+
+    const loadingState = testContainer.querySelector(
+      '.yolo-workflow-empty-state',
+    )
+    expect(loadingState?.textContent).toContain('Loading workflow…')
+    expect(loadingState?.textContent).not.toContain('No workflow yet')
+
+    act(() => testRoot.unmount())
+    testRoot = createRoot(testContainer)
+
+    const { model: errorModel } = createModel({
+      status: 'error',
+      topology: null,
+      bundle: null,
+    })
+    await renderStudio(errorModel)
+    ;(errorModel.load as jest.Mock).mockClear()
+
+    const errorState = testContainer.querySelector('.yolo-workflow-empty-state')
+    expect(errorState?.textContent).toContain('Workflow error')
+    expect(errorState?.textContent).not.toContain('No workflow yet')
+    const retry = testContainer.querySelector<HTMLButtonElement>(
+      'button[aria-label="Retry"]',
+    )
+    expect(retry).not.toBeNull()
+
+    await act(async () => {
+      retry!.click()
+      await Promise.resolve()
+    })
+    expect(errorModel.load).toHaveBeenCalledWith('demo/WORKFLOW.md')
+  })
+
+  it('shows validation when a workflow name cannot become a safe slug', async () => {
+    const { model } = createModel()
+    await renderStudio(model)
+
+    await act(async () => {
+      findButton(testContainer, 'New workflow')!.click()
+      await Promise.resolve()
+    })
+    const input = testContainer.querySelector<HTMLInputElement>(
+      'input[placeholder="New workflow"]',
+    )
+    expect(input).not.toBeNull()
+
+    await act(async () => {
+      input!.value = '调试流程'
+      input!.dispatchEvent(new Event('input', { bubbles: true }))
+      testContainer
+        .querySelector<HTMLButtonElement>(
+          '.yolo-workflow-create-bar button[type="submit"]',
+        )
+        ?.click()
+      await Promise.resolve()
+    })
+
+    expect(testContainer.textContent).toContain('Enter a valid workflow name.')
+    expect(model.create).not.toHaveBeenCalled()
+  })
+
+  it('disables duplicate apply actions while a save is pending', async () => {
+    const { model } = createModel({ dirty: true })
+    let resolveApply: (value: { ok: true }) => void = () => undefined
+    const pending = new Promise<{ ok: true }>((resolve) => {
+      resolveApply = resolve
+    })
+    ;(model.apply as jest.Mock).mockReturnValueOnce(pending)
+    await renderStudio(model)
+
+    const apply = testContainer.querySelector<HTMLButtonElement>(
+      'button[aria-label="Apply changes"]',
+    )
+    expect(apply).not.toBeNull()
+
+    await act(async () => {
+      apply!.click()
+      await Promise.resolve()
+    })
+
+    expect(apply!.disabled).toBe(true)
+    expect(testContainer.textContent).toContain('Saving…')
+
+    await act(async () => {
+      resolveApply({ ok: true })
+      await pending
+    })
+
+    expect(apply!.disabled).toBe(false)
+  })
+
   it('surfaces workflow save failures through the notice callback', async () => {
     const { model } = createModel({ dirty: true })
     const notice = jest.fn()
@@ -535,6 +739,7 @@ describe('workflow studio UI interactions', () => {
 async function renderStudio(
   model: WorkflowEditorModel,
   notice: jest.Mock = jest.fn(),
+  confirm: jest.Mock = jest.fn(async () => true),
 ): Promise<void> {
   await act(async () => {
     testRoot.render(
@@ -543,6 +748,7 @@ async function renderStudio(
         copy={createWorkflowCopy('en')}
         openFile={jest.fn()}
         notice={notice}
+        confirm={confirm}
       />,
     )
     await Promise.resolve()

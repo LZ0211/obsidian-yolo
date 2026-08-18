@@ -1,5 +1,6 @@
 import type { WorkflowCopy } from '../i18n'
 
+import { parseWorkflowDocument } from './workflow-document'
 import type {
   CreateWorkflowInput,
   WorkflowRepository,
@@ -96,6 +97,20 @@ async function createWorkflow(
 ): Promise<WorkflowToolResult> {
   const createInput = parseCreateInput(input)
   if (!createInput) return invalidInput(copy.chatToolError.invalidInput)
+  const document = parseWorkflowDocument(createInput.manifestContent, copy)
+  if (!document.topology || document.issues.length > 0)
+    return invalidInput(copy.chatToolError.invalidWorkflow)
+  const expectedSteps = new Set(
+    document.topology.nodes.map((node) => node.stepPath),
+  )
+  const suppliedSteps = new Set(
+    createInput.stepFiles.map((file) => file.relativePath),
+  )
+  if (
+    expectedSteps.size !== suppliedSteps.size ||
+    [...expectedSteps].some((stepPath) => !suppliedSteps.has(stepPath))
+  )
+    return invalidInput(copy.chatToolError.invalidWorkflow)
 
   const created = await repository.create(createInput)
   if (!created.ok) {

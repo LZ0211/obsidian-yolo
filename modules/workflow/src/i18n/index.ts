@@ -17,6 +17,12 @@ export type WorkflowCopy = Readonly<{
     empty: string
     error: string
     conflict: string
+    invalidName: string
+    retry: string
+    saving: string
+    deleteConfirm: string
+    discardConfirm: string
+    discardAction: string
   }>
   toolbar: Readonly<
     Record<

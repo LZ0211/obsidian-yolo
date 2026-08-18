@@ -71,10 +71,14 @@ describe('workflow module chat mode', () => {
     moduleDefinition!.activate(host as unknown as YoloModuleHostApiV1)
 
     const view = host.workspace.registerView.mock.calls[0]?.[0] as {
-      render(): ReactElement<{ editor: WorkflowEditorModel }>
-      setState(state: Readonly<{ path?: unknown }>): Promise<void>
+      render(context: unknown): ReactElement<{ editor: WorkflowEditorModel }>
+      setState(
+        state: Readonly<{ path?: unknown }>,
+        context: unknown,
+      ): Promise<void>
     }
-    const viewElement = view.render()
+    const viewContext = createViewContext('workflow-view-1')
+    const viewElement = view.render(viewContext)
     const editor = viewElement.props.editor
     await editor.load('demo/WORKFLOW.md')
     const topology = editor.getSnapshot().topology
@@ -87,11 +91,50 @@ describe('workflow module chat mode', () => {
     })
     expect(editor.getSnapshot().dirty).toBe(true)
 
-    await view.setState({ path: 'demo/WORKFLOW.md' })
+    await view.setState({ path: 'demo/WORKFLOW.md' }, viewContext)
 
     expect(editor.getSnapshot().dirty).toBe(true)
   })
+
+  it('creates independent editor state for independent view instances', async () => {
+    expect(moduleDefinition).not.toBeNull()
+    const host = fakeWorkflowHost()
+    moduleDefinition!.activate(host as unknown as YoloModuleHostApiV1)
+
+    const view = host.workspace.registerView.mock.calls[0]?.[0] as {
+      render(context: unknown): ReactElement<{ editor: WorkflowEditorModel }>
+    }
+    const firstElement = view.render(createViewContext('workflow-view-1'))
+    const secondElement = view.render(createViewContext('workflow-view-2'))
+    const firstEditor = firstElement.props.editor
+    const secondEditor = secondElement.props.editor
+
+    expect(firstEditor).not.toBe(secondEditor)
+    await firstEditor.load('demo/WORKFLOW.md')
+    await secondEditor.load('demo/WORKFLOW.md')
+    const topology = firstEditor.getSnapshot().topology
+    expect(topology).not.toBeNull()
+
+    firstEditor.updateTopology({
+      ...topology!,
+      nodes: topology!.nodes.map((node) =>
+        node.id === 'agent' ? { ...node, label: 'First view' } : node,
+      ),
+    })
+
+    expect(firstEditor.getSnapshot().dirty).toBe(true)
+    expect(secondEditor.getSnapshot().dirty).toBe(false)
+  })
 })
+
+function createViewContext(id: string) {
+  return {
+    id,
+    document: {} as Document,
+    window: {} as Window,
+    lifecycle: { add: jest.fn() },
+  }
+}
 
 function fakeHost(): RegistrationHost {
   return {

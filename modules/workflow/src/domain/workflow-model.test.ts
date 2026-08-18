@@ -3,6 +3,7 @@ import {
   connectionProblem,
   layoutWorkflowNodes,
   parseWorkflowTopology,
+  topologicalWorkflowOrder,
   validateWorkflowTopology,
 } from './workflow-model'
 
@@ -394,6 +395,28 @@ describe('workflow topology', () => {
       { x: 560, y: 90 },
       { x: 560, y: 250 },
       { x: 805, y: 90 },
+    ])
+  })
+
+  it('returns a stable topological order for a shuffled workflow', () => {
+    const source = validTopology()
+    const shuffled: WorkflowTopology = {
+      ...source,
+      nodes: [
+        source.nodes[4],
+        source.nodes[2],
+        source.nodes[0],
+        source.nodes[3],
+        source.nodes[1],
+      ],
+    }
+
+    expect(topologicalWorkflowOrder(shuffled).map((node) => node.id)).toEqual([
+      'input',
+      'gate',
+      'yes',
+      'no',
+      'output',
     ])
   })
 })

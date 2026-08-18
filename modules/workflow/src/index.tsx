@@ -14,18 +14,31 @@ yolo.registerModule({
   activate(host) {
     const repository = createWorkflowRepository(host)
     const getCopy = () => createWorkflowCopy(host.i18n.getSnapshot().locale)
-    const editor = createWorkflowEditorModel(repository, getCopy)
+    const editors = new Map<
+      string,
+      ReturnType<typeof createWorkflowEditorModel>
+    >()
+    const getEditor = (context: YoloModuleHostViewContextV1) => {
+      const existing = editors.get(context.id)
+      if (existing) return existing
+      const editor = createWorkflowEditorModel(repository, getCopy)
+      editors.set(context.id, editor)
+      context.lifecycle.add(() => {
+        editor.dispose()
+        editors.delete(context.id)
+      })
+      return editor
+    }
     const tools = createWorkflowChatTools(repository, getCopy)
     const openView = (): Promise<void> => host.workspace.openView()
-    host.lifecycle.add(editor.dispose)
 
     host.workspace.registerView({
       type: VIEW_TYPE,
       name: createWorkflowLocalizedText('module.name'),
       icon: 'git-branch',
-      render: () => (
+      render: (context) => (
         <WorkflowModuleView
-          editor={editor}
+          editor={getEditor(context)}
           getCopy={getCopy}
           getLocaleSnapshot={host.i18n.getSnapshot}
           subscribeLocale={host.i18n.subscribe}
@@ -33,11 +46,13 @@ yolo.registerModule({
             await host.ui.openFileAt({ path })
           }}
           notice={host.ui.notice}
+          confirm={host.ui.confirm}
         />
       ),
-      getState: () => ({ path: editor.getSnapshot().path }),
-      setState: async (state) => {
-        if (typeof state.path === 'string') await editor.load(state.path)
+      getState: (context) => ({ path: getEditor(context).getSnapshot().path }),
+      setState: async (state, context) => {
+        if (typeof state.path === 'string')
+          await getEditor(context).load(state.path)
       },
     })
     host.workspace.registerRibbonAction({
@@ -74,6 +89,7 @@ function WorkflowModuleView({
   subscribeLocale,
   openFile,
   notice,
+  confirm,
 }: Readonly<{
   editor: ReturnType<typeof createWorkflowEditorModel>
   getCopy(): ReturnType<typeof createWorkflowCopy>
@@ -81,6 +97,14 @@ function WorkflowModuleView({
   subscribeLocale(listener: () => void): () => void
   openFile(path: string): void | Promise<void>
   notice(message: string): void
+  confirm(
+    options: Readonly<{
+      title: string
+      message: string
+      ctaText?: string
+      cancelText?: string
+    }>,
+  ): Promise<boolean>
 }>) {
   useSyncExternalStore(subscribeLocale, getLocaleSnapshot, getLocaleSnapshot)
   return (
@@ -90,6 +114,7 @@ function WorkflowModuleView({
         copy={getCopy()}
         openFile={openFile}
         notice={notice}
+        confirm={confirm}
       />
     </div>
   )
