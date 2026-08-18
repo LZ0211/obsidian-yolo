@@ -326,6 +326,8 @@ export type {
   YoloModuleRibbonActionV1,
   YoloModuleRuntimeRegistration,
   YoloModuleViewV1,
+  YoloModuleViewContextV1,
+  YoloModuleViewLifecycleV1,
   YoloModuleVaultEntryV1,
   YoloModuleVaultEventV1,
   YoloModuleVaultFileV1,

@@ -16,13 +16,31 @@ export type YoloModuleLifecycle = {
   onQuiesce(callback: ModuleQuiescenceCallback): void
 }
 
+export type YoloModuleViewLifecycleV1 = Readonly<{
+  /** Registers a synchronous cleanup for this view instance. */
+  add(disposer: ModuleDisposer): void
+}>
+
+export type YoloModuleViewContextV1 = Readonly<{
+  /** Stable only for the lifetime of this Obsidian view instance. */
+  id: string
+  /** The document currently hosting the view, including popout windows. */
+  document: Document
+  /** The window currently hosting the view, including popout windows. */
+  window: Window
+  lifecycle: YoloModuleViewLifecycleV1
+}>
+
 export type YoloModuleViewV1 = Readonly<{
   type: string
   name: LocalizedTextV1
   icon: string
-  render(): ReactNode
-  getState?(): Readonly<Record<string, unknown>>
-  setState?(state: Readonly<Record<string, unknown>>): void | Promise<void>
+  render(context: YoloModuleViewContextV1): ReactNode
+  getState?(context: YoloModuleViewContextV1): Readonly<Record<string, unknown>>
+  setState?(
+    state: Readonly<Record<string, unknown>>,
+    context: YoloModuleViewContextV1,
+  ): void | Promise<void>
 }>
 
 export type YoloModuleRibbonActionV1 = Readonly<{

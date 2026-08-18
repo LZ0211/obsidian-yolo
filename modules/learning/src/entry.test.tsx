@@ -327,8 +327,10 @@ describe('production Learning module entry', () => {
     if (!view) throw new Error('Learning view was not registered')
 
     expect(view.type).toBe(legacyLeaf.type)
-    await expect(view.setState?.(legacyLeaf.state)).resolves.toBeUndefined()
-    const node = view.render() as ReactElement<{
+    await expect(
+      view.setState?.(legacyLeaf.state, createViewContext()),
+    ).resolves.toBeUndefined()
+    const node = view.render(createViewContext()) as ReactElement<{
       root: { attach(element: HTMLElement): unknown }
     }>
     expect(
@@ -378,18 +380,18 @@ describe('production Learning module entry', () => {
 
     await expect(root.open()).rejects.toThrow('not ready')
     await expect(command.callback()).rejects.toThrow('not ready')
-    await expect(view.setState?.({ navigationTarget: target })).rejects.toThrow(
-      'not ready',
-    )
+    await expect(
+      view.setState?.({ navigationTarget: target }, createViewContext()),
+    ).rejects.toThrow('not ready')
     expect(() =>
       root.attach({ ownerDocument: ownerDocument() } as HTMLElement),
     ).toThrow('not ready')
     await expect(harness.runWhenActive()).rejects.toBe(activationError)
     await expect(root.open()).rejects.toBe(activationError)
     await expect(command.callback()).rejects.toBe(activationError)
-    await expect(view.setState?.({ navigationTarget: target })).rejects.toBe(
-      activationError,
-    )
+    await expect(
+      view.setState?.({ navigationTarget: target }, createViewContext()),
+    ).rejects.toBe(activationError)
     expect(() =>
       root.attach({ ownerDocument: ownerDocument() } as HTMLElement),
     ).toThrow(activationError)
@@ -402,7 +404,7 @@ describe('production Learning module entry', () => {
     await harness.runWhenActive()
     const view = harness.getView()
     if (!view) throw new Error('Learning view was not registered')
-    const node = view.render() as ReactElement<{
+    const node = view.render(createViewContext()) as ReactElement<{
       root: {
         attach(element: HTMLElement): unknown
       }
@@ -425,7 +427,7 @@ describe('production Learning module entry', () => {
       cardMode: '学习',
     } as const
 
-    await view.setState?.({ navigationTarget: target })
+    await view.setState?.({ navigationTarget: target }, createViewContext())
 
     expect(navigate).toHaveBeenCalledWith(target)
     expect(navigate).toHaveBeenCalledTimes(1)
@@ -509,7 +511,7 @@ describe('production Learning module entry', () => {
     await harness.runWhenActive()
     const view = harness.getView()
     if (!view) throw new Error('Learning view was not registered')
-    const node = view.render() as ReactElement<{
+    const node = view.render(createViewContext()) as ReactElement<{
       root: {
         attach(element: HTMLElement): { dispose(): void }
       }
@@ -679,7 +681,7 @@ describe('production Learning module entry', () => {
 
 function getRoot(view: RegisteredView | null) {
   if (!view) throw new Error('Learning view was not registered')
-  const node = view.render() as ReactElement<{
+  const node = view.render(createViewContext()) as ReactElement<{
     root: {
       open(target?: LearningNavigationTarget): Promise<void>
       navigate(target: LearningNavigationTarget): void
@@ -695,6 +697,16 @@ function getRoot(view: RegisteredView | null) {
     }
   }>
   return node.props.root
+}
+
+function createViewContext() {
+  const owner = ownerDocument()
+  return {
+    id: `learning-test-view-${Math.random()}`,
+    document: owner,
+    window: owner.defaultView as unknown as Window,
+    lifecycle: { add: jest.fn() },
+  }
 }
 
 function createOutlineInput() {

@@ -12,11 +12,12 @@ import type {
   YoloModuleI18nV1,
   YoloModuleOpenFileLocationV1,
   YoloModuleRuntimeRegistration,
+  YoloModuleViewContextV1,
 } from '../src/core/modules/types'
 
 declare global {
   const yolo: YoloModuleRuntimeRegistration
-  type YoloModuleHostApiVersion = '1.7.0'
+  type YoloModuleHostApiVersion = '1.8.0'
   type YoloModuleHostApiV1 = YoloHostApiV1
   type YoloModuleHostActionToastV1 = YoloModuleActionToastV1
   type YoloModuleHostChatModeV1 = YoloModuleChatModeV1
@@ -24,6 +25,7 @@ declare global {
   type YoloModuleHostI18nV1 = YoloModuleI18nV1
   type YoloModuleHostLocalizedTextV1 = LocalizedTextV1
   type YoloModuleHostOpenFileLocationV1 = YoloModuleOpenFileLocationV1
+  type YoloModuleHostViewContextV1 = YoloModuleViewContextV1
   type YoloModuleHostSettingsContributionV1 = YoloModuleSettingsContributionV1
   type YoloModuleHostModelSnapshotV1 = YoloModuleModelSnapshotV1
   type YoloModuleHostWorkerV1 = YoloModuleWorkerV1

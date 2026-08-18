@@ -7,6 +7,14 @@ jest.mock('obsidian', () => ({
         this as unknown as { getViewType(): string }
       ).getViewType()
     }
+
+    setState(): Promise<void> {
+      return Promise.resolve()
+    }
+
+    registerEvent(): void {
+      return undefined
+    }
   },
 }))
 
@@ -47,6 +55,95 @@ describe('ObsidianModuleContributionRegistrar', () => {
     expect(itemView.getViewType()).toBe(view.type)
     expect(itemView.getDisplayText()).toBe(view.name)
     expect(itemView.getIcon()).toBe(view.icon)
+  })
+
+  it('passes an isolated view context to callbacks and disposes it on close', async () => {
+    const registerView = jest.fn()
+    const contexts: Array<{
+      id: string
+      document: Document
+      window: Window
+      lifecycle: { add(disposer: () => void): void }
+    }> = []
+    const setStateContexts: Array<(typeof contexts)[number]> = []
+    const disposers = [jest.fn(), jest.fn()]
+    const viewWithContext = {
+      ...view,
+      getState: (...args: unknown[]) => {
+        const context = args[0] as (typeof contexts)[number]
+        contexts.push(context)
+        context.lifecycle.add(disposers[contexts.length - 1]!)
+        return { viewId: context.id }
+      },
+      setState: (...args: unknown[]) => {
+        const context = args[1] as (typeof contexts)[number]
+        setStateContexts.push(context)
+      },
+    }
+    const registrar = new ObsidianModuleContributionRegistrar({
+      app: { workspace: { on: jest.fn() } },
+      registerView,
+    } as unknown as Plugin)
+    registrar.commit(
+      'notes',
+      { view: viewWithContext },
+      new ModuleLifecycleScope(),
+    )
+
+    const factory = registerView.mock.calls[0]?.[1] as (
+      leaf: WorkspaceLeaf,
+    ) => {
+      onOpen(): Promise<void>
+      getState(): Readonly<Record<string, unknown>>
+      setState(state: unknown, result: unknown): Promise<void>
+      onClose(): Promise<void>
+    }
+    const ownerDocument = {} as Document
+    const ownerWindow = {} as Window
+    const createLeaf = () => ({}) as unknown as WorkspaceLeaf
+    const first = factory(createLeaf())
+    const second = factory(createLeaf())
+    ;(first as unknown as { containerEl: unknown }).containerEl = {
+      ownerDocument,
+      win: ownerWindow,
+    }
+    ;(second as unknown as { containerEl: unknown }).containerEl = {
+      ownerDocument,
+      win: ownerWindow,
+      children: [],
+      onWindowMigrated: jest.fn(() => () => undefined),
+    }
+    ;(first as unknown as { containerEl: unknown }).containerEl = {
+      ownerDocument,
+      win: ownerWindow,
+      children: [],
+      onWindowMigrated: jest.fn(() => () => undefined),
+    }
+    const previousMutationObserver = globalThis.MutationObserver
+    globalThis.MutationObserver = class {
+      observe(): void {
+        return undefined
+      }
+
+      disconnect(): void {
+        return undefined
+      }
+    } as unknown as typeof MutationObserver
+    await first.onOpen()
+    await second.onOpen()
+    globalThis.MutationObserver = previousMutationObserver
+
+    expect(first.getState()).toEqual({ viewId: contexts[0]?.id })
+    expect(second.getState()).toEqual({ viewId: contexts[1]?.id })
+    expect(contexts[0]?.id).not.toBe(contexts[1]?.id)
+    expect(contexts[0]?.document).toBe(ownerDocument)
+    expect(contexts[0]?.window).toBe(ownerWindow)
+
+    await first.setState({}, {} as unknown)
+    expect(setStateContexts[0]).toBe(contexts[0])
+    await first.onClose()
+    expect(disposers[0]).toHaveBeenCalledTimes(1)
+    expect(disposers[1]).not.toHaveBeenCalled()
   })
 
   it('rebinds a module view without registering another Obsidian view type', async () => {

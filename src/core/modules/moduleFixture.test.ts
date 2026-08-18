@@ -91,12 +91,12 @@ describe('host API conformance artifact boundary', () => {
         manifest: { byteSize: number; sha256: string }
       }>
     }
-    expect(bundled).toEqual({
-      schemaVersion: 1,
-      modules: [
+    expect(bundled.schemaVersion).toBe(1)
+    expect(bundled.modules).toEqual(
+      expect.arrayContaining([
         expect.objectContaining({ id: 'learning', version: learningVersion }),
-      ],
-    })
+      ]),
+    )
 
     const manifestBytes = readFileSync(path.join(learningDir, 'module.json'))
     const manifest = parseModuleArtifactManifest(

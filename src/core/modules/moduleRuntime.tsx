@@ -19,6 +19,7 @@ import type {
   YoloModuleDefinition,
   YoloModuleOpenViewOptionsV1,
   YoloModuleViewV1,
+  YoloModuleViewContextV1,
   YoloModuleWorkspaceV1,
 } from './types'
 
@@ -30,6 +31,7 @@ type ModuleViewSlotListener = (
 class ModuleViewSlot {
   private declaration: YoloModuleViewV1 | null = null
   private readonly listeners = new Set<ModuleViewSlotListener>()
+  private nextInstanceId = 0
 
   constructor(
     readonly moduleId: string,
@@ -48,6 +50,11 @@ class ModuleViewSlot {
 
   get(): YoloModuleViewV1 | null {
     return this.declaration
+  }
+
+  createInstanceId(): string {
+    this.nextInstanceId += 1
+    return `${this.moduleId}:${this.type}:${this.nextInstanceId}`
   }
 
   bind(declaration: YoloModuleViewV1): void {
@@ -88,12 +95,30 @@ abstract class ModuleItemView extends ItemView {
   private lastState: Record<string, unknown> = {}
   private unsubscribeSlot: (() => void) | null = null
   private closed = false
+  private viewLifecycle = new ModuleLifecycleScope()
+  private viewLifecycleDisposed = false
+  private readonly viewContext: YoloModuleViewContextV1
 
   constructor(
     leaf: WorkspaceLeaf,
     private readonly plugin: Plugin,
+    instanceId: string,
   ) {
     super(leaf)
+    const getDocument = () => this.containerEl.ownerDocument
+    const getWindow = () => getDocument().defaultView ?? this.containerEl.win
+    this.viewContext = Object.freeze({
+      id: instanceId,
+      get document() {
+        return getDocument()
+      },
+      get window() {
+        return getWindow()
+      },
+      lifecycle: Object.freeze({
+        add: (disposer: () => void) => this.viewLifecycle.add(disposer),
+      }),
+    })
   }
 
   protected abstract get slot(): ModuleViewSlot
@@ -111,6 +136,10 @@ abstract class ModuleItemView extends ItemView {
   }
 
   onOpen(): Promise<void> {
+    if (this.viewLifecycleDisposed) {
+      this.viewLifecycle = new ModuleLifecycleScope()
+      this.viewLifecycleDisposed = false
+    }
     this.closed = false
     this.declaration = this.slot.get()
     this.unsubscribeSlot = this.slot.subscribe((declaration, previous) => {
@@ -154,19 +183,27 @@ abstract class ModuleItemView extends ItemView {
     this.root = null
     this.mountedHost = null
     this.mountedDocument = null
+    if (!this.viewLifecycleDisposed) {
+      this.viewLifecycle.dispose()
+      this.viewLifecycleDisposed = true
+    }
     return Promise.resolve()
   }
 
   getState(): Record<string, unknown> {
-    const state = snapshotViewState(this.declaration?.getState?.())
+    if (this.closed) return { ...this.lastState }
+    const state = snapshotViewState(
+      this.declaration?.getState?.(this.viewContext),
+    )
     if (state) this.lastState = state
     return { ...this.lastState }
   }
 
   async setState(state: unknown, result: ViewStateResult): Promise<void> {
+    if (this.closed) return
     await super.setState(state, result)
     this.lastState = snapshotViewState(state) ?? {}
-    await this.declaration?.setState?.({ ...this.lastState })
+    await this.declaration?.setState?.({ ...this.lastState }, this.viewContext)
   }
 
   private render(): void {
@@ -180,7 +217,7 @@ abstract class ModuleItemView extends ItemView {
     this.root.render(
       <React.StrictMode>
         {this.declaration ? (
-          this.declaration.render()
+          this.declaration.render(this.viewContext)
         ) : (
           <div className="yolo-module-view-transition" role="status" />
         )}
@@ -193,12 +230,20 @@ abstract class ModuleItemView extends ItemView {
     previous: YoloModuleViewV1 | null,
   ): Promise<void> {
     if (this.closed) return
-    const state = snapshotViewState(previous?.getState?.())
+    const state = snapshotViewState(previous?.getState?.(this.viewContext))
     if (state) this.lastState = state
     this.root?.unmount()
     this.root = null
+    if (!this.viewLifecycleDisposed) {
+      this.viewLifecycle.dispose()
+      this.viewLifecycleDisposed = true
+    }
     this.declaration = declaration
-    if (declaration) await declaration.setState?.({ ...this.lastState })
+    if (declaration) {
+      this.viewLifecycle = new ModuleLifecycleScope()
+      this.viewLifecycleDisposed = false
+      await declaration.setState?.({ ...this.lastState }, this.viewContext)
+    }
     if (!this.closed) this.render()
   }
 
@@ -231,7 +276,7 @@ function createModuleItemView(
     protected get slot(): ModuleViewSlot {
       return slot
     }
-  })(leaf, plugin)
+  })(leaf, plugin, slot.createInstanceId())
 }
 
 export type ModuleContributionRegistrar = {
