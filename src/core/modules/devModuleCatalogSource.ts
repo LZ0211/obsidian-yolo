@@ -22,16 +22,16 @@ import {
 import type { ModuleCatalogEntry } from './types'
 
 export type MergedModuleCatalogSourceOptions = Readonly<{
-  /** Wins ties and every module the overlay does not resolve a newer candidate for. */
+  /** Wins ties and candidates the overlay does not resolve more favorably. */
   primary: ModuleCatalogResolutionSource
-  /** Wins only for modules where it resolves a strictly newer version than primary. */
+  /** Wins newer candidates and rebuilt same-version artifacts. */
   overlay: ModuleCatalogResolutionSource
 }>
 
 /**
  * Merges two catalog sources into one, picking per module id whichever side
- * resolves the higher installable version. Ties and modules the overlay does
- * not resolve stay with the primary source.
+ * resolves the more favorable installable candidate. Identical candidates
+ * stay with the primary source.
  */
 export function createMergedModuleCatalogSource(
   options: MergedModuleCatalogSourceOptions,
@@ -56,13 +56,24 @@ export function createMergedModuleCatalogSource(
       }
       const overlayResolved = options.overlay.getResolvedVersion(entry.id)
       const primaryResolved = options.primary.getResolvedVersion(entry.id)
+      const versionComparison =
+        overlayResolved && primaryResolved
+          ? compareModuleVersions(
+              overlayResolved.version,
+              primaryResolved.version,
+            )
+          : null
+      const overlayRebuildsSameVersion = Boolean(
+        overlayResolved &&
+          primaryResolved &&
+          versionComparison === 0 &&
+          !sameArtifactMetadata(overlayResolved, primaryResolved),
+      )
       if (
         overlayResolved &&
         (!primaryResolved ||
-          compareModuleVersions(
-            overlayResolved.version,
-            primaryResolved.version,
-          ) > 0)
+          (versionComparison !== null && versionComparison > 0) ||
+          overlayRebuildsSameVersion)
       ) {
         byId.set(entry.id, entry)
         nextWinners.set(entry.id, 'overlay')
@@ -111,6 +122,23 @@ export function createMergedModuleCatalogSource(
           )
     },
   })
+}
+
+function sameArtifactMetadata(
+  left: {
+    version: string
+    manifest: Readonly<{ byteSize: number; sha256: string }>
+  },
+  right: {
+    version: string
+    manifest: Readonly<{ byteSize: number; sha256: string }>
+  },
+): boolean {
+  return (
+    left.version === right.version &&
+    left.manifest.byteSize === right.manifest.byteSize &&
+    left.manifest.sha256 === right.manifest.sha256
+  )
 }
 
 export type DevModuleCatalogOverlayOptions = Readonly<{

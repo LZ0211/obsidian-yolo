@@ -94,6 +94,61 @@ describe('createMergedModuleCatalogSource', () => {
     ).toEqual(descriptor('learning', '0.1.5-dev.0'))
   })
 
+  it('prefers a rebuilt local artifact when the semantic version is unchanged', async () => {
+    const primaryEntry: ModuleCatalogEntry = {
+      id: 'learning',
+      version: '0.1.5-dev.0',
+      name: 'Learning',
+    }
+    const overlayEntry: ModuleCatalogEntry = {
+      id: 'learning',
+      version: '0.1.5-dev.0',
+      name: 'Learning (local build)',
+    }
+    const primaryDescriptor = {
+      ...descriptor('learning', '0.1.5-dev.0'),
+      manifest: { byteSize: 10, sha256: 'a'.repeat(64) },
+    }
+    const overlayDescriptor = {
+      ...descriptor('learning', '0.1.5-dev.0'),
+      manifest: { byteSize: 11, sha256: 'b'.repeat(64) },
+    }
+    const primary = fakeSource({
+      load: async () => [primaryEntry],
+      getResolvedVersion: () => ({
+        version: primaryDescriptor.version,
+        hostApi: primaryDescriptor.hostApi,
+        platforms: ['desktop'],
+        dataSchemas: primaryDescriptor.dataSchemas,
+        manifestUrl: primaryDescriptor.manifestUrl,
+        manifest: primaryDescriptor.manifest,
+      }),
+      getResolvedArtifactDescriptor: () => primaryDescriptor,
+    })
+    const overlay = fakeSource({
+      load: async () => [overlayEntry],
+      getResolvedVersion: () => ({
+        version: overlayDescriptor.version,
+        hostApi: overlayDescriptor.hostApi,
+        platforms: ['desktop'],
+        dataSchemas: overlayDescriptor.dataSchemas,
+        manifestUrl: overlayDescriptor.manifestUrl,
+        manifest: overlayDescriptor.manifest,
+      }),
+      getResolvedArtifactDescriptor: () => overlayDescriptor,
+    })
+
+    const merged = createMergedModuleCatalogSource({ primary, overlay })
+    await expect(merged.load()).resolves.toEqual([overlayEntry])
+    expect(
+      merged.getResolvedArtifactDescriptor(
+        'learning',
+        '0.1.5-dev.0',
+        'desktop',
+      ),
+    ).toEqual(overlayDescriptor)
+  })
+
   it('keeps the primary when the overlay does not resolve an installable version', async () => {
     const primaryEntry: ModuleCatalogEntry = {
       id: 'learning',
