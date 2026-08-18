@@ -59,6 +59,17 @@ export class RuntimeComponentLoader {
       '__yolo_register_runtime_component__',
       register,
     )
+    // A top-level throw in the component script still fires the script's
+    // onload, so a "register once" failure can hide the real cause. Capture
+    // the global error event during execution and surface it in the failure.
+    let scriptError: string | null = null
+    const hasWindow =
+      typeof window !== 'undefined' &&
+      typeof window.addEventListener === 'function'
+    const onScriptError = (event: ErrorEvent): void => {
+      scriptError = `${event.message} @ ${event.filename}:${event.lineno}`
+    }
+    if (hasWindow) window.addEventListener('error', onScriptError)
     let url: string | undefined
     let resource: { remove(): void } | undefined
     try {
@@ -90,11 +101,16 @@ export class RuntimeComponentLoader {
       })
       registrationOpen = false
       if (registrations !== 1 || !definition) {
-        throw new Error('Runtime component must synchronously register once')
+        throw new Error(
+          `Runtime component must synchronously register once${
+            scriptError ? `; script error: ${scriptError}` : ''
+          }`,
+        )
       }
       return definition as RuntimeComponentDefinition<I>
     } finally {
       registrationOpen = false
+      if (hasWindow) window.removeEventListener('error', onScriptError)
       resource?.remove()
       if (url) this.host.revokeScriptUrl(url)
       removeBridge()
