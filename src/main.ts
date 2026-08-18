@@ -57,59 +57,6 @@ import {
 } from './core/background/backgroundActivityRegistry'
 import { backgroundExecutionController } from './core/background/backgroundExecutionController'
 import { buildBackgroundStatusModel } from './core/background/backgroundStatusModel'
-import {
-  BAKED_RUNTIME_COMPONENT_REGISTRY,
-  RuntimeComponentDeviceStateStore,
-  RuntimeComponentInstaller,
-  RuntimeComponentIntentStore,
-  RuntimeComponentLoader,
-  RuntimeComponentRuntime,
-  RuntimeComponentService,
-  RuntimeComponentStore,
-  setRuntimeComponentService,
-} from './core/runtime-components'
-import type { ScheduledTasksService } from './core/scheduled-tasks-service'
-import type { ScheduledTasksStore } from './core/scheduler/scheduledTasksStore'
-import {
-  configureModuleChatModeSkillSource,
-  initializeLiteSkillRegistryService,
-  migrateVaultSkillFrontmatter,
-  prewarmLiteSkillRegistry,
-  updateLiteSkillRegistrySettings,
-} from './core/skills/liteSkills'
-import {
-  type InstallationIncompleteDetail,
-  type ReleaseFileName,
-  checkInstallationIntegrityLayer1And2,
-} from './core/update/installationIntegrity'
-import {
-  ModuleUpdateController,
-  type ModuleUpdateOffer,
-} from './core/update/moduleUpdateController'
-import {
-  type PluginUpdateState,
-  applyRepairFiles,
-  applyStagedUpdate,
-  canSelfUpdate,
-  downloadReleaseToStaging,
-  downloadRepairFilesToStaging,
-  ensureWebUiAssets,
-  getRepairStagingStatus,
-  getStagingDir,
-  getStagingStatus,
-} from './core/update/pluginUpdater'
-import {
-  type ReleaseAssets,
-  type UpdateCheckResult,
-  buildReleaseAssets,
-  checkForUpdate,
-  normalizePluginVersion,
-} from './core/update/updateChecker'
-import {
-  registerWebServerRoutes,
-  type RegisteredWebServerRoutes,
-} from './core/web-server/registerWebServerRoutes'
-import type { WebAgentRunBridge } from './core/web-server/WebAgentRunBridge'
 import { disposeChatRuntimeRouteCaches } from './core/web-server/routes/chatRuntimeRoutes'
 import { loadOrCreateShareTokenPepper } from './core/web-server/shareTokenPepperStore'
 import type { WebAgentLifecycleService } from './core/web-server/webAgentLifecycleService'
@@ -256,6 +203,59 @@ import {
   RagIndexRunSnapshot,
   RagIndexService,
 } from './core/rag/ragIndexService'
+import {
+  BAKED_RUNTIME_COMPONENT_REGISTRY,
+  RuntimeComponentDeviceStateStore,
+  RuntimeComponentInstaller,
+  RuntimeComponentIntentStore,
+  RuntimeComponentLoader,
+  RuntimeComponentRuntime,
+  RuntimeComponentService,
+  RuntimeComponentStore,
+  setRuntimeComponentService,
+} from './core/runtime-components'
+import type { ScheduledTasksService } from './core/scheduled-tasks-service'
+import type { ScheduledTasksStore } from './core/scheduler/scheduledTasksStore'
+import {
+  configureModuleChatModeSkillSource,
+  initializeLiteSkillRegistryService,
+  migrateVaultSkillFrontmatter,
+  prewarmLiteSkillRegistry,
+  updateLiteSkillRegistrySettings,
+} from './core/skills/liteSkills'
+import {
+  type InstallationIncompleteDetail,
+  type ReleaseFileName,
+  checkInstallationIntegrityLayer1And2,
+} from './core/update/installationIntegrity'
+import {
+  ModuleUpdateController,
+  type ModuleUpdateOffer,
+} from './core/update/moduleUpdateController'
+import {
+  type PluginUpdateState,
+  applyRepairFiles,
+  applyStagedUpdate,
+  canSelfUpdate,
+  downloadReleaseToStaging,
+  downloadRepairFilesToStaging,
+  ensureWebUiAssets,
+  getRepairStagingStatus,
+  getStagingDir,
+  getStagingStatus,
+} from './core/update/pluginUpdater'
+import {
+  type ReleaseAssets,
+  type UpdateCheckResult,
+  buildReleaseAssets,
+  checkForUpdate,
+  normalizePluginVersion,
+} from './core/update/updateChecker'
+import {
+  registerWebServerRoutes,
+  type RegisteredWebServerRoutes,
+} from './core/web-server/registerWebServerRoutes'
+import type { WebAgentRunBridge } from './core/web-server/WebAgentRunBridge'
 import { pruneImageCache } from './database/json/chat/imageCacheStore'
 import { prunePdfTextCache } from './database/json/chat/pdfTextCacheStore'
 import type {
@@ -313,10 +313,10 @@ import {
   setFlightLogSink,
 } from './utils/debug/flightLog'
 import { stableStringify } from './utils/json/stableStringify'
-import { loadDesktopNodeModuleSync } from './utils/platform/desktopNodeModule'
 import { applyKnownMaxContextTokensToChatModels } from './utils/llm/model-capability-registry'
 import { getMentionableBlockData } from './utils/obsidian'
 import { resetMinerUSessionState } from './utils/pdf/mineruClient'
+import { loadDesktopNodeModuleSync } from './utils/platform/desktopNodeModule'
 import { ensureBufferByteLengthCompat } from './utils/runtime/ensureBufferByteLengthCompat'
 import { YOLO_ICON_ID, YOLO_ICON_SVG } from './yoloIcon'
 
@@ -1338,7 +1338,7 @@ export default class YoloPlugin extends Plugin {
     const write = this.flightLogWriteQueue.then(async () => {
       if (this.flightLogSinkDisabled) return
       try {
-        const path = await this.resolveFlightLogPath()
+        const path = this.resolveFlightLogPath()
         if (Platform.isDesktop) {
           const fs = loadDesktopNodeModuleSync<typeof import('node:fs')>(
             'node:fs',
@@ -1359,6 +1359,10 @@ export default class YoloPlugin extends Plugin {
           return
         }
         const adapter = this.app.vault.adapter
+        const dirPath = path.slice(0, path.lastIndexOf('/'))
+        if (!(await adapter.exists(dirPath))) {
+          await adapter.mkdir(dirPath)
+        }
         const stat = await adapter.stat(path)
         if (stat && stat.size > 5 * 1024 * 1024) {
           this.flightLogSinkDisabled = true
@@ -1378,20 +1382,28 @@ export default class YoloPlugin extends Plugin {
     return write
   }
 
-  private async resolveFlightLogPath(): Promise<string> {
+  /**
+   * Flight logs live under the plugin directory (`.obsidian/plugins/<id>/`),
+   * NOT inside the vault: a file written every ~500ms inside the vault would
+   * keep Obsidian's indexer re-parsing a multi-MB markdown file and pop the
+   * "indexing takes a long time" notice. Desktop returns the absolute path
+   * for atomic appends; mobile returns the vault-relative path the adapter
+   * can read/write (`.obsidian` is not indexed there either).
+   */
+  private resolveFlightLogPath(): string {
     const stamp = new Date().toISOString().slice(0, 10)
-    const debugDir = `${getYoloBaseDir(this.settings)}/debug`
-    if (!this.flightLogFilePath) {
-      this.flightLogFilePath = `${debugDir}/flight-log-${stamp}.md`
+    const fileName = `flight-log-${stamp}.md`
+    const pluginDir = this.manifest.dir
+    const relative = `${pluginDir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`}/flight-log/${fileName}`
+    if (Platform.isDesktop && pluginDir) {
+      const vaultBasePath = this.resolveVaultBasePath()
+      if (vaultBasePath) {
+        this.flightLogFilePath = `${vaultBasePath}/${relative}`
+        return this.flightLogFilePath
+      }
     }
-    if (!Platform.isDesktop) {
-      return this.flightLogFilePath
-    }
-    const vaultBasePath = this.resolveVaultBasePath()
-    if (!vaultBasePath) {
-      throw new Error('Cannot resolve the vault base path for the flight log')
-    }
-    return `${vaultBasePath}/${this.flightLogFilePath}`
+    this.flightLogFilePath = relative
+    return relative
   }
 
   private async exportFlightLogToFile(): Promise<void> {
