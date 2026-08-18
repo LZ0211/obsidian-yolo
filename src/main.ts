@@ -4904,31 +4904,28 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
     this.distributionFeedClient = distributionFeedClient
     const moduleCatalogLocale = () =>
       normalizeModuleCatalogLocale(localeStore.getSnapshot().locale)
-    // Development-only local install channel: layers module artifacts built
-    // by `npm run module:build` (modules/bundled.json) on top of the
-    // unmodified official catalog, so a dev vault can install and run an
-    // unpublished local build. Never used in production — see
-    // devModuleCatalogSource.ts for why bytes are always read locally.
-    const devModuleCatalogOverlay =
-      process.env.NODE_ENV === 'development'
-        ? createDevModuleCatalogOverlay({
-            readBundledIndexBytes: () => store.readBundledIndexBytes(),
-            adapter: store.adapter,
-            pluginDir: store.pluginDir,
-            platform,
-            locale: moduleCatalogLocale,
-            getCompatibility,
-            official: createOfficialModuleCatalogSource({
-              distributionFeedClient,
-              locale: moduleCatalogLocale,
-              getCompatibility,
-              platform,
-            }),
-            fallbackDownload: createOfficialModuleArtifactDownloader({
-              timeoutMs: OFFICIAL_MODULE_ARTIFACT_TIMEOUT_MS,
-            }),
-          })
-        : null
+    // First-party modules ship as sibling files of the plugin
+    // (`modules/bundled.json` + `modules/<id>/<version>/`, produced by
+    // `npm run module:build`) and install from the plugin directory on every
+    // platform and build — the same local-distribution model as runtime
+    // components, so unpublished local modules are always available.
+    const bundledModuleCatalogOverlay = createDevModuleCatalogOverlay({
+      readBundledIndexBytes: () => store.readBundledIndexBytes(),
+      adapter: store.adapter,
+      pluginDir: store.pluginDir,
+      platform,
+      locale: moduleCatalogLocale,
+      getCompatibility,
+      official: createOfficialModuleCatalogSource({
+        distributionFeedClient,
+        locale: moduleCatalogLocale,
+        getCompatibility,
+        platform,
+      }),
+      fallbackDownload: createOfficialModuleArtifactDownloader({
+        timeoutMs: OFFICIAL_MODULE_ARTIFACT_TIMEOUT_MS,
+      }),
+    })
     // Skill packages a module ships live under the plugin directory, which
     // Obsidian does not index — nothing there is reachable by the agent's
     // Vault-backed read tools. Activation projects each declared package into
@@ -4975,14 +4972,9 @@ ${validationResult.error.issues.map((v) => v.message).join('\n')}`)
           ),
         remove: (moduleId) => moduleSkillMaterializer.remove(moduleId),
       },
-      ...(devModuleCatalogOverlay
-        ? {
-            catalogSource: devModuleCatalogOverlay.catalogSource,
-            artifactDownloader: devModuleCatalogOverlay.artifactDownloader,
-            resolveDownloadSources:
-              devModuleCatalogOverlay.resolveDownloadSources,
-          }
-        : {}),
+      catalogSource: bundledModuleCatalogOverlay.catalogSource,
+      artifactDownloader: bundledModuleCatalogOverlay.artifactDownloader,
+      resolveDownloadSources: bundledModuleCatalogOverlay.resolveDownloadSources,
       reportCleanupError: (error) => {
         console.error('[YOLO] Module artifact cleanup failed', error)
       },
