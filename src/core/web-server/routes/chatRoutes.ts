@@ -176,7 +176,16 @@ export function registerChatRoutes(
     }
 
     const chat = await context.getChat(params.id)
-    if (!chat || !canAccessConversation(chat, binding.binding)) {
+    if (!chat) {
+      // 未知会话 id（例如 run 尚未创建会话时客户端标题生成的探测读）返回
+      // 200 + null：与 context.getChat 的 `WebChatConversation | null` 契约、
+      // 客户端 getJsonOrNull 的容错语义以及 webMockTransport 的 getJsonOrNull
+      // 行为一致——不存在的会话是"没有数据"而不是"访问错误"，避免网络层
+      // 出现 404 噪音。已存在但不可访问的会话仍 404（访问控制语义不变）。
+      writeJson(res, 200, null)
+      return
+    }
+    if (!canAccessConversation(chat, binding.binding)) {
       writeJson(res, 404, apiError('not_found', 'Not found'))
       return
     }

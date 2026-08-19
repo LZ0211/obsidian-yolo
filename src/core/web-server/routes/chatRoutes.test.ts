@@ -250,6 +250,28 @@ describe('chatRoutes', () => {
     expect(res.jsonBody).toEqual(chat)
   })
 
+  it('returns 200 with a null body for an unknown conversation id', async () => {
+    // 客户端标题生成会在 run 创建会话前探测 GET（getJsonOrNull 语义）；未知
+    // id 是"没有数据"而非"访问错误"——200 + null 让网络层零 404 噪音，
+    // 与 context.getChat 的 `WebChatConversation | null` 契约一致。
+    const { router } = createHarness({
+      getChat: jest.fn().mockResolvedValue(null),
+    })
+
+    const res = await dispatch(
+      router,
+      'GET',
+      '/api/chat/get/chat-unknown',
+      undefined,
+      {
+        [WEB_SESSION_HEADER]: 'session-1',
+      },
+    )
+
+    expect(res.statusCode).toBe(200)
+    expect(res.jsonBody).toBeNull()
+  })
+
   it('hides chats without a matching web root binding', async () => {
     const { router } = createHarness({
       getChat: jest.fn().mockResolvedValue(
