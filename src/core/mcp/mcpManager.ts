@@ -2,6 +2,7 @@ import isEqual from 'lodash.isequal'
 import { App, FileSystemAdapter, Platform } from 'obsidian'
 
 import { YoloSettings } from '../../settings/schema/setting.types'
+import { logFlightEvent } from '../../utils/debug/flightLog'
 import type { ApplyViewState } from '../../types/apply-view.types'
 import type {
   AssistantToolApprovalMode,
@@ -629,6 +630,10 @@ export class McpManager {
       validateServerName(name)
     } catch (error) {
       console.error(`[YOLO] Invalid MCP server name "${name}":`, error)
+      logFlightEvent('mcp', 'connect-failed', {
+        detail: `name=${name} ${error instanceof Error ? error.message : String(error)}`,
+        consoleOutput: 'warn',
+      })
       return {
         name,
         config: serverConfig,
@@ -735,6 +740,10 @@ export class McpManager {
               : { transport: serverParams.transport },
             fallbackError,
           )
+          logFlightEvent('mcp', 'connect-failed', {
+            detail: `name=${name} ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
+            consoleOutput: 'warn',
+          })
           return {
             name,
             config: serverConfig,
@@ -762,6 +771,10 @@ export class McpManager {
             : { transport: serverParams.transport },
           error,
         )
+        logFlightEvent('mcp', 'connect-failed', {
+          detail: `name=${name} ${error instanceof Error ? error.message : String(error)}`,
+          consoleOutput: 'warn',
+        })
         return {
           name,
           config: serverConfig,
@@ -789,6 +802,9 @@ export class McpManager {
         prewarmMcpServerToolTokenCosts(name, toolList.tools)
       }
       signal?.removeEventListener('abort', abortListener)
+      logFlightEvent('mcp', 'connected', {
+        detail: `name=${name} transport=${String(serverParams.transport)}`,
+      })
       return {
         name,
         config: serverConfig,
@@ -819,6 +835,10 @@ export class McpManager {
           : { transport: serverParams.transport },
         error,
       )
+      logFlightEvent('mcp', 'connect-failed', {
+        detail: `name=${name} list-tools ${error instanceof Error ? error.message : String(error)}`,
+        consoleOutput: 'warn',
+      })
       return {
         name,
         config: serverConfig,
@@ -1232,6 +1252,10 @@ export class McpManager {
     /** Forces the structurally read-only bash variant; see tool-gateway.ts. */
     bashReadOnly?: boolean
   }): Promise<ToolCallResponse> {
+    logFlightEvent('mcp', 'call', {
+      id: conversationId,
+      detail: `name=${name} id=${id ?? ''}`,
+    })
     const toolAbortController = new AbortController()
     if (id !== undefined) {
       const existingAbortController = this.activeToolCalls.get(id)
@@ -1433,6 +1457,11 @@ export class McpManager {
         },
       }
     } catch (error) {
+      logFlightEvent('mcp', 'call-error', {
+        id: conversationId,
+        detail: `name=${name} ${error instanceof Error ? error.message : String(error)}`,
+        consoleOutput: 'warn',
+      })
       // Prefer signal state over error inspection: SDK packages signal-driven
       // cancellation as McpError(-32001 RequestTimeout), which wouldn't match
       // a name-based `AbortError` check.

@@ -5,6 +5,11 @@ import { App, Platform, TFile } from 'obsidian'
 import type { ApplyViewState } from '../../types/apply-view.types'
 import { McpServerStatus } from '../../types/mcp.types'
 import { ToolCallResponseStatus } from '../../types/tool-call.types'
+import {
+  clearFlightLog,
+  getFlightEvents,
+  setFlightLogEnabled,
+} from '../../utils/debug/flightLog'
 
 import { McpNotAvailableException } from './exception'
 import {
@@ -379,5 +384,79 @@ describe('McpManager connected tool catalog', () => {
       manager.listAvailableTools({ chatModelModalities: ['vision'] }),
     ).resolves.toEqual([expect.objectContaining({ name: 'remote__search' })])
     expect(listTools).not.toHaveBeenCalled()
+  })
+})
+
+describe('McpManager flight log events', () => {
+  function createManager(
+    builtinCapabilityOptions: Record<string, { disabled?: boolean }> = {},
+  ) {
+    return new McpManager({
+      pluginId: 'test-plugin',
+      app: {
+        vault: { adapter: {}, configDir: OBSIDIAN_CONFIG_DIR },
+      } as unknown as App,
+      settings: {
+        mcp: { servers: [], builtinCapabilityOptions },
+      } as never,
+      openApplyReview: jest.fn(),
+      registerSettingsListener: () => () => {},
+    })
+  }
+
+  beforeEach(() => {
+    jest.spyOn(console, 'debug').mockImplementation(() => undefined)
+    setFlightLogEnabled(true)
+    clearFlightLog()
+  })
+
+  afterEach(() => {
+    setFlightLogEnabled(false)
+    clearFlightLog()
+    jest.restoreAllMocks()
+  })
+
+  it('records mcp:call and mcp:call-error when a disabled built-in tool is invoked', async () => {
+    const manager = createManager({ file_editing: { disabled: true } })
+
+    const result = await manager.callTool({
+      name: 'yolo_local__fs_edit',
+      args: {},
+      conversationId: 'c1',
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+    const events = getFlightEvents()
+    expect(
+      events.some((event) => event.scope === 'mcp' && event.event === 'call'),
+    ).toBe(true)
+    expect(
+      events.find((event) => event.event === 'call-error'),
+    ).toMatchObject({
+      scope: 'mcp',
+      detail: expect.stringContaining('fs_edit'),
+    })
+  })
+
+  it('records mcp:connect-failed when a server name is invalid', async () => {
+    const manager = createManager()
+
+    await (
+      manager as unknown as {
+        connectServer(config: unknown): Promise<unknown>
+      }
+    ).connectServer({
+      id: 'bad name!',
+      parameters: { transport: 'stdio', command: 'echo' },
+      enabled: true,
+    })
+
+    const failed = getFlightEvents().find(
+      (event) => event.event === 'connect-failed',
+    )
+    expect(failed).toMatchObject({
+      scope: 'mcp',
+      detail: expect.stringContaining('bad name'),
+    })
   })
 })
