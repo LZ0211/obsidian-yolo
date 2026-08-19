@@ -591,6 +591,10 @@ export function createWorkflowRunCoordinator(
     try {
       const record = await store.read(workflowPath)
       if (record?.status === 'running' && record.paused) {
+        // Every bail after the reservation resolves materialized: a
+        // concurrent cancel/pause that observed this run with a null
+        // snapshot awaits it, and would otherwise hang forever.
+        materialize()
         if (activeRuns.get(workflowPath) === run)
           activeRuns.delete(workflowPath)
         return { ok: false, reason: 'already-running' }
@@ -606,6 +610,7 @@ export function createWorkflowRunCoordinator(
       input.tierMap,
     )
     if (!built.ok) {
+      materialize()
       if (activeRuns.get(workflowPath) === run) activeRuns.delete(workflowPath)
       return {
         ok: false,
@@ -618,6 +623,7 @@ export function createWorkflowRunCoordinator(
       }
     }
     if (!isJsonValue(input.input)) {
+      materialize()
       if (activeRuns.get(workflowPath) === run) activeRuns.delete(workflowPath)
       return {
         ok: false,
@@ -648,6 +654,9 @@ export function createWorkflowRunCoordinator(
     try {
       await enqueuePersist(run, snapshot)
     } catch {
+      // Idempotent: materialized already resolved on the success path; keep
+      // the every-bail-resolves-materialized invariant explicit.
+      materialize()
       if (activeRuns.get(workflowPath) === run) activeRuns.delete(workflowPath)
       return {
         ok: false,
@@ -808,39 +817,15 @@ export function createWorkflowRunCoordinator(
     // continue run.
     if (record.status === 'succeeded' || record.status === 'cancelled')
       return { ok: false, reason: 'not-continuable' }
-    // Check-then-act: re-read before materializing the rebuilt run. A
-    // record-level cancel (or a fresh run) may have landed since the first
-    // read; committing to a stale record would resurrect the run.
+    // Synchronous reservation, mirroring start: check, construct, and set
+    // run in the same tick with no await between them, so a second concurrent
+    // continueRun cannot pass the check while this call is un-reserved. The
+    // re-read below then validates the record before the rebuilt run is
+    // committed; every bail after the reservation releases it (identity
+    // check) and resolves materialized so a concurrent cancel/pause that
+    // observed the reserved run cannot hang.
     if (activeRuns.has(workflowPath))
       return { ok: false, reason: 'already-running' }
-    let latest: WorkflowRunSnapshot | null
-    try {
-      latest = await store.read(workflowPath)
-    } catch {
-      return {
-        ok: false,
-        reason: 'storage-failed',
-        error: {
-          code: 'storage-failed',
-          message: 'Failed to read the workflow run record',
-        },
-      }
-    }
-    if (!latest) return { ok: false, reason: 'not-found' }
-    if (
-      latest.runId !== record.runId ||
-      latest.status === 'succeeded' ||
-      latest.status === 'cancelled'
-    )
-      return { ok: false, reason: 'not-continuable' }
-    record = latest
-    const resumeNodeId = topologicalWorkflowOrder(
-      record.definition.topology,
-    ).find((node) => {
-      const status = record.nodes[node.id]?.status
-      return status !== 'succeeded' && status !== 'skipped'
-    })?.id
-    if (!resumeNodeId) return { ok: false, reason: 'not-continuable' }
     let materialize!: () => void
     // A recovered run gets a real pause gate so a later pause parks it at its
     // next node boundary exactly like a fresh run.
@@ -864,6 +849,50 @@ export function createWorkflowRunCoordinator(
       resumePause,
     }
     activeRuns.set(workflowPath, run)
+    // Check-then-act: re-read before materializing the rebuilt run. A
+    // record-level cancel (or a fresh run) may have landed since the first
+    // read; committing to a stale record would resurrect the run.
+    let latest: WorkflowRunSnapshot | null
+    try {
+      latest = await store.read(workflowPath)
+    } catch {
+      materialize()
+      if (activeRuns.get(workflowPath) === run) activeRuns.delete(workflowPath)
+      return {
+        ok: false,
+        reason: 'storage-failed',
+        error: {
+          code: 'storage-failed',
+          message: 'Failed to read the workflow run record',
+        },
+      }
+    }
+    if (!latest) {
+      materialize()
+      if (activeRuns.get(workflowPath) === run) activeRuns.delete(workflowPath)
+      return { ok: false, reason: 'not-found' }
+    }
+    if (
+      latest.runId !== record.runId ||
+      latest.status === 'succeeded' ||
+      latest.status === 'cancelled'
+    ) {
+      materialize()
+      if (activeRuns.get(workflowPath) === run) activeRuns.delete(workflowPath)
+      return { ok: false, reason: 'not-continuable' }
+    }
+    record = latest
+    const resumeNodeId = topologicalWorkflowOrder(
+      record.definition.topology,
+    ).find((node) => {
+      const status = record.nodes[node.id]?.status
+      return status !== 'succeeded' && status !== 'skipped'
+    })?.id
+    if (!resumeNodeId) {
+      materialize()
+      if (activeRuns.get(workflowPath) === run) activeRuns.delete(workflowPath)
+      return { ok: false, reason: 'not-continuable' }
+    }
     const snapshot = freezeRun({
       ...record,
       // A recovered paused record must not re-park: the boundary check would
@@ -881,6 +910,9 @@ export function createWorkflowRunCoordinator(
     try {
       await enqueuePersist(run, snapshot)
     } catch {
+      // Idempotent: materialized already resolved on the success path; keep
+      // the every-bail-resolves-materialized invariant explicit.
+      materialize()
       if (activeRuns.get(workflowPath) === run) activeRuns.delete(workflowPath)
       return {
         ok: false,

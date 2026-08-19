@@ -279,6 +279,22 @@ const until = async (
   }
 }
 
+/**
+ * Resolves 'resolved' when the promise settles, or 'timeout' after `ms`:
+ * proves a promise does not hang. The timeout only fires on a defect, so a
+ * short budget keeps red runs fast.
+ */
+const resolveWithin = async (
+  promise: Promise<unknown>,
+  ms = 200,
+): Promise<'resolved' | 'timeout'> =>
+  Promise.race([
+    promise.then(() => 'resolved' as const),
+    new Promise<'timeout'>((resolve) =>
+      setTimeout(() => resolve('timeout'), ms),
+    ),
+  ])
+
 const makeHarness = <T extends WorkflowNodeExecutor = FakeExecutor>(options: {
   executor?: T
   topology?: WorkflowTopology
@@ -1969,6 +1985,184 @@ describe('workflow run coordinator', () => {
     expect(
       executor.calls.filter((call) => call.node.id === 'draft').length,
     ).toBe(2)
+  })
+
+  it('rejects a second concurrent continueRun for a recovered paused record', async () => {
+    const executor = new FakeExecutor()
+    const storage = new MemoryStorage()
+    const inner = createWorkflowRunStore(storage)
+    // Each continueRun reads the record twice: a fast preflight read and a
+    // re-read before the rebuild. While armed, every read after the first
+    // two is parked, so two concurrent calls both pass their first read
+    // while their re-reads stay parked; without the fix both then rebuild
+    // the run and the resume node executes twice. The seed phase runs
+    // unarmed so its polling reads pass through.
+    let armed = false
+    let readCount = 0
+    const parkedReads: (() => void)[] = []
+    const store: WorkflowRunStore = {
+      async read(path) {
+        readCount += 1
+        const record = await inner.read(path)
+        if (armed && readCount > 2) {
+          await new Promise<void>((resolve) => parkedReads.push(resolve))
+        }
+        return record
+      },
+      list: () => inner.list(),
+      write: (run) => inner.write(run),
+      remove: (path) => inner.remove(path),
+    }
+    let now = 1000
+    let runCounter = 0
+    const coordinator = createWorkflowRunCoordinator({
+      executor,
+      store,
+      now: () => now++,
+      createRunId: () => `run-${++runCounter}`,
+    })
+    const input: WorkflowRunStartInput = {
+      workflowPath: 'demo/WORKFLOW.md',
+      bundle: bundle(runnableTopology()),
+      modelSnapshot: modelSnapshot(),
+      input: 'proceed',
+    }
+
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    const succeeded = await store.read('demo/WORKFLOW.md')
+    // Seed a recovered running+paused record whose resume node was
+    // mid-flight at reload (draft running, everything after it pending).
+    await store.write({
+      ...succeeded!,
+      status: 'running' as const,
+      paused: true,
+      finishedAt: undefined,
+      nodes: {
+        ...succeeded!.nodes,
+        draft: { status: 'running' as const, startedAt: 5 },
+        gate: { status: 'pending' as const },
+        yes: { status: 'pending' as const },
+        no: { status: 'pending' as const },
+        merged: { status: 'pending' as const },
+        out: { status: 'pending' as const },
+      },
+    })
+    const draftCallsBefore = executor.calls.filter(
+      (call) => call.node.id === 'draft',
+    ).length
+    const yesCallsBefore = executor.calls.filter(
+      (call) => call.node.id === 'yes',
+    ).length
+
+    armed = true
+    readCount = 0
+    const first = coordinator.continueRun('demo/WORKFLOW.md', {
+      confirmSideEffects: true,
+    })
+    let secondSettled = false
+    const second = coordinator
+      .continueRun('demo/WORKFLOW.md', { confirmSideEffects: true })
+      .then((result) => {
+        secondSettled = true
+        return result
+      })
+    // Both calls have passed their first read. With the fix the second call
+    // has already been refused (its check ran after the first reserved the
+    // path); without the fix both are parked on their re-read. Release the
+    // parked re-reads and collect both results.
+    await until(() => parkedReads.length >= 2 || secondSettled)
+    armed = false
+    for (const release of parkedReads.splice(0)) release()
+    const results = await Promise.all([first, second])
+
+    expect(results.filter((result) => result.ok === true)).toHaveLength(1)
+    expect(
+      results.filter(
+        (result) => result.ok === false && result.reason === 'already-running',
+      ),
+    ).toHaveLength(1)
+
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    // The resume node executed exactly once: the loser of the race was
+    // refused before it could rebuild and re-run the run.
+    expect(
+      executor.calls.filter((call) => call.node.id === 'draft').length,
+    ).toBe(draftCallsBefore + 1)
+    expect(executor.calls.filter((call) => call.node.id === 'yes').length).toBe(
+      yesCallsBefore + 1,
+    )
+  })
+
+  it('does not hang cancel when start bails on a found-paused record', async () => {
+    const { coordinator, store, input } = makeHarness({})
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    const succeeded = await store.read('demo/WORKFLOW.md')
+    await store.write({
+      ...succeeded!,
+      status: 'running' as const,
+      paused: true,
+      finishedAt: undefined,
+    })
+
+    // start reserves the path synchronously, then bails on the found-paused
+    // record; cancel observes the reserved run with a null snapshot and
+    // awaits its materialization. The bail must resolve materialized or the
+    // concurrent cancel hangs forever.
+    const started = coordinator.start(input)
+    expect(await resolveWithin(coordinator.cancel('demo/WORKFLOW.md'))).toBe(
+      'resolved',
+    )
+    expect(await started).toEqual({ ok: false, reason: 'already-running' })
+    // The bail left the recovered record untouched.
+    const record = await store.read('demo/WORKFLOW.md')
+    expect(record?.status).toBe('running')
+    expect(record?.paused).toBe(true)
+  })
+
+  it('does not hang cancel when start bails on a definition-build failure', async () => {
+    const { coordinator, store, input } = makeHarness({})
+    const started = coordinator.start({
+      ...input,
+      bundle: {
+        ...input.bundle,
+        document: { ...input.bundle.document, issues: ['invalidStructure'] },
+      },
+    })
+    expect(await resolveWithin(coordinator.cancel('demo/WORKFLOW.md'))).toBe(
+      'resolved',
+    )
+    expect(await started).toMatchObject({
+      ok: false,
+      reason: 'invalid-definition',
+    })
+    expect(await store.read('demo/WORKFLOW.md')).toBeNull()
+  })
+
+  it('does not hang cancel when start bails on non-JSON input', async () => {
+    const { coordinator, store, input } = makeHarness({})
+    const started = coordinator.start({
+      ...input,
+      input: { bad: BigInt(1) } as unknown as JsonValue,
+    })
+    expect(await resolveWithin(coordinator.cancel('demo/WORKFLOW.md'))).toBe(
+      'resolved',
+    )
+    expect(await started).toMatchObject({
+      ok: false,
+      reason: 'invalid-definition',
+    })
+    expect(await store.read('demo/WORKFLOW.md')).toBeNull()
   })
 
   it('migrates the run record and publishes it under the new path on rename', async () => {
