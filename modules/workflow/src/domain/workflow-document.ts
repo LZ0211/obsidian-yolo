@@ -83,6 +83,24 @@ export function parseWorkflowDocument(
   })
 }
 
+export function extractWorkflowExecutionContext(content: string): string {
+  const withoutFrontmatter = stripFrontmatter(content)
+  const blocks = analyzeMarkers(withoutFrontmatter, [
+    YOLO_STRUCTURE,
+    YOLO_TOPOLOGY,
+    DSH_STRUCTURE,
+    DSH_TOPOLOGY,
+  ]).blocks
+  if (blocks.length === 0) return withoutFrontmatter
+  let result = withoutFrontmatter
+  for (const block of [...blocks].sort(
+    (left, right) => right.start - left.start,
+  )) {
+    result = `${result.slice(0, block.start)}${result.slice(block.end)}`
+  }
+  return result
+}
+
 export function updateWorkflowManagedBlocks(
   content: string,
   topology: WorkflowTopology,
@@ -164,6 +182,7 @@ export function exportDshFlowJson(
         ...(node.outputSchema === undefined
           ? {}
           : { outputSchema: node.outputSchema }),
+        ...(node.mergeStrategy ? { mergeStrategy: node.mergeStrategy } : {}),
       },
     })),
     edges: bundle.topology.edges.map((edge) => ({
@@ -215,6 +234,10 @@ function dshNode(
     ...(value.data.outputSchema === undefined
       ? {}
       : { outputSchema: value.data.outputSchema }),
+    ...(value.data.mergeStrategy === 'concat' ||
+    value.data.mergeStrategy === 'dedupe'
+      ? { mergeStrategy: value.data.mergeStrategy }
+      : {}),
   }
 }
 
@@ -229,6 +252,14 @@ function dshEdge(value: unknown): Record<string, unknown> {
       : {}),
     ...(text(value.label) ? { label: value.label } : {}),
   }
+}
+
+function stripFrontmatter(content: string): string {
+  const lines = content.split(/\r?\n/)
+  if (lines.length < 2 || lines[0]?.trim() !== '---') return content
+  const closing = lines.slice(1).findIndex((line) => line.trim() === '---')
+  if (closing < 0) return content
+  return lines.slice(closing + 2).join('\n')
 }
 
 function renderStructure(
