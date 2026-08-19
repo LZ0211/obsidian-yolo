@@ -9,6 +9,10 @@ import type {
   AgentConversationState,
   EnqueueUserMessageResult,
 } from '../core/agent/service'
+import type {
+  AssistantRenderStreamListener,
+  AssistantRenderStreamValue,
+} from '../core/agent/assistantRenderStreamStore'
 import type { CliRuntimeId } from '../core/cli-runtime/types'
 import type { ChatConversationMetadata } from '../database/json/chat/types'
 import type { YoloSettings } from '../settings/schema/setting.types'
@@ -253,6 +257,17 @@ export type YoloRuntime = YoloRuntimeCompatibilityBridge & {
     getState(conversationId: string): AgentConversationState
     getConversationRunSummary(conversationId: string): AgentConversationRunSummary
     getMessages(conversationId: string): ChatMessage[]
+    // 生成中 assistant 正文/思考展示流（桌面 AgentService 的
+    // AssistantRenderStreamAccess 同形访问面；web 端由 SSE `text` 事件喂入）。
+    getAssistantRenderStream(
+      conversationId: string,
+      messageId: string,
+    ): AssistantRenderStreamValue | undefined
+    subscribeAssistantRenderStream(
+      conversationId: string,
+      messageId: string,
+      listener: AssistantRenderStreamListener,
+    ): () => void
     replaceConversationMessages(
       conversationId: string,
       messages: ChatMessage[],

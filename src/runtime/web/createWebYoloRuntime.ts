@@ -5,6 +5,10 @@ import type {
   AgentConversationState,
 } from '../../core/agent/service'
 import {
+  AssistantRenderStreamStore,
+  type AssistantRenderStreamValue,
+} from '../../core/agent/assistantRenderStreamStore'
+import {
   deserializeChatMessage,
   serializeChatMessage,
 } from '../../hooks/useChatHistory'
@@ -146,6 +150,11 @@ export function createWebYoloRuntime({
     : initialSettings
   const currentAgents = initialAgents
   const settingsListeners = new Set<(settings: YoloSettings) => void>()
+  // 生成中 assistant 正文的客户端展示流：由 /api/agent/stream 的 `text` 事件
+  // 驱动（服务端 AgentService 的 assistantRenderStreamStore 经 SSE 转发），
+  // 供 AssistantRenderStreamProvider（Chat.tsx 传 plugin.getAgentService()）
+  // 消费——桌面端由 AgentService 直接提供，web 端在这里补上同一访问面。
+  const renderStreams = new AssistantRenderStreamStore()
   const agentStates = new Map<string, AgentConversationState>()
   const stateListeners = new Map<
     string,
@@ -470,6 +479,7 @@ export function createWebYoloRuntime({
           getPreviousState: () =>
             agentStates.get(response.conversationId) ??
             idleState(response.conversationId),
+          renderStreams,
         })
       },
       abort: async (conversationId) => {
@@ -496,6 +506,24 @@ export function createWebYoloRuntime({
       getConversationRunSummary: (conversationId) =>
         buildWebAgentConversationRunSummary(
           agentStates.get(conversationId) ?? idleState(conversationId),
+        ),
+      // 与桌面 AgentService 的 AssistantRenderStreamAccess 同形：生成中的
+      // 正文/思考流（useAssistantStreamedContent / useAssistantStreamedReasoning
+      // 的订阅入口）。数据来自 SSE `text` 事件（consumeRunStream 喂入）。
+      getAssistantRenderStream: (
+        conversationId: string,
+        messageId: string,
+      ): AssistantRenderStreamValue | undefined =>
+        renderStreams.getAssistantRenderStream(conversationId, messageId),
+      subscribeAssistantRenderStream: (
+        conversationId: string,
+        messageId: string,
+        listener: Parameters<AssistantRenderStreamStore['subscribeAssistantRenderStream']>[2],
+      ): (() => void) =>
+        renderStreams.subscribeAssistantRenderStream(
+          conversationId,
+          messageId,
+          listener,
         ),
       getMessages: (conversationId) =>
         agentStates.get(conversationId)?.messages ?? [],
@@ -716,6 +744,7 @@ async function consumeRunStream({
   refreshAgentState,
   normalizeAgentState,
   getPreviousState,
+  renderStreams,
 }: {
   api: WebApiClient
   signal?: AbortSignal
@@ -725,6 +754,7 @@ async function consumeRunStream({
   refreshAgentState: (conversationId: string) => Promise<void>
   normalizeAgentState: (state: AgentConversationState) => AgentConversationState
   getPreviousState: () => AgentConversationState
+  renderStreams: AssistantRenderStreamStore
 }): Promise<void> {
   let attempt = 0
   let cursor: number | null = null
@@ -755,6 +785,7 @@ async function consumeRunStream({
             emitState,
             normalizeAgentState,
             getPreviousState,
+            renderStreams,
           })
           const eventId = parseSseEventId(rawEvent)
           if (eventId != null) cursor = eventId
@@ -768,6 +799,7 @@ async function consumeRunStream({
           emitState,
           normalizeAgentState,
           getPreviousState,
+          renderStreams,
         })
         const eventId = parseSseEventId(buffer)
         if (eventId != null) cursor = eventId
@@ -920,18 +952,41 @@ function applyQueueSsePayload({
   }
 }
 
+type WebTextStreamEvent = {
+  type: 'text'
+  conversationId: string
+  messageId: string
+  text: string
+  delta?: string
+  streaming: boolean
+}
+
+const isWebTextStreamEvent = (value: unknown): value is WebTextStreamEvent => {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<WebTextStreamEvent>
+  return (
+    candidate.type === 'text' &&
+    typeof candidate.conversationId === 'string' &&
+    typeof candidate.messageId === 'string' &&
+    typeof candidate.text === 'string' &&
+    typeof candidate.streaming === 'boolean'
+  )
+}
+
 function applySsePayload({
   rawEvent,
   conversationId,
   emitState,
   normalizeAgentState,
   getPreviousState,
+  renderStreams,
 }: {
   rawEvent: string
   conversationId: string
   emitState: (conversationId: string, state: AgentConversationState) => void
   normalizeAgentState: (state: AgentConversationState) => AgentConversationState
   getPreviousState: () => AgentConversationState
+  renderStreams: AssistantRenderStreamStore
 }): void {
   const data = rawEvent
     .split(/\r?\n/)
@@ -945,6 +1000,22 @@ function applySsePayload({
     return
   }
   if (!parsed || typeof parsed !== 'object') return
+  // 生成中的 assistant 正文增量：喂入客户端展示流（不经过会话快照）。
+  // 服务端每条 `text` 事件携带该消息的全文（text）+ streaming 标志；终态
+  // 事件（streaming=false）把流定格，值保持到最后一次发布的内容，与桌面
+  // AssistantRenderStreamStore 的 terminal 语义一致。
+  if (isWebTextStreamEvent(parsed)) {
+    renderStreams.publish({
+      conversationId: parsed.conversationId,
+      messageId: parsed.messageId,
+      content: parsed.text,
+      reasoning: '',
+    })
+    if (parsed.streaming === false) {
+      renderStreams.markTerminal(parsed.conversationId, parsed.messageId)
+    }
+    return
+  }
   const event = parsed as {
     type?: string
     status?: AgentConversationState['status']
