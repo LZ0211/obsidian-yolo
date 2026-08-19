@@ -98,6 +98,151 @@ describe('workflow module chat mode', () => {
     expect(mode.tools[1]?.requiresApproval).toBeUndefined()
   })
 
+  it('registers the model tier settings contribution at activation', async () => {
+    const host = fakeHost()
+    await moduleDefinition!.activate(host as unknown as YoloModuleHostApiV1)
+
+    expect(host.settings.contribute).toHaveBeenCalledTimes(1)
+    const contribution = host.settings.contribute.mock.calls[0][0] as {
+      id: string
+      title: string
+      fields: readonly { key: string; type: string; name: string }[]
+      localizations?: Readonly<Record<string, unknown>>
+    }
+    expect(contribution.id).toBe('workflow')
+    expect(contribution.title).toBe('Workflow')
+    expect(contribution.fields.map((field) => field.key)).toEqual([
+      'tier.fast',
+      'tier.balanced',
+      'tier.deep',
+    ])
+    expect(contribution.fields.every((field) => field.type === 'model')).toBe(
+      true,
+    )
+    // Every locale is localized with the mandatory English fallback.
+    expect(contribution.localizations?.en).toBeDefined()
+    expect(contribution.localizations?.zh).toBeDefined()
+    expect(contribution.localizations?.it).toBeDefined()
+  })
+
+  it('routes node tier aliases through the config tier map into the run definition', async () => {
+    const host = fakeWorkflowHost(tierTopology())
+    host.i18n.getSnapshot = () => enLocaleSnapshot
+    // A stable snapshot reference: useSyncExternalStore loops on fresh objects.
+    const models = viewModelSnapshot()
+    host.settings.getModelSnapshot = () => models
+    host.config = {
+      getSnapshot: () =>
+        fakeConfigSnapshot({
+          'tier.fast': 'default-model',
+          'tier.balanced': 'default-model',
+          'tier.deep': 'default-model',
+        }),
+      replace: jest.fn(async (next: unknown) => next),
+      subscribe: jest.fn(() => () => undefined),
+    }
+    host.agent = {
+      stream: async function* () {
+        yield { type: 'completed', text: 'done' }
+      },
+    } as YoloModuleHostApiV1['agent']
+    await moduleDefinition!.activate(host as unknown as YoloModuleHostApiV1)
+
+    const view = host.workspace.registerView.mock.calls[0]?.[0] as {
+      render(context: unknown): ReactElement<{ editor: WorkflowEditorModel }>
+    }
+    const element = view.render(createViewContext('workflow-view-1'))
+    const { editor } = element.props
+    const store = createWorkflowRunStore(host.privateStorage.deviceLocal)
+
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    try {
+      await act(async () => {
+        root.render(element)
+        await editor.load('demo/WORKFLOW.md')
+      })
+      await act(async () => {
+        clickButton(container, 'Run')
+      })
+      await act(async () => {
+        const input = container.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Run input"]',
+        )
+        expect(input).not.toBeNull()
+        setTextareaValue(input!, 'proceed')
+        clickRunButton(container)
+      })
+      await act(async () => {
+        await until(async () => {
+          const record = await store.read('demo/WORKFLOW.md')
+          return record?.status === 'succeeded'
+        })
+      })
+      const record = await store.read('demo/WORKFLOW.md')
+      // The node's `fast` alias resolved through the config tier map, not the
+      // run default.
+      expect(record?.definition.modelByNodeId.agent).toBe('default-model')
+      expect(host.ui.notice).not.toHaveBeenCalled()
+    } finally {
+      await act(async () => root.unmount())
+      container.remove()
+    }
+  })
+
+  it('fails run start with the tier message when no tier is configured', async () => {
+    const host = fakeWorkflowHost(tierTopology())
+    host.i18n.getSnapshot = () => enLocaleSnapshot
+    // A stable snapshot reference: useSyncExternalStore loops on fresh objects.
+    const models = viewModelSnapshot()
+    host.settings.getModelSnapshot = () => models
+    // The default fake config data has no tier fields.
+    host.agent = {
+      stream: async function* () {
+        yield { type: 'completed', text: 'done' }
+      },
+    } as YoloModuleHostApiV1['agent']
+    await moduleDefinition!.activate(host as unknown as YoloModuleHostApiV1)
+
+    const view = host.workspace.registerView.mock.calls[0]?.[0] as {
+      render(context: unknown): ReactElement<{ editor: WorkflowEditorModel }>
+    }
+    const element = view.render(createViewContext('workflow-view-1'))
+    const { editor } = element.props
+    const store = createWorkflowRunStore(host.privateStorage.deviceLocal)
+
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    try {
+      await act(async () => {
+        root.render(element)
+        await editor.load('demo/WORKFLOW.md')
+      })
+      await act(async () => {
+        clickButton(container, 'Run')
+      })
+      await act(async () => {
+        const input = container.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Run input"]',
+        )
+        expect(input).not.toBeNull()
+        setTextareaValue(input!, 'proceed')
+        clickRunButton(container)
+        await until(async () => host.ui.notice.mock.calls.length > 0)
+      })
+      expect(host.ui.notice).toHaveBeenCalledWith(
+        createWorkflowCopy('en').run.modelTierUnavailable,
+      )
+      // Preflight failed: no run record was created.
+      expect(await store.read('demo/WORKFLOW.md')).toBeNull()
+    } finally {
+      await act(async () => root.unmount())
+      container.remove()
+    }
+  })
+
   it('passes the shared coordinator and run selection layer into every Studio view', async () => {
     expect(moduleDefinition).not.toBeNull()
     const host = fakeWorkflowHost()
@@ -477,6 +622,39 @@ const viewModelSnapshot = (): YoloModuleHostModelSnapshotV1 => ({
   ],
 })
 
+/** Same demo workflow as fakeWorkflowHost with the agent node on the `fast` tier. */
+const tierTopology = (): WorkflowTopology => ({
+  revision: 1,
+  nodes: [
+    {
+      id: 'input',
+      kind: 'input',
+      label: 'Input',
+      stepPath: 'steps/input/STEP.md',
+      position: { x: 70, y: 90 },
+    },
+    {
+      id: 'agent',
+      kind: 'agent',
+      label: 'Agent',
+      stepPath: 'steps/agent/STEP.md',
+      position: { x: 315, y: 90 },
+      modelId: 'fast',
+    },
+    {
+      id: 'output',
+      kind: 'output',
+      label: 'Output',
+      stepPath: 'steps/output/STEP.md',
+      position: { x: 560, y: 90 },
+    },
+  ],
+  edges: [
+    { id: 'input-agent', source: 'input', target: 'agent' },
+    { id: 'agent-output', source: 'agent', target: 'output' },
+  ],
+})
+
 function findButton(
   container: HTMLElement,
   text: string,
@@ -494,6 +672,15 @@ function clickButton(container: HTMLElement, text: string): void {
   button!.click()
 }
 
+/** The Run panel's start button; `findButton('Run')` would match the tab. */
+function clickRunButton(container: HTMLElement): void {
+  const button = container.querySelector<HTMLButtonElement>(
+    '.yolo-workflow-run-controls__run',
+  )
+  expect(button).not.toBeNull()
+  button!.click()
+}
+
 function setInputValue(input: HTMLInputElement, value: string): void {
   const setValue = Object.getOwnPropertyDescriptor(
     HTMLInputElement.prototype,
@@ -501,6 +688,15 @@ function setInputValue(input: HTMLInputElement, value: string): void {
   )?.set?.bind(input)
   setValue?.(value)
   input.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
+function setTextareaValue(textarea: HTMLTextAreaElement, value: string): void {
+  const setValue = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    'value',
+  )?.set?.bind(textarea)
+  setValue?.(value)
+  textarea.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
 const until = async (
@@ -561,7 +757,13 @@ function fakeHost(): RegistrationHost {
       synchronized: fakePrivateStorageScope(),
       deviceLocal: fakePrivateStorageScope(),
     },
+    config: {
+      getSnapshot: () => fakeConfigSnapshot({}),
+      replace: jest.fn(async (next: unknown) => next),
+      subscribe: jest.fn(() => () => undefined),
+    },
     settings: {
+      contribute: jest.fn(),
       getModelSnapshot: () => emptyModelSnapshot,
       subscribeModels: jest.fn(() => () => undefined),
     },
@@ -571,6 +773,13 @@ function fakeHost(): RegistrationHost {
     },
   } as unknown as RegistrationHost
 }
+
+const fakeConfigSnapshot = (
+  data: Readonly<Record<string, unknown>>,
+): Readonly<{
+  schemaVersion: number
+  data: Readonly<Record<string, unknown>>
+}> => Object.freeze({ schemaVersion: 1, data: Object.freeze({ ...data }) })
 
 /**
  * In-memory ModulePrivateStorageScopeV1 stand-in recording every blob. The
@@ -608,11 +817,23 @@ function fakePrivateStorageScope() {
 
 type RegistrationHost = Omit<
   YoloModuleHostApiV1,
-  'agent' | 'background' | 'chat' | 'i18n' | 'settings' | 'ui' | 'workspace'
+  | 'agent'
+  | 'background'
+  | 'chat'
+  | 'config'
+  | 'i18n'
+  | 'settings'
+  | 'ui'
+  | 'workspace'
 > & {
   agent: YoloModuleHostApiV1['agent']
   background: { upsert: jest.Mock; remove: jest.Mock }
   chat: { registerMode: jest.Mock }
+  config: {
+    getSnapshot(): FakeConfigSnapshot
+    replace: jest.Mock
+    subscribe: jest.Mock
+  }
   workspace: {
     registerView: jest.Mock
     registerRibbonAction: jest.Mock
@@ -629,15 +850,23 @@ type RegistrationHost = Omit<
     subscribe: jest.Mock
   }
   settings: {
+    contribute: jest.Mock
     getModelSnapshot(): YoloModuleHostModelSnapshotV1
     subscribeModels: jest.Mock
   }
   ui: { notice: jest.Mock; confirm: jest.Mock; openFileAt: jest.Mock }
 }
 
-function fakeWorkflowHost(): RegistrationHost {
+type FakeConfigSnapshot = Readonly<{
+  schemaVersion: number
+  data: Readonly<Record<string, unknown>>
+}>
+
+function fakeWorkflowHost(
+  topologyOverride?: WorkflowTopology,
+): RegistrationHost {
   const copy = createWorkflowCopy('en')
-  const topology: WorkflowTopology = {
+  const topology: WorkflowTopology = topologyOverride ?? {
     revision: 1,
     nodes: [
       {

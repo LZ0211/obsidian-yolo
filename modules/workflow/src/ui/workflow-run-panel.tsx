@@ -117,6 +117,17 @@ export function WorkflowRunPanel({
 
   const selectedNodeRun =
     selectedNodeId !== null ? (run?.nodes[selectedNodeId] ?? null) : null
+  // The coordinator encodes the full-run verification verdict in the node
+  // detail as a single `verification: <msg>` string (`verification: ok` when
+  // the value passed, `verification: <m1>; <m2>` for several soft failures).
+  // Parse by prefix, never prose: show a warning bar for the suffix only when
+  // the detail carries a non-ok verdict.
+  const selectedVerificationWarning =
+    selectedNodeRun?.detail !== undefined &&
+    selectedNodeRun.detail.startsWith('verification: ') &&
+    selectedNodeRun.detail !== 'verification: ok'
+      ? selectedNodeRun.detail.slice('verification: '.length)
+      : null
   const selectedError =
     selectedNodeRun?.error?.message ?? run?.error?.message ?? null
   const succeededCount =
@@ -135,6 +146,12 @@ export function WorkflowRunPanel({
   const testing = nodeTest?.status === 'running'
   const testResult =
     nodeTest !== null && nodeTest.nodeId === selectedNodeId ? nodeTest : null
+  // The coordinator's finalize helper reports `verification: ok` for a
+  // passing test too; only non-ok entries are warnings the panel shows.
+  const testWarnings =
+    testResult?.result?.warnings?.filter(
+      (warning) => warning !== 'verification: ok',
+    ) ?? []
 
   const handleRun = (): void => {
     if (runDisabled) return
@@ -389,19 +406,52 @@ export function WorkflowRunPanel({
                   </pre>
                 ) : null}
                 {detailTab === 'output' ? (
-                  testResult?.result !== undefined ? (
-                    <pre className="yolo-workflow-run-preview">
-                      {formatRunValue(testResult.result.value)}
-                    </pre>
-                  ) : selectedNodeRun?.output !== undefined ? (
-                    <pre className="yolo-workflow-run-preview">
-                      {formatRunValue(selectedNodeRun.output)}
-                    </pre>
-                  ) : (
-                    <span className="yolo-workflow-muted">
-                      {copy.run.noOutput}
-                    </span>
-                  )
+                  <div className="yolo-workflow-run-detail__output">
+                    {selectedVerificationWarning !== null ? (
+                      <div
+                        className="yolo-workflow-run-detail__warning"
+                        role="note"
+                      >
+                        <AlertTriangle size={13} />
+                        <span>
+                          {copy.run.verificationWarn}{' '}
+                          {selectedVerificationWarning}
+                        </span>
+                      </div>
+                    ) : null}
+                    {testResult?.result !== undefined ? (
+                      <>
+                        {testWarnings.length > 0 ? (
+                          <div className="yolo-workflow-run-detail__warnings">
+                            <span className="yolo-workflow-eyebrow">
+                              {copy.run.verificationWarn}
+                            </span>
+                            {testWarnings.map((warning, index) => (
+                              <div
+                                key={index}
+                                className="yolo-workflow-run-detail__warning"
+                                role="note"
+                              >
+                                <AlertTriangle size={13} />
+                                <span>{warning}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        <pre className="yolo-workflow-run-preview">
+                          {formatRunValue(testResult.result.value)}
+                        </pre>
+                      </>
+                    ) : selectedNodeRun?.output !== undefined ? (
+                      <pre className="yolo-workflow-run-preview">
+                        {formatRunValue(selectedNodeRun.output)}
+                      </pre>
+                    ) : (
+                      <span className="yolo-workflow-muted">
+                        {copy.run.noOutput}
+                      </span>
+                    )}
+                  </div>
                 ) : null}
                 {detailTab === 'error' ? (
                   testResult?.error !== undefined ? (

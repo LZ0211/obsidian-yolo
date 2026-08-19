@@ -209,13 +209,19 @@ describe('workflow topology', () => {
     expect(
       parseWorkflowTopology({
         ...source,
-        nodes: [{ ...source.nodes[0], label: 'Request\nInjected' }, ...source.nodes.slice(1)],
+        nodes: [
+          { ...source.nodes[0], label: 'Request\nInjected' },
+          ...source.nodes.slice(1),
+        ],
       }),
     ).toBeNull()
     expect(
       parseWorkflowTopology({
         ...source,
-        edges: [{ ...source.edges[0], label: 'edge\r\nlabel' }, ...source.edges.slice(1)],
+        edges: [
+          { ...source.edges[0], label: 'edge\r\nlabel' },
+          ...source.edges.slice(1),
+        ],
       }),
     ).toBeNull()
   })
@@ -419,4 +425,139 @@ describe('workflow topology', () => {
       'output',
     ])
   })
+})
+
+describe('workflow node verification', () => {
+  it('parses verification on agent nodes with mode warn', () => {
+    const source = validTopology()
+    const schema = { type: 'object' }
+    const parsed = parseWorkflowTopology({
+      ...source,
+      nodes: source.nodes.map((node) =>
+        node.id === 'yes'
+          ? { ...node, verification: { schema, mode: 'warn' } }
+          : node,
+      ),
+    })
+
+    const verification = parsed?.nodes.find(
+      (node) => node.id === 'yes',
+    )?.verification
+    expect(verification).toEqual({ schema: { type: 'object' }, mode: 'warn' })
+    expect(verification?.schema).not.toBe(schema)
+    expect(Object.isFrozen(verification?.schema as object)).toBe(true)
+  })
+
+  it('accepts verification on mapAgent and output nodes with mode hard', () => {
+    const source = validTopology()
+    const parsed = parseWorkflowTopology({
+      ...source,
+      nodes: source.nodes.map((node) =>
+        node.id === 'no' || node.id === 'output'
+          ? {
+              ...node,
+              kind: node.id === 'no' ? 'mapAgent' : 'output',
+              verification: { schema: { type: 'array' }, mode: 'hard' },
+            }
+          : node,
+      ),
+    })
+
+    const nodes = parsed?.nodes ?? []
+    expect(nodes.find((node) => node.id === 'no')?.verification).toEqual({
+      schema: { type: 'array' },
+      mode: 'hard',
+    })
+    expect(nodes.find((node) => node.id === 'output')?.verification).toEqual({
+      schema: { type: 'array' },
+      mode: 'hard',
+    })
+  })
+
+  it('rejects verification on input/condition/merge nodes', () => {
+    const source = validTopology()
+    const verification = { schema: { type: 'object' }, mode: 'warn' }
+    const withVerificationOn = (id: string) => ({
+      ...source,
+      nodes: source.nodes.map((node) =>
+        node.id === id ? { ...node, verification } : node,
+      ),
+    })
+
+    expect(parseWorkflowTopology(withVerificationOn('input'))).toBeNull()
+    expect(parseWorkflowTopology(withVerificationOn('gate'))).toBeNull()
+    expect(
+      parseWorkflowTopology({
+        ...source,
+        nodes: [
+          ...source.nodes,
+          {
+            id: 'merged',
+            kind: 'merge',
+            label: 'Merge',
+            stepPath: 'steps/merge/STEP.md',
+            position: { x: 0, y: 9 },
+            verification,
+          },
+        ],
+      }),
+    ).toBeNull()
+  })
+
+  it('rejects verification with an unknown mode', () => {
+    const source = validTopology()
+    expect(
+      parseWorkflowTopology({
+        ...source,
+        nodes: source.nodes.map((node) =>
+          node.id === 'yes'
+            ? {
+                ...node,
+                verification: { schema: { type: 'object' }, mode: 'strict' },
+              }
+            : node,
+        ),
+      }),
+    ).toBeNull()
+  })
+
+  it.each([BigInt(1), Symbol('schema'), () => 'schema', undefined])(
+    'rejects non-JSON-compatible verification schema values',
+    (schema) => {
+      const source = validTopology()
+      const invalid = {
+        ...source,
+        nodes: source.nodes.map((node) =>
+          node.id === 'yes'
+            ? { ...node, verification: { schema, mode: 'warn' } }
+            : node,
+        ),
+      }
+
+      expect(() => parseWorkflowTopology(invalid)).not.toThrow()
+      expect(parseWorkflowTopology(invalid)).toBeNull()
+    },
+  )
+
+  it.each(['cyclic', 'bigint'] as const)(
+    'reports invalidTopology for runtime %s verification schemas',
+    (kind) => {
+      const cyclic: Record<string, unknown> = {}
+      cyclic.self = cyclic
+      const schema = kind === 'cyclic' ? cyclic : { count: BigInt(1) }
+      const source = validTopology()
+      const runtime = {
+        ...source,
+        nodes: source.nodes.map((node) =>
+          node.id === 'yes'
+            ? { ...node, verification: { schema, mode: 'hard' } }
+            : node,
+        ),
+      } as unknown as WorkflowTopology
+
+      expect(
+        validateWorkflowTopology(runtime).map((issue) => issue.code),
+      ).toContain('invalidTopology')
+    },
+  )
 })

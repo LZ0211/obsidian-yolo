@@ -1095,6 +1095,103 @@ describe('workflow run coordinator', () => {
     })
   })
 
+  it('returns tier-unavailable reason when the definition build reports it', async () => {
+    const topology: WorkflowTopology = {
+      ...runnableTopology(),
+      nodes: runnableTopology().nodes.map((node) =>
+        node.id === 'draft' ? { ...node, modelId: 'fast' } : node,
+      ),
+    }
+    const { coordinator, input } = makeHarness({ topology })
+
+    const start = await coordinator.start({ ...input, tierMap: {} })
+
+    expect(start.ok).toBe(false)
+    if (start.ok) return
+    expect(start.reason).toBe('tier-unavailable')
+    expect(start.error).toMatchObject({
+      code: 'model-unavailable',
+      nodeId: 'draft',
+    })
+  })
+
+  it('returns tier-unavailable when the tier-mapped id is not in the snapshot', async () => {
+    const topology: WorkflowTopology = {
+      ...runnableTopology(),
+      nodes: runnableTopology().nodes.map((node) =>
+        node.id === 'draft' ? { ...node, modelId: 'fast' } : node,
+      ),
+    }
+    const { coordinator, input } = makeHarness({ topology })
+
+    const start = await coordinator.start({
+      ...input,
+      tierMap: { fast: 'missing' },
+    })
+
+    expect(start.ok).toBe(false)
+    if (start.ok) return
+    expect(start.reason).toBe('tier-unavailable')
+    expect(start.error).toMatchObject({
+      code: 'model-unavailable',
+      nodeId: 'draft',
+    })
+  })
+
+  it('captures the tier map per start into the frozen run definition', async () => {
+    const topology: WorkflowTopology = {
+      ...runnableTopology(),
+      nodes: runnableTopology().nodes.map((node) =>
+        node.id === 'draft' ? { ...node, modelId: 'fast' } : node,
+      ),
+    }
+    const executor = new FakeExecutor()
+    const { coordinator, store, input } = makeHarness({ executor, topology })
+    // Both runs see both models; only the per-start tier map differs, so a
+    // resolved draft model proves the run froze the tier map given at start.
+    const modelSnapshot: WorkflowModelSnapshot = {
+      defaultModelId: 'model-a',
+      models: [
+        { id: 'model-a', name: 'Model A', providerId: 'provider' },
+        { id: 'model-b', name: 'Model B', providerId: 'provider' },
+      ],
+    }
+
+    expect(
+      (
+        await coordinator.start({
+          ...input,
+          modelSnapshot,
+          tierMap: { fast: 'model-a' },
+        })
+      ).ok,
+    ).toBe(true)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    expect(
+      (await store.read('demo/WORKFLOW.md'))?.definition.modelByNodeId.draft,
+    ).toBe('model-a')
+
+    expect(
+      (
+        await coordinator.start({
+          ...input,
+          modelSnapshot,
+          tierMap: { fast: 'model-b' },
+        })
+      ).ok,
+    ).toBe(true)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    expect(
+      (await store.read('demo/WORKFLOW.md'))?.definition.modelByNodeId.draft,
+    ).toBe('model-b')
+  })
+
   it('surfaces preflight failures without reserving the path', async () => {
     const { coordinator, store, input } = makeHarness({})
     const bad = await coordinator.start({
@@ -1936,6 +2033,199 @@ describe('workflow run coordinator', () => {
     await expect(coordinator.start(input)).resolves.toEqual({
       ok: true,
       runId: 'run-1',
+    })
+  })
+
+  describe('node verification postconditions', () => {
+    const withVerification = (
+      topology: WorkflowTopology,
+      nodeId: string,
+      verification: { schema: unknown; mode: 'warn' | 'hard' },
+    ): WorkflowTopology => ({
+      ...topology,
+      nodes: topology.nodes.map((node) =>
+        node.id === nodeId ? { ...node, verification } : node,
+      ),
+    })
+
+    it('fails an agent node with verification-failed on hard mismatch', async () => {
+      const executor = new FakeExecutor()
+      executor.outputs = { draft: 'wrong-type' }
+      const topology = withVerification(runnableTopology(), 'draft', {
+        schema: { type: 'number' },
+        mode: 'hard',
+      })
+      const { coordinator, store, input } = makeHarness({ executor, topology })
+
+      await coordinator.start(input)
+      await until(
+        async () => (await store.read('demo/WORKFLOW.md'))?.status === 'failed',
+      )
+      const snapshot = await store.read('demo/WORKFLOW.md')
+      expect(snapshot?.nodes.draft.status).toBe('failed')
+      expect(snapshot?.nodes.draft.error).toMatchObject({
+        code: 'verification-failed',
+      })
+      expect(snapshot?.nodes.draft.error?.message).toMatch(/^verification: /)
+      expect(snapshot?.error).toMatchObject({
+        code: 'verification-failed',
+        nodeId: 'draft',
+      })
+    })
+
+    it('keeps an agent node succeeded with a warn detail on soft mismatch', async () => {
+      const executor = new FakeExecutor()
+      executor.outputs = { draft: 'wrong-type' }
+      const topology = withVerification(runnableTopology(), 'draft', {
+        schema: { type: 'number' },
+        mode: 'warn',
+      })
+      const { coordinator, store, input } = makeHarness({ executor, topology })
+
+      await coordinator.start(input)
+      await until(
+        async () =>
+          (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+      )
+      const snapshot = await store.read('demo/WORKFLOW.md')
+      expect(snapshot?.nodes.draft.status).toBe('succeeded')
+      expect(snapshot?.nodes.draft.detail).toMatch(/^verification: /)
+      expect(snapshot?.nodes.draft.error).toBeUndefined()
+      expect(snapshot?.error).toBeUndefined()
+    })
+
+    it('records verification: ok in detail when the value passes', async () => {
+      const executor = new FakeExecutor()
+      executor.outputs = { draft: 42 }
+      const topology = withVerification(runnableTopology(), 'draft', {
+        schema: { type: 'number' },
+        mode: 'hard',
+      })
+      const { coordinator, store, input } = makeHarness({ executor, topology })
+
+      await coordinator.start(input)
+      await until(
+        async () =>
+          (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+      )
+      const snapshot = await store.read('demo/WORKFLOW.md')
+      expect(snapshot?.nodes.draft.status).toBe('succeeded')
+      expect(snapshot?.nodes.draft.detail).toBe('verification: ok')
+    })
+
+    it('applies verification to output nodes computed by the coordinator', async () => {
+      const executor = new FakeExecutor()
+      const topology = withVerification(runnableTopology(), 'out', {
+        schema: { type: 'number' },
+        mode: 'hard',
+      })
+      const { coordinator, store, input } = makeHarness({ executor, topology })
+
+      await coordinator.start(input)
+      await until(
+        async () => (await store.read('demo/WORKFLOW.md'))?.status === 'failed',
+      )
+      const snapshot = await store.read('demo/WORKFLOW.md')
+      expect(snapshot?.nodes.out.status).toBe('failed')
+      expect(snapshot?.nodes.out.error).toMatchObject({
+        code: 'verification-failed',
+      })
+    })
+
+    it('skips verification for skipped output nodes', async () => {
+      const topology: WorkflowTopology = {
+        revision: 1,
+        nodes: [
+          {
+            id: 'in',
+            kind: 'input',
+            label: 'In',
+            stepPath: 'steps/in/STEP.md',
+            position: { x: 0, y: 0 },
+          },
+          {
+            id: 'draft',
+            kind: 'agent',
+            label: 'Draft',
+            stepPath: 'steps/draft/STEP.md',
+            position: { x: 1, y: 0 },
+          },
+          {
+            id: 'gate',
+            kind: 'condition',
+            label: 'Gate',
+            stepPath: 'steps/gate/STEP.md',
+            position: { x: 2, y: 0 },
+            gateType: 'ifElse',
+          },
+          {
+            id: 'yes',
+            kind: 'agent',
+            label: 'Yes',
+            stepPath: 'steps/yes/STEP.md',
+            position: { x: 3, y: 0 },
+          },
+          {
+            id: 'no',
+            kind: 'agent',
+            label: 'No',
+            stepPath: 'steps/no/STEP.md',
+            position: { x: 3, y: 1 },
+          },
+          {
+            id: 'out',
+            kind: 'output',
+            label: 'Out',
+            stepPath: 'steps/out/STEP.md',
+            position: { x: 4, y: 0 },
+            verification: { schema: { type: 'number' }, mode: 'hard' },
+          },
+        ],
+        edges: [
+          { id: 'e1', source: 'in', target: 'draft' },
+          { id: 'e2', source: 'draft', target: 'gate' },
+          { id: 'e3', source: 'gate', target: 'yes', branch: 'true' },
+          { id: 'e4', source: 'gate', target: 'no', branch: 'false' },
+          { id: 'e5', source: 'no', target: 'out' },
+        ],
+      }
+      const executor = new FakeExecutor()
+      const { coordinator, store, input } = makeHarness({ executor, topology })
+
+      await coordinator.start(input)
+      await until(
+        async () =>
+          (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+      )
+      const snapshot = await store.read('demo/WORKFLOW.md')
+      expect(snapshot?.nodes.out.status).toBe('skipped')
+      expect(snapshot?.nodes.out.error).toBeUndefined()
+      expect(snapshot?.status).toBe('succeeded')
+    })
+
+    it('returns warnings through testNode for warn mismatches', async () => {
+      const executor = new FakeExecutor()
+      const topology = withVerification(runnableTopology(), 'draft', {
+        schema: { type: 'number' },
+        mode: 'warn',
+      })
+      const { coordinator, store, input } = makeHarness({ executor, topology })
+      await coordinator.start(input)
+      await until(
+        async () =>
+          (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+      )
+
+      executor.testOutputs = { draft: 'still-a-string' }
+      const result = await coordinator.testNode('view-1', {
+        workflowPath: 'demo/WORKFLOW.md',
+        nodeId: 'draft',
+        input: 'x',
+      })
+      expect(result.value).toBe('still-a-string')
+      expect(result.warnings).toBeDefined()
+      expect(result.warnings?.length).toBe(1)
+      expect(result.warnings?.[0]).toMatch(/^verification: /)
     })
   })
 })

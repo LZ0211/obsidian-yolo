@@ -183,6 +183,13 @@ export const zh = {
     dirty: '请先保存或放弃当前修改再运行。',
     invalidDefinition: '请先解决工作流检查结果再运行。',
     alreadyRunning: '此工作流正在运行。',
+    modelTier: {
+      fast: '快速档模型',
+      balanced: '均衡档模型',
+      deep: '深度档模型',
+    },
+    modelTierResolved: '解析为',
+    modelTierUnavailable: '请求的模型档位未配置。',
     status: {
       running: '运行中',
       paused: '已暂停',
@@ -203,11 +210,22 @@ export const zh = {
     noOutput: '暂无输出',
     testNode: '测试节点',
     testing: '测试中…',
+    repairing: '正在修复输出…',
+    repairAttempted: '修复尝试后',
+    verificationWarn: '验证警告：',
     rename: '重命名工作流',
     renamePlaceholder: '新工作流名称',
     renameFailed: '无法重命名工作流。',
     renameInProgress: '正在重命名工作流。',
     cannotRenameWhileRunning: '请先停止或结束运行，再重命名。',
     cannotRenameWhileDirty: '请先保存或放弃当前修改，再重命名。',
+  },
+  settings: {
+    title: '工作流',
+    tier: {
+      fast: '快速档',
+      balanced: '均衡档',
+      deep: '深度档',
+    },
   },
 } as const satisfies WorkflowCopy

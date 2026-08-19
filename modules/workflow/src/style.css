@@ -618,6 +618,12 @@
   font-size: 10px;
 }
 
+.yolo-workflow-inspector__hint {
+  color: var(--yolo-workflow-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .yolo-workflow-inspector__field input,
 .yolo-workflow-inspector__field select,
 .yolo-workflow-inspector__field textarea,
@@ -1997,6 +2003,39 @@
   flex: 1 1 auto;
   align-items: flex-start;
   overflow: hidden;
+}
+
+.yolo-workflow-run-detail__output {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.yolo-workflow-run-detail__warnings {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.yolo-workflow-run-detail__warning {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid
+    color-mix(in srgb, var(--yolo-workflow-warning) 42%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--yolo-workflow-warning) 9%, transparent);
+  color: var(--yolo-workflow-warning);
+  font-size: 9px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .yolo-workflow-run-preview,

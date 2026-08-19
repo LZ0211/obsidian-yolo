@@ -183,6 +183,9 @@ export function exportDshFlowJson(
           ? {}
           : { outputSchema: node.outputSchema }),
         ...(node.mergeStrategy ? { mergeStrategy: node.mergeStrategy } : {}),
+        ...(node.verification === undefined
+          ? {}
+          : { verification: node.verification }),
       },
     })),
     edges: bundle.topology.edges.map((edge) => ({
@@ -238,6 +241,9 @@ function dshNode(
     value.data.mergeStrategy === 'dedupe'
       ? { mergeStrategy: value.data.mergeStrategy }
       : {}),
+    ...(value.data.verification === undefined
+      ? {}
+      : { verification: value.data.verification }),
   }
 }
 

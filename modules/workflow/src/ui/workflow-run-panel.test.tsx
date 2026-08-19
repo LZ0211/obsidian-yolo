@@ -523,6 +523,120 @@ describe('workflow run panel interactions', () => {
       'Enter a JSON value or plain text as the run input.',
     )
   })
+
+  it('shows a warning bar when the selected node detail starts with verification:', async () => {
+    await renderPanel({
+      run: createRunSnapshot({
+        status: 'succeeded',
+        nodes: {
+          input: { status: 'succeeded', output: { topic: 'demo' } },
+          agent: {
+            status: 'succeeded',
+            detail: 'verification: expected number',
+          },
+        },
+      }),
+      selectedNodeId: 'agent',
+    })
+    act(() => {
+      Array.from(testContainer.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Output')
+        ?.click()
+    })
+    const warning = testContainer.querySelector(
+      '.yolo-workflow-run-detail__warning',
+    )
+    expect(warning).not.toBeNull()
+    expect(warning!.textContent).toContain('Verification warning:')
+    expect(warning!.textContent).toContain('expected number')
+  })
+
+  it('does not show the bar for verification: ok or non-verification details', async () => {
+    const { rerender } = await renderPanel({
+      run: createRunSnapshot({
+        status: 'succeeded',
+        nodes: {
+          input: { status: 'succeeded', output: { topic: 'demo' } },
+          agent: { status: 'succeeded', detail: 'verification: ok' },
+        },
+      }),
+      selectedNodeId: 'agent',
+    })
+    act(() => {
+      Array.from(testContainer.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Output')
+        ?.click()
+    })
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-detail__warning'),
+    ).toBeNull()
+
+    await rerender({
+      run: createRunSnapshot({
+        status: 'succeeded',
+        nodes: {
+          input: { status: 'succeeded', output: { topic: 'demo' } },
+          agent: { status: 'succeeded', detail: 'awaiting_approval' },
+        },
+      }),
+    })
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-detail__warning'),
+    ).toBeNull()
+  })
+
+  it('shows warnings from a node test result', async () => {
+    const onTestNode = jest
+      .fn()
+      .mockResolvedValueOnce({
+        value: 'tested',
+        warnings: ['verification: expected number'],
+      })
+      .mockResolvedValueOnce({
+        value: 'retested',
+        warnings: ['verification: ok'],
+      })
+    await renderPanel({
+      run: createRunSnapshot({
+        status: 'succeeded',
+        nodes: {
+          input: { status: 'succeeded', output: { topic: 'demo' } },
+          agent: { status: 'succeeded', output: 'done' },
+        },
+      }),
+      selectedNodeId: 'agent',
+      onTestNode,
+    })
+    act(() => {
+      Array.from(testContainer.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Output')
+        ?.click()
+    })
+    await setInput('{"probe": true}')
+    act(() => findButton('Test node')!.click())
+    await flush()
+
+    const warnings = testContainer.querySelector(
+      '.yolo-workflow-run-detail__warnings',
+    )
+    expect(warnings).not.toBeNull()
+    expect(warnings!.textContent).toContain('Verification warning:')
+    expect(warnings!.textContent).toContain('verification: expected number')
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-preview')?.textContent,
+    ).toContain('"tested"')
+
+    // The coordinator reports 'verification: ok' for a passing test; the
+    // panel filters that marker out instead of showing a warning section.
+    act(() => findButton('Test node')!.click())
+    await flush()
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-detail__warnings'),
+    ).toBeNull()
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-preview')?.textContent,
+    ).toContain('"retested"')
+  })
 })
 
 async function renderPanel(

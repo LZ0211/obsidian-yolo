@@ -60,6 +60,7 @@ import type {
   JsonValue,
   WorkflowNodeExecutionResult,
   WorkflowRunSnapshot,
+  WorkflowTier,
 } from '../execution/workflow-run-types'
 import type { WorkflowCopy } from '../i18n'
 
@@ -1199,6 +1200,7 @@ export function WorkflowStudio({
             node={selectedNode}
             edge={selectedEdge}
             bundle={snapshot.bundle}
+            run={run}
             markdownTarget={markdownTarget}
             copy={copy}
             readOnly={runActive}
@@ -1389,6 +1391,7 @@ function WorkflowInspector({
   node,
   edge,
   bundle,
+  run,
   markdownTarget,
   copy,
   readOnly = false,
@@ -1405,6 +1408,7 @@ function WorkflowInspector({
   node: WorkflowNode | null
   edge: WorkflowEdge | null
   bundle: WorkflowBundle | null
+  run: WorkflowRunSnapshot | null
   markdownTarget: string
   copy: WorkflowCopy
   readOnly?: boolean
@@ -1613,6 +1617,14 @@ function WorkflowInspector({
                   })
                 }
               />
+              {isWorkflowTierAlias(node.modelId) &&
+              run?.definition.modelByNodeId[node.id] !== undefined ? (
+                <span className="yolo-workflow-inspector__hint" role="status">
+                  {copy.run.modelTier[node.modelId]} ·{' '}
+                  {copy.run.modelTierResolved}:{' '}
+                  {run.definition.modelByNodeId[node.id]}
+                </span>
+              ) : null}
             </InspectorField>
             {node.kind === 'condition' ? (
               <>
@@ -1998,6 +2010,12 @@ function nodeKindIcon(kind: WorkflowNodeKind): React.ReactNode {
   if (kind === 'condition') return <GitFork size={13} />
   if (kind === 'merge') return <Merge size={13} />
   return <CircleStop size={13} />
+}
+
+function isWorkflowTierAlias(
+  modelId: string | undefined,
+): modelId is WorkflowTier {
+  return modelId === 'fast' || modelId === 'balanced' || modelId === 'deep'
 }
 
 function defaultAssistantModelId(

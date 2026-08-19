@@ -459,6 +459,12 @@ function createHost(): unknown {
       registerCommand: () => undefined,
       openView: async () => undefined,
     },
+    config: {
+      // The run path reads the tier model map from the module config
+      // document; an unconfigured document behaves exactly like a host
+      // without settings.
+      getSnapshot: () => ({ schemaVersion: 1, data: {} }),
+    },
     i18n: {
       getSnapshot: () => localeSnapshot,
       subscribe: () => () => undefined,

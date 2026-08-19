@@ -95,6 +95,11 @@ const CONDITION_OUTPUT_INSTRUCTION =
 
 const MAP_CONCURRENCY = 3
 
+const MAX_REJECTED_VALUE_PREVIEW_CHARS = 2048
+
+const REPAIR_PROMPT_PREFIX =
+  'Your previous submission was rejected because it does not satisfy the node output schema. Submit exactly one corrected value with the submit_workflow_output tool.'
+
 export function createWorkflowNodeExecutor(
   options: WorkflowNodeExecutorOptions,
 ): WorkflowNodeExecutor {
@@ -144,12 +149,55 @@ export function createWorkflowNodeExecutor(
           outputInstruction: SCHEMA_OUTPUT_INSTRUCTION,
         })
         const value = submission.getSubmitted()
-        if (value === undefined)
+        if (value !== undefined) return { value, ...(usage ? { usage } : {}) }
+        // Repair predicate (mechanically checkable): the first stream ended
+        // normally — executeAgentStream already threw on error/aborted events
+        // and cancelled signals — no submission was accepted (checked above),
+        // and at least one schema rejection was recorded. Exactly one repair
+        // round runs: the same route, tool, and signal, with the rejection
+        // feedback appended to the first-round prompt.
+        const rejections = submission.getRejections()
+        if (rejections.length > 0) {
+          // Display-only hint that the repair round is starting.
+          onAgentEvent?.(request.node.id, {
+            type: 'tool',
+            name: 'submit_workflow_output',
+            status: 'running',
+          })
+          const last = rejections[rejections.length - 1]
+          const repairPrompt = `${prompt}\n\n${REPAIR_PROMPT_PREFIX}\nRejected value: ${previewJson(last.value)}\nSchema errors: ${last.message}`
+          const repairSubmission = createOutputSubmissionTool(
+            validator,
+            request.node.outputSchema,
+          )
+          const repairRound = await executeAgentStream(context, {
+            prompt: repairPrompt,
+            signal: request.signal,
+            tool: repairSubmission.tool,
+            outputInstruction: SCHEMA_OUTPUT_INSTRUCTION,
+          })
+          const repaired = repairSubmission.getSubmitted()
+          if (repaired !== undefined)
+            return {
+              value: repaired,
+              ...(usage || repairRound.usage
+                ? { usage: sumWorkflowTokenUsage([usage, repairRound.usage]) }
+                : {}),
+            }
+          const repairRejections = repairSubmission.getRejections()
+          const round2 =
+            repairRejections.length > 0
+              ? `rejected (${repairRejections[repairRejections.length - 1].message})`
+              : 'no submission'
           throw new WorkflowNodeExecutionError(
             'agent-failed',
-            `Agent finished without a valid submit_workflow_output submission`,
+            `Agent output rejected twice. Round 1: ${last.message} (value: ${previewJson(last.value)}); after repair attempt: ${round2}`,
           )
-        return { value, ...(usage ? { usage } : {}) }
+        }
+        throw new WorkflowNodeExecutionError(
+          'agent-failed',
+          `Agent finished without a valid submit_workflow_output submission`,
+        )
       }
     }
   }
@@ -294,7 +342,9 @@ function buildAgentRequest(
 
 /**
  * The run-scoped `submit_workflow_output` tool. The host invokes handlers
- * serially per run; only the first valid submission is stored.
+ * serially per run; only the first valid submission is stored. Schema
+ * rejections are recorded for the executor's repair round; duplicate
+ * submissions after an accepted one are not rejections.
  */
 function createOutputSubmissionTool(
   validator: WorkflowSchemaValidator,
@@ -302,6 +352,10 @@ function createOutputSubmissionTool(
 ): Readonly<{
   tool: WorkflowAgentTool
   getSubmitted: () => JsonValue | undefined
+  getRejections: () => readonly Readonly<{
+    message: string
+    value: JsonValue
+  }>[]
 }> {
   const toolSchema = {
     type: 'object',
@@ -311,6 +365,7 @@ function createOutputSubmissionTool(
   }
   let submitted: JsonValue | undefined
   let accepted = false
+  const rejections: Readonly<{ message: string; value: JsonValue }>[] = []
   const tool: WorkflowAgentTool = {
     name: 'submit_workflow_output',
     description:
@@ -318,11 +373,16 @@ function createOutputSubmissionTool(
     inputSchema: toolSchema,
     handler: (input) => {
       const check = validator.validateValue(toolSchema, input)
-      if (!check.ok)
+      if (!check.ok) {
+        rejections.push({
+          message: check.message,
+          value: input.value as JsonValue,
+        })
         return {
           isError: true,
           content: `Invalid submission: ${check.message}`,
         }
+      }
       if (accepted)
         return {
           isError: true,
@@ -334,7 +394,19 @@ function createOutputSubmissionTool(
       return { content: 'The step result was accepted.' }
     },
   }
-  return { tool, getSubmitted: () => submitted }
+  return {
+    tool,
+    getSubmitted: () => submitted,
+    getRejections: () => rejections,
+  }
+}
+
+/** A bounded JSON preview of a rejected value for the repair prompt and error. */
+function previewJson(value: JsonValue): string {
+  return (JSON.stringify(value) ?? '').slice(
+    0,
+    MAX_REJECTED_VALUE_PREVIEW_CHARS,
+  )
 }
 
 // ---------------------------------------------------------------------------

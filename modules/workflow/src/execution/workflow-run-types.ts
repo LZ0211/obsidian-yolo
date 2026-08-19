@@ -45,6 +45,7 @@ export type WorkflowRunError = Readonly<{
     | 'model-unavailable'
     | 'agent-failed'
     | 'invalid-output'
+    | 'verification-failed'
     | 'storage-failed'
     | 'cancelled'
   nodeId?: string
@@ -102,6 +103,12 @@ export type WorkflowNodeExecutionResult = Readonly<{
   conditionResult?: boolean
   /** Token usage of the node's agent calls, when the provider reported it. */
   usage?: WorkflowTokenUsage
+  /**
+   * Node verification results. Each entry is a full `verification: <msg>`
+   * string; the coordinator appends them to the node run detail on a full
+   * run and returns them to the caller of a node test.
+   */
+  warnings?: readonly string[]
 }>
 
 export type WorkflowNodeExecutor = Readonly<{
@@ -135,6 +142,19 @@ export type WorkflowModelSnapshot = Readonly<{
   models: readonly Readonly<{ id: string; name: string; providerId: string }>[]
 }>
 
+export type WorkflowTier = 'fast' | 'balanced' | 'deep'
+export const WORKFLOW_TIERS: readonly WorkflowTier[] = [
+  'fast',
+  'balanced',
+  'deep',
+] as const
+
+/**
+ * Maps the node-level tier aliases (`fast`/`balanced`/`deep`) to concrete
+ * model ids configured in the Workflow module settings.
+ */
+export type WorkflowTierMap = Readonly<Partial<Record<WorkflowTier, string>>>
+
 export type WorkflowRunStorage = Readonly<{
   list(directoryPrefix?: string): Promise<readonly string[]>
   readText(key: string): Promise<string | null>
@@ -154,12 +174,14 @@ export type WorkflowRunStartInput = Readonly<{
   bundle: WorkflowBundle
   modelSnapshot: WorkflowModelSnapshot
   input: JsonValue
+  tierMap?: WorkflowTierMap
 }>
 
 export type WorkflowRunStartFailureReason =
   | 'already-running'
   | 'invalid-definition'
   | 'model-unavailable'
+  | 'tier-unavailable'
   | 'storage-failed'
 
 export type WorkflowRunStartResult =

@@ -107,6 +107,7 @@ const ERROR_CODES = new Set([
   'model-unavailable',
   'agent-failed',
   'invalid-output',
+  'verification-failed',
   'storage-failed',
   'cancelled',
 ])
