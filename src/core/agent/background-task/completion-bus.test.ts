@@ -1,3 +1,9 @@
+import {
+  clearFlightLog,
+  getFlightEvents,
+  setFlightLogEnabled,
+} from '../../../utils/debug/flightLog'
+
 import { backgroundTaskCompletionBus } from './completion-bus'
 import type { BackgroundTaskCompletedEvent } from './completion-bus'
 
@@ -135,5 +141,37 @@ describe('backgroundTaskCompletionBus', () => {
     expect(subscriber).not.toHaveBeenCalled()
 
     unsubscribe()
+  })
+})
+
+describe('background task completion bus flight events', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'debug').mockImplementation(() => undefined)
+    setFlightLogEnabled(true)
+    clearFlightLog()
+  })
+
+  afterEach(() => {
+    setFlightLogEnabled(false)
+    clearFlightLog()
+    jest.restoreAllMocks()
+  })
+
+  it('records a task-completed event when a background task settles', () => {
+    backgroundTaskCompletionBus.pushCompleted({
+      kind: 'subagent',
+      taskId: 't1',
+      conversationId: 'c1',
+      record: {} as never,
+    })
+
+    const event = getFlightEvents().find(
+      (entry) => entry.event === 'task-completed',
+    )
+    expect(event).toMatchObject({
+      scope: 'background',
+      id: 'c1',
+      detail: expect.stringContaining('kind=subagent taskId=t1'),
+    })
   })
 })

@@ -1,3 +1,4 @@
+import { logFlightEvent } from '../../../utils/debug/flightLog'
 import type { BashTaskRecord } from '../bash/types'
 import type { SubagentTaskCompletionRecord } from '../subagent/types'
 
@@ -62,6 +63,10 @@ class BackgroundTaskCompletionBus {
   }
 
   pushCompleted(event: BackgroundTaskCompletedEvent): void {
+    logFlightEvent('background', 'task-completed', {
+      id: event.conversationId,
+      detail: `kind=${event.kind} taskId=${event.taskId}`,
+    })
     for (const fn of this.subscribers) {
       fn(event)
     }

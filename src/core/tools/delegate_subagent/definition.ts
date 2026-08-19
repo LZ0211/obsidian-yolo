@@ -1,5 +1,6 @@
 import type { McpTool } from '../../../types/mcp.types'
 import { ToolCallResponseStatus } from '../../../types/tool-call.types'
+import { logFlightEvent } from '../../../utils/debug/flightLog'
 import { assertProjectTaskDispatchable } from '../../agent/project/delivery'
 import { buildReviewPrompt } from '../../agent/project/review-prompt'
 import { ProjectStore } from '../../agent/project/store'
@@ -139,6 +140,11 @@ export const delegateSubagentDefinition = defineTool({
       signal,
     } = ctx
 
+    logFlightEvent('subagent', 'delegate', {
+      id: conversationId,
+      detail: `toolCallId=${toolCallId ?? ''}`,
+    })
+
     if (!subagentParentContext || !runSubagent) {
       throw new Error(
         'delegate_subagent is only available during an active parent agent run.',
@@ -153,6 +159,11 @@ export const delegateSubagentDefinition = defineTool({
 
     if (isParentSubagentDelegationBlocked(conversationId)) {
       if (toolCallId) clearParentSubagentDeadline(toolCallId)
+      logFlightEvent('subagent', 'delegate-blocked', {
+        id: conversationId,
+        detail: SUBAGENT_DELEGATION_BLOCKED_REASON,
+        consoleOutput: 'warn',
+      })
       return {
         status: ToolCallResponseStatus.Success,
         text: JSON.stringify({
@@ -331,6 +342,12 @@ export const delegateSubagentDefinition = defineTool({
       signal,
       ...(delegatedProfile ? { delegatedProfile } : {}),
       ...(projectTask ? { projectTask } : {}),
+    })
+
+    logFlightEvent('subagent', 'delegate-result', {
+      id: conversationId,
+      detail: `accepted=${accepted} description=${description.slice(0, 60)}`,
+      consoleOutput: accepted ? 'info' : 'warn',
     })
 
     if (projectTask) {
