@@ -27,6 +27,7 @@ export type HarnessInfo = {
   baseDir: string
   port: number
   shareToken: string
+  shareToken2?: string
   vaultIdentity: string
 }
 
@@ -100,12 +101,13 @@ async function stopHarness(child: ChildProcess): Promise<void> {
 async function loginAndWaitReady(
   page: import('@playwright/test').Page,
   info: HarnessInfo,
+  shareToken: string = info.shareToken,
 ) {
   await page.goto(`http://127.0.0.1:${info.port}/`)
   // 认证模态：yolo-web-auth-page 出现（无会话 → login 状态）
   await page.waitForSelector('.yolo-web-auth-page', { timeout: 30_000 })
   const input = page.locator('.yolo-web-auth-input')
-  await input.fill(info.shareToken)
+  await input.fill(shareToken)
   await page.locator('.yolo-web-auth-submit').click()
   // 登录成功 → shell 出现（auth page 移除）
   await page.waitForSelector('.yolo-web-auth-page', {
@@ -153,6 +155,22 @@ test.describe('web e2e harness', () => {
           timeout: 30_000,
         },
       )
+
+      // 标题由服务端 /api/chat/generate-title 生成（mock provider 的标题
+      // 规则 'Mock LLM generated title'），不是浏览器侧 A4 截断兜底——
+      // 浏览器拿到的 /api/settings 是脱敏副本（apiKey 置空），浏览器侧
+      // provider 必然抛 LLMAPIKeyNotSetException。
+      const webSessionId = await page.evaluate(() =>
+        localStorage.getItem('yolo-web-session-id'),
+      )
+      expect(typeof webSessionId).toBe('string')
+      const titledChats = await waitForConversationTitle(
+        info.port,
+        webSessionId ?? undefined,
+        'Mock LLM generated title',
+        30_000,
+      )
+      expect(titledChats.length).toBeGreaterThan(0)
     } finally {
       await stopHarness(child)
     }
@@ -310,10 +328,94 @@ test.describe('web e2e harness', () => {
   })
 
   test('e: 会话过滤（不同 agent 隔离）', async () => {
-    test.skip(
-      true,
-      '装配复杂：需要第二个 workspace agent 的 share token 会话与不同 rootHash 会话；harness 目前只装配单 agent，见 e2e-report.md',
-    )
+    const { child, ready } = startHarness()
+    const info = await ready
+    const { chromium } = await import('@playwright/test')
+    const browser = await chromium.launch({ headless: true })
+    try {
+      if (!info.shareToken2)
+        throw new Error('harness did not provision an agent-2 share token')
+
+      // 会话 1：agent-1（workspace 根 '/'）登录并发起会话
+      const page1 = await browser.newPage()
+      await loginAndWaitReady(page1, info, info.shareToken)
+      await sendMessage(page1, 'hello harness')
+      await expect(
+        page1.locator('.yolo-chat-messages-assistant').first(),
+      ).toContainText('Hello from the mock LLM!', { timeout: 30_000 })
+      const session1 = await page1.evaluate(() =>
+        localStorage.getItem('yolo-web-session-id'),
+      )
+
+      // 会话 2：agent-2（workspace 根 '/work'，rootHash 与 agent-1 不同）
+      // 登录并发起会话——两个会话都落在同一个 harness 进程里。
+      const page2 = await browser.newPage()
+      await loginAndWaitReady(page2, info, info.shareToken2)
+      await sendMessage(page2, 'agent two hello')
+      await expect(
+        page2.locator('.yolo-chat-messages-assistant').first(),
+      ).toContainText('Agent two reply', { timeout: 30_000 })
+      const session2 = await page2.evaluate(() =>
+        localStorage.getItem('yolo-web-session-id'),
+      )
+      expect(typeof session1).toBe('string')
+      expect(typeof session2).toBe('string')
+      expect(session1).not.toBe(session2)
+
+      // 服务端 run 结算持久化完成后，每个会话的列表恰好只有自己的会话
+      const list1 = await waitForChatList(
+        info.port,
+        session1 ?? undefined,
+        1,
+        30_000,
+      )
+      const list2 = await waitForChatList(
+        info.port,
+        session2 ?? undefined,
+        1,
+        30_000,
+      )
+      expect(list1.length).toBe(1)
+      expect(list2.length).toBe(1)
+      // 隔离断言：互不可见（rootHash 不同 → canAccessConversation 过滤）
+      expect(list1.map((c) => c.id)).not.toContain(list2[0].id)
+      expect(list2.map((c) => c.id)).not.toContain(list1[0].id)
+
+      // 跨会话直接读取对方会话 → 404（访问控制，不只是列表过滤）
+      await expect(
+        fetchJson(
+          info.port,
+          `/api/chat/get/${list2[0].id}`,
+          session1 ?? undefined,
+        ),
+      ).rejects.toThrow(/status 404/)
+      await expect(
+        fetchJson(
+          info.port,
+          `/api/chat/get/${list1[0].id}`,
+          session2 ?? undefined,
+        ),
+      ).rejects.toThrow(/status 404/)
+
+      // 各自的会话能正常读回（webBinding 归属正确）
+      const own1 = (await fetchJson(
+        info.port,
+        `/api/chat/get/${list1[0].id}`,
+        session1 ?? undefined,
+      )) as { id: string; webBinding: { rootHash: string } }
+      const own2 = (await fetchJson(
+        info.port,
+        `/api/chat/get/${list2[0].id}`,
+        session2 ?? undefined,
+      )) as { id: string; webBinding: { rootHash: string } }
+      expect(own1.webBinding.rootHash).not.toBe(own2.webBinding.rootHash)
+
+      await page1.close()
+      await page2.close()
+    } finally {
+      await browser.close()
+      await stopHarness(child)
+    }
   })
 
   test('g: 记忆分层（C4）：稳定 <global> 快照 + 查询相关动态召回', async ({
@@ -358,13 +460,27 @@ test.describe('web e2e harness', () => {
       const findTurn = (
         query: string,
       ): Array<{ role: string; content: unknown }> => {
-        const matches = requests.filter((entry) =>
-          entry.requestMessages.some(
-            (message) =>
-              message.role === 'user' &&
-              joinUserContent(message.content).includes(query),
-          ),
-        )
+        const matches = requests
+          .filter((entry) =>
+            entry.requestMessages.some(
+              (message) =>
+                message.role === 'user' &&
+                joinUserContent(message.content).includes(query),
+            ),
+          )
+          // 标题生成请求（user 消息以 'User first message:' 开头）也带查询
+          // 文本，但它是服务端标题模型调用，不含记忆分层 system 快照——
+          // 只按回合请求断言。
+          .filter(
+            (entry) =>
+              !entry.requestMessages.some(
+                (message) =>
+                  message.role === 'user' &&
+                  joinUserContent(message.content).startsWith(
+                    'User first message:',
+                  ),
+              ),
+          )
         expect(matches.length).toBeGreaterThan(0)
         return matches[0]!.requestMessages
       }
@@ -514,6 +630,58 @@ async function fetchJson(
     )
   }
   return (await response.json()) as unknown
+}
+
+/**
+ * 轮询 /api/chat/list 直到列表达到目标长度（会话落盘由服务端 run 结算持久化，
+ * 客户端保存是异步 debounce，轮询避免时序假设）。
+ */
+async function waitForChatList(
+  port: number,
+  webSessionId: string | undefined,
+  minCount: number,
+  timeoutMs: number,
+): Promise<Array<{ id: string; title?: string | null }>> {
+  const deadline = Date.now() + timeoutMs
+  let last: Array<{ id: string; title?: string | null }> = []
+  while (Date.now() < deadline) {
+    last = (await fetchJson(port, '/api/chat/list', webSessionId)) as Array<{
+      id: string
+      title?: string | null
+    }>
+    if (last.length >= minCount) return last
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+  throw new Error(
+    `timed out waiting for >= ${minCount} chats; last count: ${last.length}`,
+  )
+}
+
+/**
+ * 轮询 /api/chat/list 直到某会话标题等于期望值（标题由服务端
+ * /api/chat/generate-title 生成并落库，晚于回复渲染）。
+ */
+async function waitForConversationTitle(
+  port: number,
+  webSessionId: string | undefined,
+  expectedTitle: string,
+  timeoutMs: number,
+): Promise<Array<{ id: string; title?: string | null }>> {
+  const deadline = Date.now() + timeoutMs
+  let last: Array<{ id: string; title?: string | null }> = []
+  while (Date.now() < deadline) {
+    last = (await fetchJson(port, '/api/chat/list', webSessionId)) as Array<{
+      id: string
+      title?: string | null
+    }>
+    if (last.some((chat) => chat.title === expectedTitle)) return last
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+  throw new Error(
+    `timed out waiting for title "${expectedTitle}"; last titles: ${JSON.stringify(
+      last.map((chat) => chat.title),
+    )}`,
+  )
 }
 
 /**
