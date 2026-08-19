@@ -12,7 +12,7 @@ export type FlightLogEvent = {
 const MAX_FLIGHT_LOG_EVENTS = 1000
 const SINK_FLUSH_INTERVAL_MS = 500
 
-let enabled = true
+let enabled = false
 let events: FlightLogEvent[] = []
 let lastTs: number | null = null
 

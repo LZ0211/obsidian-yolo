@@ -2416,6 +2416,9 @@ export const it: DeepPartial<TranslationKeys> = {
       captureRawRequestDebugExcludeLogsMessage:
         'I log di debug possono contenere il contenuto raw della conversazione e degli strumenti. Aggiungere {{path}} alla lista di esclusione della knowledge base per evitare che vengano indicizzati dal RAG?',
       captureRawRequestDebugExcludeLogsCta: 'Escludi log',
+      enableFlightLog: 'Abilita flight log',
+      enableFlightLogDesc:
+        "Quando attivo, gli eventi di runtime di chiamate strumento, turni LLM, esecuzioni agent, RAG, memoria e attività in background vengono registrati con timestamp e intervalli, per tracciare una catena interrotta. Disattivo per impostazione predefinita; attivarlo aggiunge output in console.",
       captureRawRequestDebugExcludeLogsSuccess:
         '{{path}} è stato escluso dalla knowledge base.',
       yoloBaseDir: 'Cartella base YOLO',

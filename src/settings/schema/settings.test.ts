@@ -29,6 +29,10 @@ describe('parseYoloSettings', () => {
     expect(result.mutedModuleUpdateVersions).toEqual({})
     expect(result.pluginUpdateNoticeEnabled).toBe(true)
     expect(result.pluginUpdateAutoDownloadEnabled).toBe(true)
+    expect(result.debug).toMatchObject({
+      captureRawRequestDebug: false,
+      enableFlightLog: false,
+    })
     expect(result.ragOptions).toMatchObject({
       enabled: true,
       chunkSize: 1000,

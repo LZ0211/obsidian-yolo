@@ -2132,6 +2132,9 @@ export const zh: TranslationKeys = {
         '调试日志可能含原始对话与工具内容。是否将 {{path}} 加入知识库排除列表，避免被 RAG 索引？',
       captureRawRequestDebugExcludeLogsCta: '排除日志',
       captureRawRequestDebugExcludeLogsSuccess: '已将 {{path}} 排除出知识库。',
+      enableFlightLog: '启用飞行日志',
+      enableFlightLogDesc:
+        '开启后，工具调用、LLM 轮次、Agent 运行、RAG、记忆与后台任务的运行时事件会带时间戳和间隔记录，可据此排查链路断点。默认关闭，排查时再打开；开启会增加控制台输出。',
       yoloBaseDir: 'YOLO 根目录',
       yoloBaseDirDesc:
         '填写库内相对路径（不要以 / 开头）。例如：放在库根目录填 YOLO；放在 setting 文件夹下填 setting/YOLO。当前技能目录：{path}。',

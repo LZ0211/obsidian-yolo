@@ -819,9 +819,11 @@ export const yoloSettingsSchema = z.object({
   debug: z
     .object({
       captureRawRequestDebug: z.boolean().optional(),
+      enableFlightLog: z.boolean().optional(),
     })
     .catch({
       captureRawRequestDebug: false,
+      enableFlightLog: false,
     }),
 
   // MinerU PDF 转换服务：开关打开且接口可用时，PDF 先转 markdown + 图片再进入处理链。

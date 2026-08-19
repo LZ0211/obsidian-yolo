@@ -365,6 +365,23 @@ export function EtcSection({ app, plugin, className }: EtcSectionProps) {
     })
   }
 
+  const handleEnableFlightLogChange = (value: boolean) => {
+    void (async () => {
+      try {
+        await setSettings({
+          ...settings,
+          debug: {
+            ...settings.debug,
+            enableFlightLog: value,
+          },
+        })
+      } catch (error: unknown) {
+        console.error('Failed to update flight log setting', error)
+        new Notice(t('common.error'))
+      }
+    })()
+  }
+
   const handleResetSettings = () => {
     new ConfirmModal(app, {
       title: t('settings.etc.resetSettings'),
@@ -690,6 +707,17 @@ export function EtcSection({ app, plugin, className }: EtcSectionProps) {
             <ObsidianToggle
               value={settings.debug?.captureRawRequestDebug ?? false}
               onChange={handleCaptureRawRequestDebugChange}
+            />
+          </ObsidianSetting>
+
+          <ObsidianSetting
+            name={t('settings.etc.enableFlightLog')}
+            desc={t('settings.etc.enableFlightLogDesc')}
+            className="yolo-settings-card"
+          >
+            <ObsidianToggle
+              value={settings.debug?.enableFlightLog ?? false}
+              onChange={handleEnableFlightLogChange}
             />
           </ObsidianSetting>
 

@@ -2306,6 +2306,9 @@ export const en: TranslationKeys = {
       captureRawRequestDebugExcludeLogsCta: 'Exclude logs',
       captureRawRequestDebugExcludeLogsSuccess:
         '{{path}} has been excluded from the knowledge base.',
+      enableFlightLog: 'Enable flight log',
+      enableFlightLogDesc:
+        'When enabled, runtime events across tool calls, LLM turns, agent runs, RAG, memory, and background tasks are recorded with timestamps and gaps, so a broken chain can be traced. Off by default; enabling it adds console output.',
       yoloBaseDir: 'YOLO base folder',
       yoloBaseDirDesc:
         'Enter a vault-relative path (without a leading /). Example: use YOLO at vault root, or setting/YOLO under the setting folder. Current skills directory: {path}.',

@@ -310,6 +310,7 @@ import { isUntitledConversationTitle } from './utils/chat/conversationTitle'
 import {
   flushFlightLog,
   formatFlightLog,
+  setFlightLogEnabled,
   setFlightLogSink,
 } from './utils/debug/flightLog'
 import { stableStringify } from './utils/json/stableStringify'
@@ -2466,6 +2467,11 @@ export default class YoloPlugin extends Plugin {
 
     await this.loadSettings()
     this.setupFlightLogSink()
+    const applyFlightLogEnabled = (settings: YoloSettings): void => {
+      setFlightLogEnabled(settings.debug?.enableFlightLog ?? false)
+    }
+    applyFlightLogEnabled(this.settings)
+    this.addSettingsChangeListener(applyFlightLogEnabled)
     this.projectDeliveryBridge = new ProjectDeliveryBridge({
       getSettings: () => this.settings,
       adapter: this.app.vault.adapter,

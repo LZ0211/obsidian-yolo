@@ -1836,6 +1836,8 @@ export type TranslationKeys = {
       captureRawRequestDebugExcludeLogsMessage?: string
       captureRawRequestDebugExcludeLogsCta?: string
       captureRawRequestDebugExcludeLogsSuccess?: string
+      enableFlightLog?: string
+      enableFlightLogDesc?: string
       yoloBaseDir?: string
       yoloBaseDirDesc?: string
       yoloBaseDirPlaceholder?: string
