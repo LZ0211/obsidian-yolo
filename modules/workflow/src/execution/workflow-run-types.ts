@@ -203,6 +203,8 @@ export type WorkflowRunSnapshotListener = (
 
 export type WorkflowRunCoordinator = Readonly<{
   start(input: WorkflowRunStartInput): Promise<WorkflowRunStartResult>
+  /** Parks a running run at its next node boundary; false when there is no running run to pause. */
+  pause(workflowPath: string): Promise<boolean>
   cancel(workflowPath: string): Promise<void>
   continueRun(
     workflowPath: string,

@@ -84,7 +84,17 @@ type ActiveRun = {
   persistChain: Promise<void>
   terminal: boolean
   cancelRequested: boolean
+  /** Resolves when a parked run may continue scheduling. */
+  pauseGate: Promise<void>
+  resumePause: () => void
 }
+
+/** Every terminal transition clears `paused`; no terminal record may keep it. */
+const terminal = (
+  snapshot: WorkflowRunSnapshot,
+  patch: Partial<WorkflowRunSnapshot>,
+): WorkflowRunSnapshot =>
+  freezeRun({ ...snapshot, paused: undefined, ...patch })
 
 export function createWorkflowRunCoordinator(
   options: WorkflowRunCoordinatorOptions,
@@ -170,8 +180,7 @@ export function createWorkflowRunCoordinator(
     } catch {
       if (run.terminal) return
       const failed = transition(run, {}, (current) =>
-        freezeRun({
-          ...current,
+        terminal(current, {
           status: 'failed',
           finishedAt: now(),
           error: {
@@ -203,8 +212,7 @@ export function createWorkflowRunCoordinator(
     message: string,
   ): Promise<void> => {
     const next = transition(run, { nodeId }, (snapshot) =>
-      freezeRun({
-        ...snapshot,
+      terminal(snapshot, {
         status: 'failed',
         finishedAt: now(),
         error: { code, nodeId, message },
@@ -411,8 +419,12 @@ export function createWorkflowRunCoordinator(
     for (const node of order) {
       if (run.terminal || run.controller.signal.aborted) return
       if (run.snapshot!.nodes[node.id]?.status !== 'pending') continue
+      if (run.snapshot!.paused) await run.pauseGate
+      if (run.terminal || run.controller.signal.aborted) return
+      if (run.snapshot!.nodes[node.id]?.status !== 'pending') continue
       await processNode(run, node)
     }
+    if (run.snapshot!.paused) await run.pauseGate
     if (run.terminal || run.cancelRequested || run.controller.signal.aborted)
       return
     const outputs = aggregateWorkflowOutputs(
@@ -421,8 +433,7 @@ export function createWorkflowRunCoordinator(
       run.snapshot!.definition.policy,
     )
     const succeeded = transition(run, {}, (snapshot) =>
-      freezeRun({
-        ...snapshot,
+      terminal(snapshot, {
         outputs,
         status: 'succeeded',
         finishedAt: now(),
@@ -439,8 +450,7 @@ export function createWorkflowRunCoordinator(
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           const failed = transition(run, {}, (snapshot) =>
-            freezeRun({
-              ...snapshot,
+            terminal(snapshot, {
               status: 'failed',
               finishedAt: now(),
               error: {
@@ -480,6 +490,9 @@ export function createWorkflowRunCoordinator(
       persistChain: Promise.resolve(),
       terminal: false,
       cancelRequested: false,
+      // Fresh runs start unparked; recovered runs get a real gate in Task 3.
+      pauseGate: Promise.resolve(),
+      resumePause: () => undefined,
     }
     activeRuns.set(workflowPath, run)
 
@@ -543,15 +556,39 @@ export function createWorkflowRunCoordinator(
     return { ok: true, runId: run.runId }
   }
 
+  const pause = async (workflowPath: string): Promise<boolean> => {
+    const run = activeRuns.get(workflowPath)
+    if (!run) return false
+    if (run.snapshot === null) await run.materialized
+    if (activeRuns.get(workflowPath) !== run || run.snapshot === null)
+      return false
+    if (run.snapshot.status !== 'running' || run.snapshot.paused) return false
+    // Each parking episode installs a fresh unresolved gate; continueRun and
+    // the terminal transitions resolve it through run.resumePause.
+    let resumePause!: () => void
+    run.pauseGate = new Promise<void>((resolve) => {
+      resumePause = resolve
+    })
+    run.resumePause = resumePause
+    const next = transition(run, {}, (snapshot) =>
+      freezeRun({ ...snapshot, paused: true }),
+    )
+    if (!next) return false
+    await enqueuePersist(run, next).catch(() => undefined)
+    return true
+  }
+
   const cancel = async (workflowPath: string): Promise<void> => {
     const run = activeRuns.get(workflowPath)
     if (!run) return
     run.controller.abort()
     if (run.snapshot === null) await run.materialized
     if (activeRuns.get(workflowPath) !== run || run.snapshot === null) return
+    // Wake a parked run: it re-checks the aborted controller and stops; the
+    // terminal transition below then lands as the final record.
+    run.resumePause()
     const next = transition(run, { allowCancel: true }, (snapshot) =>
-      freezeRun({
-        ...snapshot,
+      terminal(snapshot, {
         cancelRequested: true,
         status: 'cancelled',
         finishedAt: now(),
@@ -564,6 +601,20 @@ export function createWorkflowRunCoordinator(
     workflowPath: string,
     confirmation: WorkflowRunContinueConfirmation,
   ): Promise<WorkflowRunContinueResult> => {
+    const active = activeRuns.get(workflowPath)
+    if (active?.snapshot?.paused) {
+      // In-memory pause: no node ever re-executes, so no side-effect
+      // confirmation is needed. Reuse the same ActiveRun and its serial
+      // chain instead of rebuilding the run from the record.
+      const resumed = transition(active, {}, (snapshot) =>
+        freezeRun({ ...snapshot, paused: undefined }),
+      )
+      if (!resumed) return { ok: false, reason: 'already-running' }
+      await enqueuePersist(active, resumed).catch(() => undefined)
+      // Wake the parked chain; it re-reads the snapshot, now unparked.
+      active.resumePause()
+      return { ok: true, runId: active.runId }
+    }
     if (activeRuns.has(workflowPath))
       return { ok: false, reason: 'already-running' }
     if (!confirmation.confirmSideEffects)
@@ -604,6 +655,10 @@ export function createWorkflowRunCoordinator(
       persistChain: Promise.resolve(),
       terminal: false,
       cancelRequested: false,
+      // Record-level rebuilds start unparked; recovered paused records get a
+      // real gate in Task 3.
+      pauseGate: Promise.resolve(),
+      resumePause: () => undefined,
     }
     activeRuns.set(workflowPath, run)
     const snapshot = freezeRun({
@@ -638,8 +693,7 @@ export function createWorkflowRunCoordinator(
     const records = await store.list()
     for (const record of records) {
       if (record.status !== 'running') continue
-      const interrupted = freezeRun({
-        ...record,
+      const interrupted = terminal(record, {
         status: 'interrupted',
         finishedAt: now(),
       })
@@ -658,8 +712,10 @@ export function createWorkflowRunCoordinator(
     const persists: Promise<void>[] = []
     for (const run of [...activeRuns.values()]) {
       run.controller.abort()
+      // Wake a parked run: it re-checks the aborted controller and stops.
+      run.resumePause()
       const next = transition(run, { allowCancel: true }, (snapshot) =>
-        freezeRun({ ...snapshot, status: 'interrupted', finishedAt: now() }),
+        terminal(snapshot, { status: 'interrupted', finishedAt: now() }),
       )
       if (next) persists.push(enqueuePersist(run, next).catch(() => undefined))
     }
@@ -784,6 +840,7 @@ export function createWorkflowRunCoordinator(
 
   return Object.freeze({
     start,
+    pause,
     cancel,
     continueRun,
     initialize,

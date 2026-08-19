@@ -703,6 +703,181 @@ describe('workflow run coordinator', () => {
     expect(after?.nodes.draft.status).toBe('running')
   })
 
+  it('parks the serial chain at the next node boundary after pause', async () => {
+    const executor = new FakeExecutor()
+    executor.hold('draft')
+    const { coordinator, store, input } = makeHarness({ executor })
+
+    const start = await coordinator.start(input)
+    expect(start.ok).toBe(true)
+    await until(() => executor.calls.some((call) => call.node.id === 'draft'))
+
+    expect(await coordinator.pause('demo/WORKFLOW.md')).toBe(true)
+    let snapshot = await store.read('demo/WORKFLOW.md')
+    expect(snapshot?.status).toBe('running')
+    expect(snapshot?.paused).toBe(true)
+
+    // Already paused: a second pause is a no-op.
+    expect(await coordinator.pause('demo/WORKFLOW.md')).toBe(false)
+
+    executor.releaseOne('draft')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    snapshot = await store.read('demo/WORKFLOW.md')
+    expect(snapshot?.status).toBe('running')
+    expect(snapshot?.paused).toBe(true)
+    // The chain parked before the next node: gate never evaluated, no branch
+    // agent ran.
+    expect(snapshot?.nodes.gate.status).toBe('pending')
+    expect(executor.calls.some((call) => call.node.id === 'yes')).toBe(false)
+  })
+
+  it('resume continues the same ActiveRun chain without re-running succeeded nodes', async () => {
+    const executor = new FakeExecutor()
+    executor.hold('draft')
+    const { coordinator, store, input } = makeHarness({ executor })
+
+    const start = await coordinator.start(input)
+    expect(start.ok).toBe(true)
+    await until(() => executor.calls.some((call) => call.node.id === 'draft'))
+
+    expect(await coordinator.pause('demo/WORKFLOW.md')).toBe(true)
+    executor.releaseOne('draft')
+    await until(async () => {
+      const snapshot = await store.read('demo/WORKFLOW.md')
+      return snapshot?.nodes.draft.status === 'succeeded'
+    })
+    const parked = await store.read('demo/WORKFLOW.md')
+    expect(parked?.status).toBe('running')
+    expect(parked?.paused).toBe(true)
+    expect(parked?.nodes.gate.status).toBe('pending')
+    expect(executor.calls.some((call) => call.node.id === 'yes')).toBe(false)
+
+    // The in-memory pause needs no side-effect confirmation: no node
+    // re-executes, so nothing can re-apply side effects.
+    const continued = await coordinator.continueRun('demo/WORKFLOW.md', {
+      confirmSideEffects: false,
+    })
+    expect(continued).toEqual({ ok: true, runId: 'run-1' })
+
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    const final = await store.read('demo/WORKFLOW.md')
+    expect(final?.status).toBe('succeeded')
+    expect(final?.paused).toBeUndefined()
+    expect(final?.nodes.draft.output).toBe('late-draft')
+    expect(
+      executor.calls.filter((call) => call.node.id === 'draft').length,
+    ).toBe(1)
+  })
+
+  it('pause-then-cancel wins and clears paused on the terminal record', async () => {
+    const executor = new FakeExecutor()
+    executor.hold('draft')
+    const { coordinator, store, input } = makeHarness({ executor })
+
+    const start = await coordinator.start(input)
+    expect(start.ok).toBe(true)
+    await until(() => executor.calls.some((call) => call.node.id === 'draft'))
+
+    expect(await coordinator.pause('demo/WORKFLOW.md')).toBe(true)
+    await coordinator.cancel('demo/WORKFLOW.md')
+
+    let snapshot = await store.read('demo/WORKFLOW.md')
+    expect(snapshot?.status).toBe('cancelled')
+    expect(snapshot?.paused).toBeUndefined()
+
+    executor.releaseAll()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    snapshot = await store.read('demo/WORKFLOW.md')
+    expect(snapshot?.status).toBe('cancelled')
+    expect(snapshot?.paused).toBeUndefined()
+  })
+
+  it('quiesce converts a parked run to interrupted and clears paused', async () => {
+    const executor = new FakeExecutor()
+    executor.hold('draft')
+    const { coordinator, store, input } = makeHarness({ executor })
+
+    const start = await coordinator.start(input)
+    expect(start.ok).toBe(true)
+    await until(() => executor.calls.some((call) => call.node.id === 'draft'))
+
+    expect(await coordinator.pause('demo/WORKFLOW.md')).toBe(true)
+    await coordinator.quiesce()
+
+    let snapshot = await store.read('demo/WORKFLOW.md')
+    expect(snapshot?.status).toBe('interrupted')
+    expect(snapshot?.paused).toBeUndefined()
+
+    executor.releaseAll()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    snapshot = await store.read('demo/WORKFLOW.md')
+    expect(snapshot?.status).toBe('interrupted')
+    expect(snapshot?.paused).toBeUndefined()
+  })
+
+  it('pause on a non-running run is a no-op returning false', async () => {
+    const executor = new FakeExecutor()
+    executor.failOnce.add('draft')
+    const { coordinator, store, input } = makeHarness({ executor })
+
+    // No run at all: no record is created.
+    expect(await coordinator.pause('demo/WORKFLOW.md')).toBe(false)
+    expect(await store.read('demo/WORKFLOW.md')).toBeNull()
+
+    // A finished (failed) run is not paused: the record stays untouched.
+    await coordinator.start(input)
+    await until(
+      async () => (await store.read('demo/WORKFLOW.md'))?.status === 'failed',
+    )
+    expect(await coordinator.pause('demo/WORKFLOW.md')).toBe(false)
+    const snapshot = await store.read('demo/WORKFLOW.md')
+    expect(snapshot?.status).toBe('failed')
+    expect(snapshot?.paused).toBeUndefined()
+  })
+
+  it('a parked run still rejects a second start with already-running', async () => {
+    const executor = new FakeExecutor()
+    executor.hold('draft')
+    const { coordinator, store, input } = makeHarness({ executor })
+
+    const start = await coordinator.start(input)
+    expect(start.ok).toBe(true)
+    await until(() => executor.calls.some((call) => call.node.id === 'draft'))
+
+    expect(await coordinator.pause('demo/WORKFLOW.md')).toBe(true)
+    const second = await coordinator.start({ ...input, input: 'again' })
+    expect(second).toEqual({ ok: false, reason: 'already-running' })
+
+    executor.releaseAll()
+    expect(
+      await coordinator.continueRun('demo/WORKFLOW.md', {
+        confirmSideEffects: false,
+      }),
+    ).toEqual({ ok: true, runId: 'run-1' })
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+  })
+
+  it('pause arriving after terminal does not produce succeeded+paused', async () => {
+    const { coordinator, store, input } = makeHarness({})
+
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+
+    expect(await coordinator.pause('demo/WORKFLOW.md')).toBe(false)
+    const snapshot = await store.read('demo/WORKFLOW.md')
+    expect(snapshot?.status).toBe('succeeded')
+    expect(snapshot?.paused).toBeUndefined()
+  })
+
   it('publishes snapshots that cannot be mutated through caller-owned objects', async () => {
     const executor = new FakeExecutor()
     const callerInput = { items: [1, 2], nested: { keep: 'yes' } }
