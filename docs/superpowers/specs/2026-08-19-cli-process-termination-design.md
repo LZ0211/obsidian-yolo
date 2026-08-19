@@ -1,102 +1,111 @@
-# CLI 进程分级终止统一（借鉴 Claudian ManagedStdioProcess）
+# CLI 进程分级终止统一（盲审修订版 v2）
 
 日期：2026-08-19
-状态：设计稿
-参考来源：[Claudian](https://github.com/YishenTu/claudian)（`reference/claudian-main/`），具体见 §3
+状态：设计稿（v2，按盲审修订）
+盲审结论：v1 四块必改——claude 接口不适配、POSIX 组杀前提缺失、租约键与句柄获取路径错误、win32 兜底与监听器语义。
+参考来源：[Claudian](https://github.com/YishenTu/claudian) `reference/claudian-main/src/core/process/ManagedStdioProcess.ts`（分级终止 + 自有监听器清理语义）
 
 ## 1. 背景与动机
 
-YOLO 通过 CLI runtime（claude-code / codex / hermes / opencode / pi / acp）和 bash 工具 spawn 子进程。终止逻辑目前**三处各自实现、强度不一**：
+claude-code / codex CLI 子进程终止强度不足：claude 仅 `child.kill('SIGTERM')` 无升级；codex 非 win32 分支仅 SIGTERM；两者 spawn 均非 detached，孙进程无法组杀。目标：统一分级终止（SIGTERM → 超时 → SIGKILL → destroy 兜底），补齐 claude/codex。
 
-- bash session-manager：完整（SIGTERM → 3s → SIGKILL；win32 taskkill /T /F）✅
-- gitCommandRunner：状态机含 terminating + 2s watchdog + SIGKILL/taskkill 兜底 ✅
-- **codex：win32 taskkill /t /f；非 win32 仅 SIGTERM，无升级** ⚠️
-- **claude：仅 `child.kill('SIGTERM')`，无升级、无超时兜底** ⚠️
+## 2. 现状分析（YOLO，盲审校准后）
 
-无升级的 SIGTERM 对挂死进程（死锁、等待网络、SIGTERM 未处理）等于没有终止；会话切换/取消时残留进程会继续占用 CPU 和 API 配额。目标：把 bash 已有的分级终止模式提炼为共享工具，补齐 claude/codex。
+- `src/core/cli-runtime/claude/process.ts`：`resolveClaudeProcessSupport`（:305-317）→ `createElectronSpawnFunction`，`windowsHide:true`，**非 detached**（:298-303）；AbortSignal 仅 `child.kill('SIGTERM')`；SDK 的 `SpawnedProcess` 对插件只暴露 kill/stdin/stdout——**无 pid、无 stderr**。
+- `src/core/cli-runtime/codex/process.ts`：`CodexAppServerProcess.start`（:143-149 非 detached）；`shutdown()`：**`.cmd` 包裹分支**用 `taskkill /pid /t /f`（:188-197），**直接 `codex.exe` 分支仅 `child.kill('SIGTERM')`**（:199）；exit 前先查 `exitCode` 再注册监听（:186，已有竞态先例）。
+- `src/core/agent/bash/session-manager.ts`：`createKillProcess`（POSIX detached 进程组 `kill(-pid,SIGTERM)` → `SIGKILL_DELAY_MS` 3s → SIGKILL；win32 taskkill 用 **node 原生 spawn** 非 cross-spawn，:302-320 有 fallback）。`CappedOutputCollector`（1MB 上限头尾 256KB）**无实时快照 API**（只有 finalize/tail）。
+- `src/core/agent/git-diff/gitCommandRunner.ts`：terminating 状态机 + 2s watchdog + 兜底。
+- 桌面动态加载：`src/utils/platform/desktopNodeModule.ts`。
 
-## 2. 现状分析（YOLO）
-
-- `src/core/cli-runtime/claude/process.ts`：`resolveClaudeProcessSupport` → Electron spawn（`windowsHide: true`），AbortSignal 仅 `child.kill('SIGTERM')`。
-- `src/core/cli-runtime/codex/process.ts`：`CodexAppServerProcess`，`.cmd` 经 cmd.exe 包裹（windowsVerbatimArguments）；`shutdown()`：win32 `taskkill /pid /t /f`，非 win32 仅 SIGTERM。
-- `src/core/agent/bash/session-manager.ts`：`createKillProcess`——POSIX detached 进程组 `kill(-pid, SIGTERM)` → `SIGKILL_DELAY_MS`(3s) 后 SIGKILL；win32 `cross-spawn` + `taskkill /T /F`。stderr 用 `StringDecoder` + `CappedOutputCollector`（1MB 上限、头尾各 256KB）。
-- `src/core/agent/git-diff/gitCommandRunner.ts`：状态机（terminating）+ 2s watchdog + SIGKILL/taskkill 兜底。
-- 桌面依赖动态加载：`src/utils/platform/desktopNodeModule.ts`（`loadDesktopNodeModule`）、`src/core/cli-runtime/desktop.ts`、bash 非桌面直接 throw。
-
-**差距**：claude/codex 无分级终止与超时兜底；三处逻辑重复（kill 顺序、win32 特判、等待退出）。
+**差距**（v2 范围）：claude/codex 无分级终止；非 detached 无组杀；三处终止逻辑未共享。
 
 ## 3. 参考设计（Claudian）
 
 | 机制 | 参考实现 |
 |---|---|
-| 分级终止：`shutdown()` = SIGTERM → 3s 后 SIGKILL → 再 3s 强制 destroy 流 + 清理监听器 | `reference/claudian-main/src/core/process/ManagedStdioProcess.ts` |
-| stderr 环形缓冲（8KB，诊断不丢） | 同文件 |
-| Windows cmd shim 处理（`.cmd` 经 cmd.exe） | `reference/claudian-main/src/utils/windowsCmdShim`（YOLO codex 已有等价实现） |
-| 生命周期租约 + generation 失效（进程代际标识，防旧进程清理误杀新进程） | `reference/claudian-main/src/core/execution/ProviderExecutionLifecycleRegistry.ts` |
+| 分级终止：graceful → 超时 → SIGKILL → destroy 流 | `reference/claudian-main/src/core/process/ManagedStdioProcess.ts` |
+| **监听器清理只清自有处理器**（不 removeAllListeners，避免清掉 transport 的监听） | 同文件 `:274-290` |
+| stderr 环形缓冲（固定容量 slice，非"保头尾"） | 同文件（stderr ring buffer） |
 
-## 4. 目标设计
+## 4. 目标设计（盲审修订）
 
-### 4.1 共享终止工具（新增 `src/core/cli-runtime/termination.ts`）
+### 4.1 共享终止工具 `src/core/cli-runtime/termination.ts`
 
 ```ts
-export type TerminateOptions = {
-  signal?: 'SIGTERM' | 'SIGKILL' | 'SIGINT' | 'taskkill'
-  sigKillDelayMs?: number   // 默认 3000（对齐 bash SIGKILL_DELAY_MS）
-  destroyTimeoutMs?: number // 默认 3000
+export type TerminatedProcess = {
+  pid?: number
+  onExit(listener: () => void): void
+  kill(signal?: NodeJS.Signals | number): boolean
+  stderr?: NodeJS.ReadableStream | null
+  stdout?: NodeJS.ReadableStream | null
 }
 
-/** 分级终止：graceful → 超时升级 → 强制销毁流，返回最终退出状态 */
 export async function terminateProcess(
-  child: ChildProcess,
-  options?: TerminateOptions,
-): Promise<{ exited: boolean; signal?: NodeJS.Signals | 'SIGKILL'; code?: number | null }>
+  target: TerminatedProcess,
+  options?: {
+    sigKillDelayMs?: number   // 默认 3000
+    destroyTimeoutMs?: number // 默认 3000
+  },
+): Promise<{ exited: boolean; via?: 'signal' | 'sigkill' | 'destroy' | 'taskkill' }>
 ```
 
-行为（对齐 bash 语义并统一）：
+行为（盲审修订后）：
+1. **只清自有监听器**：内部用 `AbortController`/包装器跟踪自己注册的 exit/error 监听，终止结束时精确移除——**绝不用 removeAllListeners**（SDK transport / CodexAppServerProcess 持有自己的监听器）。
+2. 先查 `exitCode`（codex :186 先例）再注册 `once('exit')`——已退出进程立即返回，防挂死。
+3. POSIX：`kill('SIGTERM')` → `sigKillDelayMs` 未退出 → `kill('SIGKILL')` → `destroyTimeoutMs` 未退出 → destroy stdio 流（stdout/stderr 可空，claude 场景）→ 返回 `via:'destroy'`。
+4. win32：`taskkill /pid <pid> /t /f`（node 原生 spawn，对齐 bash）→ 失败/非零/挂死时 **fallback** 到 `kill('SIGTERM')` → 升级 SIGKILL → destroy（bash :302-320 的兜底语义，不能比现有实现更弱）。
+5. **幂等**：重复调用对同一 target 只生效一次（内部 state 标记），并发安全。
+6. 信号终止后不补发多余信号（SIGKILL 已生效后不再发默认信号）。
 
-1. POSIX：detached 时 `kill(-pid, SIGTERM)`（进程组），否则 `child.kill('SIGTERM')`；等 `exit` 或 `sigKillDelayMs` 超时。
-2. 超时 → `kill(-pid, SIGKILL)` / `child.kill('SIGKILL')`；再等 `destroyTimeoutMs`。
-3. 仍不退 → `child.kill()`（默认 SIGTERM 的最后一次）+ 对 stdio 流 `destroy()` + 移除全部监听器，返回超时标记。
-4. win32：走 `taskkill /pid <pid> /t /f`（对齐 bash/codex 现状）——`cross-spawn` 或 `execFile('taskkill', ...)`，完成后等 exit。
-5. 全部路径 `once('exit')` 收尾，防泄漏。
+### 4.2 claude 适配（`src/core/cli-runtime/claude/process.ts`）
 
-### 4.2 stderr 环形缓冲（`src/core/cli-runtime/stderrBuffer.ts`）
+- SDK `SpawnedProcess` 无 pid/stderr → **不把 terminateProcess 接到 SDK 句柄上**；在 `createElectronSpawnFunction` 内部用**真实 child**（`import('node:child_process').spawn` 的返回值）包一层 `TerminatedProcess`（pid = child.pid，onExit = child.once('exit')），插件侧持有该包装句柄。
+- AbortSignal 回调是同步的 → `void terminateProcess(wrapper)`（fire-and-forget，与 v1 相同但签名成立）。
+- 不新增 detached（见 §4.3 决策）。
 
-复用 bash 的 `CappedOutputCollector` 语义（1MB 上限、头尾 256KB），抽象为独立工具供 claude/codex 使用（bash 保持现状或迁移，见非目标）。
+### 4.3 组杀决策（盲审点 2）
 
-### 4.3 接入点
+盲审指出：claude/codex spawn 均非 detached，`kill(-pid)` 不可用。**v2 决策：不引入 detached**——detached 改变子进程行为（新进程组、信号隔离），对 SDK 托管的 claude 风险不可控。**接受"孙进程残留"为已知限制**（与现状一致，本次不扩大范围；bash/git 已有组杀不受影响）。§1 目标相应收敛为"主进程必杀 + 升级兜底"。
 
-- `src/core/cli-runtime/claude/process.ts`：AbortSignal 处理改为 `terminateProcess`（替代裸 `kill('SIGTERM')`）。
-- `src/core/cli-runtime/codex/process.ts`：`shutdown()` 改为 `terminateProcess`（win32 分支保留 taskkill 语义，由工具统一处理）。
-- 生命周期租约：`cli-runtime/coordinator.ts` 维护活跃进程 registry（`Map<runtimeId, { generation, child }>`）；`terminateProcess` 前校验 generation，防"旧代清理误杀新一代进程"。
+### 4.4 租约与句柄（盲审点 3）
 
-### 4.4 非桌面环境
+盲审指出：coordinator 同 runtimeId 可多进程并存（`instantiateRuntime` 每会话独立，coordinator.ts:302,534-550），`Map<runtimeId,...>` 冲突；且 coordinator 拿不到 child 句柄。
 
-保持现状：所有新代码仍在桌面分支动态 import（`loadDesktopNodeModule` / `import('node:child_process')`），移动端零影响。
+**v2 决策：不做中央 registry**。改为**运行时实例自持**：
+- claude：`createElectronSpawnFunction` 返回的包装句柄由 `ClaudeProcessSupport` 实例持有（每会话独立实例，天然隔离代际）。
+- codex：`CodexAppServerProcess` 实例持有 child + generation（实例自增，`shutdown()` 前校验 generation 未变）。
+- 每个实例的 `dispose()`/`shutdown()` 内部完成"校验代际 → terminateProcess → 清理"。
+- 取消跨 runtime 的共享 registry（v1 的过度设计，且无安全实现路径）。
+
+### 4.5 stderr 缓冲（盲审点 6）
+
+- 新建 `src/core/cli-runtime/stderrBuffer.ts`：固定容量**环形 slice**（对齐 codex 现状 8KB，:117-122），提供 `push(chunk)` / `snapshot()`（实时读取，区别于 bash CappedOutputCollector 的 finalize/tail）。
+- claude/codex 接入；bash 保持现状（语义不同，不迁移）。
 
 ## 5. 边界与非目标
 
-- **不迁移 bash session-manager / gitCommandRunner 到新工具**（它们已有等价实现且测试充分；统一是后续债务项，本次只服务缺失的 claude/codex）。
-- 不做进程退出码语义改动（调用方现状不变）。
-- 不引入新依赖（`cross-spawn` 已是项目依赖，win32 可用）。
+- 不迁移 bash / gitCommandRunner（已有等价实现且测试充分）。
+- 不做 detached 组杀（§4.3 决策，接受孙进程残留限制）。
+- 不做中央进程 registry（§4.4 决策，实例自持代际）。
+- 不引入新依赖。
 
-## 6. 测试计划
+## 6. 测试计划（盲审补齐后）
 
-- `termination.test.ts`：POSIX 分级（mock child：SIGTERM 后退出 / 不退出触发 SIGKILL / 全不响应触发 destroy）；win32 taskkill 分支；超时参数覆盖；exit 监听器清理（无泄漏断言）。
-- `stderrBuffer.test.ts`：环形截断（超 1MB 保头尾）。
-- 接入点测试：claude/codex process 的 AbortSignal/shutdown 路径（mock `terminateProcess` 断言被调用且参数正确）。
-- 沿用 jest 并行 + `npm run type:check`。
+- `termination.test.ts`：mock `TerminatedProcess` —— 已退出早返回（exitCode 先查）、SIGTERM 后退出、超时升级 SIGKILL、全不响应 destroy、**幂等并发**、**自有监听器清理（断言第三方监听器仍在）**、win32 taskkill 成功/失败/非零/挂死四路径 + fallback、destroy 安全网。
+- `stderrBuffer.test.ts`：环形截断 + snapshot 实时性。
+- 接入点：claude（`createElectronSpawnFunction` 包装 + abort 触发 terminateProcess，mock 断言调用）；codex（shutdown 走 terminateProcess；generation 不匹配时不终止）。
+- POSIX 真实进程冒烟：win32 机器上仅 mock 覆盖，POSIX 冒烟列入人工 QA。
 
 ## 7. 验证方式
 
 - 单测全绿；type:check / lint。
-- 人工 QA（桌面）：启动 claude-code 会话 → 切换会话触发终止 → 进程列表确认无残留；codex 同验；挂死进程（如 sleep）确认升级 SIGKILL。
+- 人工 QA（桌面）：claude/codex 会话切换终止无残留；挂死进程升级 SIGKILL；win32 taskkill 路径。
 
 ## 8. 实施顺序（TDD）
 
-1. RED：`termination.ts` 测试（POSIX 分级三态）→ GREEN
-2. RED：win32 taskkill 分支测试 → GREEN
-3. RED：`stderrBuffer.ts` 测试 → GREEN
-4. RED：claude/codex 接入测试 → GREEN 接线
-5. 生命周期租约 registry + 测试
+1. RED：`termination.ts` 基础分级（SIGTERM→SIGKILL→destroy）→ GREEN
+2. RED：已退出早返回 + 幂等 + 监听器语义 → GREEN
+3. RED：win32 taskkill 四路径 + fallback → GREEN
+4. RED：`stderrBuffer.ts` → GREEN
+5. RED：claude 包装 + codex shutdown 接入 → GREEN
 6. 人工 QA
