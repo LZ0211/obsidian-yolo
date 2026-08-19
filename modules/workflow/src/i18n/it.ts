@@ -171,6 +171,8 @@ export const it = {
     model: 'Modello di esecuzione',
     input: 'Input di esecuzione',
     run: 'Esegui',
+    pause: 'Pausa',
+    resume: 'Riprendi',
     stop: 'Interrompi',
     continue: 'Continua',
     confirmSideEffects:
@@ -183,6 +185,7 @@ export const it = {
     alreadyRunning: 'Questo flusso è già in esecuzione.',
     status: {
       running: 'In esecuzione',
+      paused: 'In pausa',
       succeeded: 'Riuscito',
       failed: 'Non riuscito',
       cancelled: 'Annullato',
@@ -200,5 +203,13 @@ export const it = {
     noOutput: 'Nessun output',
     testNode: 'Testa nodo',
     testing: 'Test in corso…',
+    rename: 'Rinomina flusso',
+    renamePlaceholder: 'Nuovo nome del flusso',
+    renameFailed: 'Non è stato possibile rinominare il flusso.',
+    renameInProgress: 'Rinomina del flusso in corso…',
+    cannotRenameWhileRunning:
+      'Interrompi o termina l’esecuzione prima di rinominare.',
+    cannotRenameWhileDirty:
+      'Salva o scarta le modifiche correnti prima di rinominare.',
   },
 } as const satisfies WorkflowCopy

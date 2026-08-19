@@ -14,6 +14,7 @@ import type {
   WorkflowRunError,
   WorkflowRunSnapshot,
   WorkflowRunStartFailureReason,
+  WorkflowRunStore,
 } from './execution/workflow-run-types'
 import type { WorkflowCopy } from './i18n'
 import { createWorkflowCopy, createWorkflowLocalizedText } from './i18n'
@@ -43,6 +44,8 @@ type BackgroundActivity = Parameters<
 type RunSnapshotIndex = Readonly<{
   subscribe(listener: () => void): () => void
   getSnapshot(): Readonly<Record<string, WorkflowRunSnapshot>>
+  /** Drops the key of a renamed path; the migrated record lives under the new key. */
+  remove(path: string): void
 }>
 
 /**
@@ -58,11 +61,7 @@ function createRunSnapshotIndex(
     {},
   )
   const listeners = new Set<() => void>()
-  coordinator.subscribe((snapshot) => {
-    snapshots = Object.freeze({
-      ...snapshots,
-      [snapshot.workflowPath]: snapshot,
-    })
+  const notify = (): void => {
     for (const listener of [...listeners]) {
       try {
         listener()
@@ -70,6 +69,13 @@ function createRunSnapshotIndex(
         // A subscriber failure must not corrupt the run selection layer.
       }
     }
+  }
+  coordinator.subscribe((snapshot) => {
+    snapshots = Object.freeze({
+      ...snapshots,
+      [snapshot.workflowPath]: snapshot,
+    })
+    notify()
   })
   return Object.freeze({
     subscribe: (listener: () => void): (() => void) => {
@@ -79,6 +85,15 @@ function createRunSnapshotIndex(
       }
     },
     getSnapshot: () => snapshots,
+    remove: (path: string): void => {
+      if (!(path in snapshots)) return
+      snapshots = Object.freeze(
+        Object.fromEntries(
+          Object.entries(snapshots).filter(([key]) => key !== path),
+        ),
+      )
+      notify()
+    },
   })
 }
 
@@ -180,9 +195,11 @@ yolo.registerModule({
           host.background.upsert(
             workflowRunActivity(
               snapshot.workflowPath,
-              isWaitingForApproval(snapshot, pendingApprovalNodeIds)
+              snapshot.paused
                 ? 'waiting'
-                : 'running',
+                : isWaitingForApproval(snapshot, pendingApprovalNodeIds)
+                  ? 'waiting'
+                  : 'running',
               openWorkflow,
             ),
           )
@@ -227,6 +244,7 @@ yolo.registerModule({
           editor={getEditor(context)}
           coordinator={coordinator}
           runs={runs}
+          store={store}
           getCopy={getCopy}
           getLocaleSnapshot={host.i18n.getSnapshot}
           subscribeLocale={host.i18n.subscribe}
@@ -239,6 +257,9 @@ yolo.registerModule({
           }}
           notice={(message) => host.ui.notice(message)}
           confirm={(options) => host.ui.confirm(options)}
+          removeRunBackground={(path) =>
+            host.background.remove(workflowRunActivityId(path))
+          }
         />
       ),
       getState: (context) => ({ path: getEditor(context).getSnapshot().path }),
@@ -279,6 +300,7 @@ function WorkflowModuleView({
   editor,
   coordinator,
   runs,
+  store,
   getCopy,
   getLocaleSnapshot,
   subscribeLocale,
@@ -289,11 +311,13 @@ function WorkflowModuleView({
   openFile,
   notice,
   confirm,
+  removeRunBackground,
 }: Readonly<{
   viewId: string
   editor: ReturnType<typeof createWorkflowEditorModel>
   coordinator: WorkflowRunCoordinatorWithNodeTests
   runs: RunSnapshotIndex
+  store: WorkflowRunStore
   getCopy(): ReturnType<typeof createWorkflowCopy>
   getLocaleSnapshot(): Readonly<{ locale: string }>
   subscribeLocale(listener: () => void): () => void
@@ -311,6 +335,7 @@ function WorkflowModuleView({
       cancelText?: string
     }>,
   ): Promise<boolean>
+  removeRunBackground(path: string): void
 }>) {
   const [styleText, setStyleText] = useState('')
   useSyncExternalStore(subscribeLocale, getLocaleSnapshot, getLocaleSnapshot)
@@ -338,6 +363,10 @@ function WorkflowModuleView({
     (input: JsonValue, modelId: string): void => {
       const snapshot = editor.getSnapshot()
       if (!snapshot.path || !snapshot.bundle) return
+      if (coordinator.isRenaming(snapshot.path)) {
+        notice(getCopy().run.renameInProgress)
+        return
+      }
       void coordinator
         .start({
           workflowPath: snapshot.path,
@@ -357,6 +386,18 @@ function WorkflowModuleView({
     },
     [coordinator, editor, getCopy, models, notice],
   )
+  const pauseRun = useCallback((): void => {
+    const path = editor.getSnapshot().path
+    if (path === null) return
+    void coordinator
+      .pause(path)
+      .then((paused) => {
+        if (!paused) notice(getCopy().run.alreadyRunning)
+      })
+      .catch((error: unknown) =>
+        notice(error instanceof Error ? error.message : String(error)),
+      )
+  }, [coordinator, editor, getCopy, notice])
   const cancelRun = useCallback((): void => {
     const path = editor.getSnapshot().path
     if (path !== null) void coordinator.cancel(path)
@@ -364,20 +405,88 @@ function WorkflowModuleView({
   const continueRun = useCallback((): void => {
     const path = editor.getSnapshot().path
     if (path === null) return
-    void coordinator
-      .continueRun(path, { confirmSideEffects: true })
-      .then((result) => {
+    if (coordinator.isRenaming(path)) {
+      notice(getCopy().run.renameInProgress)
+      return
+    }
+    // The panel resumes a paused run without asking: an in-memory pause
+    // resumes cleanly, while a recovered paused run makes the Coordinator
+    // answer `side-effect-confirmation-required`. That answer is handled
+    // here: confirm once, then retry with the confirmation granted.
+    const paused = currentRun?.paused === true
+    const attempt = (confirmSideEffects: boolean): Promise<void> =>
+      coordinator.continueRun(path, { confirmSideEffects }).then((result) => {
         if (result.ok) return
         if (result.reason === 'already-running') {
           notice(getCopy().run.alreadyRunning)
           return
         }
+        if (paused && result.reason === 'side-effect-confirmation-required') {
+          return confirm({
+            title: getCopy().run.continue,
+            message: getCopy().run.confirmSideEffects,
+            ctaText: getCopy().run.continue,
+            cancelText: getCopy().assistant.cancel,
+          }).then((accepted) => {
+            if (accepted) return attempt(true)
+            return undefined
+          })
+        }
         notice(result.error?.message ?? getCopy().run.error)
       })
-      .catch((error: unknown) =>
-        notice(error instanceof Error ? error.message : String(error)),
-      )
-  }, [coordinator, editor, getCopy, notice])
+    void attempt(!paused).catch((error: unknown) =>
+      notice(error instanceof Error ? error.message : String(error)),
+    )
+  }, [confirm, coordinator, currentRun, editor, getCopy, notice])
+  const renameWorkflow = useCallback(
+    (slug: string): Promise<boolean> => {
+      const path = editor.getSnapshot().path
+      if (path === null) return Promise.resolve(false)
+      const copy = getCopy()
+      // A rename must not land while a run is active for the path (in-memory,
+      // including paused) or while a running+paused record exists
+      // (recovered). The lease below refuses start/continueRun for the
+      // duration; this reverse check refuses the rename itself.
+      if (coordinator.isActive(path)) {
+        notice(copy.run.cannotRenameWhileRunning)
+        return Promise.resolve(false)
+      }
+      return store.read(path).then((record) => {
+        if (record?.status === 'running' && record.paused) {
+          notice(copy.run.cannotRenameWhileRunning)
+          return false
+        }
+        // The lease must precede the rename's own exclusive section (the
+        // repository runs the file move under runExclusive) and must be
+        // released no matter how the rename settles.
+        coordinator.beginRename(path)
+        return editor
+          .rename(slug)
+          .then(async (renamed) => {
+            if (!renamed) {
+              notice(copy.run.renameFailed)
+              return false
+            }
+            const nextPath = editor.getSnapshot().path
+            if (nextPath === null) return false
+            await coordinator.notifyRenamedWorkflow(path, nextPath)
+            // Drop the stale old-path key; the migrated record was published
+            // under the new path.
+            runs.remove(path)
+            removeRunBackground(path)
+            return true
+          })
+          .catch((error: unknown) => {
+            notice(error instanceof Error ? error.message : String(error))
+            return false
+          })
+          .finally(() => {
+            coordinator.endRename(path)
+          })
+      })
+    },
+    [coordinator, editor, getCopy, notice, removeRunBackground, runs, store],
+  )
   const testNode = useCallback(
     // The second parameter is optional so the handler stays assignable to the
     // Studio's pass-through `(nodeId, input?) => Promise<...> | undefined`
@@ -429,9 +538,11 @@ function WorkflowModuleView({
         models={models}
         run={currentRun}
         onStart={startRun}
+        onPause={pauseRun}
         onCancel={cancelRun}
         onContinue={continueRun}
         onTestNode={testNode}
+        onRename={renameWorkflow}
       />
     </div>
   )

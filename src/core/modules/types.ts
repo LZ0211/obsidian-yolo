@@ -164,7 +164,16 @@ export type YoloModuleAgentEventV1 =
         | 'awaiting_approval'
       arguments?: Readonly<Record<string, unknown>>
     }>
-  | Readonly<{ type: 'completed'; text: string }>
+  | Readonly<{
+      type: 'completed'
+      text: string
+      /** Token usage for the run, when the host provider reported it. */
+      usage?: Readonly<{
+        inputTokens?: number
+        outputTokens?: number
+        totalTokens?: number
+      }>
+    }>
   | Readonly<{ type: 'aborted' }>
   | Readonly<{ type: 'error'; message: string }>
 

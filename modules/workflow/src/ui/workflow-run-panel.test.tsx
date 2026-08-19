@@ -59,6 +59,73 @@ describe('workflow run panel interactions', () => {
     ).toBe(true)
   })
 
+  it('shows Pause while running and Resume plus Stop while paused', async () => {
+    const { rerender } = await renderPanel({
+      run: createRunSnapshot({ status: 'running' }),
+    })
+    expect(findButton('Pause')).not.toBeNull()
+    expect(findButton('Resume')).toBeNull()
+    expect(stopButton()).not.toBeNull()
+
+    await rerender({
+      run: createRunSnapshot({ status: 'running', paused: true }),
+    })
+    expect(findButton('Pause')).toBeNull()
+    expect(findButton('Resume')).not.toBeNull()
+    expect(stopButton()).not.toBeNull()
+    expect(runButton()!.disabled).toBe(true)
+  })
+
+  it('Pause calls onPause', async () => {
+    const { onPause } = await renderPanel({
+      run: createRunSnapshot({ status: 'running' }),
+    })
+    act(() => findButton('Pause')!.click())
+
+    expect(onPause).toHaveBeenCalledTimes(1)
+  })
+
+  it('Resume calls onContinue without a confirmation dialog for an in-memory paused run', async () => {
+    const { onContinue, confirm } = await renderPanel({
+      run: createRunSnapshot({ status: 'running', paused: true }),
+    })
+    expect(findButton('Resume')).not.toBeNull()
+
+    act(() => findButton('Resume')!.click())
+
+    expect(confirm).not.toHaveBeenCalled()
+    expect(onContinue).toHaveBeenCalledTimes(1)
+  })
+
+  it('Stop remains enabled while paused', async () => {
+    const { onCancel } = await renderPanel({
+      run: createRunSnapshot({ status: 'running', paused: true }),
+    })
+    expect(stopButton()).not.toBeNull()
+
+    act(() => stopButton()!.click())
+
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the paused status badge while a running run is paused', async () => {
+    const { rerender } = await renderPanel({
+      run: createRunSnapshot({ status: 'running' }),
+    })
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-status__badge')
+        ?.textContent,
+    ).toBe('Running')
+
+    await rerender({
+      run: createRunSnapshot({ status: 'running', paused: true }),
+    })
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-status__badge')
+        ?.textContent,
+    ).toBe('Paused')
+  })
+
   it('shows Stop for an active run and cancels without local busy state', async () => {
     const { onCancel, rerender } = await renderPanel({
       run: createRunSnapshot({ status: 'running' }),
@@ -462,6 +529,7 @@ async function renderPanel(
   props: Partial<WorkflowRunPanelProps> = {},
 ): Promise<{
   onStart: jest.Mock
+  onPause: jest.Mock
   onCancel: jest.Mock
   onContinue: jest.Mock
   onSelectNode: jest.Mock
@@ -470,6 +538,7 @@ async function renderPanel(
   rerender: (next: Partial<WorkflowRunPanelProps>) => Promise<void>
 }> {
   const onStart = jest.fn()
+  const onPause = jest.fn()
   const onCancel = jest.fn()
   const onContinue = jest.fn()
   const onSelectNode = jest.fn()
@@ -487,6 +556,7 @@ async function renderPanel(
     issues: [],
     confirm,
     onStart,
+    onPause,
     onCancel,
     onContinue,
     onSelectNode,
@@ -501,6 +571,7 @@ async function renderPanel(
   await render()
   return {
     onStart,
+    onPause,
     onCancel,
     onContinue,
     onSelectNode,

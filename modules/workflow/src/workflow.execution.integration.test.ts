@@ -343,6 +343,160 @@ describe('workflow execution lifecycle through the module', () => {
     expect(await host.store.read('demo/WORKFLOW.md')).toEqual(record)
     expect(host.background.activities.size).toBe(0)
   })
+
+  it('pause, reload, resume, and rename keep the run recoverable', async () => {
+    const host = new ExecutionHost()
+    seedWorkflow(host)
+    const gate = deferred()
+    host.agent = createFakeAgent({
+      gate: gate.promise,
+      usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 },
+    })
+    await activateModule(host)
+
+    const element = registeredView(host).render(createViewContext('view-1'))
+    const { coordinator, editor } = element.props
+    await editor.load('demo/WORKFLOW.md')
+    const bundle = editor.getSnapshot().bundle
+    expect(bundle).not.toBeNull()
+    const started = await coordinator.start({
+      workflowPath: 'demo/WORKFLOW.md',
+      bundle: bundle!,
+      modelSnapshot: host.modelSnapshot,
+      input: { topic: 'integration' },
+    })
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+
+    // The held agent call keeps the run mid-flight; pause parks the chain.
+    await until(async () => {
+      const record = await host.store.read('demo/WORKFLOW.md')
+      return record?.nodes.agent.status === 'running'
+    })
+    expect(await coordinator.pause('demo/WORKFLOW.md')).toBe(true)
+    gate.resolve()
+    await until(async () => {
+      const record = await host.store.read('demo/WORKFLOW.md')
+      return (
+        record?.nodes.agent.status === 'succeeded' && record.paused === true
+      )
+    })
+    let record = await host.store.read('demo/WORKFLOW.md')
+    expect(record?.status).toBe('running')
+    expect(record?.paused).toBe(true)
+    expect(record?.nodes.output.status).toBe('pending')
+
+    // Re-activate the module over the same store: the recovered paused run
+    // publishes into the fresh module-level run selection layer.
+    await moduleDefinition!.activate(host.api)
+    const recoveredView = host.workspace.registerView.mock
+      .calls[1]?.[0] as RegisteredView
+    const recovered = recoveredView.render(createViewContext('view-2'))
+    expect(recovered.props.runs.getSnapshot()['demo/WORKFLOW.md']?.status).toBe(
+      'running',
+    )
+    expect(recovered.props.runs.getSnapshot()['demo/WORKFLOW.md']?.paused).toBe(
+      true,
+    )
+    // The paused recovered run maps to a waiting background activity.
+    expect(
+      host.background.upsert.mock.calls.some(
+        ([activity]) =>
+          activity.id === 'workflow:run:demo/WORKFLOW.md' &&
+          activity.status === 'waiting',
+      ),
+    ).toBe(true)
+
+    // Resume with the side-effect confirmation. The agent node already
+    // succeeded with its usage before the pause; the resume re-executes only
+    // the remaining output node, so the run-level usage keeps the agent's.
+    const continued = await recovered.props.coordinator.continueRun(
+      'demo/WORKFLOW.md',
+      { confirmSideEffects: true },
+    )
+    expect(continued).toEqual({ ok: true, runId: record!.runId })
+    await terminalStoredRun(host.store, 'demo/WORKFLOW.md')
+    record = await host.store.read('demo/WORKFLOW.md')
+    expect(record?.status).toBe('succeeded')
+    expect(record?.nodes.agent.usage).toEqual({
+      inputTokens: 7,
+      outputTokens: 3,
+      totalTokens: 10,
+    })
+    expect(record?.usage).toEqual({
+      inputTokens: 7,
+      outputTokens: 3,
+      totalTokens: 10,
+    })
+
+    // Rename after success: the record migrates and the path-keyed surfaces
+    // follow (the view-level lease and index re-key are covered by the
+    // module view tests).
+    await recovered.props.coordinator.notifyRenamedWorkflow(
+      'demo/WORKFLOW.md',
+      'renamed/WORKFLOW.md',
+    )
+    const migrated = await host.store.read('renamed/WORKFLOW.md')
+    expect(migrated).not.toBeNull()
+    expect(migrated?.workflowPath).toBe('renamed/WORKFLOW.md')
+    expect(migrated?.definition.workflowPath).toBe('renamed/WORKFLOW.md')
+    expect(migrated?.usage).toEqual({
+      inputTokens: 7,
+      outputTokens: 3,
+      totalTokens: 10,
+    })
+    expect(await host.store.read('demo/WORKFLOW.md')).toBeNull()
+    expect(
+      recovered.props.runs.getSnapshot()['renamed/WORKFLOW.md']?.status,
+    ).toBe('succeeded')
+    // No stale background activity under the old path id.
+    expect(
+      host.background.activities.get('workflow:run:demo/WORKFLOW.md'),
+    ).toBeUndefined()
+    // continueRun resolves the migrated path (a succeeded record is final,
+    // so the answer proves the path resolved instead of a not-found).
+    expect(
+      await recovered.props.coordinator.continueRun('renamed/WORKFLOW.md', {
+        confirmSideEffects: true,
+      }),
+    ).toEqual({ ok: false, reason: 'not-continuable' })
+  })
+
+  it('usage aggregates across nodes into the run record', async () => {
+    const host = new ExecutionHost()
+    seedWorkflow(host)
+    host.agent = createFakeAgent({
+      usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 },
+    })
+    await activateModule(host)
+
+    const element = registeredView(host).render(createViewContext('view-1'))
+    const { coordinator, editor } = element.props
+    await editor.load('demo/WORKFLOW.md')
+    const bundle = editor.getSnapshot().bundle
+    expect(bundle).not.toBeNull()
+    const started = await coordinator.start({
+      workflowPath: 'demo/WORKFLOW.md',
+      bundle: bundle!,
+      modelSnapshot: host.modelSnapshot,
+      input: { topic: 'integration' },
+    })
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await terminalStoredRun(host.store, 'demo/WORKFLOW.md')
+
+    const record = await host.store.read('demo/WORKFLOW.md')
+    expect(record?.nodes.agent.usage).toEqual({
+      inputTokens: 7,
+      outputTokens: 3,
+      totalTokens: 10,
+    })
+    expect(record?.usage).toEqual({
+      inputTokens: 7,
+      outputTokens: 3,
+      totalTokens: 10,
+    })
+  })
 })
 
 async function activateModule(host: ExecutionHost): Promise<void> {
@@ -471,6 +625,11 @@ function createFakeAgent(
   options: Readonly<{
     gate?: Promise<void>
     onRequest?: (request: HostAgentRequest) => void
+    usage?: Readonly<{
+      inputTokens?: number
+      outputTokens?: number
+      totalTokens?: number
+    }>
   }> = {},
 ): YoloModuleHostApiV1['agent'] {
   type HostAgentEvent =
@@ -503,9 +662,24 @@ function createFakeAgent(
       if (options.gate) await options.gate
       if (request.signal?.aborted) return
     }
-    yield { type: 'completed', text: 'done' }
+    yield {
+      type: 'completed',
+      text: 'done',
+      ...(options.usage ? { usage: options.usage } : {}),
+    }
   }
   return { stream }
+}
+
+const until = async (
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 3000,
+): Promise<void> => {
+  const start = Date.now()
+  while (!(await predicate())) {
+    if (Date.now() - start > timeoutMs) throw new Error('timed out waiting')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
 }
 
 type BackgroundActivity = Parameters<

@@ -25,7 +25,6 @@ import { getMemoryIndexRuntimeHandle } from '../memory/memoryIndexRuntime'
 import { listLiteSkillEntries } from '../skills/liteSkills'
 import { isSkillEnabledForAssistant } from '../skills/skillPolicy'
 
-
 import { resolveAgentApiContext } from './agent-api-context'
 import { DEFAULT_ASSISTANT_ID } from './default-assistant'
 import type {
@@ -143,6 +142,16 @@ export type YoloAgentEvent =
       type: 'completed'
       conversationId: string
       text: string
+      /**
+       * Token usage for the completed run, when the provider reported it
+       * (projected from the assistant message's `metadata.usage`). Absent
+       * when the run had no usage data.
+       */
+      usage?: Readonly<{
+        inputTokens?: number
+        outputTokens?: number
+        totalTokens?: number
+      }>
     }
   | {
       type: 'error'
@@ -742,10 +751,20 @@ export function conversationStateToEvents({
   }
 
   if (state.status === 'completed') {
+    const usage = assistantMessage?.metadata?.usage
     events.push({
       type: 'completed',
       conversationId: state.conversationId,
       text: currentText,
+      ...(usage
+        ? {
+            usage: {
+              inputTokens: usage.prompt_tokens,
+              outputTokens: usage.completion_tokens,
+              totalTokens: usage.total_tokens,
+            },
+          }
+        : {}),
     })
   } else if (state.status === 'error') {
     events.push({

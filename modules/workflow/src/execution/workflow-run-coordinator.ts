@@ -10,7 +10,11 @@ import {
   stableIncomingEdges,
 } from './workflow-run-graph'
 import type { WorkflowSourceValue } from './workflow-run-graph'
-import { WorkflowNodeExecutionError, isJsonValue } from './workflow-run-types'
+import {
+  WorkflowNodeExecutionError,
+  isJsonValue,
+  sumWorkflowTokenUsage,
+} from './workflow-run-types'
 import type {
   JsonValue,
   WorkflowNodeExecutionRequest,
@@ -29,6 +33,7 @@ import type {
   WorkflowRunStartResult,
   WorkflowRunStatus,
   WorkflowRunStore,
+  WorkflowTokenUsage,
 } from './workflow-run-types'
 import { validateJsonSchemaOutput } from './workflow-schema'
 
@@ -84,6 +89,34 @@ type ActiveRun = {
   persistChain: Promise<void>
   terminal: boolean
   cancelRequested: boolean
+  /** Resolves when a parked run may continue scheduling. */
+  pauseGate: Promise<void>
+  resumePause: () => void
+}
+
+/** Sum of the usage of every succeeded node; failed/aborted nodes contribute nothing. */
+function usageFromSucceededNodes(
+  snapshot: WorkflowRunSnapshot,
+): WorkflowTokenUsage | undefined {
+  return sumWorkflowTokenUsage(
+    Object.values(snapshot.nodes)
+      .filter((node) => node.status === 'succeeded')
+      .map((node) => node.usage),
+  )
+}
+
+/** Every terminal transition clears `paused`; no terminal record may keep it. */
+const terminal = (
+  snapshot: WorkflowRunSnapshot,
+  patch: Partial<WorkflowRunSnapshot>,
+): WorkflowRunSnapshot => {
+  const usage = usageFromSucceededNodes(snapshot)
+  return freezeRun({
+    ...snapshot,
+    paused: undefined,
+    ...(usage ? { usage } : {}),
+    ...patch,
+  })
 }
 
 export function createWorkflowRunCoordinator(
@@ -97,6 +130,8 @@ export function createWorkflowRunCoordinator(
   const listeners = new Set<WorkflowRunSnapshotListener>()
   /** One active ephemeral node test per view id; disposal aborts it. */
   const activeNodeTests = new Map<string, AbortController>()
+  /** Paths whose rename migration is in flight; start/continueRun refuse them. */
+  const renamingPaths = new Set<string>()
 
   const subscribe = (listener: WorkflowRunSnapshotListener): (() => void) => {
     listeners.add(listener)
@@ -170,8 +205,7 @@ export function createWorkflowRunCoordinator(
     } catch {
       if (run.terminal) return
       const failed = transition(run, {}, (current) =>
-        freezeRun({
-          ...current,
+        terminal(current, {
           status: 'failed',
           finishedAt: now(),
           error: {
@@ -203,8 +237,7 @@ export function createWorkflowRunCoordinator(
     message: string,
   ): Promise<void> => {
     const next = transition(run, { nodeId }, (snapshot) =>
-      freezeRun({
-        ...snapshot,
+      terminal(snapshot, {
         status: 'failed',
         finishedAt: now(),
         error: { code, nodeId, message },
@@ -302,6 +335,7 @@ export function createWorkflowRunCoordinator(
         withNodeRun(snapshot, node.id, {
           status: 'succeeded',
           output: cloneJsonValue(result.value),
+          ...(result.usage ? { usage: result.usage } : {}),
           finishedAt: now(),
         }),
     )
@@ -411,8 +445,12 @@ export function createWorkflowRunCoordinator(
     for (const node of order) {
       if (run.terminal || run.controller.signal.aborted) return
       if (run.snapshot!.nodes[node.id]?.status !== 'pending') continue
+      if (run.snapshot!.paused) await run.pauseGate
+      if (run.terminal || run.controller.signal.aborted) return
+      if (run.snapshot!.nodes[node.id]?.status !== 'pending') continue
       await processNode(run, node)
     }
+    if (run.snapshot!.paused) await run.pauseGate
     if (run.terminal || run.cancelRequested || run.controller.signal.aborted)
       return
     const outputs = aggregateWorkflowOutputs(
@@ -421,8 +459,7 @@ export function createWorkflowRunCoordinator(
       run.snapshot!.definition.policy,
     )
     const succeeded = transition(run, {}, (snapshot) =>
-      freezeRun({
-        ...snapshot,
+      terminal(snapshot, {
         outputs,
         status: 'succeeded',
         finishedAt: now(),
@@ -439,8 +476,7 @@ export function createWorkflowRunCoordinator(
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           const failed = transition(run, {}, (snapshot) =>
-            freezeRun({
-              ...snapshot,
+            terminal(snapshot, {
               status: 'failed',
               finishedAt: now(),
               error: {
@@ -462,6 +498,10 @@ export function createWorkflowRunCoordinator(
     input: WorkflowRunStartInput,
   ): Promise<WorkflowRunStartResult> => {
     const { workflowPath } = input
+    // A rename lease refuses new runs for the path before the synchronous
+    // reservation: the record migration must land first.
+    if (renamingPaths.has(workflowPath))
+      return { ok: false, reason: 'already-running' }
     if (activeRuns.has(workflowPath))
       return { ok: false, reason: 'already-running' }
     // A full run supersedes every pending node test, in every view: a stale
@@ -480,8 +520,26 @@ export function createWorkflowRunCoordinator(
       persistChain: Promise.resolve(),
       terminal: false,
       cancelRequested: false,
+      // Fresh runs start unparked; recovered runs get a real gate in Task 3.
+      pauseGate: Promise.resolve(),
+      resumePause: () => undefined,
     }
     activeRuns.set(workflowPath, run)
+
+    // A recovered paused run has no ActiveRun, so the in-memory guard above
+    // cannot see it. The reservation precedes the read to keep the Phase 2
+    // synchronous-reservation invariant: no two starts both pass the check.
+    try {
+      const record = await store.read(workflowPath)
+      if (record?.status === 'running' && record.paused) {
+        if (activeRuns.get(workflowPath) === run)
+          activeRuns.delete(workflowPath)
+        return { ok: false, reason: 'already-running' }
+      }
+    } catch {
+      // Storage read failure: continue as today (definition build will
+      // surface storage issues).
+    }
 
     const built = await createWorkflowDefinition(
       input.bundle,
@@ -543,27 +601,130 @@ export function createWorkflowRunCoordinator(
     return { ok: true, runId: run.runId }
   }
 
+  const pause = async (workflowPath: string): Promise<boolean> => {
+    const run = activeRuns.get(workflowPath)
+    if (!run) return false
+    if (run.snapshot === null) await run.materialized
+    if (activeRuns.get(workflowPath) !== run || run.snapshot === null)
+      return false
+    if (run.snapshot.status !== 'running' || run.snapshot.paused) return false
+    // Each parking episode installs a fresh unresolved gate; continueRun and
+    // the terminal transitions resolve it through run.resumePause.
+    let resumePause!: () => void
+    run.pauseGate = new Promise<void>((resolve) => {
+      resumePause = resolve
+    })
+    run.resumePause = resumePause
+    const next = transition(run, {}, (snapshot) =>
+      freezeRun({ ...snapshot, paused: true }),
+    )
+    if (!next) return false
+    await enqueuePersist(run, next).catch(() => undefined)
+    return true
+  }
+
   const cancel = async (workflowPath: string): Promise<void> => {
     const run = activeRuns.get(workflowPath)
-    if (!run) return
-    run.controller.abort()
-    if (run.snapshot === null) await run.materialized
-    if (activeRuns.get(workflowPath) !== run || run.snapshot === null) return
-    const next = transition(run, { allowCancel: true }, (snapshot) =>
-      freezeRun({
-        ...snapshot,
-        cancelRequested: true,
-        status: 'cancelled',
-        finishedAt: now(),
-      }),
-    )
-    if (next) await enqueuePersist(run, next).catch(() => undefined)
+    if (run) {
+      run.controller.abort()
+      if (run.snapshot === null) await run.materialized
+      if (activeRuns.get(workflowPath) !== run || run.snapshot === null) return
+      // Wake a parked run: it re-checks the aborted controller and stops; the
+      // terminal transition below then lands as the final record.
+      run.resumePause()
+      const next = transition(run, { allowCancel: true }, (snapshot) =>
+        terminal(snapshot, {
+          cancelRequested: true,
+          status: 'cancelled',
+          finishedAt: now(),
+        }),
+      )
+      if (next) await enqueuePersist(run, next).catch(() => undefined)
+      return
+    }
+    // Record-level cancel: a recovered paused run has no ActiveRun, so there
+    // is no transition machinery; land a terminal record directly. This is a
+    // separate function from the in-memory path, but both must publish.
+    let record: WorkflowRunSnapshot | null
+    try {
+      record = await store.read(workflowPath)
+    } catch {
+      return
+    }
+    if (!record || record.status !== 'running' || !record.paused) return
+    const usage = usageFromSucceededNodes(record)
+    const cancelled = freezeRun({
+      ...record,
+      paused: undefined,
+      cancelRequested: true,
+      status: 'cancelled',
+      finishedAt: now(),
+      ...(usage ? { usage } : {}),
+    })
+    try {
+      // Check-then-write: re-read so a concurrent continueRun that rebuilt
+      // the run cannot be clobbered by a stale cancel.
+      const latest = await store.read(workflowPath)
+      if (latest?.status !== 'running' || !latest.paused) return
+      await store.write(cancelled)
+    } catch {
+      return
+    }
+    publish(cancelled)
   }
+
+  const notifyRenamedWorkflow = async (
+    oldPath: string,
+    newPath: string,
+  ): Promise<void> => {
+    // No record: nothing to migrate. The rename itself already succeeded.
+    const record = await store.read(oldPath)
+    if (!record) return
+    // Re-key the record (workflowPath and definition.workflowPath) while the
+    // definition hash stays unchanged: the migrated run resumes against the
+    // same definition. Storage errors propagate so the wiring can surface a
+    // rename whose migration failed.
+    const migrated = freezeRun({
+      ...record,
+      workflowPath: newPath,
+      definition: { ...record.definition, workflowPath: newPath },
+    })
+    await store.write(migrated)
+    await store.remove(oldPath)
+    publish(migrated)
+  }
+
+  const beginRename = (path: string): void => {
+    renamingPaths.add(path)
+  }
+  const endRename = (path: string): void => {
+    renamingPaths.delete(path)
+  }
+  const isRenaming = (path: string): boolean => renamingPaths.has(path)
+  const isActive = (path: string): boolean => activeRuns.has(path)
 
   const continueRun = async (
     workflowPath: string,
     confirmation: WorkflowRunContinueConfirmation,
   ): Promise<WorkflowRunContinueResult> => {
+    // Same synchronous refusal as start: a renamed path must not be resumed
+    // while its record migration is in flight.
+    if (renamingPaths.has(workflowPath))
+      return { ok: false, reason: 'already-running' }
+    const active = activeRuns.get(workflowPath)
+    if (active?.snapshot?.paused) {
+      // In-memory pause: no node ever re-executes, so no side-effect
+      // confirmation is needed. Reuse the same ActiveRun and its serial
+      // chain instead of rebuilding the run from the record.
+      const resumed = transition(active, {}, (snapshot) =>
+        freezeRun({ ...snapshot, paused: undefined }),
+      )
+      if (!resumed) return { ok: false, reason: 'already-running' }
+      await enqueuePersist(active, resumed).catch(() => undefined)
+      // Wake the parked chain; it re-reads the snapshot, now unparked.
+      active.resumePause()
+      return { ok: true, runId: active.runId }
+    }
     if (activeRuns.has(workflowPath))
       return { ok: false, reason: 'already-running' }
     if (!confirmation.confirmSideEffects)
@@ -582,8 +743,36 @@ export function createWorkflowRunCoordinator(
       }
     }
     if (!record) return { ok: false, reason: 'not-found' }
-    if (record.status === 'succeeded')
+    // A cancelled record is final: it must never be resurrected by a stale
+    // continue run.
+    if (record.status === 'succeeded' || record.status === 'cancelled')
       return { ok: false, reason: 'not-continuable' }
+    // Check-then-act: re-read before materializing the rebuilt run. A
+    // record-level cancel (or a fresh run) may have landed since the first
+    // read; committing to a stale record would resurrect the run.
+    if (activeRuns.has(workflowPath))
+      return { ok: false, reason: 'already-running' }
+    let latest: WorkflowRunSnapshot | null
+    try {
+      latest = await store.read(workflowPath)
+    } catch {
+      return {
+        ok: false,
+        reason: 'storage-failed',
+        error: {
+          code: 'storage-failed',
+          message: 'Failed to read the workflow run record',
+        },
+      }
+    }
+    if (!latest) return { ok: false, reason: 'not-found' }
+    if (
+      latest.runId !== record.runId ||
+      latest.status === 'succeeded' ||
+      latest.status === 'cancelled'
+    )
+      return { ok: false, reason: 'not-continuable' }
+    record = latest
     const resumeNodeId = topologicalWorkflowOrder(
       record.definition.topology,
     ).find((node) => {
@@ -592,6 +781,12 @@ export function createWorkflowRunCoordinator(
     })?.id
     if (!resumeNodeId) return { ok: false, reason: 'not-continuable' }
     let materialize!: () => void
+    // A recovered run gets a real pause gate so a later pause parks it at its
+    // next node boundary exactly like a fresh run.
+    let resumePause!: () => void
+    const pauseGate = new Promise<void>((resolve) => {
+      resumePause = resolve
+    })
     const run: ActiveRun = {
       workflowPath,
       runId: record.runId,
@@ -604,10 +799,15 @@ export function createWorkflowRunCoordinator(
       persistChain: Promise.resolve(),
       terminal: false,
       cancelRequested: false,
+      pauseGate,
+      resumePause,
     }
     activeRuns.set(workflowPath, run)
     const snapshot = freezeRun({
       ...record,
+      // A recovered paused record must not re-park: the boundary check would
+      // immediately await the gate again.
+      paused: undefined,
       status: 'running',
       cancelRequested: false,
       error: undefined,
@@ -638,8 +838,13 @@ export function createWorkflowRunCoordinator(
     const records = await store.list()
     for (const record of records) {
       if (record.status !== 'running') continue
-      const interrupted = freezeRun({
-        ...record,
+      if (record.paused) {
+        // A deliberately parked run survives reload as-is; listeners (and
+        // the background sink) still need it so the UI can offer resume.
+        publish(record)
+        continue
+      }
+      const interrupted = terminal(record, {
         status: 'interrupted',
         finishedAt: now(),
       })
@@ -658,8 +863,10 @@ export function createWorkflowRunCoordinator(
     const persists: Promise<void>[] = []
     for (const run of [...activeRuns.values()]) {
       run.controller.abort()
+      // Wake a parked run: it re-checks the aborted controller and stops.
+      run.resumePause()
       const next = transition(run, { allowCancel: true }, (snapshot) =>
-        freezeRun({ ...snapshot, status: 'interrupted', finishedAt: now() }),
+        terminal(snapshot, { status: 'interrupted', finishedAt: now() }),
       )
       if (next) persists.push(enqueuePersist(run, next).catch(() => undefined))
     }
@@ -784,8 +991,14 @@ export function createWorkflowRunCoordinator(
 
   return Object.freeze({
     start,
+    pause,
     cancel,
     continueRun,
+    notifyRenamedWorkflow,
+    isRenaming,
+    isActive,
+    beginRename,
+    endRename,
     initialize,
     quiesce,
     subscribe,

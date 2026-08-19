@@ -42,6 +42,12 @@ export type CreateWorkflowResult =
       ok: false
       reason: 'target-exists' | 'invalid-input' | 'stale'
     }>
+export type RenameWorkflowResult =
+  | Readonly<{ ok: true; nextPath: string }>
+  | Readonly<{
+      ok: false
+      reason: 'not-found' | 'target-exists' | 'invalid-slug' | 'failed'
+    }>
 export type WorkflowRepositoryEvent =
   | Readonly<{ type: 'root-changed' }>
   | Readonly<{
@@ -68,6 +74,7 @@ export type WorkflowRepository = Readonly<{
   ): Promise<RepositoryWriteResult>
   trash(path: string): Promise<boolean>
   trashStep(manifestPath: string, relativePath: string): Promise<boolean>
+  renameWorkflow(path: string, nextSlug: string): Promise<RenameWorkflowResult>
   subscribe(listener: (event: WorkflowRepositoryEvent) => void): () => void
 }>
 
@@ -149,6 +156,8 @@ export function createWorkflowRepository(host: Host): WorkflowRepository {
         : Promise.resolve(false),
     trashStep: (manifestPath, relativePath) =>
       trashStepFile(host, root, manifestPath, relativePath),
+    renameWorkflow: (path, nextSlug) =>
+      renameWorkflowFile(host, root, path, nextSlug),
     subscribe: (listener) => subscribeToRoot(host, root, listener),
   })
 }
@@ -203,7 +212,9 @@ async function writeBundle(
 ): Promise<CreateWorkflowResult> {
   if (
     !isSlug(input.slug) ||
-    !input.stepFiles.every((file) => isSafeWorkflowStepPath(file.relativePath)) ||
+    !input.stepFiles.every((file) =>
+      isSafeWorkflowStepPath(file.relativePath),
+    ) ||
     new Set(input.stepFiles.map((file) => file.relativePath)).size !==
       input.stepFiles.length
   )
@@ -228,7 +239,10 @@ async function writeBundle(
         }
         const target = at(folder, file.relativePath)
         await host.vault.ensureFolder(target.slice(0, target.lastIndexOf('/')))
-        const created = await host.vault.createTextIfAbsent(target, file.content)
+        const created = await host.vault.createTextIfAbsent(
+          target,
+          file.content,
+        )
         if (!created) {
           await cleanup()
           return { ok: false, reason: 'target-exists' }
@@ -256,6 +270,74 @@ async function writeBundle(
     } catch (error) {
       await cleanup()
       throw error
+    }
+  })
+}
+
+async function renameWorkflowFile(
+  host: Host,
+  root: () => string,
+  path: string,
+  nextSlug: string,
+): Promise<RenameWorkflowResult> {
+  if (!isManifestPath(path)) return { ok: false, reason: 'not-found' }
+  if (!isSlug(nextSlug)) return { ok: false, reason: 'invalid-slug' }
+  const currentRoot = root()
+  const oldFolder = at(currentRoot, path.slice(0, -'/WORKFLOW.md'.length))
+  const newFolder = at(currentRoot, nextSlug)
+  return host.paths.runExclusive('workflows', async () => {
+    const operationRoot = root()
+    if (root() !== operationRoot) return { ok: false, reason: 'failed' }
+    if (await host.vault.exists(newFolder))
+      return { ok: false, reason: 'target-exists' }
+    // listChildren is direct-children-only and renamePath is file-only, so a
+    // rename walks the folder subtree and moves every file individually.
+    const collectFiles = (folder: string): string[] =>
+      host.vault
+        .listChildren(folder)
+        .flatMap((entry) =>
+          entry.kind === 'file' ? [entry.path] : collectFiles(entry.path),
+        )
+    const files = collectFiles(oldFolder)
+    if (files.length === 0) return { ok: false, reason: 'not-found' }
+    // listChildren paths start with `folder/`; strip the folder and its
+    // separator so `at()` joins a clean relative path (no double slashes).
+    const relativeIn = (folder: string, filePath: string): string =>
+      filePath.slice(folder.length + 1)
+    const moved: string[] = []
+    const undo = async (): Promise<void> => {
+      for (const movedPath of moved.reverse()) {
+        await host.vault
+          .renamePath(
+            movedPath,
+            at(oldFolder, relativeIn(newFolder, movedPath)),
+          )
+          .catch(() => false)
+      }
+      await host.vault.removeEmptyFolderExact(newFolder).catch(() => false)
+    }
+    try {
+      await host.vault.ensureFolder(newFolder)
+      // STEP files first, WORKFLOW.md last so list() never sees a half-state.
+      const ordered = [
+        ...files.filter((file) => !file.endsWith('/WORKFLOW.md')),
+        ...files.filter((file) => file.endsWith('/WORKFLOW.md')),
+      ]
+      for (const file of ordered) {
+        const target = at(newFolder, relativeIn(oldFolder, file))
+        // renamePath requires the destination parent to exist.
+        await host.vault.ensureFolder(target.slice(0, target.lastIndexOf('/')))
+        await host.vault.renamePath(file, target)
+        moved.push(target)
+      }
+      if (root() !== operationRoot) {
+        await undo()
+        return { ok: false, reason: 'failed' }
+      }
+      return { ok: true, nextPath: `${nextSlug}/WORKFLOW.md` }
+    } catch {
+      await undo()
+      return { ok: false, reason: 'failed' }
     }
   })
 }

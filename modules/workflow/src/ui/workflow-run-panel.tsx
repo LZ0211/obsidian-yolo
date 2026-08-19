@@ -1,4 +1,4 @@
-import { AlertTriangle, CircleStop, Play } from 'lucide-react'
+import { AlertTriangle, CircleStop, Pause, Play } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import type { WorkflowIssue } from '../domain/workflow-model'
@@ -28,6 +28,7 @@ export type WorkflowRunPanelProps = Readonly<{
     }>,
   ): Promise<boolean>
   onStart(input: JsonValue, modelId: string): void
+  onPause(): void
   onCancel(): void
   onContinue(): void
   onSelectNode(nodeId: string): void
@@ -68,6 +69,7 @@ export function WorkflowRunPanel({
   issues,
   confirm,
   onStart,
+  onPause,
   onCancel,
   onContinue,
   onSelectNode,
@@ -96,7 +98,11 @@ export function WorkflowRunPanel({
   }, [selectedNodeId])
 
   const running = run?.status === 'running'
-  const continuable = run?.status === 'failed' || run?.status === 'interrupted'
+  const runningPaused = running && run?.paused === true
+  // Paused runs are resumable like failed and interrupted ones; the Resume
+  // button owns the paused path while Continue stays for terminal states.
+  const continuable =
+    run?.status === 'failed' || run?.status === 'interrupted' || runningPaused
   const runDisabled =
     dirty || issues.length > 0 || modelSnapshot.models.length === 0 || running
   const runDisabledReason = dirty
@@ -141,7 +147,7 @@ export function WorkflowRunPanel({
   }
 
   const handleContinue = (): void => {
-    if (!continuable) return
+    if (!continuable || running) return
     void confirm({
       title: copy.run.continue,
       message: copy.run.confirmSideEffects,
@@ -150,6 +156,15 @@ export function WorkflowRunPanel({
     }).then((accepted) => {
       if (accepted) onContinue()
     })
+  }
+
+  // Resume never asks here: the Coordinator decides whether a paused run
+  // needs the side-effect confirmation (in-memory pauses resume cleanly, a
+  // recovered one returns `side-effect-confirmation-required` and the
+  // view-level continue handler confirms before retrying).
+  const handleResume = (): void => {
+    if (!runningPaused) return
+    onContinue()
   }
 
   const handleTestNode = (): void => {
@@ -213,6 +228,26 @@ export function WorkflowRunPanel({
           />
         </label>
         <div className="yolo-workflow-run-controls__actions">
+          {running && !runningPaused ? (
+            <button
+              type="button"
+              className="yolo-workflow-run-controls__pause"
+              onClick={onPause}
+            >
+              <Pause size={13} />
+              {copy.run.pause}
+            </button>
+          ) : null}
+          {runningPaused ? (
+            <button
+              type="button"
+              className="yolo-workflow-run-controls__resume"
+              onClick={handleResume}
+            >
+              <Play size={13} />
+              {copy.run.resume}
+            </button>
+          ) : null}
           {running ? (
             <button
               type="button"
@@ -223,7 +258,7 @@ export function WorkflowRunPanel({
               {copy.run.stop}
             </button>
           ) : null}
-          {continuable ? (
+          {continuable && !running ? (
             <button
               type="button"
               className="yolo-workflow-run-controls__continue"
@@ -277,7 +312,9 @@ export function WorkflowRunPanel({
               <span
                 className={`yolo-workflow-run-status__badge yolo-workflow-run-status__badge--${run.status}`}
               >
-                {copy.run.status[run.status]}
+                {run.paused === true
+                  ? copy.run.status.paused
+                  : copy.run.status[run.status]}
               </span>
               <span className="yolo-workflow-run-status__progress">
                 {succeededCount}/{run.definition.topology.nodes.length}

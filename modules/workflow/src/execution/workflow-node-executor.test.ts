@@ -311,6 +311,55 @@ describe('workflow node executor', () => {
     expect(agent.calls[0].tools).toBeUndefined()
   })
 
+  it('passes completed usage through to the node result', async () => {
+    const { executor } = makeExecutor(async function* () {
+      yield {
+        type: 'completed',
+        text: 'x',
+        usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 },
+      }
+    })
+    const result = await executor.execute(makeRequest({}))
+    expect(result).toEqual({
+      value: 'x',
+      usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 },
+    })
+  })
+
+  it('omits usage from the node result when the completed event carries none', async () => {
+    const { executor } = makeExecutor(async function* () {
+      yield completed('x')
+    })
+    const result = await executor.execute(makeRequest({}))
+    expect(result).toEqual({ value: 'x' })
+    expect(result).not.toHaveProperty('usage')
+  })
+
+  it('sums per-item usage across mapAgent workers with a total fallback', async () => {
+    const { executor } = makeExecutor(async function* (request) {
+      const parsed = JSON.parse(request.prompt ?? '{}') as { index: number }
+      yield {
+        type: 'completed',
+        text: `r-${parsed.index}`,
+        usage: { inputTokens: 2, outputTokens: 1 },
+      }
+    })
+    const result = await executor.execute(
+      makeRequest({
+        node: node('map', 'mapAgent', 'steps/map/STEP.md'),
+        upstream: [{ nodeId: 'a', value: ['i0', 'i1'] }],
+      }),
+    )
+    expect(result.value).toEqual(['r-0', 'r-1'])
+    // Each call has no explicit total; the per-call input+output fallback
+    // (3) sums across the two workers.
+    expect(result.usage).toEqual({
+      inputTokens: 4,
+      outputTokens: 2,
+      totalTokens: 6,
+    })
+  })
+
   it('duplicate or invalid output submissions return tool errors and do not overwrite the first value', async () => {
     const schema = outputSchema()
     const outcomes: WorkflowAgentToolResult[] = []

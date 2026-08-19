@@ -195,7 +195,8 @@ describe('workflow repository', () => {
   it('reports a root switch during create as stale and cleans created steps', async () => {
     const fake = new MemoryHost('first')
     fake.createHook = (path) => {
-      if (path === 'first/workflow/steps/input/STEP.md') fake.changeRoot('second')
+      if (path === 'first/workflow/steps/input/STEP.md')
+        fake.changeRoot('second')
     }
     const repository = createWorkflowRepository(fake.host)
 
@@ -378,9 +379,9 @@ describe('workflow repository', () => {
         ],
       }),
     ).rejects.toBe(failure)
-    expect(fake.files.has('managed/workflows/partial/steps/first/STEP.md')).toBe(
-      false,
-    )
+    expect(
+      fake.files.has('managed/workflows/partial/steps/first/STEP.md'),
+    ).toBe(false)
     expect(fake.files.has('managed/workflows/partial/WORKFLOW.md')).toBe(false)
     expect(fake.deleteCalls).toEqual([
       'managed/workflows/partial/steps/first/STEP.md',
@@ -558,6 +559,104 @@ describe('workflow repository', () => {
     expect(fake.vaultDisposes).toBe(2)
     expect(fake.vaultDisposeAttempts).toBe(3)
   })
+
+  it('renames a workflow directory with step files first and WORKFLOW.md last', async () => {
+    const fake = new MemoryHost('managed/workflows')
+    const repository = createWorkflowRepository(fake.host)
+    await repository.create({
+      slug: 'demo',
+      manifestContent: manifest('Demo'),
+      stepFiles: [
+        { relativePath: 'steps/input/STEP.md', content: 'input' },
+        { relativePath: 'steps/draft/STEP.md', content: 'draft' },
+      ],
+    })
+
+    await expect(
+      repository.renameWorkflow('demo/WORKFLOW.md', 'alpha'),
+    ).resolves.toEqual({ ok: true, nextPath: 'alpha/WORKFLOW.md' })
+
+    expect(fake.renameCalls).toEqual([
+      'managed/workflows/demo/steps/input/STEP.md -> managed/workflows/alpha/steps/input/STEP.md',
+      'managed/workflows/demo/steps/draft/STEP.md -> managed/workflows/alpha/steps/draft/STEP.md',
+      'managed/workflows/demo/WORKFLOW.md -> managed/workflows/alpha/WORKFLOW.md',
+    ])
+    expect(repository.list()).toEqual([
+      { path: 'alpha/WORKFLOW.md', title: 'alpha' },
+    ])
+    expect(fake.files.has('managed/workflows/demo/WORKFLOW.md')).toBe(false)
+    expect(fake.files.get('managed/workflows/alpha/WORKFLOW.md')).toBe(
+      manifest('Demo'),
+    )
+    expect(fake.files.get('managed/workflows/alpha/steps/draft/STEP.md')).toBe(
+      'draft',
+    )
+  })
+
+  it('rejects rename when the target slug exists', async () => {
+    const fake = new MemoryHost('managed/workflows')
+    const repository = createWorkflowRepository(fake.host)
+    await repository.create({
+      slug: 'demo',
+      manifestContent: manifest(),
+      stepFiles: [],
+    })
+    await repository.create({
+      slug: 'alpha',
+      manifestContent: manifest(),
+      stepFiles: [],
+    })
+
+    await expect(
+      repository.renameWorkflow('demo/WORKFLOW.md', 'alpha'),
+    ).resolves.toEqual({ ok: false, reason: 'target-exists' })
+    expect(fake.renameCalls).toEqual([])
+  })
+
+  it('rejects invalid slugs and unknown paths before moving anything', async () => {
+    const fake = new MemoryHost('managed/workflows')
+    const repository = createWorkflowRepository(fake.host)
+
+    await expect(
+      repository.renameWorkflow('demo/WORKFLOW.md', 'a/b'),
+    ).resolves.toEqual({ ok: false, reason: 'invalid-slug' })
+    await expect(
+      repository.renameWorkflow('missing/WORKFLOW.md', 'alpha'),
+    ).resolves.toEqual({ ok: false, reason: 'not-found' })
+    expect(fake.renameCalls).toEqual([])
+  })
+
+  it('compensates by moving files back when a later move fails', async () => {
+    const fake = new MemoryHost('managed/workflows')
+    const repository = createWorkflowRepository(fake.host)
+    await repository.create({
+      slug: 'demo',
+      manifestContent: manifest('Demo'),
+      stepFiles: [
+        { relativePath: 'first.md', content: 'first' },
+        { relativePath: 'second.md', content: 'second' },
+      ],
+    })
+    fake.renameErrorAtCall = 3
+
+    await expect(
+      repository.renameWorkflow('demo/WORKFLOW.md', 'alpha'),
+    ).resolves.toEqual({ ok: false, reason: 'failed' })
+
+    expect(fake.renameCalls).toEqual([
+      'managed/workflows/demo/first.md -> managed/workflows/alpha/first.md',
+      'managed/workflows/demo/second.md -> managed/workflows/alpha/second.md',
+      'managed/workflows/alpha/second.md -> managed/workflows/demo/second.md',
+      'managed/workflows/alpha/first.md -> managed/workflows/demo/first.md',
+    ])
+    expect(fake.files.get('managed/workflows/demo/WORKFLOW.md')).toBe(
+      manifest('Demo'),
+    )
+    expect(fake.files.get('managed/workflows/demo/first.md')).toBe('first')
+    expect(fake.files.get('managed/workflows/demo/second.md')).toBe('second')
+    expect(fake.files.has('managed/workflows/alpha/WORKFLOW.md')).toBe(false)
+    expect(fake.folders.has('managed/workflows/alpha')).toBe(false)
+  })
 })
 
 class MemoryHost {
@@ -567,6 +666,10 @@ class MemoryHost {
   readonly createResults: Array<{ ok: boolean; reason?: string }> = []
   readonly deleteCalls: string[] = []
   readonly trashCalls: string[] = []
+  readonly renameCalls: string[] = []
+  /** 1-based renamePath call index at which the fake throws. */
+  renameErrorAtCall: number | undefined
+  private renameCallCount = 0
   trashResult = true
   trashHook: ((path: string) => void) | undefined
   readonly lockNamespaces: string[] = []
@@ -641,7 +744,7 @@ class MemoryHost {
         }
       },
     },
-      vault: {
+    vault: {
       getEntry: (path: string) => this.entry(path),
       listChildren: (folder: string) => this.children(folder),
       exists: async (path: string) =>
@@ -699,7 +802,26 @@ class MemoryHost {
         this.deleteCalls.push(path)
         return this.files.delete(path)
       },
-      removeEmptyFolderExact: async () => true,
+      renamePath: async (oldPath: string, newPath: string) => {
+        this.renameCallCount++
+        if (this.renameErrorAtCall === this.renameCallCount)
+          throw new Error(`rename failed: ${oldPath}`)
+        this.renameCalls.push(`${oldPath} -> ${newPath}`)
+        if (!this.files.has(oldPath))
+          throw new Error(`Module vault file not found: ${oldPath}`)
+        if (this.files.has(newPath) || this.folders.has(newPath))
+          throw new Error(`Module vault destination already exists: ${newPath}`)
+        const content = this.files.get(oldPath)!
+        this.files.delete(oldPath)
+        this.file(newPath, content)
+      },
+      removeEmptyFolderExact: async (path: string) => {
+        if (!this.folders.has(path)) return false
+        // Mirrors the host: only a folder without direct children is removed.
+        if (this.children(path).length > 0) return false
+        this.folders.delete(path)
+        return true
+      },
       subscribe: (scope: string, listener: (event: VaultEvent) => void) => {
         this.vaultSubscribeCalls++
         const subscribeError = this.vaultSubscribeErrors.get(scope)
