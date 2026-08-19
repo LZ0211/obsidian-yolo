@@ -614,7 +614,7 @@ describe('workflow definition', () => {
     expect(result.error.message).toMatch(/tier/i)
   })
 
-  it('fails preflight when the tier-mapped id is not in the snapshot', async () => {
+  it('fails preflight with tier-unavailable when the tier-mapped id is not in the snapshot', async () => {
     const withModelIds = (
       modelIds: Readonly<Record<string, string | undefined>>,
     ) =>
@@ -638,14 +638,14 @@ describe('workflow definition', () => {
       },
       tierMap: { fast: 'missing' },
     })
-    expect(result).toEqual({
-      ok: false,
-      error: {
-        code: 'model-unavailable',
-        nodeId: 'draft',
-        message: expect.any(String),
-      },
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.tierUnavailable).toBe(true)
+    expect(result.error).toMatchObject({
+      code: 'model-unavailable',
+      nodeId: 'draft',
     })
+    expect(result.error.message).toMatch(/tier/i)
   })
 
   it('rejects empty or unknown snapshot default model ids', async () => {

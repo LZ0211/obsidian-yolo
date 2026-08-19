@@ -125,6 +125,11 @@ export async function createWorkflowDefinition(
           `Model tier "${requested}" is not configured; set it in the Workflow module settings`,
           node.id,
         )
+      if (!modelIds.has(mapped))
+        return tierUnavailable(
+          `Model tier "${requested}" maps to "${mapped}", which is unavailable`,
+          node.id,
+        )
       resolved = mapped
     } else {
       return unavailable(`Model "${requested}" is unavailable`, node.id)

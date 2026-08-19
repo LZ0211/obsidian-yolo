@@ -1115,6 +1115,83 @@ describe('workflow run coordinator', () => {
     })
   })
 
+  it('returns tier-unavailable when the tier-mapped id is not in the snapshot', async () => {
+    const topology: WorkflowTopology = {
+      ...runnableTopology(),
+      nodes: runnableTopology().nodes.map((node) =>
+        node.id === 'draft' ? { ...node, modelId: 'fast' } : node,
+      ),
+    }
+    const { coordinator, input } = makeHarness({ topology })
+
+    const start = await coordinator.start({
+      ...input,
+      tierMap: { fast: 'missing' },
+    })
+
+    expect(start.ok).toBe(false)
+    if (start.ok) return
+    expect(start.reason).toBe('tier-unavailable')
+    expect(start.error).toMatchObject({
+      code: 'model-unavailable',
+      nodeId: 'draft',
+    })
+  })
+
+  it('captures the tier map per start into the frozen run definition', async () => {
+    const topology: WorkflowTopology = {
+      ...runnableTopology(),
+      nodes: runnableTopology().nodes.map((node) =>
+        node.id === 'draft' ? { ...node, modelId: 'fast' } : node,
+      ),
+    }
+    const executor = new FakeExecutor()
+    const { coordinator, store, input } = makeHarness({ executor, topology })
+    // Both runs see both models; only the per-start tier map differs, so a
+    // resolved draft model proves the run froze the tier map given at start.
+    const modelSnapshot: WorkflowModelSnapshot = {
+      defaultModelId: 'model-a',
+      models: [
+        { id: 'model-a', name: 'Model A', providerId: 'provider' },
+        { id: 'model-b', name: 'Model B', providerId: 'provider' },
+      ],
+    }
+
+    expect(
+      (
+        await coordinator.start({
+          ...input,
+          modelSnapshot,
+          tierMap: { fast: 'model-a' },
+        })
+      ).ok,
+    ).toBe(true)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    expect(
+      (await store.read('demo/WORKFLOW.md'))?.definition.modelByNodeId.draft,
+    ).toBe('model-a')
+
+    expect(
+      (
+        await coordinator.start({
+          ...input,
+          modelSnapshot,
+          tierMap: { fast: 'model-b' },
+        })
+      ).ok,
+    ).toBe(true)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    expect(
+      (await store.read('demo/WORKFLOW.md'))?.definition.modelByNodeId.draft,
+    ).toBe('model-b')
+  })
+
   it('surfaces preflight failures without reserving the path', async () => {
     const { coordinator, store, input } = makeHarness({})
     const bad = await coordinator.start({
