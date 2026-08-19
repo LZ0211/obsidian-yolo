@@ -496,6 +496,21 @@ export function createWorkflowRunCoordinator(
     }
     activeRuns.set(workflowPath, run)
 
+    // A recovered paused run has no ActiveRun, so the in-memory guard above
+    // cannot see it. The reservation precedes the read to keep the Phase 2
+    // synchronous-reservation invariant: no two starts both pass the check.
+    try {
+      const record = await store.read(workflowPath)
+      if (record?.status === 'running' && record.paused) {
+        if (activeRuns.get(workflowPath) === run)
+          activeRuns.delete(workflowPath)
+        return { ok: false, reason: 'already-running' }
+      }
+    } catch {
+      // Storage read failure: continue as today (definition build will
+      // surface storage issues).
+    }
+
     const built = await createWorkflowDefinition(
       input.bundle,
       input.modelSnapshot,
@@ -580,21 +595,50 @@ export function createWorkflowRunCoordinator(
 
   const cancel = async (workflowPath: string): Promise<void> => {
     const run = activeRuns.get(workflowPath)
-    if (!run) return
-    run.controller.abort()
-    if (run.snapshot === null) await run.materialized
-    if (activeRuns.get(workflowPath) !== run || run.snapshot === null) return
-    // Wake a parked run: it re-checks the aborted controller and stops; the
-    // terminal transition below then lands as the final record.
-    run.resumePause()
-    const next = transition(run, { allowCancel: true }, (snapshot) =>
-      terminal(snapshot, {
-        cancelRequested: true,
-        status: 'cancelled',
-        finishedAt: now(),
-      }),
-    )
-    if (next) await enqueuePersist(run, next).catch(() => undefined)
+    if (run) {
+      run.controller.abort()
+      if (run.snapshot === null) await run.materialized
+      if (activeRuns.get(workflowPath) !== run || run.snapshot === null) return
+      // Wake a parked run: it re-checks the aborted controller and stops; the
+      // terminal transition below then lands as the final record.
+      run.resumePause()
+      const next = transition(run, { allowCancel: true }, (snapshot) =>
+        terminal(snapshot, {
+          cancelRequested: true,
+          status: 'cancelled',
+          finishedAt: now(),
+        }),
+      )
+      if (next) await enqueuePersist(run, next).catch(() => undefined)
+      return
+    }
+    // Record-level cancel: a recovered paused run has no ActiveRun, so there
+    // is no transition machinery; land a terminal record directly. This is a
+    // separate function from the in-memory path, but both must publish.
+    let record: WorkflowRunSnapshot | null
+    try {
+      record = await store.read(workflowPath)
+    } catch {
+      return
+    }
+    if (!record || record.status !== 'running' || !record.paused) return
+    const cancelled = freezeRun({
+      ...record,
+      paused: undefined,
+      cancelRequested: true,
+      status: 'cancelled',
+      finishedAt: now(),
+    })
+    try {
+      // Check-then-write: re-read so a concurrent continueRun that rebuilt
+      // the run cannot be clobbered by a stale cancel.
+      const latest = await store.read(workflowPath)
+      if (latest?.status !== 'running' || !latest.paused) return
+      await store.write(cancelled)
+    } catch {
+      return
+    }
+    publish(cancelled)
   }
 
   const continueRun = async (
@@ -633,8 +677,36 @@ export function createWorkflowRunCoordinator(
       }
     }
     if (!record) return { ok: false, reason: 'not-found' }
-    if (record.status === 'succeeded')
+    // A cancelled record is final: it must never be resurrected by a stale
+    // continue run.
+    if (record.status === 'succeeded' || record.status === 'cancelled')
       return { ok: false, reason: 'not-continuable' }
+    // Check-then-act: re-read before materializing the rebuilt run. A
+    // record-level cancel (or a fresh run) may have landed since the first
+    // read; committing to a stale record would resurrect the run.
+    if (activeRuns.has(workflowPath))
+      return { ok: false, reason: 'already-running' }
+    let latest: WorkflowRunSnapshot | null
+    try {
+      latest = await store.read(workflowPath)
+    } catch {
+      return {
+        ok: false,
+        reason: 'storage-failed',
+        error: {
+          code: 'storage-failed',
+          message: 'Failed to read the workflow run record',
+        },
+      }
+    }
+    if (!latest) return { ok: false, reason: 'not-found' }
+    if (
+      latest.runId !== record.runId ||
+      latest.status === 'succeeded' ||
+      latest.status === 'cancelled'
+    )
+      return { ok: false, reason: 'not-continuable' }
+    record = latest
     const resumeNodeId = topologicalWorkflowOrder(
       record.definition.topology,
     ).find((node) => {
@@ -643,6 +715,12 @@ export function createWorkflowRunCoordinator(
     })?.id
     if (!resumeNodeId) return { ok: false, reason: 'not-continuable' }
     let materialize!: () => void
+    // A recovered run gets a real pause gate so a later pause parks it at its
+    // next node boundary exactly like a fresh run.
+    let resumePause!: () => void
+    const pauseGate = new Promise<void>((resolve) => {
+      resumePause = resolve
+    })
     const run: ActiveRun = {
       workflowPath,
       runId: record.runId,
@@ -655,14 +733,15 @@ export function createWorkflowRunCoordinator(
       persistChain: Promise.resolve(),
       terminal: false,
       cancelRequested: false,
-      // Record-level rebuilds start unparked; recovered paused records get a
-      // real gate in Task 3.
-      pauseGate: Promise.resolve(),
-      resumePause: () => undefined,
+      pauseGate,
+      resumePause,
     }
     activeRuns.set(workflowPath, run)
     const snapshot = freezeRun({
       ...record,
+      // A recovered paused record must not re-park: the boundary check would
+      // immediately await the gate again.
+      paused: undefined,
       status: 'running',
       cancelRequested: false,
       error: undefined,
@@ -693,6 +772,12 @@ export function createWorkflowRunCoordinator(
     const records = await store.list()
     for (const record of records) {
       if (record.status !== 'running') continue
+      if (record.paused) {
+        // A deliberately parked run survives reload as-is; listeners (and
+        // the background sink) still need it so the UI can offer resume.
+        publish(record)
+        continue
+      }
       const interrupted = terminal(record, {
         status: 'interrupted',
         finishedAt: now(),

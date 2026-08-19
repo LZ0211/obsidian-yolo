@@ -15,6 +15,7 @@ import type {
   WorkflowRunSnapshot,
   WorkflowRunStartInput,
   WorkflowRunStorage,
+  WorkflowRunStore,
 } from './workflow-run-types'
 
 const modelSnapshot = (): WorkflowModelSnapshot => ({
@@ -1491,5 +1492,311 @@ describe('workflow run coordinator', () => {
       code: 'invalid-output',
       message: 'schema says no',
     })
+  })
+
+  it('initialize keeps running+paused records and publishes them', async () => {
+    const { coordinator, store, snapshots, input } = makeHarness({})
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    const succeeded = await store.read('demo/WORKFLOW.md')
+    await store.write({
+      ...succeeded!,
+      status: 'running' as const,
+      paused: true,
+      finishedAt: undefined,
+    })
+
+    const before = snapshots.length
+    await coordinator.initialize()
+
+    const record = await store.read('demo/WORKFLOW.md')
+    expect(record?.status).toBe('running')
+    expect(record?.paused).toBe(true)
+    // The kept record reached listeners exactly once, with paused intact.
+    expect(snapshots.slice(before)).toHaveLength(1)
+    expect(snapshots[before].status).toBe('running')
+    expect(snapshots[before].paused).toBe(true)
+  })
+
+  it('initialize still converts plain running records to interrupted', async () => {
+    const { coordinator, store, snapshots, input } = makeHarness({})
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    const succeeded = await store.read('demo/WORKFLOW.md')
+    await store.write({
+      ...succeeded!,
+      status: 'running' as const,
+      finishedAt: undefined,
+    })
+
+    const before = snapshots.length
+    await coordinator.initialize()
+
+    const record = await store.read('demo/WORKFLOW.md')
+    expect(record?.status).toBe('interrupted')
+    expect(record?.paused).toBeUndefined()
+    expect(snapshots.slice(before)).toHaveLength(1)
+    expect(snapshots[before].status).toBe('interrupted')
+  })
+
+  it('start rejects when the store holds a running+paused record', async () => {
+    const { coordinator, store, input } = makeHarness({})
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    const succeeded = await store.read('demo/WORKFLOW.md')
+    await store.write({
+      ...succeeded!,
+      status: 'running' as const,
+      paused: true,
+      finishedAt: undefined,
+    })
+
+    const start = await coordinator.start(input)
+    expect(start).toEqual({ ok: false, reason: 'already-running' })
+    // start left the persisted record untouched...
+    const record = await store.read('demo/WORKFLOW.md')
+    expect(record?.status).toBe('running')
+    expect(record?.paused).toBe(true)
+    // ...and released its reservation: with the record gone, a fresh start
+    // for the same path proceeds.
+    await store.remove('demo/WORKFLOW.md')
+    expect((await coordinator.start(input)).ok).toBe(true)
+  })
+
+  it('record-level cancel writes cancelled with paused cleared and publishes', async () => {
+    const { coordinator, store, snapshots, input } = makeHarness({})
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    const succeeded = await store.read('demo/WORKFLOW.md')
+    await store.write({
+      ...succeeded!,
+      status: 'running' as const,
+      paused: true,
+      finishedAt: undefined,
+    })
+
+    const before = snapshots.length
+    await coordinator.cancel('demo/WORKFLOW.md')
+
+    const record = await store.read('demo/WORKFLOW.md')
+    expect(record?.status).toBe('cancelled')
+    expect(record?.cancelRequested).toBe(true)
+    expect(record?.paused).toBeUndefined()
+    expect(snapshots.slice(before)).toHaveLength(1)
+    expect(snapshots[before].status).toBe('cancelled')
+    expect(snapshots[before].paused).toBeUndefined()
+
+    // Guard: a running record without paused is not a record-level target.
+    await store.write({
+      ...succeeded!,
+      status: 'running' as const,
+      finishedAt: undefined,
+    })
+    const beforeGuard = snapshots.length
+    await coordinator.cancel('demo/WORKFLOW.md')
+    expect((await store.read('demo/WORKFLOW.md'))?.status).toBe('running')
+    expect(snapshots.length).toBe(beforeGuard)
+
+    // Guard: no record at all is a no-op.
+    await store.remove('demo/WORKFLOW.md')
+    await coordinator.cancel('demo/WORKFLOW.md')
+    expect(await store.read('demo/WORKFLOW.md')).toBeNull()
+    expect(snapshots.length).toBe(beforeGuard)
+  })
+
+  it('record-level cancel does not resurrect a run after a stale continue read', async () => {
+    const executor = new FakeExecutor()
+    const storage = new MemoryStorage()
+    const inner = createWorkflowRunStore(storage)
+    // Once armed, the next read returns the record it observed and lands a
+    // record-level cancel in the store before the caller's following read:
+    // the store simulates a racing cancel between continueRun's read and its
+    // rebuild, so the rebuild must observe the fresh cancelled record.
+    let simulateCancelOnRead = false
+    const store: WorkflowRunStore = {
+      async read(path) {
+        const record = await inner.read(path)
+        if (
+          simulateCancelOnRead &&
+          record?.status === 'running' &&
+          record.paused
+        ) {
+          simulateCancelOnRead = false
+          await inner.write({
+            ...record,
+            paused: undefined,
+            cancelRequested: true,
+            status: 'cancelled',
+            finishedAt: 5000,
+          })
+        }
+        return record
+      },
+      list: () => inner.list(),
+      write: (run) => inner.write(run),
+      remove: (path) => inner.remove(path),
+    }
+    let now = 1000
+    let runCounter = 0
+    const coordinator = createWorkflowRunCoordinator({
+      executor,
+      store,
+      now: () => now++,
+      createRunId: () => `run-${++runCounter}`,
+    })
+    const snapshots: WorkflowRunSnapshot[] = []
+    coordinator.subscribe((snapshot) => snapshots.push(snapshot))
+    const input: WorkflowRunStartInput = {
+      workflowPath: 'demo/WORKFLOW.md',
+      bundle: bundle(runnableTopology()),
+      modelSnapshot: modelSnapshot(),
+      input: 'proceed',
+    }
+
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    const succeeded = await store.read('demo/WORKFLOW.md')
+    await store.write({
+      ...succeeded!,
+      status: 'running' as const,
+      paused: true,
+      finishedAt: undefined,
+      // The resume node was mid-flight at reload, so the record is genuinely
+      // continuable: without the re-check the rebuild would resurrect it.
+      nodes: {
+        ...succeeded!.nodes,
+        draft: { status: 'running' as const, startedAt: 5 },
+        gate: { status: 'pending' as const },
+        yes: { status: 'pending' as const },
+        no: { status: 'pending' as const },
+        merged: { status: 'pending' as const },
+        out: { status: 'pending' as const },
+      },
+    })
+    const callsBefore = executor.calls.length
+    const publishesBefore = snapshots.length
+
+    simulateCancelOnRead = true
+    const continued = await coordinator.continueRun('demo/WORKFLOW.md', {
+      confirmSideEffects: true,
+    })
+
+    expect(continued).toEqual({ ok: false, reason: 'not-continuable' })
+    const record = await store.read('demo/WORKFLOW.md')
+    expect(record?.status).toBe('cancelled')
+    expect(record?.paused).toBeUndefined()
+    expect(executor.calls.length).toBe(callsBefore)
+    expect(snapshots.length).toBe(publishesBefore)
+  })
+
+  it('continueRun on a recovered paused run rebuilds, clears paused, requires confirmation, and resumes', async () => {
+    const executor = new FakeExecutor()
+    const { coordinator, store, snapshots, input } = makeHarness({ executor })
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    const succeeded = await store.read('demo/WORKFLOW.md')
+    // Seed a recovered running+paused record whose resume node was
+    // mid-flight at reload (draft running, everything after it pending).
+    await store.write({
+      ...succeeded!,
+      status: 'running' as const,
+      paused: true,
+      finishedAt: undefined,
+      nodes: {
+        ...succeeded!.nodes,
+        draft: { status: 'running' as const, startedAt: 5 },
+        gate: { status: 'pending' as const },
+        yes: { status: 'pending' as const },
+        no: { status: 'pending' as const },
+        merged: { status: 'pending' as const },
+        out: { status: 'pending' as const },
+      },
+    })
+    // The resume node may have been mid-flight at reload, so a recovered run
+    // must confirm side effects even though it was paused.
+    executor.hold('draft')
+    const callsBeforeResume = executor.calls.length
+
+    expect(
+      await coordinator.continueRun('demo/WORKFLOW.md', {
+        confirmSideEffects: false,
+      }),
+    ).toEqual({ ok: false, reason: 'side-effect-confirmation-required' })
+
+    const publishesBefore = snapshots.length
+    const continued = await coordinator.continueRun('demo/WORKFLOW.md', {
+      confirmSideEffects: true,
+    })
+    expect(continued).toEqual({ ok: true, runId: succeeded!.runId })
+    // The rebuilt snapshot clears paused and resets the resume node to
+    // pending; the record is running again without paused.
+    expect(snapshots[publishesBefore].paused).toBeUndefined()
+    expect(snapshots[publishesBefore].nodes.draft.status).toBe('pending')
+    let record = await store.read('demo/WORKFLOW.md')
+    expect(record?.status).toBe('running')
+    expect(record?.paused).toBeUndefined()
+
+    // The re-executed resume node lands again (at-least-once), and the
+    // rebuilt ActiveRun carries a real pause gate: pause parks it at the
+    // next node boundary exactly like a fresh run.
+    await until(
+      () =>
+        executor.calls.filter((call) => call.node.id === 'draft').length === 2,
+    )
+    expect(await coordinator.pause('demo/WORKFLOW.md')).toBe(true)
+    record = await store.read('demo/WORKFLOW.md')
+    expect(record?.paused).toBe(true)
+
+    executor.releaseOne('draft')
+    await until(async () => {
+      const current = await store.read('demo/WORKFLOW.md')
+      return (
+        current?.nodes.draft.status === 'succeeded' && current.paused === true
+      )
+    })
+    record = await store.read('demo/WORKFLOW.md')
+    expect(record?.nodes.gate.status).toBe('pending')
+    expect(
+      executor.calls
+        .slice(callsBeforeResume)
+        .some((call) => call.node.id === 'yes'),
+    ).toBe(false)
+
+    // The in-memory resume of the same ActiveRun needs no confirmation.
+    expect(
+      await coordinator.continueRun('demo/WORKFLOW.md', {
+        confirmSideEffects: false,
+      }),
+    ).toEqual({ ok: true, runId: succeeded!.runId })
+
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    record = await store.read('demo/WORKFLOW.md')
+    expect(record?.status).toBe('succeeded')
+    expect(record?.paused).toBeUndefined()
+    expect(record?.nodes.draft.output).toBe('late-draft')
+    expect(
+      executor.calls.filter((call) => call.node.id === 'draft').length,
+    ).toBe(2)
   })
 })
