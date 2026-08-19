@@ -77,6 +77,7 @@ const makeSettings = (overrides: Partial<YoloSettings> = {}): YoloSettings => {
     chatTitleModelId: '',
     advancedMemoryIndexEnabled: false,
     memoryReflectionEnabled: false,
+    memoryExtractionQualityGate: 'shadow',
     embeddingModelId: '',
     rerankModelId: '',
     ttsModelId: '',

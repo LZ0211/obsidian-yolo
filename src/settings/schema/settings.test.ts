@@ -716,4 +716,42 @@ describe('parseYoloSettings', () => {
     ])
     expect(result.embeddingModelId).toBe('openai/text-embedding-3-large')
   })
+
+  it('defaults the memory extraction quality gate to shadow for legacy settings', () => {
+    const result = parseYoloSettings({
+      version: SETTINGS_SCHEMA_VERSION,
+      providers: [
+        {
+          id: 'openai',
+          presetType: 'openai',
+          apiKey: 'token',
+        },
+      ],
+      chatModels: [
+        {
+          providerId: 'openai',
+          id: 'openai/gpt-5',
+          model: 'gpt-5',
+          enable: true,
+        },
+      ],
+      chatModelId: 'openai/gpt-5',
+    })
+
+    expect(result.memoryExtractionQualityGate).toBe('shadow')
+  })
+
+  it('parses explicit off and enabled memory extraction quality gate modes', () => {
+    const off = parseYoloSettings({
+      version: SETTINGS_SCHEMA_VERSION,
+      memoryExtractionQualityGate: 'off',
+    })
+    const enabled = parseYoloSettings({
+      version: SETTINGS_SCHEMA_VERSION,
+      memoryExtractionQualityGate: 'enabled',
+    })
+
+    expect(off.memoryExtractionQualityGate).toBe('off')
+    expect(enabled.memoryExtractionQualityGate).toBe('enabled')
+  })
 })
