@@ -51,6 +51,12 @@ export type WorkflowRunError = Readonly<{
   message: string
 }>
 
+export type WorkflowTokenUsage = Readonly<{
+  inputTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+}>
+
 export type WorkflowNodeRun = Readonly<{
   status: WorkflowNodeRunStatus
   output?: JsonValue
@@ -59,6 +65,7 @@ export type WorkflowNodeRun = Readonly<{
   error?: WorkflowRunError
   startedAt?: number
   finishedAt?: number
+  usage?: WorkflowTokenUsage
 }>
 
 export type WorkflowRunSnapshot = Readonly<{
@@ -74,6 +81,8 @@ export type WorkflowRunSnapshot = Readonly<{
   cancelRequested?: boolean
   startedAt: number
   finishedAt?: number
+  paused?: boolean
+  usage?: WorkflowTokenUsage
 }>
 
 export type WorkflowNodeExecutionRequest = Readonly<{

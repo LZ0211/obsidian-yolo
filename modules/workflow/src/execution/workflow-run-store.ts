@@ -5,6 +5,7 @@ import type {
   WorkflowRunSnapshot,
   WorkflowRunStatus,
   WorkflowRunStorage,
+  WorkflowTokenUsage,
 } from './workflow-run-types'
 import { isJsonValue } from './workflow-run-types'
 
@@ -152,6 +153,11 @@ export function isWorkflowRunSnapshot(
     return false
   if (!isJsonValue(value.input)) return false
   if (!(RUN_STATUSES as readonly unknown[]).includes(value.status)) return false
+  // `paused` is only persisted as `true` on a running run; `false` is malformed.
+  if (value.paused !== undefined) {
+    if (typeof value.paused !== 'boolean' || !value.paused) return false
+    if (value.status !== 'running') return false
+  }
   if (!isRecord(value.nodes) || !isRecord(value.outputs)) return false
   for (const nodeRun of Object.values(value.nodes)) {
     if (!isNodeRun(nodeRun)) return false
@@ -166,6 +172,7 @@ export function isWorkflowRunSnapshot(
   if (typeof value.startedAt !== 'number') return false
   if (value.finishedAt !== undefined && typeof value.finishedAt !== 'number')
     return false
+  if (value.usage !== undefined && !isTokenUsage(value.usage)) return false
   return true
 }
 
@@ -188,6 +195,15 @@ function isNodeRun(value: unknown): boolean {
     return false
   if (value.finishedAt !== undefined && typeof value.finishedAt !== 'number')
     return false
+  if (value.usage !== undefined && !isTokenUsage(value.usage)) return false
+  return true
+}
+
+function isTokenUsage(value: unknown): value is WorkflowTokenUsage {
+  if (!isRecord(value)) return false
+  for (const key of ['inputTokens', 'outputTokens', 'totalTokens'] as const) {
+    if (value[key] !== undefined && typeof value[key] !== 'number') return false
+  }
   return true
 }
 

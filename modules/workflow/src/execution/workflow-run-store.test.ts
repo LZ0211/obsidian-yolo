@@ -1,5 +1,14 @@
-import { createWorkflowRunStore } from './workflow-run-store'
-import type { WorkflowRunStorage } from './workflow-run-types'
+import {
+  WorkflowRunStoreError,
+  createWorkflowRunStore,
+} from './workflow-run-store'
+import type {
+  WorkflowNodeRun,
+  WorkflowRunSnapshot,
+  WorkflowRunStatus,
+  WorkflowRunStorage,
+  WorkflowTokenUsage,
+} from './workflow-run-types'
 
 const sha256 = async (value: string): Promise<string> => {
   const digest = await crypto.subtle.digest(
@@ -38,11 +47,16 @@ const snapshot = (
   overrides: Partial<Parameters<typeof makeSnapshot>[0]> = {},
 ) => makeSnapshot(overrides)
 
-const makeSnapshot = (overrides: {
-  runId?: string
-  workflowPath?: string
-  status?: 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
-}) => ({
+const makeSnapshot = (
+  overrides: Partial<{
+    runId?: string
+    workflowPath?: string
+    status?: WorkflowRunStatus
+    paused?: boolean
+    usage?: WorkflowTokenUsage
+    nodes?: Record<string, WorkflowNodeRun>
+  }> = {},
+) => ({
   schemaVersion: 1 as const,
   runId: overrides.runId ?? 'run-1',
   workflowPath: overrides.workflowPath ?? 'demo/WORKFLOW.md',
@@ -65,10 +79,30 @@ const makeSnapshot = (overrides: {
   },
   input: { question: 'hi' },
   status: overrides.status ?? 'running',
-  nodes: {},
+  nodes: overrides.nodes ?? {},
   outputs: {},
+  ...(overrides.paused === undefined ? {} : { paused: overrides.paused }),
+  ...(overrides.usage === undefined ? {} : { usage: overrides.usage }),
   startedAt: 1,
 })
+
+const runningSnapshot = (
+  workflowPath: string,
+  extra: {
+    paused?: boolean
+    usage?: WorkflowTokenUsage
+    nodes?: Record<string, WorkflowNodeRun>
+  } = {},
+) => snapshot({ workflowPath, status: 'running', ...extra })
+
+const succeededSnapshot = (
+  workflowPath: string,
+  extra: {
+    paused?: boolean
+    usage?: WorkflowTokenUsage
+    nodes?: Record<string, WorkflowNodeRun>
+  } = {},
+) => snapshot({ workflowPath, status: 'succeeded', ...extra })
 
 describe('workflow run store', () => {
   it('writes and reads one latest record per Workflow path', async () => {
@@ -164,5 +198,63 @@ describe('workflow run store', () => {
     const read = await store.read('demo/WORKFLOW.md')
     expect(read).toEqual(run)
     expect(Object.isFrozen(read)).toBe(true)
+  })
+
+  it('accepts a running snapshot with paused: true', async () => {
+    const storage = new MemoryStorage()
+    const store = createWorkflowRunStore(storage)
+    const run = runningSnapshot('a/WORKFLOW.md', { paused: true })
+    await store.write(run)
+    expect((await store.read('a/WORKFLOW.md'))?.paused).toBe(true)
+  })
+
+  it('rejects paused on a terminal snapshot as malformed', async () => {
+    const storage = new MemoryStorage()
+    const store = createWorkflowRunStore(storage)
+    const run = { ...succeededSnapshot('a/WORKFLOW.md'), paused: true }
+    await expect(store.write(run)).rejects.toThrow(WorkflowRunStoreError)
+  })
+
+  it('rejects paused: false as malformed (only true is a legal value)', async () => {
+    const storage = new MemoryStorage()
+    const store = createWorkflowRunStore(storage)
+    const run = { ...runningSnapshot('a/WORKFLOW.md'), paused: false }
+    await expect(store.write(run)).rejects.toThrow(WorkflowRunStoreError)
+  })
+
+  it('round-trips usage aggregates on run and node records', async () => {
+    const storage = new MemoryStorage()
+    const store = createWorkflowRunStore(storage)
+    const run = succeededSnapshot('a/WORKFLOW.md', {
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      nodes: {
+        agent: {
+          status: 'succeeded',
+          usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+        },
+      },
+    })
+    await store.write(run)
+    const read = await store.read('a/WORKFLOW.md')
+    expect(read?.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+    })
+    expect(read?.nodes.agent.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+    })
+  })
+
+  it('rejects a usage object with non-numeric fields', async () => {
+    const storage = new MemoryStorage()
+    const store = createWorkflowRunStore(storage)
+    const run = {
+      ...runningSnapshot('a/WORKFLOW.md'),
+      usage: { inputTokens: 'x' },
+    } as unknown as WorkflowRunSnapshot
+    await expect(store.write(run)).rejects.toThrow(WorkflowRunStoreError)
   })
 })
