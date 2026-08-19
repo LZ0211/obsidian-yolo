@@ -16,6 +16,7 @@ import type {
   WorkflowRunStartInput,
   WorkflowRunStorage,
   WorkflowRunStore,
+  WorkflowTokenUsage,
 } from './workflow-run-types'
 
 const modelSnapshot = (): WorkflowModelSnapshot => ({
@@ -162,6 +163,8 @@ class FakeExecutor implements WorkflowNodeExecutor {
   }[] = []
   /** Raw values, cast per test; runtime validation happens in the coordinator. */
   outputs: Readonly<Record<string, unknown>> = {}
+  /** Per-node token usage returned alongside the node value. */
+  usages: Readonly<Record<string, WorkflowTokenUsage>> = {}
 
   async execute(request: WorkflowNodeExecutionRequest) {
     this.calls.push(request)
@@ -171,10 +174,10 @@ class FakeExecutor implements WorkflowNodeExecutor {
       this.failOnce.delete(nodeId)
       throw new Error(`boom ${nodeId}`)
     }
+    let value: JsonValue
     if (Object.prototype.hasOwnProperty.call(this.outputs, nodeId)) {
-      return { value: this.outputs[nodeId] as JsonValue }
-    }
-    if (nodeId in this.pendingByNode) {
+      value = this.outputs[nodeId] as JsonValue
+    } else if (nodeId in this.pendingByNode) {
       return new Promise<{ value: JsonValue }>((resolve, reject) => {
         this.pending.push({
           request,
@@ -182,8 +185,13 @@ class FakeExecutor implements WorkflowNodeExecutor {
           reject,
         })
       })
+    } else {
+      value = `value-${nodeId}`
     }
-    return { value: `value-${nodeId}` }
+    return {
+      value,
+      ...(this.usages[nodeId] ? { usage: this.usages[nodeId] } : {}),
+    }
   }
 
   pendingByNode: Record<string, boolean> = {}
@@ -346,6 +354,72 @@ describe('workflow run coordinator', () => {
     expect(Object.isFrozen(latest?.nodes.in)).toBe(true)
     expect(snapshots[0].nodes.in.status).toBe('pending')
     expect(snapshots.every((snapshot) => snapshot.runId === 'run-1')).toBe(true)
+  })
+
+  it('aggregates node usage into the run snapshot at terminal', async () => {
+    const executor = createWorkflowNodeExecutor({
+      agent: {
+        stream: async function* (): AsyncIterable<WorkflowAgentEvent> {
+          yield {
+            type: 'completed',
+            text: 'done',
+            usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 },
+          }
+        },
+      },
+    })
+    const { coordinator, store, input } = makeHarness({ executor })
+
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+
+    const snapshot = await store.read('demo/WORKFLOW.md')
+    // Both executed agent nodes carry their own usage...
+    expect(snapshot?.nodes.draft.usage).toEqual({
+      inputTokens: 7,
+      outputTokens: 3,
+      totalTokens: 10,
+    })
+    expect(snapshot?.nodes.yes.usage).toEqual({
+      inputTokens: 7,
+      outputTokens: 3,
+      totalTokens: 10,
+    })
+    // ...and the terminal run usage sums them.
+    expect(snapshot?.usage).toEqual({
+      inputTokens: 14,
+      outputTokens: 6,
+      totalTokens: 20,
+    })
+  })
+
+  it('aggregates usage of finished nodes on a failed terminal', async () => {
+    const executor = new FakeExecutor()
+    executor.usages = { draft: { inputTokens: 7, outputTokens: 3 } }
+    executor.failOnce.add('yes')
+    const { coordinator, store, input } = makeHarness({ executor })
+
+    await coordinator.start(input)
+    await until(
+      async () => (await store.read('demo/WORKFLOW.md'))?.status === 'failed',
+    )
+
+    const snapshot = await store.read('demo/WORKFLOW.md')
+    expect(snapshot?.nodes.draft.usage).toEqual({
+      inputTokens: 7,
+      outputTokens: 3,
+    })
+    expect(snapshot?.nodes.yes.status).toBe('failed')
+    // The failed node contributed nothing; the succeeded one did, with the
+    // input+output total fallback.
+    expect(snapshot?.usage).toEqual({
+      inputTokens: 7,
+      outputTokens: 3,
+      totalTokens: 10,
+    })
   })
 
   it('persists all nodes as pending before any external Agent call', async () => {

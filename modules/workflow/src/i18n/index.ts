@@ -196,6 +196,7 @@ export type WorkflowCopy = Readonly<{
     rename: string
     renamePlaceholder: string
     renameFailed: string
+    renameInProgress: string
     cannotRenameWhileRunning: string
     cannotRenameWhileDirty: string
   }>

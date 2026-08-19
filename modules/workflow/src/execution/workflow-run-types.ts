@@ -100,6 +100,8 @@ export type WorkflowNodeExecutionRequest = Readonly<{
 export type WorkflowNodeExecutionResult = Readonly<{
   value: JsonValue
   conditionResult?: boolean
+  /** Token usage of the node's agent calls, when the provider reported it. */
+  usage?: WorkflowTokenUsage
 }>
 
 export type WorkflowNodeExecutor = Readonly<{
@@ -217,6 +219,8 @@ export type WorkflowRunCoordinator = Readonly<{
   notifyRenamedWorkflow(oldPath: string, newPath: string): Promise<void>
   /** True while a rename lease is held for the path; start and continueRun refuse such paths. */
   isRenaming(path: string): boolean
+  /** True while an in-memory run (running or paused) exists for the path. */
+  isActive(path: string): boolean
   /** Holds a rename lease for the path; release it with `endRename`. */
   beginRename(path: string): void
   endRename(path: string): void
@@ -224,6 +228,49 @@ export type WorkflowRunCoordinator = Readonly<{
   quiesce(): Promise<void>
   subscribe(listener: WorkflowRunSnapshotListener): () => void
 }>
+
+/**
+ * Sums token usage across entries. An entry without an explicit total falls
+ * back to its input+output total first, so the aggregate stays consistent
+ * when some entries omit `totalTokens`. Returns undefined when no entry
+ * carries any usage.
+ */
+export function sumWorkflowTokenUsage(
+  entries: readonly (WorkflowTokenUsage | undefined)[],
+): WorkflowTokenUsage | undefined {
+  const present = entries.filter(
+    (entry): entry is WorkflowTokenUsage => entry !== undefined,
+  )
+  if (present.length === 0) return undefined
+  const inputTokens = sumDefinedTokens(
+    present.map((entry) => entry.inputTokens),
+  )
+  const outputTokens = sumDefinedTokens(
+    present.map((entry) => entry.outputTokens),
+  )
+  const totalTokens = sumDefinedTokens(
+    present.map(
+      (entry) =>
+        entry.totalTokens ??
+        (entry.inputTokens !== undefined || entry.outputTokens !== undefined
+          ? (entry.inputTokens ?? 0) + (entry.outputTokens ?? 0)
+          : undefined),
+    ),
+  )
+  return {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+  }
+}
+
+function sumDefinedTokens(
+  values: readonly (number | undefined)[],
+): number | undefined {
+  const defined = values.filter((value): value is number => value !== undefined)
+  if (defined.length === 0) return undefined
+  return defined.reduce((sum, value) => sum + value, 0)
+}
 
 export function isJsonValue(value: unknown): value is JsonValue {
   if (value === null || typeof value === 'boolean' || typeof value === 'string')

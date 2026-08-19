@@ -92,6 +92,12 @@ export type WorkflowStudioProps = Readonly<{
   onCancel(): void
   onContinue(): void
   /**
+   * Renames the current workflow. The view wraps the editor rename with the
+   * run-control lease and publishes the run-record migration; a false answer
+   * has already shown its own notice.
+   */
+  onRename(slug: string): Promise<boolean>
+  /**
    * Passed through to the Run panel, which supplies the parsed input. A
    * handler that resolves to nothing is treated as a completed test without
    * a result.
@@ -153,6 +159,7 @@ export function WorkflowStudio({
   onPause,
   onCancel,
   onContinue,
+  onRename,
   onTestNode,
 }: WorkflowStudioProps) {
   const snapshot = useSyncExternalStore(
@@ -506,21 +513,16 @@ export function WorkflowStudio({
         showNotice(copy.run.renameFailed)
         return
       }
-      void model
-        .rename(slug)
-        .then((renamed) => {
-          if (!renamed) {
-            showNotice(copy.run.renameFailed)
-            return
-          }
-          setRenameOpen(false)
-          setRenameSlug('')
-        })
-        .catch((error: unknown) =>
-          showNotice(error instanceof Error ? error.message : String(error)),
-        )
+      // The view wraps the rename with the run-control lease and publishes
+      // the run-record migration; a false answer already carries its own
+      // notice, so the form only closes on success.
+      void onRename(slug).then((renamed) => {
+        if (!renamed) return
+        setRenameOpen(false)
+        setRenameSlug('')
+      })
     },
-    [copy.run.renameFailed, model, renameSlug, showNotice],
+    [copy.run.renameFailed, onRename, renameSlug, showNotice],
   )
 
   const addNode = useCallback(

@@ -201,6 +201,7 @@ export const en = {
     rename: 'Rename workflow',
     renamePlaceholder: 'New workflow name',
     renameFailed: 'Failed to rename the workflow.',
+    renameInProgress: 'The workflow is being renamed.',
     cannotRenameWhileRunning: 'Stop or finish the run before renaming.',
     cannotRenameWhileDirty:
       'Save or discard the current edits before renaming.',

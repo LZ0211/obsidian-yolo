@@ -4,12 +4,16 @@ import {
   evaluateWorkflowGate,
   mergeWorkflowSources,
 } from './workflow-run-graph'
-import { WorkflowNodeExecutionError } from './workflow-run-types'
+import {
+  WorkflowNodeExecutionError,
+  sumWorkflowTokenUsage,
+} from './workflow-run-types'
 import type {
   JsonValue,
   WorkflowNodeExecutionRequest,
   WorkflowNodeExecutionResult,
   WorkflowNodeExecutor,
+  WorkflowTokenUsage,
 } from './workflow-run-types'
 import { workflowSchemaValidator } from './workflow-schema'
 import type { WorkflowSchemaValidator } from './workflow-schema'
@@ -43,7 +47,7 @@ export type WorkflowAgentEvent =
       status: string
       arguments?: Readonly<Record<string, unknown>>
     }>
-  | Readonly<{ type: 'completed'; text: string }>
+  | Readonly<{ type: 'completed'; text: string; usage?: WorkflowTokenUsage }>
   | Readonly<{ type: 'aborted' }>
   | Readonly<{ type: 'error'; message: string }>
 
@@ -121,19 +125,19 @@ export function createWorkflowNodeExecutor(
           workflowInput: request.workflowInput,
           upstream: request.upstream,
         })
-        if (request.node.outputSchema === undefined)
-          return {
-            value: await executeTextAgentNode(context, {
-              prompt,
-              signal: request.signal,
-              outputInstruction: TEXT_OUTPUT_INSTRUCTION,
-            }),
-          }
+        if (request.node.outputSchema === undefined) {
+          const { value, usage } = await executeTextAgentNode(context, {
+            prompt,
+            signal: request.signal,
+            outputInstruction: TEXT_OUTPUT_INSTRUCTION,
+          })
+          return { value, ...(usage ? { usage } : {}) }
+        }
         const submission = createOutputSubmissionTool(
           validator,
           request.node.outputSchema,
         )
-        await executeAgentStream(context, {
+        const { usage } = await executeAgentStream(context, {
           prompt,
           signal: request.signal,
           tool: submission.tool,
@@ -145,7 +149,7 @@ export function createWorkflowNodeExecutor(
             'agent-failed',
             `Agent finished without a valid submit_workflow_output submission`,
           )
-        return { value }
+        return { value, ...(usage ? { usage } : {}) }
       }
     }
   }
@@ -195,30 +199,37 @@ type AgentCallOptions = Readonly<{
 async function executeTextAgentNode(
   context: AgentCallContext,
   options: AgentCallOptions,
-): Promise<JsonValue> {
-  const text = await executeAgentStream(context, options)
+): Promise<Readonly<{ value: JsonValue; usage?: WorkflowTokenUsage }>> {
+  const { text, usage } = await executeAgentStream(context, options)
   if (text === undefined)
     throw new WorkflowNodeExecutionError(
       'agent-failed',
       'Agent stream ended without a completion',
     )
-  return text
+  return { value: text, ...(usage ? { usage } : {}) }
 }
 
+type AgentStreamResult = Readonly<{
+  /** The completed message text; undefined when the stream ended without one. */
+  text?: string
+  /** The completed event's usage, when the provider reported it. */
+  usage?: WorkflowTokenUsage
+}>
+
 /**
- * Streams one agent call and returns the completed message text (undefined
- * when the stream ended without a completion). Tool-mode callers read their
- * run-scoped submission state afterwards; schema/condition modes never parse
- * model text.
+ * Streams one agent call and returns the completed message text and usage.
+ * Tool-mode callers read their run-scoped submission state afterwards;
+ * schema/condition modes never parse model text.
  */
 async function executeAgentStream(
   context: AgentCallContext,
   options: AgentCallOptions,
-): Promise<string | undefined> {
+): Promise<AgentStreamResult> {
   if (options.signal.aborted)
     throw new WorkflowNodeExecutionError('cancelled', 'Agent call cancelled')
   const request = buildAgentRequest(context, options)
   let completed: string | undefined
+  let usage: WorkflowTokenUsage | undefined
   for await (const event of context.agent.stream(request)) {
     context.onAgentEvent?.(context.request.node.id, event)
     if (event.type === 'error')
@@ -237,11 +248,17 @@ async function executeAgentStream(
         'Agent stream aborted',
       )
     }
-    if (event.type === 'completed') completed = event.text
+    if (event.type === 'completed') {
+      completed = event.text
+      usage = event.usage
+    }
   }
   if (options.signal.aborted)
     throw new WorkflowNodeExecutionError('cancelled', 'Agent call cancelled')
-  return completed
+  return {
+    ...(completed !== undefined ? { text: completed } : {}),
+    ...(usage ? { usage } : {}),
+  }
 }
 
 function buildAgentRequest(
@@ -341,7 +358,7 @@ async function executeCondition(
   const gateType: WorkflowGateType = node.gateType ?? 'ifElse'
   const sourceIds = upstream.map((source) => source.nodeId)
   const submission = createConditionSubmissionTool(context.validator, sourceIds)
-  await executeAgentStream(context, {
+  const { usage } = await executeAgentStream(context, {
     prompt: JSON.stringify({ workflowInput: request.workflowInput, upstream }),
     signal,
     tool: submission.tool,
@@ -375,7 +392,7 @@ async function executeCondition(
       : Object.fromEntries(
           upstream.map((source) => [source.nodeId, source.value]),
         )
-  return { value, conditionResult }
+  return { value, conditionResult, ...(usage ? { usage } : {}) }
 }
 
 /** The run-scoped `submit_workflow_condition` tool: one boolean per source. */
@@ -451,6 +468,7 @@ async function executeMapAgent(
       value: validateMapResult(node, context.validator, Object.freeze([])),
     }
   const results: JsonValue[] = new Array(items.length)
+  const usages: WorkflowTokenUsage[] = []
   let cursor = 0
   let failure: unknown
   const siblingController = new AbortController()
@@ -461,11 +479,13 @@ async function executeMapAgent(
       cursor += 1
       if (index >= items.length) return
       try {
-        results[index] = await executeTextAgentNode(context, {
+        const result = await executeTextAgentNode(context, {
           prompt: JSON.stringify({ workflowInput, index, item: items[index] }),
           signal: combinedSignal,
           outputInstruction: TEXT_OUTPUT_INSTRUCTION,
         })
+        results[index] = result.value
+        if (result.usage !== undefined) usages.push(result.usage)
       } catch (error) {
         if (failure === undefined) failure = error
         siblingController.abort()
@@ -479,6 +499,7 @@ async function executeMapAgent(
     throw new WorkflowNodeExecutionError('cancelled', 'mapAgent call cancelled')
   return {
     value: validateMapResult(node, context.validator, Object.freeze(results)),
+    ...(usages.length > 0 ? { usage: sumWorkflowTokenUsage(usages) } : {}),
   }
 }
 

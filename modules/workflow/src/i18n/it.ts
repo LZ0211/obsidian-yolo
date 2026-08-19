@@ -206,6 +206,7 @@ export const it = {
     rename: 'Rinomina flusso',
     renamePlaceholder: 'Nuovo nome del flusso',
     renameFailed: 'Non è stato possibile rinominare il flusso.',
+    renameInProgress: 'Rinomina del flusso in corso…',
     cannotRenameWhileRunning:
       'Interrompi o termina l’esecuzione prima di rinominare.',
     cannotRenameWhileDirty:

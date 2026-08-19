@@ -206,6 +206,7 @@ export const zh = {
     rename: '重命名工作流',
     renamePlaceholder: '新工作流名称',
     renameFailed: '无法重命名工作流。',
+    renameInProgress: '正在重命名工作流。',
     cannotRenameWhileRunning: '请先停止或结束运行，再重命名。',
     cannotRenameWhileDirty: '请先保存或放弃当前修改，再重命名。',
   },

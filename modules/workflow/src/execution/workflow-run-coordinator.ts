@@ -10,7 +10,11 @@ import {
   stableIncomingEdges,
 } from './workflow-run-graph'
 import type { WorkflowSourceValue } from './workflow-run-graph'
-import { WorkflowNodeExecutionError, isJsonValue } from './workflow-run-types'
+import {
+  WorkflowNodeExecutionError,
+  isJsonValue,
+  sumWorkflowTokenUsage,
+} from './workflow-run-types'
 import type {
   JsonValue,
   WorkflowNodeExecutionRequest,
@@ -29,6 +33,7 @@ import type {
   WorkflowRunStartResult,
   WorkflowRunStatus,
   WorkflowRunStore,
+  WorkflowTokenUsage,
 } from './workflow-run-types'
 import { validateJsonSchemaOutput } from './workflow-schema'
 
@@ -89,12 +94,30 @@ type ActiveRun = {
   resumePause: () => void
 }
 
+/** Sum of the usage of every succeeded node; failed/aborted nodes contribute nothing. */
+function usageFromSucceededNodes(
+  snapshot: WorkflowRunSnapshot,
+): WorkflowTokenUsage | undefined {
+  return sumWorkflowTokenUsage(
+    Object.values(snapshot.nodes)
+      .filter((node) => node.status === 'succeeded')
+      .map((node) => node.usage),
+  )
+}
+
 /** Every terminal transition clears `paused`; no terminal record may keep it. */
 const terminal = (
   snapshot: WorkflowRunSnapshot,
   patch: Partial<WorkflowRunSnapshot>,
-): WorkflowRunSnapshot =>
-  freezeRun({ ...snapshot, paused: undefined, ...patch })
+): WorkflowRunSnapshot => {
+  const usage = usageFromSucceededNodes(snapshot)
+  return freezeRun({
+    ...snapshot,
+    paused: undefined,
+    ...(usage ? { usage } : {}),
+    ...patch,
+  })
+}
 
 export function createWorkflowRunCoordinator(
   options: WorkflowRunCoordinatorOptions,
@@ -312,6 +335,7 @@ export function createWorkflowRunCoordinator(
         withNodeRun(snapshot, node.id, {
           status: 'succeeded',
           output: cloneJsonValue(result.value),
+          ...(result.usage ? { usage: result.usage } : {}),
           finishedAt: now(),
         }),
     )
@@ -628,12 +652,14 @@ export function createWorkflowRunCoordinator(
       return
     }
     if (!record || record.status !== 'running' || !record.paused) return
+    const usage = usageFromSucceededNodes(record)
     const cancelled = freezeRun({
       ...record,
       paused: undefined,
       cancelRequested: true,
       status: 'cancelled',
       finishedAt: now(),
+      ...(usage ? { usage } : {}),
     })
     try {
       // Check-then-write: re-read so a concurrent continueRun that rebuilt
@@ -675,6 +701,7 @@ export function createWorkflowRunCoordinator(
     renamingPaths.delete(path)
   }
   const isRenaming = (path: string): boolean => renamingPaths.has(path)
+  const isActive = (path: string): boolean => activeRuns.has(path)
 
   const continueRun = async (
     workflowPath: string,
@@ -969,6 +996,7 @@ export function createWorkflowRunCoordinator(
     continueRun,
     notifyRenamedWorkflow,
     isRenaming,
+    isActive,
     beginRename,
     endRename,
     initialize,

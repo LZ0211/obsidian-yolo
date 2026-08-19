@@ -213,10 +213,16 @@ describe('workflow studio UI interactions', () => {
     expect(runningRename!.disabled).toBe(true)
   })
 
-  it('renames the workflow through the inline input and reports failures', async () => {
-    const { model, rename } = createModel({ bundle: createBundle() })
+  it('renames the workflow through the inline input and delegates the result', async () => {
+    const { model } = createModel({ bundle: createBundle() })
     const notice = jest.fn()
-    await renderStudio(model, notice)
+    const onRename = jest.fn(async () => true)
+    await renderStudio(
+      model,
+      notice,
+      jest.fn(async () => true),
+      { onRename },
+    )
 
     const renameButton = testContainer.querySelector<HTMLButtonElement>(
       'button[aria-label="Rename workflow"]',
@@ -242,11 +248,12 @@ describe('workflow studio UI interactions', () => {
       await Promise.resolve()
     })
 
-    expect(rename).toHaveBeenCalledWith('renamed-flow')
+    expect(onRename).toHaveBeenCalledWith('renamed-flow')
     expect(notice).not.toHaveBeenCalled()
 
-    // A failed rename keeps the inline input open and reports the failure.
-    rename.mockResolvedValueOnce(false)
+    // A rejected rename keeps the inline input open; the view-level wiring
+    // owns the failure notice.
+    onRename.mockResolvedValueOnce(false)
     await act(async () => {
       renameButton!.click()
       await Promise.resolve()
@@ -266,8 +273,8 @@ describe('workflow studio UI interactions', () => {
       await Promise.resolve()
     })
 
-    expect(rename).toHaveBeenLastCalledWith('second-name')
-    expect(notice).toHaveBeenCalledWith('Failed to rename the workflow.')
+    expect(onRename).toHaveBeenLastCalledWith('second-name')
+    expect(notice).not.toHaveBeenCalled()
     expect(
       testContainer.querySelector('input[aria-label="Rename workflow"]'),
     ).not.toBeNull()
@@ -1337,6 +1344,7 @@ async function renderStudio(
     onPause?: jest.Mock
     onCancel?: jest.Mock
     onContinue?: jest.Mock
+    onRename?: jest.Mock
     onTestNode?: jest.Mock
   }> = {},
 ): Promise<void> {
@@ -1362,6 +1370,7 @@ async function renderStudio(
         onPause={options.onPause ?? jest.fn()}
         onCancel={options.onCancel ?? jest.fn()}
         onContinue={options.onContinue ?? jest.fn()}
+        onRename={options.onRename ?? jest.fn(async () => true)}
         onTestNode={options.onTestNode}
       />,
     )

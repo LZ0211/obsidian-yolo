@@ -154,6 +154,73 @@ describe('CoreModuleAgentCapabilityProvider', () => {
     },
   )
 
+  it('passes the host completed usage through to the module event', async () => {
+    const agent: YoloAgentApi = {
+      run: jest.fn(),
+      abort: jest.fn(),
+      stream: async function* () {
+        yield {
+          type: 'completed',
+          conversationId: 'private',
+          text: 'done',
+          usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 },
+        }
+      },
+    }
+    const lifecycle = new ModuleLifecycleScope()
+    const activation = new CoreModuleAgentCapabilityProvider({
+      isDebugCaptureEnabled: () => false,
+      getAgentApi: async () => agent,
+    }).create('learning', lifecycle)
+    activation.activate()
+
+    const output = await collect(
+      activation.api.stream({
+        prompt: 'Question',
+        systemPrompt: 'System',
+        capability: 'none',
+      }),
+    )
+
+    expect(output).toEqual([
+      {
+        type: 'completed',
+        text: 'done',
+        usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 },
+      },
+    ])
+    expect(Object.isFrozen(output[0])).toBe(true)
+    lifecycle.dispose()
+  })
+
+  it('omits usage from the module completed event when the host carries none', async () => {
+    const agent: YoloAgentApi = {
+      run: jest.fn(),
+      abort: jest.fn(),
+      stream: async function* () {
+        yield { type: 'completed', conversationId: 'private', text: 'done' }
+      },
+    }
+    const lifecycle = new ModuleLifecycleScope()
+    const activation = new CoreModuleAgentCapabilityProvider({
+      isDebugCaptureEnabled: () => false,
+      getAgentApi: async () => agent,
+    }).create('learning', lifecycle)
+    activation.activate()
+
+    const output = await collect(
+      activation.api.stream({
+        prompt: 'Question',
+        systemPrompt: 'System',
+        capability: 'none',
+      }),
+    )
+
+    expect(output).toEqual([{ type: 'completed', text: 'done' }])
+    expect(output[0]).not.toHaveProperty('usage')
+    lifecycle.dispose()
+  })
+
   it('rejects work before activation and after disposal', () => {
     const lifecycle = new ModuleLifecycleScope()
     const activation = new CoreModuleAgentCapabilityProvider({

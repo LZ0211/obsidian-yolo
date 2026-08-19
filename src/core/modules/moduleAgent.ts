@@ -526,7 +526,11 @@ function mapEvent(
           : {}),
       })
     case 'completed':
-      return Object.freeze({ type: 'completed', text: event.text })
+      return Object.freeze({
+        type: 'completed',
+        text: event.text,
+        ...(event.usage ? { usage: Object.freeze({ ...event.usage }) } : {}),
+      })
     case 'error':
       return Object.freeze({
         type: 'error',
