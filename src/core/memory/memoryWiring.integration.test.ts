@@ -2,8 +2,12 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { App, FileSystemAdapter, normalizePath, TFile, TFolder } from 'obsidian'
+import { App } from 'obsidian'
 
+import {
+  TempFileSystemAdapter,
+  makeVaultApp,
+} from './__test_utils__/memoryIntegrationHarness'
 import { executeSingleTurn } from '../ai/single-turn'
 import { SystemPromptSnapshotStore } from '../../core/agent/systemPromptSnapshotStore'
 import { getEmbeddingModelClient } from '../../core/rag/embedding'
@@ -70,66 +74,6 @@ jest.mock('./memoryJiebaTokenizer', () => ({
 }))
 
 const executeSingleTurnMock = executeSingleTurn as jest.Mock
-
-class TempFileSystemAdapter extends FileSystemAdapter {
-  constructor(private readonly basePath: string) {
-    super()
-  }
-  override getBasePath(): string {
-    return this.basePath
-  }
-}
-
-const makeVaultApp = (rootDir: string): App => {
-  const files = new Map<string, string>()
-  const directories = new Set<string>([rootDir])
-  const vault = {
-    getAbstractFileByPath: jest.fn((p: string) => {
-      const absolute = path.join(rootDir, p)
-      if (directories.has(absolute)) {
-        return Object.assign(new TFolder(), { path: p, children: [] })
-      }
-      if (files.has(p)) {
-        return Object.assign(new TFile(), {
-          path: p,
-          basename: path.basename(p),
-          extension: p.split('.').pop() ?? '',
-          stat: { size: files.get(p)?.length ?? 0, mtime: Date.now() },
-        })
-      }
-      return null
-    }),
-    read: jest.fn(async (file: { path: string }) => files.get(file.path) ?? ''),
-    cachedRead: jest.fn(
-      async (file: { path: string }) => files.get(file.path) ?? '',
-    ),
-    create: jest.fn(async (p: string, content: string) => {
-      files.set(p, content)
-      return {
-        path: p,
-        basename: path.basename(p),
-        extension: p.split('.').pop() ?? '',
-        stat: { size: content.length, mtime: Date.now() },
-      }
-    }),
-    modify: jest.fn(async (file: { path: string }, content: string) => {
-      files.set(file.path, content)
-    }),
-    createFolder: jest.fn(async (p: string) => {
-      directories.add(path.join(rootDir, p))
-    }),
-    getFiles: jest.fn(() => []),
-    getMarkdownFiles: jest.fn(() => []),
-    getRoot: jest.fn(() => null),
-    on: jest.fn(() => () => undefined),
-    offref: jest.fn(),
-  }
-  return {
-    vault,
-    workspace: { getLeavesOfType: jest.fn(() => []) },
-    metadataCache: { getFileCache: jest.fn(() => null) },
-  } as unknown as App
-}
 
 describe('memory wiring integration (extract → persist → reconcile → recall)', () => {
   let rootDir: string
