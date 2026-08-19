@@ -63,8 +63,8 @@
       ],
       "manifestUrl": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/module.json",
       "manifest": {
-        "byteSize": 11410,
-        "sha256": "cf067dd8317ef1e52e855073748ebfa8cb84247a39469e01afb388c7b239e439"
+        "byteSize": 11412,
+        "sha256": "a4a1a345620cd328049843f630d6bd1245fdf28d0ac17fd2c48747c3896ac0c5"
       }
     }
   ]
