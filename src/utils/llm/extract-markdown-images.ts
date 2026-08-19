@@ -8,6 +8,8 @@ import {
 import { ContentPart } from '../../types/llm/request'
 import { arrayBufferToBase64 } from '../base64'
 
+import { compressImage } from './imageCompress'
+
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp'])
 
 const MIME_TYPES: Record<string, string> = {
@@ -123,88 +125,6 @@ function resolveImageFile(
   const sourceDir = sourcePath.substring(0, sourcePath.lastIndexOf('/'))
   const relativePath = sourceDir ? `${sourceDir}/${linkPath}` : linkPath
   return app.vault.getFileByPath(relativePath) ?? null
-}
-
-/**
- * Compress an image using Canvas API.
- * GIF is skipped (may be animated).
- * PNG is converted to JPEG (transparency becomes white).
- * JPEG/WebP are re-encoded at the given quality.
- */
-async function compressImage(
-  buffer: ArrayBuffer,
-  ext: string,
-  quality: number,
-): Promise<{
-  base64: string
-  mimeType: string
-  originalWidth: number
-  originalHeight: number
-  scaledWidth: number
-  scaledHeight: number
-}> {
-  // GIF: skip compression (may be animated)
-  if (ext === 'gif') {
-    return {
-      base64: arrayBufferToBase64(buffer),
-      mimeType: 'image/gif',
-      originalWidth: 0,
-      originalHeight: 0,
-      scaledWidth: 0,
-      scaledHeight: 0,
-    }
-  }
-
-  const scale = quality / 100
-  const blob = new Blob([buffer], { type: MIME_TYPES[ext] ?? 'image/png' })
-  const bitmap = await createImageBitmap(blob)
-
-  const origWidth = bitmap.width
-  const origHeight = bitmap.height
-
-  // Scale dimensions and quality by the same factor
-  const targetWidth = Math.round(origWidth * scale)
-  const targetHeight = Math.round(origHeight * scale)
-
-  const canvas = new OffscreenCanvas(targetWidth, targetHeight)
-  const ctx = canvas.getContext('2d')
-  if (!ctx) {
-    bitmap.close()
-    return {
-      base64: arrayBufferToBase64(buffer),
-      mimeType: MIME_TYPES[ext] ?? 'image/png',
-      originalWidth: origWidth,
-      originalHeight: origHeight,
-      scaledWidth: origWidth,
-      scaledHeight: origHeight,
-    }
-  }
-
-  // For PNG → JPEG conversion, fill white background first
-  if (ext === 'png') {
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, targetWidth, targetHeight)
-  }
-
-  ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight)
-  bitmap.close()
-
-  // Determine output format
-  const outputMime = ext === 'webp' ? 'image/webp' : 'image/jpeg'
-  const outputBlob = await canvas.convertToBlob({
-    type: outputMime,
-    quality: scale,
-  })
-
-  const compressedBuffer = await outputBlob.arrayBuffer()
-  return {
-    base64: arrayBufferToBase64(compressedBuffer),
-    mimeType: outputMime,
-    originalWidth: origWidth,
-    originalHeight: origHeight,
-    scaledWidth: targetWidth,
-    scaledHeight: targetHeight,
-  }
 }
 
 type LocalImageMatch = {
