@@ -793,9 +793,7 @@ function nodeTestUpstream(
     return Object.freeze(
       incoming.flatMap((edge) => {
         const value = input[edge.source]
-        return value === undefined
-          ? []
-          : [{ nodeId: edge.source, value }]
+        return value === undefined ? [] : [{ nodeId: edge.source, value }]
       }),
     )
   }

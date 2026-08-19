@@ -1,20 +1,19 @@
 import {
   AlertTriangle,
   Bot,
-  CircleDot,
-  CircleStop,
   Check,
   CheckCircle2,
   ChevronDown,
+  CircleDot,
+  CircleStop,
   Download,
-  FileInput,
   FileCode2,
+  FileInput,
   GitBranch,
   GitFork,
   Layers3,
   LayoutDashboard,
   Merge,
-  Maximize2,
   PanelLeft,
   PanelRight,
   Play,
@@ -39,6 +38,12 @@ import {
   useSyncExternalStore,
 } from 'react'
 
+import { runWorkflowReview } from '../assistant/workflow-review'
+import {
+  exportDshFlowJson,
+  parseDshFlowJson,
+  updateWorkflowManagedBlocks,
+} from '../domain/workflow-document'
 import {
   type WorkflowBranch,
   type WorkflowConnectionCandidate,
@@ -49,18 +54,14 @@ import {
   type WorkflowTopology,
   connectionProblem,
 } from '../domain/workflow-model'
-import { runWorkflowReview } from '../assistant/workflow-review'
-import {
-  exportDshFlowJson,
-  parseDshFlowJson,
-  updateWorkflowManagedBlocks,
-} from '../domain/workflow-document'
-import type { WorkflowCopy } from '../i18n'
 import type { WorkflowBundle } from '../domain/workflow-repository'
 import type {
   JsonValue,
+  WorkflowNodeExecutionResult,
   WorkflowRunSnapshot,
 } from '../execution/workflow-run-types'
+import type { WorkflowCopy } from '../i18n'
+
 import type {
   WorkflowEditorModel,
   WorkflowEditorSnapshot,
@@ -88,8 +89,15 @@ export type WorkflowStudioProps = Readonly<{
   onStart(input: JsonValue, modelId: string): void
   onCancel(): void
   onContinue(): void
-  /** Wired in a later task; hidden until the Coordinator exposes testNode. */
-  onTestNode?(nodeId: string): void
+  /**
+   * Passed through to the Run panel, which supplies the parsed input. A
+   * handler that resolves to nothing is treated as a completed test without
+   * a result.
+   */
+  onTestNode?(
+    nodeId: string,
+    input?: JsonValue,
+  ): Promise<WorkflowNodeExecutionResult> | undefined
 }>
 
 type PendingConnection = Readonly<{
@@ -1329,8 +1337,6 @@ function WorkflowInspector({
     bundle?.files.find((file) => file.nodeId === markdownTarget) ??
     bundle?.files.find((file) => file.nodeId === 'workflow') ??
     null
-  const stepFiles =
-    bundle?.files.filter((file) => file.nodeId !== 'workflow') ?? []
   const nodeIds = bundle?.document.steps.map((step) => step.nodeId) ?? []
   return (
     <aside className="yolo-workflow-inspector" style={style}>

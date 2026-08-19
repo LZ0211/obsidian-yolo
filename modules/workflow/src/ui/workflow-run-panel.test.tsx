@@ -330,9 +330,9 @@ describe('workflow run panel interactions', () => {
   })
 
   it('runs a node test from the parsed input and shows the result in the output area', async () => {
-    const onTestNode = jest.fn(
-      async (_nodeId: string, input: JsonValue) => ({ value: input }),
-    )
+    const onTestNode = jest.fn(async (_nodeId: string, input: JsonValue) => ({
+      value: input,
+    }))
     const { rerender } = await renderPanel({
       run: createRunSnapshot({
         status: 'succeeded',

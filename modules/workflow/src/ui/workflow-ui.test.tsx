@@ -1256,11 +1256,11 @@ async function flushAssistant(): Promise<void> {
 }
 
 function setInputValue(input: HTMLInputElement, value: string): void {
-  const setter = Object.getOwnPropertyDescriptor(
+  const setValue = Object.getOwnPropertyDescriptor(
     HTMLInputElement.prototype,
     'value',
-  )?.set
-  setter?.call(input, value)
+  )?.set?.bind(input)
+  setValue?.(value)
   input.dispatchEvent(new Event('input', { bubbles: true }))
 }
 

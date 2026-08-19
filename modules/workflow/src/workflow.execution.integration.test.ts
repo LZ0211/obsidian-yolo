@@ -4,8 +4,8 @@ import { updateWorkflowManagedBlocks } from './domain/workflow-document'
 import type { WorkflowTopology } from './domain/workflow-model'
 import { createWorkflowRepository } from './domain/workflow-repository'
 import { createWorkflowDefinition } from './execution/workflow-definition'
-import { createWorkflowRunStore } from './execution/workflow-run-store'
 import type { WorkflowRunCoordinatorWithNodeTests } from './execution/workflow-run-coordinator'
+import { createWorkflowRunStore } from './execution/workflow-run-store'
 import type { WorkflowRunSnapshot } from './execution/workflow-run-types'
 import { createWorkflowCopy } from './i18n'
 import type { WorkflowEditorModel } from './ui/workflow-editor-model'
@@ -205,7 +205,9 @@ describe('workflow execution lifecycle through the module', () => {
     const host = new ExecutionHost()
     seedWorkflow(host)
     const agentRequests: HostAgentRequest[] = []
-    host.agent = createFakeAgent({ onRequest: (request) => agentRequests.push(request) })
+    host.agent = createFakeAgent({
+      onRequest: (request) => agentRequests.push(request),
+    })
     await activateModule(host)
 
     const element = registeredView(host).render(createViewContext('view-1'))
@@ -408,9 +410,7 @@ function createTopology(): WorkflowTopology {
   }
 }
 
-type HostAgentRequest = Parameters<
-  YoloModuleHostApiV1['agent']['stream']
->[0]
+type HostAgentRequest = Parameters<YoloModuleHostApiV1['agent']['stream']>[0]
 
 /**
  * Host-side agent stand-in: announces awaiting_approval, submits the node's

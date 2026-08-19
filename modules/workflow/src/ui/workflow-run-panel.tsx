@@ -32,15 +32,15 @@ export type WorkflowRunPanelProps = Readonly<{
   onContinue(): void
   onSelectNode(nodeId: string): void
   /**
-   * Runs the selected node through the Coordinator's ephemeral test path. The
-   * void branch keeps the older pass-through wiring (the Studio surface)
-   * assignable; a handler that returns nothing is treated as a completed test
-   * without a result.
+   * Runs the selected node through the Coordinator's ephemeral test path. A
+   * handler that resolves to nothing is treated as a completed test without a
+   * result; the undefined branch keeps the older pass-through wiring (the
+   * Studio surface) assignable.
    */
   onTestNode?(
     nodeId: string,
     input: JsonValue,
-  ): void | Promise<WorkflowNodeExecutionResult>
+  ): Promise<WorkflowNodeExecutionResult> | undefined
 }>
 
 type DetailTab = 'input' | 'output' | 'error'

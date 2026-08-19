@@ -10,8 +10,8 @@ import { createWorkflowRepository } from './domain/workflow-repository'
 import { createWorkflowChatTools } from './domain/workflow-tools'
 import { createWorkflowNodeExecutor } from './execution/workflow-node-executor'
 import {
-  createWorkflowRunCoordinator,
   type WorkflowRunCoordinatorWithNodeTests,
+  createWorkflowRunCoordinator,
 } from './execution/workflow-run-coordinator'
 import { createWorkflowRunStore } from './execution/workflow-run-store'
 import type {
@@ -219,8 +219,8 @@ yolo.registerModule({
           openFile={async (path) => {
             await host.ui.openFileAt({ path })
           }}
-          notice={host.ui.notice}
-          confirm={host.ui.confirm}
+          notice={(message) => host.ui.notice(message)}
+          confirm={(options) => host.ui.confirm(options)}
         />
       ),
       getState: (context) => ({ path: getEditor(context).getSnapshot().path }),
@@ -363,7 +363,10 @@ function WorkflowModuleView({
     // The second parameter is optional so the handler stays assignable to the
     // Studio's pass-through `(nodeId) => void` prop; the Run panel always
     // passes the parsed input, and a missing value is a deterministic null.
-    (nodeId: string, input?: JsonValue): Promise<WorkflowNodeExecutionResult> => {
+    (
+      nodeId: string,
+      input?: JsonValue,
+    ): Promise<WorkflowNodeExecutionResult> => {
       const path = editor.getSnapshot().path
       if (path === null) return Promise.reject(new Error(getCopy().state.empty))
       return coordinator.testNode(viewId, {

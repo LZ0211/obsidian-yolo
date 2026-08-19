@@ -896,7 +896,9 @@ describe('workflow run coordinator', () => {
       record!.definition.topology.nodes.find((node) => node.id === 'draft'),
     )
     expect(request.workflowInput).toBe('preview')
-    expect(request.upstream).toEqual([{ nodeId: 'test-input', value: 'preview' }])
+    expect(request.upstream).toEqual([
+      { nodeId: 'test-input', value: 'preview' },
+    ])
     expect(request.signal.aborted).toBe(false)
     // No persistent write, no publish, and the full-run record is untouched.
     expect(writeSpy).not.toHaveBeenCalled()
