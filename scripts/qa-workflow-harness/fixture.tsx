@@ -101,28 +101,31 @@ putFile('workflows/demo/steps/input/STEP.md', '# Input\n')
 putFile('workflows/demo/steps/agent/STEP.md', '# Agent\n')
 putFile('workflows/demo/steps/output/STEP.md', '# Output\n')
 
-const moduleDefinition = (
-  window as unknown as {
-    __workflowModuleDefinition?: { activate(host: unknown): void }
-  }
-).__workflowModuleDefinition
-if (!moduleDefinition) throw new Error('workflow module was not registered')
+async function mount(): Promise<void> {
+  const moduleDefinition = (
+    window as unknown as {
+      __workflowModuleDefinition?: { activate(host: unknown): Promise<void> }
+    }
+  ).__workflowModuleDefinition
+  if (!moduleDefinition) throw new Error('workflow module was not registered')
 
-const host = createHost()
-moduleDefinition.activate(host)
-if (!state.view) throw new Error('workflow view was not registered')
+  const host = createHost()
+  await moduleDefinition.activate(host)
+  if (!state.view) throw new Error('workflow view was not registered')
 
-const root = document.getElementById('root')
-if (!root) throw new Error('workflow root was not found')
-;(window as unknown as { __workflowE2E: E2EState }).__workflowE2E = state
-createRoot(root).render(
-  state.view.render({
-    id: 'workflow-e2e-view',
-    document,
-    window,
-    lifecycle: { add: () => undefined },
-  }),
-)
+  const root = document.getElementById('root')
+  if (!root) throw new Error('workflow root was not found')
+  ;(window as unknown as { __workflowE2E: E2EState }).__workflowE2E = state
+  createRoot(root).render(
+    state.view.render({
+      id: 'workflow-e2e-view',
+      document,
+      window,
+      lifecycle: { add: () => undefined },
+    }),
+  )
+}
+void mount()
 
 function createHost(): unknown {
   const models = {
@@ -131,6 +134,21 @@ function createHost(): unknown {
       { id: 'browser-model', name: 'Browser model', providerId: 'browser' },
     ],
   }
+  // Device-local run persistence, mirroring the module's own test fakes.
+  const blobs = new Map<string, string>()
+  const deviceLocalScope = {
+    list: async (directoryPrefix?: string): Promise<readonly string[]> => {
+      const prefix = directoryPrefix === undefined ? '' : `${directoryPrefix}/`
+      return [...blobs.keys()].filter((key) => key.startsWith(prefix)).sort()
+    },
+    readText: async (key: string): Promise<string | null> =>
+      blobs.get(key) ?? null,
+    writeText: async (key: string, value: string): Promise<void> => {
+      blobs.set(key, value)
+    },
+    removeFile: async (key: string): Promise<boolean> => blobs.delete(key),
+  }
+  const backgroundActivityIds = new Set<string>()
   return {
     agent: {
       stream: async function* (request: {
@@ -175,7 +193,16 @@ function createHost(): unknown {
     chat: {
       registerMode: () => undefined,
     },
-    lifecycle: { add: () => undefined },
+    lifecycle: { add: () => undefined, onQuiesce: () => undefined },
+    privateStorage: { deviceLocal: deviceLocalScope },
+    background: {
+      upsert: (activity: { id: string }) => {
+        backgroundActivityIds.add(activity.id)
+      },
+      remove: (id: string) => {
+        backgroundActivityIds.delete(id)
+      },
+    },
     workspace: {
       registerView: (view: E2EState['view']) => {
         state.view = view
