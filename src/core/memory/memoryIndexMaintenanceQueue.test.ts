@@ -1,4 +1,9 @@
 import { buildMemoryPartition } from './memoryIndex'
+import {
+  clearFlightLog,
+  getFlightEvents,
+  setFlightLogEnabled,
+} from '../../utils/debug/flightLog'
 import type { MemoryIndexMaintenanceStore } from './memoryIndex'
 import { MemoryIndexMaintenanceQueue } from './memoryIndexMaintenanceQueue'
 import type { MemorySourceSnapshot } from './memoryManager'
@@ -380,5 +385,43 @@ describe('MemoryIndexMaintenanceQueue', () => {
     await queue.shutdown(20)
 
     expect(Date.now() - startedAt).toBeLessThan(250)
+  })
+})
+
+describe('MemoryIndexMaintenanceQueue flight events', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'debug').mockImplementation(() => undefined)
+    setFlightLogEnabled(true)
+    clearFlightLog()
+  })
+
+  afterEach(() => {
+    setFlightLogEnabled(false)
+    clearFlightLog()
+    jest.restoreAllMocks()
+  })
+
+  it('records a task-error event when a task fails', async () => {
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const snapshot = makeSnapshot(partition, 'one')
+    const store = makeStore(async () => undefined)
+    store.rebuildEdges.mockRejectedValueOnce(new Error('graph unavailable'))
+    const queue = new MemoryIndexMaintenanceQueue({
+      store,
+      getSourceSnapshot: async () => snapshot,
+    })
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      queue.enqueueReconcile({ partition, sourcePath: snapshot.sourcePath })
+      await queue.drain()
+
+      const error = getFlightEvents().find(
+        (event) => event.event === 'task-graph-error',
+      )
+      expect(error).toBeDefined()
+      expect(error?.detail).toContain('graph unavailable')
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

@@ -1,4 +1,10 @@
 import {
+  clearFlightLog,
+  getFlightEvents,
+  setFlightLogEnabled,
+} from '../../utils/debug/flightLog'
+
+import {
   MAX_REFLECTION_PROMPT_CHARS,
   MEMORY_REFLECTION_PROMPT_VERSION,
   type MemoryReflectionSource,
@@ -229,5 +235,45 @@ describe('memory reflection contract', () => {
     ).rejects.toThrow('timed out')
     expect(observedSignal).not.toBeNull()
     expect((observedSignal as unknown as AbortSignal).aborted).toBe(true)
+  })
+})
+
+describe('memory reflection flight span', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'debug').mockImplementation(() => undefined)
+    setFlightLogEnabled(true)
+    clearFlightLog()
+  })
+
+  afterEach(() => {
+    setFlightLogEnabled(false)
+    clearFlightLog()
+    jest.restoreAllMocks()
+  })
+
+  it('records a reflection span with the model outcome', async () => {
+    await runMemoryReflectionModel(async () => '{"ok":true}', 'prompt')
+
+    const events = getFlightEvents()
+    expect(events.map((event) => event.event)).toEqual([
+      'span:reflection:start',
+      'span:reflection:done',
+    ])
+  })
+
+  it('records a reflection span with error detail on failure', async () => {
+    await expect(
+      runMemoryReflectionModel(
+        async () => {
+          throw new Error('model down')
+        },
+        'prompt',
+      ),
+    ).rejects.toThrow('model down')
+
+    const done = getFlightEvents().find(
+      (event) => event.event === 'span:reflection:done',
+    )
+    expect(done?.detail).toContain('model down')
   })
 })

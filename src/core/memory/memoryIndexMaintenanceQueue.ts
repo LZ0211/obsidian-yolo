@@ -280,6 +280,13 @@ export class MemoryIndexMaintenanceQueue {
     })
     try {
       await this.runTaskInner(task, signal)
+    } catch (error) {
+      logFlightEvent('memory-index', `task-${task.kind}-error`, {
+        id: task.partition.partitionKey,
+        detail: error instanceof Error ? error.message : String(error),
+        consoleOutput: 'warn',
+      })
+      throw error
     } finally {
       logFlightEvent('memory-index', `task-${task.kind}-done`, {
         id: task.partition.partitionKey,

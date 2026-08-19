@@ -1,3 +1,6 @@
+import type { FlightSpan } from '../../utils/debug/flightLog'
+import { startFlightSpan } from '../../utils/debug/flightLog'
+
 import type { MemoryIndexMaintenanceStore } from './memoryIndex'
 import { MemoryEmbeddingStore } from './memoryEmbeddings'
 import { MemoryRetrievalService } from './memoryRetrieval'
@@ -55,6 +58,39 @@ export class MemoryRecallOrchestrator {
     partition: MemoryPartition,
     sourceFileFingerprint: string,
   ): Promise<MemoryRecallContext> {
+    const recallStartedAt = Date.now()
+    const recallSpan = startFlightSpan('memory', 'recall', {
+      id: partition.partitionKey,
+    })
+    try {
+      return await this.runRecall({
+        input,
+        partition,
+        sourceFileFingerprint,
+        recallStartedAt,
+        recallSpan,
+      })
+    } catch (error) {
+      recallSpan.finish(
+        `error=${error instanceof Error ? error.message : String(error)}`,
+      )
+      throw error
+    }
+  }
+
+  private async runRecall({
+    input,
+    partition,
+    sourceFileFingerprint,
+    recallStartedAt,
+    recallSpan,
+  }: {
+    input: MemoryRecallTargetInput
+    partition: MemoryPartition
+    sourceFileFingerprint: string
+    recallStartedAt: number
+    recallSpan: FlightSpan
+  }): Promise<MemoryRecallContext> {
     const target = await buildMemoryRecallTargetWithJieba(input)
     const result = await this.retrieval.retrieve({
       partition,
@@ -95,6 +131,9 @@ export class MemoryRecallOrchestrator {
       })
     }
 
+    recallSpan.finish(
+      `hits=${entries.length} paths=${result.paths.join('+')} ${Date.now() - recallStartedAt}ms`,
+    )
     return {
       partition,
       sourceFileFingerprint,

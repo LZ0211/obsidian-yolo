@@ -1,4 +1,5 @@
 import { sha256Hex } from '../../utils/common/content-hash'
+import { startFlightSpan } from '../../utils/debug/flightLog'
 
 import type { MemoryPartition, MemorySector } from './memoryTypes'
 
@@ -233,12 +234,24 @@ export async function runMemoryReflectionModel(
     removeAbortListener = () => signal.removeEventListener('abort', abort)
     if (signal.aborted) abort()
   })
+  const reflectionSpan = startFlightSpan('memory', 'reflection')
   try {
-    return await Promise.race([
+    const result = await Promise.race([
       runner(prompt, controller.signal),
       timeoutPromise,
       abortPromise,
     ])
+    reflectionSpan.finish()
+    return result
+  } catch (error) {
+    if (signal?.aborted) {
+      reflectionSpan.cancel()
+    } else {
+      reflectionSpan.finish(
+        `error=${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+    throw error
   } finally {
     if (timeout !== undefined) clearTimeout(timeout)
     removeAbortListener?.()
