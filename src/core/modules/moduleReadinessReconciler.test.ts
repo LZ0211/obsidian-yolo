@@ -87,6 +87,88 @@ describe('ModuleReadinessReconciler', () => {
     })
   })
 
+  test('heals a stale active descriptor superseded by a rebuilt same-version artifact', async () => {
+    const stale: ModuleArtifactDescriptor = {
+      ...descriptor,
+      manifest: { ...descriptor.manifest, sha256: 'c'.repeat(64) },
+    }
+    let durable: ModuleDeviceState | null = {
+      moduleId: 'learning',
+      platform: 'desktop',
+      active: stale,
+      pending: { descriptor },
+    }
+    const repair = jest.fn(
+      async (_descriptor: ModuleArtifactDescriptor, _signal: AbortSignal) => ({
+        schemaVersion: 1 as const,
+        id: 'learning',
+        version: '1.0.0',
+        hostApi: '^1.0.0',
+        dataSchemas: {},
+        variants: [
+          { platform: 'desktop' as const, entry: 'main.js', files: [] },
+        ],
+      }),
+    )
+    const reconciler = new ModuleReadinessReconciler({
+      deviceStateStore: {
+        runExclusive: async (_moduleId, operation) =>
+          operation({
+            read: async () => durable,
+            write: async (next) => {
+              durable = next
+              return next
+            },
+            remove: async () => {
+              durable = null
+            },
+          }),
+      },
+      intentStore: { get: async () => 'enabled' },
+      catalogSource: {
+        getResolvedVersion: () => ({
+          version: descriptor.version,
+          hostApi: descriptor.hostApi,
+          platforms: ['desktop'],
+          dataSchemas: descriptor.dataSchemas,
+          manifestUrl: descriptor.manifestUrl,
+          manifest: descriptor.manifest,
+        }),
+        getResolvedArtifactDescriptor: () => descriptor,
+      },
+      artifactStore: {
+        readManifestBytes: async () => new Uint8Array([0]),
+        readEntryBytes: async () => new Uint8Array([0]),
+        listVersionFiles: async () => [],
+        removeVersionArtifacts: async () => undefined,
+      },
+      installer: {
+        install: async () => {
+          throw new Error('not used')
+        },
+        repair,
+      },
+      platform: 'desktop',
+      subtleCrypto: { digest: async () => new ArrayBuffer(32) },
+    })
+
+    await expect(
+      reconciler.ensureModuleReady('learning'),
+    ).resolves.toMatchObject({ status: 'ready' })
+    // The stale active descriptor's expectations can never be satisfied by the
+    // installed (rebuilt) artifact — the reconcile must verify and persist
+    // against the catalog descriptor instead of repairing the stale one.
+    expect(
+      repair.mock.calls.some(
+        ([called]) => called.manifest.sha256 === stale.manifest.sha256,
+      ),
+    ).toBe(false)
+    expect(durable).toMatchObject({
+      active: descriptor,
+      pending: { descriptor },
+    })
+  })
+
   test('adopts a rebuilt descriptor with the same semantic version', async () => {
     let durable: ModuleDeviceState | null = {
       moduleId: 'learning',

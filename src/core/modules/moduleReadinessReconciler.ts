@@ -246,12 +246,15 @@ export class ModuleReadinessReconciler {
     const resolved = this.options.catalogSource.getResolvedVersion(
       state.moduleId,
     )
+    const current =
+      resolved === undefined
+        ? null
+        : this.options.catalogSource.getResolvedArtifactDescriptor(
+            state.moduleId,
+            resolved.version,
+            this.options.platform,
+          )
     if (selected && resolved?.version === selected.version) {
-      const current = this.options.catalogSource.getResolvedArtifactDescriptor(
-        state.moduleId,
-        resolved.version,
-        this.options.platform,
-      )
       if (current && current.manifest.sha256 !== selected.manifest.sha256) {
         const repaired = await this.ensureDescriptor(current, signal)
         await transaction.write({
@@ -269,10 +272,38 @@ export class ModuleReadinessReconciler {
     }
     const descriptors = referencedDescriptors(state)
     const repairedVersions: string[] = []
+    // A state descriptor superseded by a rebuilt same-version catalog artifact
+    // (e.g. `module:build` replaced the installed files in place) can never
+    // verify against its own recorded hashes again — the installed bytes are
+    // the catalog's now. Reconcile such descriptors against the catalog
+    // descriptor and persist the healed state instead of repairing the stale
+    // expectations.
+    const heal = (descriptor: ModuleArtifactDescriptor | null) =>
+      descriptor &&
+      current &&
+      descriptor.version === current.version &&
+      descriptor.manifest.sha256 !== current.manifest.sha256
+        ? current
+        : descriptor
     for (const descriptor of descriptors) {
-      if (await this.ensureDescriptor(descriptor, signal)) {
+      if (await this.ensureDescriptor(heal(descriptor) ?? descriptor, signal)) {
         repairedVersions.push(descriptor.version)
       }
+    }
+    const healedActive = heal(state.active)
+    const healedPendingDescriptor = heal(state.pending?.descriptor ?? null)
+    if (
+      healedActive !== state.active ||
+      healedPendingDescriptor !== (state.pending?.descriptor ?? null)
+    ) {
+      await transaction.write({
+        ...state,
+        active: healedActive,
+        pending:
+          healedPendingDescriptor !== null
+            ? { descriptor: healedPendingDescriptor }
+            : state.pending,
+      })
     }
     const versions = descriptors.map((descriptor) => descriptor.version)
     return readinessResult({
