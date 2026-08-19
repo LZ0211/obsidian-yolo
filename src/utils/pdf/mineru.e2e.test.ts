@@ -286,7 +286,7 @@ describe('fs_read MinerU 端到端（mock requestUrl 模拟 gradio 会话）', (
     expect(mockedRequestUrl).toHaveBeenCalledTimes(5)
     const [config, upload, join, sse, download] =
       mockedRequestUrl.mock.calls.map(requestParams)
-    expect(config.url).toBe(`${BASE_URL}/gradio_api/config`)
+    expect(config.url).toBe(`${BASE_URL}/config`)
     expect(config.method).toBe('GET')
     expect(config.headers?.['Authorization']).toBe(API_KEY)
     expect(upload.url).toBe(`${BASE_URL}/gradio_api/upload`)

@@ -349,6 +349,31 @@ const newSessionHash = (): string =>
   `yolo-${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`
 
 /**
+ * Fetches the gradio config object, trying the endpoint paths in order:
+ * gradio 6+ serves `/config` at the root, gradio 5 exposes it under the
+ * `/gradio_api/` prefix. Same sse_v3 protocol either way.
+ */
+async function fetchMinerUConfig(
+  baseUrl: string,
+  apiKey: string,
+): Promise<{ dependencies?: Array<{ api_name?: string; id?: number }> }> {
+  for (const path of ['/config', '/gradio_api/config']) {
+    const response = await requestUrl({
+      url: `${baseUrl}${path}`,
+      method: 'GET',
+      headers: { Accept: 'application/json', ...authHeaders(apiKey) },
+      throw: false,
+    })
+    if (response.status >= 200 && response.status < 300) {
+      return JSON.parse(response.text) as {
+        dependencies?: Array<{ api_name?: string; id?: number }>
+      }
+    }
+  }
+  throw new Error('MinerU config endpoint unreachable')
+}
+
+/**
  * Resolves the gradio fn index of the conversion endpoint from /config
  * (the queue/join payload requires it; api names are not accepted there).
  * Fails fast when the endpoint is absent from the dependency list.
@@ -362,15 +387,7 @@ function resolveMinerUFnIndex(
   if (existing) return withAbort(existing, signal)
 
   const task = (async (): Promise<number> => {
-    const response = await requestUrl({
-      url: `${baseUrl}/gradio_api/config`,
-      method: 'GET',
-      headers: { Accept: 'application/json', ...authHeaders(apiKey) },
-      throw: true,
-    })
-    const config = JSON.parse(response.text) as {
-      dependencies?: Array<{ api_name?: string; id?: number }>
-    }
+    const config = await fetchMinerUConfig(baseUrl, apiKey)
     const dependency = (config.dependencies ?? []).find(
       (entry) => entry.api_name === MINERU_API_NAME.slice(1),
     )

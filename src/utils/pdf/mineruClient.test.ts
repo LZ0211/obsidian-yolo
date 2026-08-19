@@ -200,8 +200,9 @@ describe('convertPdfToMarkdown', () => {
     const [config, upload, join, stream, download] =
       mockedRequestUrl.mock.calls.map(requestParams)
 
-    // ① fn_index discovery from /config (api_name → dependency id)
-    expect(config.url).toBe(`${BASE_URL}/gradio_api/config`)
+    // ① fn_index discovery from /config (api_name → dependency id);
+    // gradio 6+ serves the config at the root path, not /gradio_api/config.
+    expect(config.url).toBe(`${BASE_URL}/config`)
     expect(config.method).toBe('GET')
     expect(config.headers?.['Authorization']).toBe(API_KEY)
 
@@ -532,6 +533,35 @@ describe('convertPdfToMarkdown', () => {
       )
 
     await expect(convert()).rejects.toThrow(/backend exploded/)
+  })
+
+  it('falls back to /gradio_api/config when the root config endpoint 404s (gradio 5)', async () => {
+    const markdownBase64 = btoa(MARKDOWN)
+    mockedRequestUrl
+      .mockResolvedValueOnce(responseWithText('Not Found', 404)) // /config
+      .mockResolvedValueOnce(responseWithText(CONFIG_RESPONSE_TEXT)) // /gradio_api/config
+      .mockResolvedValueOnce(responseWithText(UPLOAD_RESPONSE_TEXT))
+      .mockResolvedValueOnce(responseWithText(JOIN_RESPONSE_TEXT))
+      .mockResolvedValueOnce(
+        responseWithText(
+          sseCompletedWith([
+            '<div class="status">ok</div>',
+            {
+              path: '/tmp/x.zip',
+              data: `data:text/markdown;base64,${markdownBase64}`,
+              orig_name: 'x.zip',
+              meta: { _type: 'gradio.FileData' },
+            },
+          ]),
+        ),
+      )
+
+    const result = await convert()
+
+    const calls = mockedRequestUrl.mock.calls.map(requestParams)
+    expect(calls[0]?.url).toBe(`${BASE_URL}/config`)
+    expect(calls[1]?.url).toBe(`${BASE_URL}/gradio_api/config`)
+    expect(result.markdown).toBe(MARKDOWN)
   })
 })
 
