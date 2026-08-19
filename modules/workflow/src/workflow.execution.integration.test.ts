@@ -79,6 +79,13 @@ describe('workflow execution lifecycle through the module', () => {
           activity.id === activityId && activity.status === 'waiting',
       ),
     ).toBe(true)
+    // A plain run never shows the repairing detail: the host's own
+    // `running` tool events for the submit tool are not repair hints.
+    expect(
+      host.background.upsert.mock.calls.some(
+        ([activity]) => activity.detail === 'Repairing output…',
+      ),
+    ).toBe(false)
     expect(host.background.remove).toHaveBeenCalledWith(activityId)
   })
 
@@ -535,6 +542,18 @@ describe('workflow execution lifecycle through the module', () => {
     expect(agentRequests[1].prompt).toContain(
       'previous submission was rejected',
     )
+    // The executor's repair hint surfaces in the background activity: a
+    // running upsert carrying the repairing detail lands between the
+    // rejected first round and the repaired second round, so users can tell
+    // repair-in-progress from a plain running node.
+    expect(
+      host.background.upsert.mock.calls.some(
+        ([activity]) =>
+          activity.id === 'workflow:run:demo/WORKFLOW.md' &&
+          activity.status === 'running' &&
+          activity.detail === 'Repairing output…',
+      ),
+    ).toBe(true)
   })
 
   it('verification hard failure fails the run with verification-failed', async () => {
@@ -788,12 +807,19 @@ function createFakeAgent(
       }
       if (options.gate) await options.gate
       if (request.signal?.aborted) return
+      // Once approved, the host's dispatcher executes the call and emits a
+      // `running` tool event; the module wiring must not mistake this plain
+      // execution event for the executor's repair-round hint.
+      yield { type: 'tool', name: tool.name, status: 'running', arguments: {} }
       const scripted = options.outputValues
       const value = scripted ? scripted[outputRound++] : { ok: true }
       const result = await tool.handler({ value })
       if (result.isError) {
-        // Rejected: end the round without an error event so the executor
+        // Rejected: announce the failed submission like the host's
+        // in-process tool server does (isError -> error tool status), then
+        // end the round without a stream-level error so the executor
         // records the rejection and runs its repair round.
+        yield { type: 'tool', name: tool.name, status: 'error' }
         yield { type: 'completed', text: 'done' }
         return
       }

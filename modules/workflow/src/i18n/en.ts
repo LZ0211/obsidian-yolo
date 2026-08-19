@@ -205,6 +205,8 @@ export const en = {
     noOutput: 'No output yet',
     testNode: 'Test node',
     testing: 'Testing…',
+    repairing: 'Repairing output…',
+    repairAttempted: 'after repair attempt',
     verificationWarn: 'Verification warning:',
     rename: 'Rename workflow',
     renamePlaceholder: 'New workflow name',

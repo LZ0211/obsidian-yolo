@@ -196,6 +196,8 @@ export type WorkflowCopy = Readonly<{
     noOutput: string
     testNode: string
     testing: string
+    repairing: string
+    repairAttempted: string
     verificationWarn: string
     rename: string
     renamePlaceholder: string

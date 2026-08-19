@@ -210,6 +210,8 @@ export const it = {
     noOutput: 'Nessun output',
     testNode: 'Testa nodo',
     testing: 'Test in corso…',
+    repairing: 'Riparazione dell’output in corso…',
+    repairAttempted: 'dopo il tentativo di riparazione',
     verificationWarn: 'Avviso di verifica:',
     rename: 'Rinomina flusso',
     renamePlaceholder: 'Nuovo nome del flusso',

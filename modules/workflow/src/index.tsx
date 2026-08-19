@@ -154,11 +154,13 @@ function workflowRunActivity(
   workflowPath: string,
   status: BackgroundActivity['status'],
   openWorkflow: (path: string) => void | Promise<void>,
+  detail?: string,
 ): BackgroundActivity {
   return {
     id: workflowRunActivityId(workflowPath),
     title: workflowPath,
     status,
+    ...(detail !== undefined ? { detail } : {}),
     onOpen: () => openWorkflow(workflowPath),
   }
 }
@@ -237,10 +239,15 @@ yolo.registerModule({
     const readStyle = (): Promise<string> => host.assets.readText('style.css')
 
     const store = createWorkflowRunStore(host.privateStorage.deviceLocal)
-    // Node ids whose agent call is currently awaiting approval, and the
-    // Workflow path each running node belongs to. Both are derived from
-    // Coordinator publishes and agent events, never a parallel run state.
+    // Node ids whose agent call is currently awaiting approval, the Workflow
+    // path each running node belongs to, and — display-only — node ids whose
+    // agent call is in the executor's repair round together with the last
+    // submit-tool status per node. All are derived from Coordinator
+    // publishes and agent events, never a parallel run state or persisted
+    // state.
     const pendingApprovalNodeIds = new Set<string>()
+    const repairingNodeIds = new Set<string>()
+    const submitToolLastStatus = new Map<string, string>()
     const runningNodeWorkflow = new Map<string, string>()
     const executor = createWorkflowNodeExecutor({
       agent: host.agent,
@@ -248,15 +255,59 @@ yolo.registerModule({
         if (event.type !== 'tool') return
         if (event.status === 'awaiting_approval') {
           pendingApprovalNodeIds.add(nodeId)
+          if (event.name === 'submit_workflow_output')
+            submitToolLastStatus.set(nodeId, 'awaiting_approval')
           const workflowPath = runningNodeWorkflow.get(nodeId)
           if (workflowPath !== undefined)
             host.background.upsert(
-              workflowRunActivity(workflowPath, 'waiting', openWorkflow),
+              workflowRunActivity(
+                workflowPath,
+                'waiting',
+                openWorkflow,
+                // A second approval during the repair round keeps the
+                // repairing detail instead of clobbering it with plain
+                // waiting text.
+                repairingNodeIds.has(nodeId)
+                  ? getCopy().run.repairing
+                  : undefined,
+              ),
             )
           return
         }
-        if (event.status === 'completed' || event.status === 'error')
+        if (event.status === 'completed' || event.status === 'error') {
           pendingApprovalNodeIds.delete(nodeId)
+          repairingNodeIds.delete(nodeId)
+          if (event.name === 'submit_workflow_output')
+            submitToolLastStatus.set(nodeId, event.status)
+          return
+        }
+        // The executor's repair-round hint: a `running` status for the
+        // submit tool fired between the rejected first round and the repair
+        // round. The host's dispatcher also emits `running` when an approved
+        // submission executes, so only treat it as the hint when it follows
+        // a rejected submission (`error` — the only way a repair round can
+        // start) or a previous hint — never the plain execution of a
+        // round's submission.
+        if (
+          event.name === 'submit_workflow_output' &&
+          event.status === 'running'
+        ) {
+          const previous = submitToolLastStatus.get(nodeId)
+          submitToolLastStatus.set(nodeId, 'running')
+          if (repairingNodeIds.has(nodeId) || previous === 'error') {
+            repairingNodeIds.add(nodeId)
+            const workflowPath = runningNodeWorkflow.get(nodeId)
+            if (workflowPath !== undefined)
+              host.background.upsert(
+                workflowRunActivity(
+                  workflowPath,
+                  'running',
+                  openWorkflow,
+                  getCopy().run.repairing,
+                ),
+              )
+          }
+        }
       },
     })
     const coordinator = createWorkflowRunCoordinator({ executor, store })
@@ -307,6 +358,8 @@ yolo.registerModule({
         } else {
           runningNodeWorkflow.delete(node.id)
           pendingApprovalNodeIds.delete(node.id)
+          repairingNodeIds.delete(node.id)
+          submitToolLastStatus.delete(node.id)
         }
       }
     })
