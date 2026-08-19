@@ -31,6 +31,7 @@ import {
 } from '../utils/chat/conversationTitle'
 import {
   AUTO_TITLE_FAILURE_COOLDOWN_MS,
+  buildFallbackTitle,
   generateConversationTitleText,
 } from '../utils/chat/generateConversationTitle'
 import {
@@ -691,38 +692,85 @@ export function useChatHistory(): UseChatHistory {
           return null
         }
 
-        const result = await generateConversationTitleText({
-          settings,
-          language,
-          messages,
-          onAutoPromoteTransportMode: handleAutoPromoteTransportMode,
-          debug: {
-            conversationId: id,
-            sourceUserMessageId: firstUserMessage.id,
-          },
-        })
-
-        if (!result.ok) {
-          logTitleEvent(result.reason)
-          if (result.reason === 'llm_generation_failed') {
-            const errorMessage =
-              result.error instanceof Error
-                ? result.error.message
-                : typeof result.error === 'string'
-                  ? result.error
-                  : result.error
-                    ? JSON.stringify(result.error)
-                    : 'unknown_error'
-            console.error('[YOLO] Failed to generate conversation title', {
-              conversationId: id,
-              error: errorMessage,
+        // 标题来源按运行时分流：web 走服务端 /api/chat/generate-title 路由
+        // （服务端持有完整 settings，apiKey 不离开服务端）；桌面走浏览器
+        // provider。两条路径失败都沿用 A4 截断兜底。
+        let title: string | null = null
+        // 服务端路由成功时已把标题落库（touchUpdatedAt: false）——本地跳过
+        // 写回，只刷新列表；仅本地兜底标题需要 updateChat 写回。
+        let titlePersistedByServer = false
+        if (yoloRuntime?.mode === 'web') {
+          try {
+            title = await yoloRuntime.chat.generateTitle(id, messages, {
               force,
             })
-            titleGenerationCooldownUntilRef.current.set(
-              id,
-              Date.now() + AUTO_TITLE_FAILURE_COOLDOWN_MS,
+            titlePersistedByServer = title != null
+          } catch (error) {
+            const errorMessage =
+              error instanceof Error
+                ? error.message
+                : typeof error === 'string'
+                  ? error
+                  : 'unknown_error'
+            console.error(
+              '[YOLO] Failed to generate conversation title via server',
+              {
+                conversationId: id,
+                error: errorMessage,
+                force,
+              },
             )
+            title = null
           }
+        } else {
+          const result = await generateConversationTitleText({
+            settings,
+            language,
+            messages,
+            onAutoPromoteTransportMode: handleAutoPromoteTransportMode,
+            debug: {
+              conversationId: id,
+              sourceUserMessageId: firstUserMessage.id,
+            },
+          })
+
+          if (!result.ok) {
+            logTitleEvent(result.reason)
+            if (result.reason === 'llm_generation_failed') {
+              const errorMessage =
+                result.error instanceof Error
+                  ? result.error.message
+                  : typeof result.error === 'string'
+                    ? result.error
+                    : result.error
+                      ? JSON.stringify(result.error)
+                      : 'unknown_error'
+              console.error('[YOLO] Failed to generate conversation title', {
+                conversationId: id,
+                error: errorMessage,
+                force,
+              })
+              titleGenerationCooldownUntilRef.current.set(
+                id,
+                Date.now() + AUTO_TITLE_FAILURE_COOLDOWN_MS,
+              )
+            }
+            return null
+          }
+          title = result.title
+        }
+
+        if (!title) {
+          // 服务端生成失败/离线时的 A4 截断兜底（与桌面 key 缺失路径同款：
+          // 首条用户消息文本截断作为标题）。
+          title = buildFallbackTitle(firstUserMessage)
+        }
+        if (!title) {
+          logTitleEvent('llm_generation_failed')
+          titleGenerationCooldownUntilRef.current.set(
+            id,
+            Date.now() + AUTO_TITLE_FAILURE_COOLDOWN_MS,
+          )
           return null
         }
         titleGenerationCooldownUntilRef.current.delete(id)
@@ -733,16 +781,18 @@ export function useChatHistory(): UseChatHistory {
           currentConversation &&
           (force || isUntitledConversationTitle(currentConversation.title))
         ) {
-          await chatManager.updateChat(
-            id,
-            { title: result.title },
-            {
-              touchUpdatedAt: false,
-            },
-          )
+          if (!titlePersistedByServer) {
+            await chatManager.updateChat(
+              id,
+              { title },
+              {
+                touchUpdatedAt: false,
+              },
+            )
+          }
           emitChatHistoryUpdated()
           await fetchChatList()
-          return result.title
+          return title
         }
         return null
       } finally {
@@ -756,6 +806,7 @@ export function useChatHistory(): UseChatHistory {
       language,
       settings,
       emitChatHistoryUpdated,
+      yoloRuntime,
     ],
   )
 

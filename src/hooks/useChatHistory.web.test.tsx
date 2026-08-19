@@ -24,12 +24,14 @@ const getRemoteConversation = jest.fn().mockResolvedValue({
   createdAt: 1,
   updatedAt: 1,
 })
+const generateRemoteTitle = jest.fn().mockResolvedValue('Server title')
 const runtime = {
   mode: 'web',
   chat: {
     delete: deleteRemoteConversation,
     get: getRemoteConversation,
     save: saveRemoteConversation,
+    generateTitle: generateRemoteTitle,
   },
 } as unknown as YoloRuntime
 
@@ -65,6 +67,7 @@ jest.mock('../runtime/YoloRuntimeProvider', () => ({
 jest.mock('../utils/chat/generateConversationTitle', () => ({
   AUTO_TITLE_FAILURE_COOLDOWN_MS: 1,
   generateConversationTitleText: jest.fn(),
+  buildFallbackTitle: jest.fn(),
 }))
 jest.mock('./useJsonManagers', () => ({ useChatManager: () => chatManager }))
 
@@ -126,6 +129,54 @@ describe('useChatHistory web runtime', () => {
 
     expect(getRemoteConversation).toHaveBeenCalledWith('conversation-existing')
     expect(chatManager.findById).not.toHaveBeenCalled()
+
+    await act(async () => root.unmount())
+  })
+
+  it('generates titles through the server route in web runtime', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    let history: ReturnType<typeof useChatHistory> | null = null
+
+    function Probe() {
+      history = useChatHistory()
+      return null
+    }
+
+    const untitledConversation = {
+      id: 'conversation-new',
+      title: '',
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    chatManager.findById.mockResolvedValue(untitledConversation)
+
+    await act(async () => root.render(<Probe />))
+    let title: string | null = null
+    await act(async () => {
+      title =
+        (await history?.generateConversationTitle('conversation-new', [
+          {
+            role: 'user',
+            id: 'user-1',
+            content: null,
+            promptContent: 'hello harness',
+            mentionables: [],
+            selectedSkills: [],
+            selectedModelIds: [],
+          },
+        ])) ?? null
+    })
+
+    // 服务端路由生成（apiKey 不离开服务端），标题由服务端落库——本地不写回。
+    expect(title).toBe('Server title')
+    expect(generateRemoteTitle).toHaveBeenCalledWith(
+      'conversation-new',
+      [expect.objectContaining({ id: 'user-1' })],
+      { force: false },
+    )
+    expect(generateRemoteTitle).toHaveBeenCalledTimes(1)
 
     await act(async () => root.unmount())
   })
