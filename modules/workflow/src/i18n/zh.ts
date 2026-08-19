@@ -203,6 +203,7 @@ export const zh = {
     noOutput: '暂无输出',
     testNode: '测试节点',
     testing: '测试中…',
+    verificationWarn: '验证警告：',
     rename: '重命名工作流',
     renamePlaceholder: '新工作流名称',
     renameFailed: '无法重命名工作流。',

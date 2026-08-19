@@ -203,6 +203,7 @@ export const it = {
     noOutput: 'Nessun output',
     testNode: 'Testa nodo',
     testing: 'Test in corso…',
+    verificationWarn: 'Avviso di verifica:',
     rename: 'Rinomina flusso',
     renamePlaceholder: 'Nuovo nome del flusso',
     renameFailed: 'Non è stato possibile rinominare il flusso.',
