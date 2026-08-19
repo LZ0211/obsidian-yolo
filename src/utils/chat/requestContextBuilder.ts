@@ -32,7 +32,11 @@ import {
 } from '../../core/memory/memoryManager'
 import {
   MAX_RECALL_RECENT_USER_MESSAGES,
+  MAX_RECALL_RENDER_ENTRIES,
+  MAX_RECALL_RENDER_TOKENS,
   MemoryRecallOrchestrator,
+  type MemoryRecallPackLine,
+  packMemoryRecallLines,
 } from '../../core/memory/memoryRecallOrchestrator'
 import {
   getProjectInstructionsSection,
@@ -3351,15 +3355,13 @@ ${previewLines.join('\n')}`)
         partition,
         snapshot.sourceFileFingerprint,
       )
-      // `await` on the currently-synchronous render keeps every call site on
-      // the same awaiting path, so the later async render result shape adds
-      // no second orchestration path (C4 task ruling).
-      // eslint-disable-next-line @typescript-eslint/await-thenable -- C4 ruling: uniform await at every render call site; render stays sync `string | null` until Task 4 introduces the async result shape.
+      // Task 4: render is async and returns MemoryRecallRenderResult; the
+      // dynamic block is its .content (null when nothing fit the budget).
       const rendered = await orchestrator.render(
         context,
         (_key, fallback) => fallback,
       )
-      return rendered
+      return rendered.content
     } catch (error) {
       console.warn('[YOLO][Memory] indexed recall unavailable', error)
       return null
@@ -3367,12 +3369,14 @@ ${previewLines.join('\n')}`)
   }
 
   /**
-   * Bounded Markdown fallback for the dynamic path (C4): renders the same
-   * `getMemoryPromptContext` global/assistant scopes the stable section would
-   * have used — each scope still bounded to `MAX_ALWAYS_LOADED_MEMORY_CHARS`
-   * — wrapped in a `<recalled_memory source="markdown-fallback">` block.
-   * Used only when the SQLite index is unavailable; never writes to SQLite
-   * and never reaches the frozen system snapshot.
+   * Bounded Markdown fallback for the dynamic path (C4/C1+C2): renders the
+   * same `getMemoryPromptContext` global/assistant scopes the stable section
+   * would have used — each scope still bounded to
+   * `MAX_ALWAYS_LOADED_MEMORY_CHARS` — converted into packer lines and run
+   * through the SAME token packer as the indexed path, so the SQLite-outage
+   * fallback cannot exceed the final token budget with a second,
+   * character-based budget. Used only when the SQLite index is unavailable;
+   * never writes to SQLite and never reaches the frozen system snapshot.
    */
   private async buildMarkdownMemoryFallbackBlock(
     assistantId: string | undefined,
@@ -3382,21 +3386,24 @@ ${previewLines.join('\n')}`)
       settings: this.settings,
       assistantId,
     })
-    const memoryParts: string[] = []
+    const lines: MemoryRecallPackLine[] = []
     if (memoryContext.global) {
-      memoryParts.push(`<global>
-${memoryContext.global}
-</global>`)
+      lines.push({ content: memoryContext.global, category: 'global' })
     }
     if (memoryContext.assistant) {
-      memoryParts.push(`<assistant>
-${memoryContext.assistant}
-</assistant>`)
+      lines.push({ content: memoryContext.assistant, category: 'assistant' })
     }
-    if (memoryParts.length === 0) return null
-    return `<recalled_memory source="markdown-fallback">
-${memoryParts.join('\n\n')}
-</recalled_memory>`
+    if (lines.length === 0) return null
+    const rendered = await packMemoryRecallLines(
+      lines,
+      'markdown-fallback',
+      {
+        maxTokens: MAX_RECALL_RENDER_TOKENS,
+        maxEntries: MAX_RECALL_RENDER_ENTRIES,
+      },
+      (_key, fallback) => fallback,
+    )
+    return rendered.content
   }
 
   /**

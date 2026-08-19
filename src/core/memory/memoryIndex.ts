@@ -260,8 +260,14 @@ type MemoryReflectionStateRow = {
   dirty_reason: string | null
 }
 
-const DEFAULT_MAX_ENTRIES = 8
-const DEFAULT_MAX_CHARS = 3000
+/**
+ * Query safety caps (C1+C2): same semantics as the recall candidate limits —
+ * the query layer is a fault-protection bound against pathological data, not
+ * the final render budget. Must cover at least the candidate values (32
+ * entries / 12_000 chars) so the candidate pool reaches the query layer.
+ */
+const MAX_QUERY_ENTRIES = 32
+const MAX_QUERY_CHARS = 12_000
 const MAX_SOURCE_ENTRIES = 20_000
 const RECONCILE_HASH_BATCH_SIZE = 500
 const MAX_QUERY_KEYWORDS = 64
@@ -948,11 +954,11 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
         return []
       const maxEntries = Math.max(
         0,
-        Math.min(DEFAULT_MAX_ENTRIES, Math.trunc(input.maxEntries)),
+        Math.min(MAX_QUERY_ENTRIES, Math.trunc(input.maxEntries)),
       )
       const maxChars = Math.max(
         0,
-        Math.min(DEFAULT_MAX_CHARS, Math.trunc(input.maxChars)),
+        Math.min(MAX_QUERY_CHARS, Math.trunc(input.maxChars)),
       )
       const categories =
         input.target.categories?.length > 0
@@ -1034,6 +1040,13 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
         result.push(rowToEntry(row))
         chars += row.content.length
       }
+      // Query layer observability (C1+C2): actual rows returned, the
+      // char-filtered keep count, and whether a safety cap was hit. The
+      // renderer's omitted/truncated stats stay separate at render time.
+      logFlightEvent('memory-index', 'query-candidates', {
+        detail: `rows=${rows.length} kept=${result.length} chars=${chars} capEntries=${rows.length >= maxEntries} capChars=${chars >= maxChars}`,
+        consoleOutput: 'none',
+      })
       return result
     } catch (error) {
       console.warn('[YOLO][MemoryIndex] query failed', error)
@@ -1358,7 +1371,7 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
           Math.max(sourceScores.get(seed.id) ?? 0, seed.salience),
         )
       }
-      const sourceIds = [...sourceScores.keys()].slice(0, DEFAULT_MAX_ENTRIES)
+      const sourceIds = [...sourceScores.keys()].slice(0, MAX_QUERY_ENTRIES)
       if (sourceIds.length === 0) return input.seeds
       const rows = runtime.query<
         MemoryIndexRow & {
@@ -1385,7 +1398,7 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
           ...categories,
           COLD_ARCHIVE_SALIENCE,
           COLD_ARCHIVE_MS,
-          DEFAULT_MAX_ENTRIES * MAX_GRAPH_DEGREE,
+          MAX_QUERY_ENTRIES * MAX_GRAPH_DEGREE,
         ],
       )
       const seenKeys = new Set(input.seeds.map(({ memoryKey }) => memoryKey))

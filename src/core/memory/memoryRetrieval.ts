@@ -1,10 +1,10 @@
+import { MemoryEmbeddingStore } from './memoryEmbeddings'
 import type {
   MemoryIndexMaintenanceStore,
   MemoryIndexStore,
 } from './memoryIndex'
-import { MemoryEmbeddingStore } from './memoryEmbeddings'
-import type { MemoryRecallTarget } from './memoryRecallTarget'
 import { fuseMemoryRecallRanks } from './memoryRecallFusion'
+import type { MemoryRecallTarget } from './memoryRecallTarget'
 import type { MemoryPartition } from './memoryTypes'
 
 /**
@@ -36,6 +36,10 @@ export type MemoryRetrievalPath = 'lexical' | 'vector' | 'graph'
 export type MemoryRetrievalResult = {
   memoryKeys: readonly string[]
   paths: readonly MemoryRetrievalPath[]
+  /** Per-path candidate counts so the query layer's discard stats stay observable. */
+  candidateCounts: Readonly<Record<MemoryRetrievalPath, number>>
+  /** True only when a path reached `maxEntries` (the candidate entry cap). */
+  candidateLimitHit: boolean
 }
 
 export class MemoryRetrievalService {
@@ -63,19 +67,29 @@ export class MemoryRetrievalService {
       maxChars,
     })
     const lexicalKeys = lexicalEntries.map((entry) => entry.memoryKey)
+    const candidateCounts: Record<MemoryRetrievalPath, number> = {
+      lexical: lexicalKeys.length,
+      vector: 0,
+      graph: 0,
+    }
+    let candidateLimitHit = lexicalKeys.length >= maxEntries
     const paths: MemoryRetrievalPath[] = ['lexical']
     const rankedLists: string[][] = [lexicalKeys]
 
     // Semantic path: query embedding → cosine Top-N.
     const vectorKeys = await this.retrieveViaVector(options)
+    candidateCounts.vector = vectorKeys.length
     if (vectorKeys.length > 0) {
+      if (vectorKeys.length >= maxEntries) candidateLimitHit = true
       paths.push('vector')
       rankedLists.push(vectorKeys)
     }
 
     // Graph path: expand from the top lexical seeds via keyword-Jaccard edges.
     const graphKeys = await this.retrieveViaGraph(options, lexicalEntries)
+    candidateCounts.graph = graphKeys.length
     if (graphKeys.length > 0) {
+      if (graphKeys.length >= maxEntries) candidateLimitHit = true
       paths.push('graph')
       rankedLists.push(graphKeys)
     }
@@ -83,6 +97,8 @@ export class MemoryRetrievalService {
     return {
       memoryKeys: fuseMemoryRecallRanks(...rankedLists),
       paths,
+      candidateCounts,
+      candidateLimitHit,
     }
   }
 

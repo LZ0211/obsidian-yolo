@@ -9,7 +9,7 @@ import { FileSystemAdapter } from 'obsidian'
 import { openSqliteRuntime } from '../../database/sqlite/sqliteNativeRuntime'
 
 import { MemoryEmbeddingStore } from './memoryEmbeddings'
-import { openMemoryIndexStore } from './memoryIndex'
+import { buildMemoryKey, openMemoryIndexStore } from './memoryIndex'
 import { buildMemoryPartition } from './memoryIndex'
 import type { MemoryIndexMaintenanceStore } from './memoryIndex'
 import {
@@ -614,6 +614,79 @@ describe('memory index runtime adapter', () => {
         'Memory_unrelated',
         'Memory_related',
       ])
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('returns the candidate pool instead of the final 8 entries / 3000 chars', async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'memory-index-candidates-'),
+    )
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const entries = Array.from({ length: 12 }, (_, index) => ({
+      localId: `Memory_${index + 1}`,
+      content: `candidate ${index + 1} `.repeat(30),
+      keywords: [],
+      category: 'other' as const,
+      partition,
+      sourcePath: 'global.md',
+      entryFingerprint: `candidate-v${index + 1}`,
+    }))
+    const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
+    const store = await openMemoryIndexStore({
+      app,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot: async () => ({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: 'file-v1',
+        parserVersion: 'p',
+        entries,
+        valid: true,
+      }),
+    })
+    try {
+      await store.reconcilePartition({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: 'file-v1',
+        parserVersion: 'p',
+        entries,
+      })
+      const fusedKeys = entries.map(({ localId }) =>
+        buildMemoryKey(partition.partitionKey, localId),
+      )
+      const rows = await store.query({
+        partition,
+        sourceFileFingerprint: 'file-v1',
+        target: {
+          query: '',
+          keywords: [],
+          entities: [],
+          categories: ['other'],
+          scopes: ['global'],
+          sector: null,
+          confidence: 1,
+          isReferential: false,
+          source: 'lexical',
+        },
+        memoryKeys: fusedKeys,
+        // Candidate-pool limits (Task 4): the store must not cap the query at
+        // the final render limits of 8 entries / 3000 chars.
+        maxEntries: 32,
+        maxChars: 12_000,
+      })
+      const totalChars = rows.reduce((sum, row) => sum + row.content.length, 0)
+      // RED: today the store caps maxEntries at 8 and the char post-filter at
+      // 3000, so the candidate pool never reaches the query layer.
+      expect(rows.length).toBe(entries.length)
+      expect(totalChars).toBeGreaterThan(3000)
+      expect(rows.map(({ id }) => id)).toEqual(
+        entries.map(({ localId }) => localId),
+      )
     } finally {
       if ('close' in store && typeof store.close === 'function')
         await store.close()
