@@ -8,6 +8,7 @@ import {
   evaluateWorkflowGate,
   mergeWorkflowSources,
 } from './workflow-run-graph'
+import { WorkflowNodeExecutionError, isJsonValue } from './workflow-run-types'
 import type {
   JsonValue,
   WorkflowNodeExecutionRequest,
@@ -27,7 +28,6 @@ import type {
   WorkflowRunStatus,
   WorkflowRunStore,
 } from './workflow-run-types'
-import { isJsonValue } from './workflow-run-types'
 import { validateJsonSchemaOutput } from './workflow-schema'
 
 export type WorkflowRunCoordinatorOptions = Readonly<{
@@ -234,7 +234,9 @@ export function createWorkflowRunCoordinator(
       await failNode(
         run,
         node.id,
-        'agent-failed',
+        error instanceof WorkflowNodeExecutionError
+          ? error.code
+          : 'agent-failed',
         error instanceof Error ? error.message : String(error),
       )
       return

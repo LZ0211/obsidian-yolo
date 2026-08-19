@@ -102,6 +102,22 @@ export type WorkflowNodeExecutor = Readonly<{
   ): Promise<WorkflowNodeExecutionResult>
 }>
 
+/** Stable codes an executor throws; the coordinator persists them as-is. */
+export type WorkflowNodeExecutionErrorCode = Exclude<
+  WorkflowRunError['code'],
+  'storage-failed'
+>
+
+export class WorkflowNodeExecutionError extends Error {
+  readonly code: WorkflowNodeExecutionErrorCode
+
+  constructor(code: WorkflowNodeExecutionErrorCode, message: string) {
+    super(message)
+    this.name = 'WorkflowNodeExecutionError'
+    this.code = code
+  }
+}
+
 /** Structural model snapshot; `YoloModuleModelSnapshotV1` is compatible. */
 export type WorkflowModelSnapshot = Readonly<{
   defaultModelId: string

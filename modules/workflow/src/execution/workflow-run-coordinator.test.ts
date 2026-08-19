@@ -1,6 +1,8 @@
 import type { WorkflowTopology } from '../domain/workflow-model'
 import type { WorkflowBundle } from '../domain/workflow-repository'
 
+import { createWorkflowNodeExecutor } from './workflow-node-executor'
+import type { WorkflowAgentEvent } from './workflow-node-executor'
 import { createWorkflowRunCoordinator } from './workflow-run-coordinator'
 import { createWorkflowRunStore } from './workflow-run-store'
 import type {
@@ -226,8 +228,8 @@ const until = async (
   }
 }
 
-const makeHarness = (options: {
-  executor?: FakeExecutor
+const makeHarness = <T extends WorkflowNodeExecutor = FakeExecutor>(options: {
+  executor?: T
   topology?: WorkflowTopology
   storage?: MemoryStorage
   workflowPath?: string
@@ -685,6 +687,120 @@ describe('workflow run coordinator', () => {
     expect(latest?.input).toEqual({ items: [1, 2], nested: { keep: 'yes' } })
     expect(latest?.nodes.draft.output).toEqual({ result: 'x' })
     expect(Object.isFrozen(latest?.nodes.draft.output as object)).toBe(true)
+  })
+
+  it('preserves stable executor error codes from the real executor in the run error', async () => {
+    const topology: WorkflowTopology = {
+      revision: 1,
+      nodes: [
+        {
+          id: 'in',
+          kind: 'input',
+          label: 'In',
+          stepPath: 'steps/in/STEP.md',
+          position: { x: 0, y: 0 },
+        },
+        {
+          id: 'draft',
+          kind: 'agent',
+          label: 'Draft',
+          stepPath: 'steps/draft/STEP.md',
+          position: { x: 1, y: 0 },
+          outputSchema: {
+            type: 'object',
+            properties: { plan: { type: 'string' } },
+          },
+        },
+        {
+          id: 'out',
+          kind: 'output',
+          label: 'Out',
+          stepPath: 'steps/out/STEP.md',
+          position: { x: 2, y: 0 },
+        },
+      ],
+      edges: [
+        { id: 'e1', source: 'in', target: 'draft' },
+        { id: 'e2', source: 'draft', target: 'out' },
+      ],
+    }
+    const executor = createWorkflowNodeExecutor({
+      agent: {
+        stream: async function* (): AsyncIterable<WorkflowAgentEvent> {
+          yield { type: 'completed', text: 'model prose without a submission' }
+        },
+      },
+    })
+    const { coordinator, store, input } = makeHarness({ executor, topology })
+
+    await coordinator.start(input)
+    await until(
+      async () => (await store.read('demo/WORKFLOW.md'))?.status === 'failed',
+    )
+    const snapshot = await store.read('demo/WORKFLOW.md')
+    expect(snapshot?.nodes.draft.error).toMatchObject({
+      code: 'agent-failed',
+    })
+    expect(snapshot?.error).toMatchObject({
+      code: 'agent-failed',
+      nodeId: 'draft',
+    })
+  })
+
+  it('persists invalid-output from the real executor for a non-array map input', async () => {
+    const topology: WorkflowTopology = {
+      revision: 1,
+      nodes: [
+        {
+          id: 'in',
+          kind: 'input',
+          label: 'In',
+          stepPath: 'steps/in/STEP.md',
+          position: { x: 0, y: 0 },
+        },
+        {
+          id: 'map',
+          kind: 'mapAgent',
+          label: 'Map',
+          stepPath: 'steps/map/STEP.md',
+          position: { x: 1, y: 0 },
+        },
+        {
+          id: 'out',
+          kind: 'output',
+          label: 'Out',
+          stepPath: 'steps/out/STEP.md',
+          position: { x: 2, y: 0 },
+        },
+      ],
+      edges: [
+        { id: 'e1', source: 'in', target: 'map' },
+        { id: 'e2', source: 'map', target: 'out' },
+      ],
+    }
+    const executor = createWorkflowNodeExecutor({
+      agent: {
+        stream: async function* (): AsyncIterable<WorkflowAgentEvent> {
+          throw new Error('the Agent must not be called for a non-array input')
+          // Unreachable; the throw above fires if the executor pulls.
+          yield { type: 'completed', text: '' }
+        },
+      },
+    })
+    const { coordinator, store, input } = makeHarness({ executor, topology })
+
+    await coordinator.start({ ...input, input: 'not-an-array' })
+    await until(
+      async () => (await store.read('demo/WORKFLOW.md'))?.status === 'failed',
+    )
+    const snapshot = await store.read('demo/WORKFLOW.md')
+    expect(snapshot?.nodes.map.error).toMatchObject({
+      code: 'invalid-output',
+    })
+    expect(snapshot?.error).toMatchObject({
+      code: 'invalid-output',
+      nodeId: 'map',
+    })
   })
 
   it('surfaces preflight failures without reserving the path', async () => {

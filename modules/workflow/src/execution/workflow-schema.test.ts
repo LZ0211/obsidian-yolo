@@ -1,22 +1,50 @@
-import { isJsonSchema, validateJsonSchemaOutput } from './workflow-schema'
+import {
+  createWorkflowSchemaValidator,
+  isJsonSchema,
+  validateJsonSchemaOutput,
+} from './workflow-schema'
+
+const objectSchema = {
+  type: 'object',
+  required: ['result'],
+  properties: {
+    result: { type: 'string', minLength: 1 },
+    count: { type: 'integer', minimum: 0 },
+    items: { type: 'array', items: { type: 'number' } },
+  },
+  additionalProperties: false,
+}
 
 describe('workflow json schema', () => {
-  it('accepts a valid draft-07 style schema', () => {
-    expect(
-      isJsonSchema({
+  it('validateSchema accepts valid draft-07 schemas', () => {
+    const validator = createWorkflowSchemaValidator()
+    for (const schema of [
+      objectSchema,
+      { type: ['string', 'null'] },
+      true,
+      { enum: ['a', 'b', 3] },
+      { const: { a: 1 } },
+      {
+        type: 'array',
+        items: [{ type: 'number' }, { type: 'string' }],
+        minItems: 2,
+        maxItems: 2,
+      },
+      {
+        definitions: { pos: { type: 'integer', minimum: 0 } },
         type: 'object',
-        required: ['result'],
-        properties: {
-          result: { type: 'string', minLength: 1 },
-          count: { type: 'integer', minimum: 0 },
-          items: { type: 'array', items: { type: 'number' } },
-        },
-        additionalProperties: false,
-      }),
-    ).toBe(true)
+        required: ['x'],
+        properties: { x: { $ref: '#/definitions/pos' } },
+      },
+      { allOf: [{ type: 'number' }, { minimum: 2 }] },
+      { not: { type: 'string' } },
+    ]) {
+      expect(validator.validateSchema(schema)).toEqual({ ok: true })
+    }
   })
 
-  it('rejects malformed schemas without throwing', () => {
+  it('validateSchema rejects malformed and non-JSON schemas', () => {
+    const validator = createWorkflowSchemaValidator()
     for (const schema of [
       42,
       null,
@@ -28,11 +56,11 @@ describe('workflow json schema', () => {
       { properties: { a: 'string' } },
       { required: 'a' },
       { required: ['a', 2] },
-      { required: ['a', 'a'] },
       { items: 5 },
       { items: ['a'] },
       { items: [{}], additionalProperties: 'no' },
       { enum: 'nope' },
+      { enum: [BigInt(1)] },
       { allOf: {} },
       { oneOf: [{}], not: 5 },
       { minimum: 'zero' },
@@ -40,136 +68,223 @@ describe('workflow json schema', () => {
       { minLength: 1.5 },
       { pattern: 5 },
       { minItems: 1, uniqueItems: 'yes' },
+      { $ref: 'https://example.com/missing-schema.json' },
+      { type: 'object', extra: BigInt(1) },
     ]) {
-      expect(isJsonSchema(schema)).toBe(false)
+      expect(validator.validateSchema(schema)).toEqual({
+        ok: false,
+        message: expect.any(String),
+      })
     }
   })
 
-  it('rejects non-JSON schema values such as bigint', () => {
-    expect(isJsonSchema({ type: 'object', extra: BigInt(1) })).toBe(false)
-    expect(isJsonSchema({ enum: [BigInt(1)] })).toBe(false)
+  it('validateSchema ignores unknown keywords', () => {
+    const validator = createWorkflowSchemaValidator()
+    expect(
+      validator.validateSchema({
+        type: 'object',
+        properties: { a: { type: 'string', xCustom: 1 } },
+        xUnknown: { deep: [1] },
+      }),
+    ).toEqual({ ok: true })
   })
 
-  it('validates type, required, properties, and additionalProperties', () => {
-    const schema = {
-      type: 'object',
-      required: ['result'],
-      properties: {
-        result: { type: 'string' },
-        count: { type: 'integer' },
-      },
-      additionalProperties: false,
-    }
+  it('validateValue enforces type, required, properties, and additionalProperties', () => {
+    const validator = createWorkflowSchemaValidator()
     expect(
-      validateJsonSchemaOutput(schema, { result: 'ok', count: 2 }),
-    ).toEqual([])
-    expect(validateJsonSchemaOutput(schema, { count: 2 })).not.toEqual([])
-    expect(validateJsonSchemaOutput(schema, { result: 5 })).not.toEqual([])
+      validator.validateValue(objectSchema, { result: 'ok', count: 2 }),
+    ).toEqual({
+      ok: true,
+    })
+    expect(validator.validateValue(objectSchema, { count: 2 }).ok).toBe(false)
+    expect(validator.validateValue(objectSchema, { result: 5 }).ok).toBe(false)
     expect(
-      validateJsonSchemaOutput(schema, { result: 'ok', count: 2.5 }),
-    ).not.toEqual([])
+      validator.validateValue(objectSchema, { result: 'ok', count: 2.5 }).ok,
+    ).toBe(false)
     expect(
-      validateJsonSchemaOutput(schema, { result: 'ok', extra: 1 }),
-    ).not.toEqual([])
+      validator.validateValue(objectSchema, { result: 'ok', extra: 1 }).ok,
+    ).toBe(false)
+    expect(validator.validateValue({ type: ['string', 'null'] }, 'x')).toEqual({
+      ok: true,
+    })
+    expect(validator.validateValue({ type: ['string', 'null'] }, 3).ok).toBe(
+      false,
+    )
   })
 
-  it('validates arrays, tuples, enums, and const', () => {
-    const schema = {
+  it('validateValue enforces arrays, tuples, enums, and const', () => {
+    const validator = createWorkflowSchemaValidator()
+    const tuple = {
       type: 'array',
       items: [{ type: 'number' }, { type: 'string' }],
       minItems: 2,
       maxItems: 2,
     }
-    expect(validateJsonSchemaOutput(schema, [1, 'a'])).toEqual([])
-    expect(validateJsonSchemaOutput(schema, ['a', 1])).not.toEqual([])
-    expect(validateJsonSchemaOutput(schema, [1])).not.toEqual([])
-
-    expect(validateJsonSchemaOutput({ enum: ['a', 'b', 3] }, 'b')).toEqual([])
-    expect(validateJsonSchemaOutput({ enum: ['a', 'b'] }, 'c')).not.toEqual([])
-    expect(validateJsonSchemaOutput({ const: { a: 1 } }, { a: 1 })).toEqual([])
-    expect(validateJsonSchemaOutput({ const: { a: 1 } }, { a: 2 })).not.toEqual(
-      [],
+    expect(validator.validateValue(tuple, [1, 'a'])).toEqual({ ok: true })
+    expect(validator.validateValue(tuple, ['a', 1]).ok).toBe(false)
+    expect(validator.validateValue(tuple, [1]).ok).toBe(false)
+    expect(validator.validateValue({ enum: ['a', 'b', 3] }, 'b')).toEqual({
+      ok: true,
+    })
+    expect(validator.validateValue({ enum: ['a', 'b'] }, 'c').ok).toBe(false)
+    expect(validator.validateValue({ const: { a: 1 } }, { a: 1 })).toEqual({
+      ok: true,
+    })
+    expect(validator.validateValue({ const: { a: 1 } }, { a: 2 }).ok).toBe(
+      false,
     )
   })
 
-  it('validates strings, patterns, and uniqueItems', () => {
-    expect(validateJsonSchemaOutput({ type: 'string' }, 'x')).toEqual([])
+  it('validateValue enforces strings, patterns, and uniqueItems', () => {
+    const validator = createWorkflowSchemaValidator()
+    expect(validator.validateValue({ type: 'string' }, 'x')).toEqual({
+      ok: true,
+    })
     expect(
-      validateJsonSchemaOutput(
+      validator.validateValue(
         { type: 'string', minLength: 2, maxLength: 3 },
         'abc',
       ),
-    ).toEqual([])
+    ).toEqual({ ok: true })
     expect(
-      validateJsonSchemaOutput({ type: 'string', minLength: 2 }, 'a'),
-    ).not.toEqual([])
-    expect(validateJsonSchemaOutput({ pattern: '^[a-z]+$' }, 'abc')).toEqual([])
+      validator.validateValue({ type: 'string', minLength: 2 }, 'a').ok,
+    ).toBe(false)
+    expect(validator.validateValue({ pattern: '^[a-z]+$' }, 'abc')).toEqual({
+      ok: true,
+    })
+    expect(validator.validateValue({ pattern: '^[a-z]+$' }, 'ABC').ok).toBe(
+      false,
+    )
     expect(
-      validateJsonSchemaOutput({ pattern: '^[a-z]+$' }, 'ABC'),
-    ).not.toEqual([])
+      validator.validateValue({ type: 'array', uniqueItems: true }, [1, 2]),
+    ).toEqual({ ok: true })
     expect(
-      validateJsonSchemaOutput({ type: 'array', uniqueItems: true }, [1, 2]),
-    ).toEqual([])
-    expect(
-      validateJsonSchemaOutput({ type: 'array', uniqueItems: true }, [1, 1]),
-    ).not.toEqual([])
+      validator.validateValue({ type: 'array', uniqueItems: true }, [1, 1]).ok,
+    ).toBe(false)
   })
 
-  it('validates numbers, allOf, anyOf, oneOf, and not', () => {
-    expect(validateJsonSchemaOutput({ type: 'number' }, 1.5)).toEqual([])
+  it('validateValue enforces numbers and composition keywords', () => {
+    const validator = createWorkflowSchemaValidator()
+    expect(validator.validateValue({ type: 'number' }, 1.5)).toEqual({
+      ok: true,
+    })
     expect(
-      validateJsonSchemaOutput({ type: 'number', minimum: 1, maximum: 3 }, 2),
-    ).toEqual([])
-    expect(
-      validateJsonSchemaOutput({ type: 'number', minimum: 3 }, 2),
-    ).not.toEqual([])
-    expect(validateJsonSchemaOutput({ type: 'boolean' }, true)).toEqual([])
+      validator.validateValue({ type: 'number', minimum: 1, maximum: 3 }, 2),
+    ).toEqual({ ok: true })
+    expect(validator.validateValue({ type: 'number', minimum: 3 }, 2).ok).toBe(
+      false,
+    )
+    expect(validator.validateValue({ type: 'boolean' }, true)).toEqual({
+      ok: true,
+    })
 
     expect(
-      validateJsonSchemaOutput(
+      validator.validateValue(
         { allOf: [{ type: 'number' }, { minimum: 2 }] },
         3,
       ),
-    ).toEqual([])
+    ).toEqual({ ok: true })
     expect(
-      validateJsonSchemaOutput(
+      validator.validateValue(
         { allOf: [{ type: 'number' }, { minimum: 2 }] },
         1,
-      ),
-    ).not.toEqual([])
+      ).ok,
+    ).toBe(false)
     expect(
-      validateJsonSchemaOutput(
+      validator.validateValue(
         { anyOf: [{ type: 'string' }, { type: 'number' }] },
         2,
       ),
-    ).toEqual([])
+    ).toEqual({ ok: true })
+    expect(validator.validateValue({ anyOf: [{ type: 'string' }] }, 2).ok).toBe(
+      false,
+    )
     expect(
-      validateJsonSchemaOutput({ anyOf: [{ type: 'string' }] }, 2),
-    ).not.toEqual([])
-    expect(
-      validateJsonSchemaOutput(
+      validator.validateValue(
         { oneOf: [{ type: 'string' }, { const: 'x' }] },
         'x',
-      ),
-    ).not.toEqual([])
+      ).ok,
+    ).toBe(false)
     expect(
-      validateJsonSchemaOutput(
+      validator.validateValue(
         { oneOf: [{ type: 'string' }, { type: 'number' }] },
         'x',
       ),
-    ).toEqual([])
-    expect(validateJsonSchemaOutput({ not: { type: 'string' } }, 2)).toEqual([])
-    expect(
-      validateJsonSchemaOutput({ not: { type: 'string' } }, 'x'),
-    ).not.toEqual([])
+    ).toEqual({ ok: true })
+    expect(validator.validateValue({ not: { type: 'string' } }, 2)).toEqual({
+      ok: true,
+    })
+    expect(validator.validateValue({ not: { type: 'string' } }, 'x').ok).toBe(
+      false,
+    )
   })
 
-  it('ignores unknown keywords and nested property schemas', () => {
+  it('validateValue resolves local $ref definitions', () => {
+    const validator = createWorkflowSchemaValidator()
+    const schema = {
+      definitions: { pos: { type: 'integer', minimum: 0 } },
+      type: 'object',
+      required: ['x'],
+      properties: { x: { $ref: '#/definitions/pos' } },
+    }
+    expect(validator.validateValue(schema, { x: 3 })).toEqual({ ok: true })
+    expect(validator.validateValue(schema, { x: -1 }).ok).toBe(false)
+    expect(validator.validateValue(schema, { x: 's' }).ok).toBe(false)
+  })
+
+  it('validateValue rejects values that are not finite JSON-compatible', () => {
+    const validator = createWorkflowSchemaValidator()
+    for (const value of [
+      BigInt(1),
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      undefined,
+      () => 1,
+      new Date(),
+      { nested: BigInt(1) },
+    ]) {
+      expect(validator.validateValue({}, value)).toEqual({
+        ok: false,
+        message: expect.any(String),
+      })
+    }
+    expect(validator.validateValue({}, 1)).toEqual({ ok: true })
+    expect(validator.validateValue({}, null)).toEqual({ ok: true })
+  })
+
+  it('validateValue reports a readable message on failure', () => {
+    const validator = createWorkflowSchemaValidator()
+    const result = validator.validateValue(objectSchema, { result: 5 })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.message.length).toBeGreaterThan(5)
+  })
+
+  it('the module wrappers share one validator instance', () => {
+    expect(isJsonSchema(objectSchema)).toBe(true)
+    expect(isJsonSchema({ type: 42 })).toBe(false)
+    expect(isJsonSchema({ type: 'object', extra: BigInt(1) })).toBe(false)
     expect(
-      validateJsonSchemaOutput(
-        { type: 'object', properties: { a: { type: 'string', xCustom: 1 } } },
-        { a: 'v' },
-      ),
+      validateJsonSchemaOutput(objectSchema, { result: 'ok', count: 2 }),
     ).toEqual([])
+    expect(validateJsonSchemaOutput(objectSchema, { result: 5 })).not.toEqual(
+      [],
+    )
+    expect(validateJsonSchemaOutput(objectSchema, BigInt(1))).not.toEqual([])
+  })
+
+  it('the validator stays independent of provider and model settings', () => {
+    // Unknown provider-ish keywords and format strings must not change results.
+    const validator = createWorkflowSchemaValidator()
+    expect(
+      validator.validateValue(
+        {
+          type: 'string',
+          format: 'email',
+          providerHint: 'x',
+          modelHint: 'y',
+        },
+        'not-an-email',
+      ),
+    ).toEqual({ ok: true })
   })
 })

@@ -13,6 +13,7 @@
     "test:boundary": "node --test ../../scripts/check-workflow-module-boundary.test.mjs"
   },
   "dependencies": {
+    "ajv": "^8.17.1",
     "lucide-react": "^0.447.0",
     "react": "^18.3.1"
   },
