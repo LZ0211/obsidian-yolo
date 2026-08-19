@@ -3,16 +3,16 @@
 // 未移植（Task 6 同裁），会话网关类型收拢在 runtime/web/webConversationTypes，
 // agent 状态类型改由 master 的 core/agent/service 提供。
 import type { ContextBreakdownInputs } from '../components/chat-view/useContextBreakdown'
+import type {
+  AssistantRenderStreamListener,
+  AssistantRenderStreamValue,
+} from '../core/agent/assistantRenderStreamStore'
 import type { ContextBreakdown } from '../core/agent/contextBreakdown'
 import type {
   AgentConversationRunSummary,
   AgentConversationState,
   EnqueueUserMessageResult,
 } from '../core/agent/service'
-import type {
-  AssistantRenderStreamListener,
-  AssistantRenderStreamValue,
-} from '../core/agent/assistantRenderStreamStore'
 import type { CliRuntimeId } from '../core/cli-runtime/types'
 import type { ChatConversationMetadata } from '../database/json/chat/types'
 import type { YoloSettings } from '../settings/schema/setting.types'

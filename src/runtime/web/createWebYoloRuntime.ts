@@ -1,13 +1,13 @@
 // master 的序列化工具位于 hooks/useChatHistory（Task 9 已加 serializeChatMessage
 // export）；agent 状态类型位于 core/agent/service。
-import type {
-  AgentConversationRunSummary,
-  AgentConversationState,
-} from '../../core/agent/service'
 import {
   AssistantRenderStreamStore,
   type AssistantRenderStreamValue,
 } from '../../core/agent/assistantRenderStreamStore'
+import type {
+  AgentConversationRunSummary,
+  AgentConversationState,
+} from '../../core/agent/service'
 import {
   deserializeChatMessage,
   serializeChatMessage,
@@ -30,16 +30,16 @@ import type {
 } from '../yoloRuntime.types'
 
 import { createWebCompatApp } from './createWebCompatApp'
-import {
-  createWebChatManager,
-  type ChatClient,
-  type WebChatManager,
-} from './webChatManager'
 import { createWebCompatibilityBridge } from './createWebCompatibilityBridge'
 import { createWebCompatPlugin } from './createWebCompatPlugin'
 import { createWebMcpManager } from './createWebMcpManager'
 import { Notice } from './obsidianCompat'
 import type { WebApiClient, WebBootstrapPayload } from './WebApiClient'
+import {
+  type ChatClient,
+  type WebChatManager,
+  createWebChatManager,
+} from './webChatManager'
 import { createWebConversationGateway } from './WebConversationGateway'
 
 export type { WebBootstrapPayload }
