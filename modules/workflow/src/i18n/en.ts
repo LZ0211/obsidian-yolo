@@ -167,6 +167,8 @@ export const en = {
     model: 'Run model',
     input: 'Run input',
     run: 'Run',
+    pause: 'Pause',
+    resume: 'Resume',
     stop: 'Stop',
     continue: 'Continue',
     confirmSideEffects:
@@ -178,6 +180,7 @@ export const en = {
     alreadyRunning: 'This workflow is already running.',
     status: {
       running: 'Running',
+      paused: 'Paused',
       succeeded: 'Succeeded',
       failed: 'Failed',
       cancelled: 'Cancelled',
@@ -195,5 +198,11 @@ export const en = {
     noOutput: 'No output yet',
     testNode: 'Test node',
     testing: 'Testing…',
+    rename: 'Rename workflow',
+    renamePlaceholder: 'New workflow name',
+    renameFailed: 'Failed to rename the workflow.',
+    cannotRenameWhileRunning: 'Stop or finish the run before renaming.',
+    cannotRenameWhileDirty:
+      'Save or discard the current edits before renaming.',
   },
 } as const satisfies WorkflowCopy

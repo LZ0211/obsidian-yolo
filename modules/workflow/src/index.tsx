@@ -357,6 +357,18 @@ function WorkflowModuleView({
     },
     [coordinator, editor, getCopy, models, notice],
   )
+  const pauseRun = useCallback((): void => {
+    const path = editor.getSnapshot().path
+    if (path === null) return
+    void coordinator
+      .pause(path)
+      .then((paused) => {
+        if (!paused) notice(getCopy().run.alreadyRunning)
+      })
+      .catch((error: unknown) =>
+        notice(error instanceof Error ? error.message : String(error)),
+      )
+  }, [coordinator, editor, getCopy, notice])
   const cancelRun = useCallback((): void => {
     const path = editor.getSnapshot().path
     if (path !== null) void coordinator.cancel(path)
@@ -364,20 +376,35 @@ function WorkflowModuleView({
   const continueRun = useCallback((): void => {
     const path = editor.getSnapshot().path
     if (path === null) return
-    void coordinator
-      .continueRun(path, { confirmSideEffects: true })
-      .then((result) => {
+    // The panel resumes a paused run without asking: an in-memory pause
+    // resumes cleanly, while a recovered paused run makes the Coordinator
+    // answer `side-effect-confirmation-required`. That answer is handled
+    // here: confirm once, then retry with the confirmation granted.
+    const paused = currentRun?.paused === true
+    const attempt = (confirmSideEffects: boolean): Promise<void> =>
+      coordinator.continueRun(path, { confirmSideEffects }).then((result) => {
         if (result.ok) return
         if (result.reason === 'already-running') {
           notice(getCopy().run.alreadyRunning)
           return
         }
+        if (paused && result.reason === 'side-effect-confirmation-required') {
+          return confirm({
+            title: getCopy().run.continue,
+            message: getCopy().run.confirmSideEffects,
+            ctaText: getCopy().run.continue,
+            cancelText: getCopy().assistant.cancel,
+          }).then((accepted) => {
+            if (accepted) return attempt(true)
+            return undefined
+          })
+        }
         notice(result.error?.message ?? getCopy().run.error)
       })
-      .catch((error: unknown) =>
-        notice(error instanceof Error ? error.message : String(error)),
-      )
-  }, [coordinator, editor, getCopy, notice])
+    void attempt(!paused).catch((error: unknown) =>
+      notice(error instanceof Error ? error.message : String(error)),
+    )
+  }, [confirm, coordinator, currentRun, editor, getCopy, notice])
   const testNode = useCallback(
     // The second parameter is optional so the handler stays assignable to the
     // Studio's pass-through `(nodeId, input?) => Promise<...> | undefined`
@@ -429,6 +456,7 @@ function WorkflowModuleView({
         models={models}
         run={currentRun}
         onStart={startRun}
+        onPause={pauseRun}
         onCancel={cancelRun}
         onContinue={continueRun}
         onTestNode={testNode}

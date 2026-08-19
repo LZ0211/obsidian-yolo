@@ -164,6 +164,8 @@ export type WorkflowCopy = Readonly<{
     model: string
     input: string
     run: string
+    pause: string
+    resume: string
     stop: string
     continue: string
     confirmSideEffects: string
@@ -174,7 +176,12 @@ export type WorkflowCopy = Readonly<{
     alreadyRunning: string
     status: Readonly<
       Record<
-        'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted',
+        | 'running'
+        | 'paused'
+        | 'succeeded'
+        | 'failed'
+        | 'cancelled'
+        | 'interrupted',
         string
       >
     >
@@ -186,6 +193,11 @@ export type WorkflowCopy = Readonly<{
     noOutput: string
     testNode: string
     testing: string
+    rename: string
+    renamePlaceholder: string
+    renameFailed: string
+    cannotRenameWhileRunning: string
+    cannotRenameWhileDirty: string
   }>
 }>
 

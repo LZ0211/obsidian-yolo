@@ -180,6 +180,99 @@ describe('workflow studio UI interactions', () => {
     expect(trashCurrent).toHaveBeenCalled()
   })
 
+  it('exposes Rename and refuses while dirty or running', async () => {
+    const { model, setSnapshot } = createModel({ bundle: createBundle() })
+    await renderStudio(model)
+
+    const renameButton = testContainer.querySelector<HTMLButtonElement>(
+      'button[aria-label="Rename workflow"]',
+    )
+    expect(renameButton).not.toBeNull()
+    expect(renameButton!.disabled).toBe(false)
+
+    act(() => setSnapshot({ ...model.getSnapshot(), dirty: true }))
+    expect(renameButton!.disabled).toBe(true)
+
+    act(() => setSnapshot({ ...model.getSnapshot(), dirty: false }))
+    expect(renameButton!.disabled).toBe(false)
+
+    act(() => testRoot.unmount())
+    testRoot = createRoot(testContainer)
+    await renderStudio(
+      model,
+      jest.fn(),
+      jest.fn(async () => true),
+      {
+        run: createRunSnapshot({ status: 'running' }),
+      },
+    )
+    const runningRename = testContainer.querySelector<HTMLButtonElement>(
+      'button[aria-label="Rename workflow"]',
+    )
+    expect(runningRename).not.toBeNull()
+    expect(runningRename!.disabled).toBe(true)
+  })
+
+  it('renames the workflow through the inline input and reports failures', async () => {
+    const { model, rename } = createModel({ bundle: createBundle() })
+    const notice = jest.fn()
+    await renderStudio(model, notice)
+
+    const renameButton = testContainer.querySelector<HTMLButtonElement>(
+      'button[aria-label="Rename workflow"]',
+    )
+    await act(async () => {
+      renameButton!.click()
+      await Promise.resolve()
+    })
+    const input = testContainer.querySelector<HTMLInputElement>(
+      'input[aria-label="Rename workflow"]',
+    )
+    expect(input).not.toBeNull()
+    expect(input!.placeholder).toBe('New workflow name')
+
+    await act(async () => {
+      setInputValue(input!, 'renamed-flow')
+      testContainer
+        .querySelector<HTMLButtonElement>(
+          '.yolo-workflow-create-bar button[type="submit"]',
+        )
+        ?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(rename).toHaveBeenCalledWith('renamed-flow')
+    expect(notice).not.toHaveBeenCalled()
+
+    // A failed rename keeps the inline input open and reports the failure.
+    rename.mockResolvedValueOnce(false)
+    await act(async () => {
+      renameButton!.click()
+      await Promise.resolve()
+    })
+    const reopenedInput = testContainer.querySelector<HTMLInputElement>(
+      'input[aria-label="Rename workflow"]',
+    )
+    expect(reopenedInput).not.toBeNull()
+    await act(async () => {
+      setInputValue(reopenedInput!, 'second-name')
+      testContainer
+        .querySelector<HTMLButtonElement>(
+          '.yolo-workflow-create-bar button[type="submit"]',
+        )
+        ?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(rename).toHaveBeenLastCalledWith('second-name')
+    expect(notice).toHaveBeenCalledWith('Failed to rename the workflow.')
+    expect(
+      testContainer.querySelector('input[aria-label="Rename workflow"]'),
+    ).not.toBeNull()
+  })
+
   it('requires confirmation before deleting the current workflow', async () => {
     const { model, trashCurrent } = createModel({ bundle: createBundle() })
     const confirm = jest
@@ -1241,6 +1334,7 @@ async function renderStudio(
     models?: YoloModuleHostModelSnapshotV1
     run?: WorkflowRunSnapshot | null
     onStart?: jest.Mock
+    onPause?: jest.Mock
     onCancel?: jest.Mock
     onContinue?: jest.Mock
     onTestNode?: jest.Mock
@@ -1265,6 +1359,7 @@ async function renderStudio(
         }
         run={options.run ?? null}
         onStart={options.onStart ?? jest.fn()}
+        onPause={options.onPause ?? jest.fn()}
         onCancel={options.onCancel ?? jest.fn()}
         onContinue={options.onContinue ?? jest.fn()}
         onTestNode={options.onTestNode}
@@ -1335,6 +1430,7 @@ function createModel(
   selectNode: jest.Mock
   removeNode: jest.Mock
   trashCurrent: jest.Mock
+  rename: jest.Mock
   setSnapshot(next: WorkflowEditorSnapshot): void
 }> {
   let snapshot = createSnapshot(overrides)
@@ -1345,6 +1441,7 @@ function createModel(
   const selectNode = jest.fn()
   const removeNode = jest.fn(async () => true)
   const trashCurrent = jest.fn(async () => false)
+  const rename = jest.fn(async () => true)
   const model = {
     getSnapshot: () => snapshot,
     subscribe: jest.fn((listener: () => void) => {
@@ -1366,6 +1463,7 @@ function createModel(
       ok: false as const,
       reason: 'invalid-input' as const,
     })),
+    rename,
     trashCurrent,
     dispose: jest.fn(),
   } as unknown as WorkflowEditorModel
@@ -1377,6 +1475,7 @@ function createModel(
     selectNode,
     removeNode,
     trashCurrent,
+    rename,
     setSnapshot: (next) => {
       snapshot = next
       for (const listener of listeners) listener()

@@ -16,6 +16,7 @@ import {
   Merge,
   PanelLeft,
   PanelRight,
+  PenLine,
   Play,
   Plus,
   Redo2,
@@ -87,6 +88,7 @@ export type WorkflowStudioProps = Readonly<{
   /** The current path's run snapshot, or null when it has no run record. */
   run: WorkflowRunSnapshot | null
   onStart(input: JsonValue, modelId: string): void
+  onPause(): void
   onCancel(): void
   onContinue(): void
   /**
@@ -148,6 +150,7 @@ export function WorkflowStudio({
   models,
   run,
   onStart,
+  onPause,
   onCancel,
   onContinue,
   onTestNode,
@@ -179,6 +182,8 @@ export function WorkflowStudio({
   const [newWorkflowOpen, setNewWorkflowOpen] = useState(false)
   const [newWorkflowSlug, setNewWorkflowSlug] = useState('')
   const [newWorkflowError, setNewWorkflowError] = useState<string | null>(null)
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [renameSlug, setRenameSlug] = useState('')
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [markdownTarget, setMarkdownTarget] = useState('workflow')
   const [assistantAction, setAssistantAction] =
@@ -230,6 +235,8 @@ export function WorkflowStudio({
     setAssistantAction('validation')
     setAssistantProposal(null)
     setAssistantInstruction('')
+    setRenameOpen(false)
+    setRenameSlug('')
     cancelAssistant()
   }, [cancelAssistant, snapshot.path, snapshot.status])
 
@@ -489,6 +496,31 @@ export function WorkflowStudio({
         })
     },
     [copy, model, newWorkflowSlug, showNotice, snapshot.dirty],
+  )
+
+  const renameWorkflow = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault()
+      const slug = normalizeSlug(renameSlug)
+      if (!slug) {
+        showNotice(copy.run.renameFailed)
+        return
+      }
+      void model
+        .rename(slug)
+        .then((renamed) => {
+          if (!renamed) {
+            showNotice(copy.run.renameFailed)
+            return
+          }
+          setRenameOpen(false)
+          setRenameSlug('')
+        })
+        .catch((error: unknown) =>
+          showNotice(error instanceof Error ? error.message : String(error)),
+        )
+    },
+    [copy.run.renameFailed, model, renameSlug, showNotice],
   )
 
   const addNode = useCallback(
@@ -848,6 +880,12 @@ export function WorkflowStudio({
   )
 
   const statusMessage = statusText(snapshot, copy)
+  const renameDisabled = snapshot.dirty || runActive || !snapshot.path
+  const renameDisabledReason = snapshot.dirty
+    ? copy.run.cannotRenameWhileDirty
+    : runActive
+      ? copy.run.cannotRenameWhileRunning
+      : null
   return (
     <div
       ref={rootRef}
@@ -942,6 +980,29 @@ export function WorkflowStudio({
           </button>
         </form>
       ) : null}
+      {renameOpen ? (
+        <form className="yolo-workflow-create-bar" onSubmit={renameWorkflow}>
+          <PenLine size={15} />
+          <input
+            autoFocus
+            value={renameSlug}
+            onChange={(event) => setRenameSlug(event.currentTarget.value)}
+            aria-label={copy.run.rename}
+            placeholder={copy.run.renamePlaceholder}
+          />
+          <button type="submit">{copy.run.rename}</button>
+          <button
+            type="button"
+            aria-label={copy.assistant.cancel}
+            onClick={() => {
+              setRenameOpen(false)
+              setRenameSlug('')
+            }}
+          >
+            <X size={15} />
+          </button>
+        </form>
+      ) : null}
       <input
         ref={importRef}
         className="yolo-workflow-visually-hidden"
@@ -986,6 +1047,7 @@ export function WorkflowStudio({
               label={copy.toolbar.create}
               onClick={() => {
                 setNewWorkflowError(null)
+                setRenameOpen(false)
                 setNewWorkflowOpen(true)
               }}
             />
@@ -1036,6 +1098,17 @@ export function WorkflowStudio({
               onClick={() => {
                 setStudioTab('run')
                 if (runActive) onCancel()
+              }}
+            />
+            <CanvasToolbarButton
+              icon={<PenLine size={13} />}
+              label={copy.run.rename}
+              title={renameDisabledReason ?? copy.run.rename}
+              disabled={renameDisabled}
+              onClick={() => {
+                setNewWorkflowOpen(false)
+                setRenameSlug('')
+                setRenameOpen(true)
               }}
             />
             <CanvasToolbarButton
@@ -1211,6 +1284,7 @@ export function WorkflowStudio({
             issues={snapshot.issues}
             confirm={confirm}
             onStart={onStart}
+            onPause={onPause}
             onCancel={onCancel}
             onContinue={onContinue}
             onTestNode={onTestNode}
@@ -1890,11 +1964,13 @@ function EmptyState({
 function CanvasToolbarButton({
   icon,
   label,
+  title,
   disabled,
   onClick,
 }: Readonly<{
   icon: React.ReactNode
   label: string
+  title?: string
   disabled?: boolean
   onClick(): void
 }>) {
@@ -1903,7 +1979,7 @@ function CanvasToolbarButton({
       type="button"
       className="yolo-workflow-canvas-toolbar__button"
       aria-label={label}
-      title={label}
+      title={title ?? label}
       disabled={disabled}
       onClick={onClick}
     >

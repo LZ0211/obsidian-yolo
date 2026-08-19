@@ -172,6 +172,8 @@ export const zh = {
     model: '运行模型',
     input: '运行输入',
     run: '运行',
+    pause: '暂停',
+    resume: '恢复',
     stop: '停止',
     continue: '继续',
     confirmSideEffects:
@@ -183,6 +185,7 @@ export const zh = {
     alreadyRunning: '此工作流正在运行。',
     status: {
       running: '运行中',
+      paused: '已暂停',
       succeeded: '成功',
       failed: '失败',
       cancelled: '已取消',
@@ -200,5 +203,10 @@ export const zh = {
     noOutput: '暂无输出',
     testNode: '测试节点',
     testing: '测试中…',
+    rename: '重命名工作流',
+    renamePlaceholder: '新工作流名称',
+    renameFailed: '无法重命名工作流。',
+    cannotRenameWhileRunning: '请先停止或结束运行，再重命名。',
+    cannotRenameWhileDirty: '请先保存或放弃当前修改，再重命名。',
   },
 } as const satisfies WorkflowCopy
