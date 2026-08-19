@@ -9,6 +9,7 @@ import {
   ParsedTagContent,
   parseTagContents,
 } from '../../utils/chat/parse-tag-content'
+import type { WebCitationSources } from '../../utils/chat/web-citations'
 
 import AssistantMessageReasoning from './AssistantMessageReasoning'
 import AssistantSelectionQuoteButton from './AssistantSelectionQuoteButton'
@@ -35,6 +36,7 @@ export default function AssistantMessageContent({
   content,
   annotations,
   sources,
+  webCitationSources,
   handleApply,
   isApplying,
   activeApplyRequestKey,
@@ -52,6 +54,7 @@ export default function AssistantMessageContent({
   content: ChatAssistantMessage['content']
   annotations?: ChatAssistantMessage['annotations']
   sources?: CitationSource[]
+  webCitationSources?: WebCitationSources
   handleApply: (
     blockToApply: string,
     applyRequestKey: string,
@@ -123,6 +126,7 @@ export default function AssistantMessageContent({
       onDeleteQuote={onDeleteQuote}
       enableSelectionQuote={enableSelectionQuote}
       sources={sources}
+      webCitationSources={webCitationSources}
     >
       {annotatedContent}
     </AssistantTextRenderer>
@@ -145,9 +149,11 @@ const AssistantTextRenderer = React.memo(function AssistantTextRenderer({
   onDeleteQuote,
   enableSelectionQuote,
   sources,
+  webCitationSources,
   children,
 }: {
   contentSource: StreamingContentSource | null
+  webCitationSources?: WebCitationSources
   onApply: (
     blockToApply: string,
     applyRequestKey: string,
@@ -225,6 +231,7 @@ const AssistantTextRenderer = React.memo(function AssistantTextRenderer({
               scale="sm"
               generationState={generationState}
               citationSources={sources}
+              webCitationSources={webCitationSources}
             />
           </div>
         ) : block.type === 'think' ? (

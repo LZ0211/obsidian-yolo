@@ -24,6 +24,12 @@ import remarkMath from 'remark-math'
 
 import { useApp } from '../../contexts/app-context'
 import { CitationSource } from '../../core/agent/citationRegistry'
+import {
+  WebCitationSources,
+  WebCitationSourcesContext,
+  isWebCitationLinkText,
+  resolveWebCitation,
+} from '../../utils/chat/web-citations'
 import { getNodeWindow } from '../../utils/dom/window-context'
 import { openMarkdownFile, openPdfFileAtPage } from '../../utils/obsidian'
 
@@ -54,6 +60,7 @@ type StreamingMarkdownProps = {
   draining?: boolean
   onDrained?: () => void
   citationSources?: CitationSource[]
+  webCitationSources?: WebCitationSources
 }
 
 // Providers deliver chunks unevenly — a burst, then a few hundred milliseconds
@@ -297,6 +304,7 @@ function StreamingLink({
 }: ComponentPropsWithoutRef<'a'>) {
   const app = useApp()
   const citationSources = useContext(CitationSourcesContext)
+  const webCitationSources = useContext(WebCitationSourcesContext)
 
   if (!href) {
     return <a {...props}>{children}</a>
@@ -316,6 +324,27 @@ function StreamingLink({
         </a>
       )
     }
+  }
+
+  // Web-search citations: never route `[citation,domain](id)` through the
+  // vault — resolve the id to the result url, or degrade to plain text when
+  // no matching result exists.
+  if (isWebCitationLinkText(getTextContent(children))) {
+    const webSource = resolveWebCitation(href, webCitationSources)
+    if (webSource) {
+      return (
+        <a
+          {...props}
+          href={webSource.url}
+          target="_blank"
+          rel="noreferrer"
+          title={webSource.title ?? webSource.url}
+        >
+          {children}
+        </a>
+      )
+    }
+    return <span {...props}>{children}</span>
   }
 
   if (isExternalHref(href)) {
@@ -379,6 +408,7 @@ const StreamingMarkdown = memo(function StreamingMarkdown({
   draining = false,
   onDrained,
   citationSources,
+  webCitationSources,
 }: StreamingMarkdownProps) {
   const followLiveEdge = useLiveEdgeFollow()
   const [displayedContent, setDisplayedContent] = useState(content)
@@ -594,13 +624,15 @@ const StreamingMarkdown = memo(function StreamingMarkdown({
       className={`markdown-rendered yolo-markdown-rendered yolo-streaming-markdown yolo-scale-${scale}`}
     >
       <CitationSourcesContext.Provider value={citationSources}>
-        {blocks.map((block, index) => (
-          // Index keys are deliberate: keying on the content would unmount and
-          // remount the trailing block on every streamed character, which
-          // flickers and drops rendered math. Memoization on `content` is what
-          // decides whether a block re-renders.
-          <MarkdownBlock key={index} content={block} />
-        ))}
+        <WebCitationSourcesContext.Provider value={webCitationSources}>
+          {blocks.map((block, index) => (
+            // Index keys are deliberate: keying on the content would unmount
+            // and remount the trailing block on every streamed character,
+            // which flickers and drops rendered math. Memoization on `content`
+            // is what decides whether a block re-renders.
+            <MarkdownBlock key={index} content={block} />
+          ))}
+        </WebCitationSourcesContext.Provider>
       </CitationSourcesContext.Provider>
     </div>
   )

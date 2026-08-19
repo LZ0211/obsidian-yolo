@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 
 import { CitationSource } from '../../core/agent/citationRegistry'
+import { WebCitationSources } from '../../utils/chat/web-citations'
 
 import { ObsidianMarkdown } from './ObsidianMarkdown'
 import StreamingMarkdown from './StreamingMarkdown'
@@ -14,6 +15,7 @@ const TransitioningMarkdown = memo(function TransitioningMarkdown({
   scale = 'base',
   generationState,
   citationSources,
+  webCitationSources,
 }: {
   content: string
   /**
@@ -24,6 +26,7 @@ const TransitioningMarkdown = memo(function TransitioningMarkdown({
   scale?: 'xs' | 'sm' | 'base'
   generationState?: GenerationState
   citationSources?: CitationSource[]
+  webCitationSources?: WebCitationSources
 }) {
   const hasStreamed = useRef(false)
   const isStreaming = generationState === 'streaming'
@@ -45,6 +48,7 @@ const TransitioningMarkdown = memo(function TransitioningMarkdown({
         scale={scale}
         animateIncrementalText
         citationSources={citationSources}
+        webCitationSources={webCitationSources}
       />
     )
   }
@@ -61,6 +65,7 @@ const TransitioningMarkdown = memo(function TransitioningMarkdown({
         draining
         onDrained={handleDrained}
         citationSources={citationSources}
+        webCitationSources={webCitationSources}
       />
     )
   }
@@ -70,6 +75,7 @@ const TransitioningMarkdown = memo(function TransitioningMarkdown({
       content={content}
       scale={scale}
       citationSources={citationSources}
+      webCitationSources={webCitationSources}
     />
   ) : undefined
 
@@ -78,6 +84,7 @@ const TransitioningMarkdown = memo(function TransitioningMarkdown({
       content={content}
       scale={scale}
       citationSources={citationSources}
+      webCitationSources={webCitationSources}
       initialFallback={initialFallback}
     />
   )

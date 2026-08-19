@@ -12,7 +12,12 @@ import { useApp } from '../../contexts/app-context'
 import { useChatView } from '../../contexts/chat-view-context'
 import { useLanguage } from '../../contexts/language-context'
 import { CitationSource } from '../../core/agent/citationRegistry'
+import {
+  WebCitationSources,
+  bindWebCitationLinks,
+} from '../../utils/chat/web-citations'
 import { openMarkdownFile, openPdfFileAtPage } from '../../utils/obsidian'
+import { openExternalLink } from '../../utils/openExternalLink'
 
 import {
   annotateRenderedLatex,
@@ -25,6 +30,7 @@ type ObsidianMarkdownProps = {
   content: string
   scale?: 'xs' | 'sm' | 'base'
   citationSources?: CitationSource[]
+  webCitationSources?: WebCitationSources
   initialFallback?: ReactNode
 }
 
@@ -116,6 +122,7 @@ const ObsidianMarkdown = memo(function ObsidianMarkdown({
   content,
   scale = 'base',
   citationSources,
+  webCitationSources,
   initialFallback,
 }: ObsidianMarkdownProps) {
   const app = useApp()
@@ -125,6 +132,8 @@ const ObsidianMarkdown = memo(function ObsidianMarkdown({
   const renderTokenRef = useRef(0)
   const citationSourcesRef = useRef(citationSources)
   citationSourcesRef.current = citationSources
+  const webCitationSourcesRef = useRef(webCitationSources)
+  webCitationSourcesRef.current = webCitationSources
   const hasInitialFallback = initialFallback !== undefined
   const [initialRenderComplete, setInitialRenderComplete] = useState(
     () => !hasInitialFallback,
@@ -160,6 +169,11 @@ const ObsidianMarkdown = memo(function ObsidianMarkdown({
         sourcePath,
         false,
         citationSourcesRef.current,
+      )
+      bindWebCitationLinks(
+        liveContainer,
+        webCitationSourcesRef.current,
+        openExternalLink,
       )
       if (includeLatexAnnotations) {
         annotateRenderedLatex(liveContainer, renderContent)
@@ -268,7 +282,8 @@ const ObsidianMarkdown = memo(function ObsidianMarkdown({
       return
     }
     setupCitationLinks(app, containerEl, citationSources)
-  }, [app, citationSources])
+    bindWebCitationLinks(containerEl, webCitationSources, openExternalLink)
+  }, [app, citationSources, webCitationSources])
 
   useEffect(() => {
     const containerEl = containerRef.current

@@ -37,15 +37,16 @@ import {
   collectGroupEditSummary,
   countFileChangeStats,
 } from '../../utils/chat/editSummary'
+import { collectWebCitationSources } from '../../utils/chat/web-citations'
 
 import AssistantEditSummary from './AssistantEditSummary'
 import AssistantErrorCard from './AssistantErrorCard'
 import AssistantGroupEditor from './AssistantGroupEditor'
 import AssistantMessageAnnotations from './AssistantMessageAnnotations'
 import AssistantMessageContent from './AssistantMessageContent'
+import AssistantMessageFileChanges from './AssistantMessageFileChanges'
 import AssistantMessageReasoning from './AssistantMessageReasoning'
 import AssistantMessageSources from './AssistantMessageSources'
-import AssistantMessageFileChanges from './AssistantMessageFileChanges'
 import AssistantToolMessageGroupActions from './AssistantToolMessageGroupActions'
 import LLMResponseInlineInfo from './LLMResponseInlineInfo'
 import { isReasoningActivityActive } from './reasoningActivity'
@@ -566,6 +567,10 @@ function AssistantToolMessageGroupItem({
     scrollContainer: HTMLElement
     bottom: number
   } | null>(null)
+  const webCitationSources = useMemo(
+    () => collectWebCitationSources(messages),
+    [messages],
+  )
   const branchGroups = useMemo(() => {
     const groups = new Map<
       string,
@@ -1181,6 +1186,7 @@ function AssistantToolMessageGroupItem({
                         content={message.content}
                         annotations={message.annotations}
                         sources={message.metadata?.sources}
+                        webCitationSources={webCitationSources}
                         handleApply={onApply}
                         isApplying={isApplying}
                         activeApplyRequestKey={activeApplyRequestKey}
