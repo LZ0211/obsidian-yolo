@@ -732,6 +732,7 @@ function createRepository(): WorkflowRepository & {
     },
     emit: (event: WorkflowRepositoryEvent) => {
       content = `${content}\nexternal change`
+      fileContents.set(manifestPath, content)
       listener?.(event)
     },
     currentContent: () => content,

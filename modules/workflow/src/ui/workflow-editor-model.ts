@@ -141,7 +141,14 @@ export function createWorkflowEditorModel(
     const filesDirty = bundle?.files.some(
       (file) => savedFiles.get(file.nodeId)?.content !== file.snapshot.content,
     )
-    return Boolean(topologyDirty || filesDirty)
+    const pendingStepDeletions =
+      topology !== null &&
+      bundle?.files.some(
+        (file) =>
+          file.nodeId !== 'workflow' &&
+          !topology.nodes.some((node) => node.id === file.nodeId),
+      )
+    return Boolean(topologyDirty || filesDirty || pendingStepDeletions)
   }
 
   const setTopology = (
