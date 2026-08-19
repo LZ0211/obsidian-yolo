@@ -9,11 +9,14 @@ import {
 import { createWorkflowRepository } from './domain/workflow-repository'
 import { createWorkflowChatTools } from './domain/workflow-tools'
 import { createWorkflowNodeExecutor } from './execution/workflow-node-executor'
-import { createWorkflowRunCoordinator } from './execution/workflow-run-coordinator'
+import {
+  createWorkflowRunCoordinator,
+  type WorkflowRunCoordinatorWithNodeTests,
+} from './execution/workflow-run-coordinator'
 import { createWorkflowRunStore } from './execution/workflow-run-store'
 import type {
   JsonValue,
-  WorkflowRunCoordinator,
+  WorkflowNodeExecutionResult,
   WorkflowRunError,
   WorkflowRunSnapshot,
   WorkflowRunStartFailureReason,
@@ -47,7 +50,7 @@ type RunSnapshotIndex = Readonly<{
 }>
 
 function createRunSnapshotIndex(
-  coordinator: WorkflowRunCoordinator,
+  coordinator: WorkflowRunCoordinatorWithNodeTests,
 ): RunSnapshotIndex {
   let snapshots: Readonly<Record<string, WorkflowRunSnapshot>> = Object.freeze(
     {},
@@ -112,6 +115,9 @@ yolo.registerModule({
       const editor = createWorkflowEditorModel(repository, getCopy)
       editors.set(context.id, editor)
       context.lifecycle.add(() => {
+        // The view's ephemeral node test is aborted with the view; full runs
+        // are module-scoped and keep running.
+        coordinator.cancelNodeTest(context.id)
         editor.dispose()
         editors.delete(context.id)
       })
@@ -267,7 +273,7 @@ function WorkflowModuleView({
 }: Readonly<{
   viewId: string
   editor: ReturnType<typeof createWorkflowEditorModel>
-  coordinator: WorkflowRunCoordinator
+  coordinator: WorkflowRunCoordinatorWithNodeTests
   getCopy(): ReturnType<typeof createWorkflowCopy>
   getLocaleSnapshot(): Readonly<{ locale: string }>
   subscribeLocale(listener: () => void): () => void
@@ -353,6 +359,21 @@ function WorkflowModuleView({
         notice(error instanceof Error ? error.message : String(error)),
       )
   }, [coordinator, editor, getCopy, notice])
+  const testNode = useCallback(
+    // The second parameter is optional so the handler stays assignable to the
+    // Studio's pass-through `(nodeId) => void` prop; the Run panel always
+    // passes the parsed input, and a missing value is a deterministic null.
+    (nodeId: string, input?: JsonValue): Promise<WorkflowNodeExecutionResult> => {
+      const path = editor.getSnapshot().path
+      if (path === null) return Promise.reject(new Error(getCopy().state.empty))
+      return coordinator.testNode(viewId, {
+        workflowPath: path,
+        nodeId,
+        input: input ?? null,
+      })
+    },
+    [coordinator, editor, getCopy, viewId],
+  )
   useEffect(() => {
     let active = true
     void readStyle()
@@ -387,6 +408,7 @@ function WorkflowModuleView({
         onStart={startRun}
         onCancel={cancelRun}
         onContinue={continueRun}
+        onTestNode={testNode}
       />
     </div>
   )

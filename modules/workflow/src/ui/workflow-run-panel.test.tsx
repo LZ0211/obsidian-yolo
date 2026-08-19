@@ -5,7 +5,11 @@ import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 
 import type { WorkflowNode, WorkflowTopology } from '../domain/workflow-model'
-import type { WorkflowRunSnapshot } from '../execution/workflow-run-types'
+import type {
+  JsonValue,
+  WorkflowNodeExecutionResult,
+  WorkflowRunSnapshot,
+} from '../execution/workflow-run-types'
 import { createWorkflowCopy } from '../i18n'
 
 import type { WorkflowRunPanelProps } from './workflow-run-panel'
@@ -289,15 +293,168 @@ describe('workflow run panel interactions', () => {
     await renderPanel({ run: createRunSnapshot({ status: 'running' }) })
     expect(findButton('Test node')).toBeNull()
 
-    const onTestNode = jest.fn()
+    const onTestNode = jest.fn(async () => ({ value: 'tested' }))
     await renderPanel({
       run: createRunSnapshot({ status: 'succeeded' }),
       selectedNodeId: 'agent',
       onTestNode,
     })
     expect(findButton('Test node')).not.toBeNull()
+    await setInput('{"probe": true}')
     act(() => findButton('Test node')!.click())
-    expect(onTestNode).toHaveBeenCalledWith('agent')
+    await flush()
+    expect(onTestNode).toHaveBeenCalledWith('agent', { probe: true })
+  })
+
+  it('hides the Test node control for missing or non-executable selections', async () => {
+    const onTestNode = jest.fn()
+    const { rerender } = await renderPanel({
+      run: createRunSnapshot({ status: 'succeeded' }),
+      selectedNodeId: 'input',
+      onTestNode,
+    })
+    expect(findButton('Test node')).toBeNull()
+
+    await rerender({ selectedNodeId: null })
+    expect(findButton('Test node')).toBeNull()
+  })
+
+  it('hides the Test node control while a full run is active', async () => {
+    const onTestNode = jest.fn()
+    await renderPanel({
+      run: createRunSnapshot({ status: 'running' }),
+      selectedNodeId: 'agent',
+      onTestNode,
+    })
+    expect(findButton('Test node')).toBeNull()
+  })
+
+  it('runs a node test from the parsed input and shows the result in the output area', async () => {
+    const onTestNode = jest.fn(
+      async (_nodeId: string, input: JsonValue) => ({ value: input }),
+    )
+    const { rerender } = await renderPanel({
+      run: createRunSnapshot({
+        status: 'succeeded',
+        nodes: {
+          input: { status: 'succeeded', output: { topic: 'demo' } },
+          agent: { status: 'succeeded', output: 'done' },
+        },
+      }),
+      selectedNodeId: 'agent',
+      onTestNode,
+    })
+    act(() => {
+      Array.from(testContainer.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Output')
+        ?.click()
+    })
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-preview')?.textContent,
+    ).toBe('"done"')
+
+    await setInput('{"probe": true}')
+    act(() => findButton('Test node')!.click())
+    await flush()
+
+    expect(onTestNode).toHaveBeenCalledWith('agent', { probe: true })
+    // The test result replaces the run snapshot output for the selected node.
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-preview')?.textContent,
+    ).toContain('"probe": true')
+
+    // A snapshot refresh keeps the test result displayed for the same node.
+    await rerender({
+      run: createRunSnapshot({
+        status: 'succeeded',
+        nodes: {
+          input: { status: 'succeeded', output: { topic: 'demo' } },
+          agent: { status: 'succeeded', output: 'changed' },
+        },
+      }),
+    })
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-preview')?.textContent,
+    ).toContain('"probe": true')
+  })
+
+  it('shows Testing… while the node test is pending and clears on selection change', async () => {
+    let resolveTest!: (result: WorkflowNodeExecutionResult) => void
+    const onTestNode = jest.fn(
+      () =>
+        new Promise<WorkflowNodeExecutionResult>((resolve) => {
+          resolveTest = resolve
+        }),
+    )
+    const { rerender } = await renderPanel({
+      run: createRunSnapshot({ status: 'succeeded' }),
+      selectedNodeId: 'agent',
+      onTestNode,
+    })
+    await setInput('hello')
+    act(() => findButton('Test node')!.click())
+    await flush()
+    expect(findButton('Testing…')).not.toBeNull()
+    expect(findButton('Testing…')!.disabled).toBe(true)
+
+    act(() => {
+      resolveTest({ value: 'result-1' })
+    })
+    await flush()
+    expect(findButton('Test node')).not.toBeNull()
+    expect(findButton('Testing…')).toBeNull()
+
+    // Selecting another node clears the previous test result.
+    act(() => {
+      Array.from(testContainer.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Output')
+        ?.click()
+    })
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-preview')?.textContent,
+    ).toContain('"result-1"')
+    await rerender({ selectedNodeId: 'input' })
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-preview')?.textContent,
+    ).toContain('"topic": "demo"')
+  })
+
+  it('shows a failed node test error in the error tab', async () => {
+    const onTestNode = jest.fn(async () => {
+      throw new Error('boom test')
+    })
+    await renderPanel({
+      run: createRunSnapshot({ status: 'succeeded' }),
+      selectedNodeId: 'agent',
+      onTestNode,
+    })
+    await setInput('hello')
+    act(() => findButton('Test node')!.click())
+    await flush()
+
+    act(() => {
+      Array.from(testContainer.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Error')
+        ?.click()
+    })
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-error')?.textContent,
+    ).toBe('boom test')
+  })
+
+  it('rejects a node test with blank input through the existing parser', async () => {
+    const onTestNode = jest.fn()
+    await renderPanel({
+      run: createRunSnapshot({ status: 'succeeded' }),
+      selectedNodeId: 'agent',
+      onTestNode,
+    })
+    act(() => findButton('Test node')!.click())
+
+    expect(onTestNode).not.toHaveBeenCalled()
+    expect(testContainer.textContent).toContain(
+      'Enter a JSON value or plain text as the run input.',
+    )
   })
 })
 

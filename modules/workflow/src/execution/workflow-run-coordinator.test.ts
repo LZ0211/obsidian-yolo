@@ -5,6 +5,7 @@ import { createWorkflowNodeExecutor } from './workflow-node-executor'
 import type { WorkflowAgentEvent } from './workflow-node-executor'
 import { createWorkflowRunCoordinator } from './workflow-run-coordinator'
 import { createWorkflowRunStore } from './workflow-run-store'
+import { WorkflowNodeExecutionError } from './workflow-run-types'
 import type {
   JsonValue,
   WorkflowModelSnapshot,
@@ -204,8 +205,48 @@ class FakeExecutor implements WorkflowNodeExecutor {
     entry.resolve({ value: `late-${nodeId}` })
   }
 
+  testCalls: WorkflowNodeExecutionRequest[] = []
+  readonly testFailOnce = new Set<string>()
+  readonly testFailAlways = new Set<string>()
+  readonly testPending: {
+    request: WorkflowNodeExecutionRequest
+    resolve: (result: { value: JsonValue }) => void
+    reject: (error: Error) => void
+  }[] = []
+  testOutputs: Readonly<Record<string, unknown>> = {}
+  testPendingByNode: Record<string, boolean> = {}
+
   async testNode(request: WorkflowNodeExecutionRequest) {
-    return { value: `test-${request.node.id}` }
+    this.testCalls.push(request)
+    const nodeId = request.node.id
+    if (this.testFailAlways.has(nodeId)) throw new Error(`boom ${nodeId}`)
+    if (this.testFailOnce.has(nodeId)) {
+      this.testFailOnce.delete(nodeId)
+      throw new Error(`boom ${nodeId}`)
+    }
+    if (Object.prototype.hasOwnProperty.call(this.testOutputs, nodeId)) {
+      return { value: this.testOutputs[nodeId] as JsonValue }
+    }
+    if (this.testPendingByNode[nodeId]) {
+      return new Promise<{ value: JsonValue }>((resolve, reject) => {
+        this.testPending.push({
+          request,
+          resolve: (result) => resolve(result),
+          reject,
+        })
+      })
+    }
+    return { value: `test-${nodeId}` }
+  }
+
+  testHold(nodeId: string): void {
+    this.testPendingByNode[nodeId] = true
+  }
+
+  testReleaseAll(): void {
+    const pending = this.testPending.splice(0)
+    for (const entry of pending)
+      entry.resolve({ value: `late-${entry.request.node.id}` })
   }
 }
 
@@ -820,5 +861,328 @@ describe('workflow run coordinator', () => {
       async () =>
         (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
     )
+  })
+
+  it('runs a node test through the executor and returns its result directly', async () => {
+    const executor = new FakeExecutor()
+    executor.outputs = { draft: 'drafted' }
+    const { coordinator, storage, store, snapshots, input } = makeHarness({
+      executor,
+    })
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    const record = await store.read('demo/WORKFLOW.md')
+    const writeSpy = jest.spyOn(storage, 'writeText')
+    const publishesBefore = snapshots.length
+    const executeCallsBefore = executor.calls.length
+
+    const result = await coordinator.testNode('view-1', {
+      workflowPath: 'demo/WORKFLOW.md',
+      nodeId: 'draft',
+      input: 'preview',
+    })
+
+    expect(result).toEqual({ value: 'test-draft' })
+    // No dependency execution: the test adds no execute calls and runs only
+    // the one executor test call.
+    expect(executor.calls.length).toBe(executeCallsBefore)
+    expect(executor.testCalls.length).toBe(1)
+    const request = executor.testCalls[0]
+    expect(request.definition).toEqual(record!.definition)
+    expect(request.node).toEqual(
+      record!.definition.topology.nodes.find((node) => node.id === 'draft'),
+    )
+    expect(request.workflowInput).toBe('preview')
+    expect(request.upstream).toEqual([{ nodeId: 'test-input', value: 'preview' }])
+    expect(request.signal.aborted).toBe(false)
+    // No persistent write, no publish, and the full-run record is untouched.
+    expect(writeSpy).not.toHaveBeenCalled()
+    expect(snapshots.length).toBe(publishesBefore)
+    expect(await store.read('demo/WORKFLOW.md')).toEqual(record)
+  })
+
+  it('uses the real predecessor node ids for condition and merge node tests', async () => {
+    const executor = new FakeExecutor()
+    const { coordinator, store, input } = makeHarness({ executor })
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+
+    const condition = await coordinator.testNode('view-1', {
+      workflowPath: 'demo/WORKFLOW.md',
+      nodeId: 'gate',
+      input: 'truthy',
+    })
+    expect(condition).toEqual({ value: 'test-gate' })
+    expect(executor.testCalls[0].upstream).toEqual([
+      { nodeId: 'draft', value: 'truthy' },
+    ])
+
+    // The merge has two incoming edges; sources use their real node ids in
+    // the same stable edge-id order as a full run.
+    const merge = await coordinator.testNode('view-1', {
+      workflowPath: 'demo/WORKFLOW.md',
+      nodeId: 'merged',
+      input: { yes: 'y', no: 'n' },
+    })
+    expect(merge).toEqual({ value: 'test-merged' })
+    expect(executor.testCalls[1].upstream).toEqual([
+      { nodeId: 'no', value: 'n' },
+      { nodeId: 'yes', value: 'y' },
+    ])
+  })
+
+  it('keeps one active node test per view and replaces it on a new test', async () => {
+    const executor = new FakeExecutor()
+    executor.testHold('draft')
+    const { coordinator, store, input } = makeHarness({ executor })
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+
+    const first = coordinator.testNode('view-1', {
+      workflowPath: 'demo/WORKFLOW.md',
+      nodeId: 'draft',
+      input: 'one',
+    })
+    const other = coordinator.testNode('view-2', {
+      workflowPath: 'demo/WORKFLOW.md',
+      nodeId: 'draft',
+      input: 'two',
+    })
+    await until(() => executor.testCalls.length === 2)
+    expect(executor.testCalls[0].signal.aborted).toBe(false)
+    expect(executor.testCalls[1].signal.aborted).toBe(false)
+
+    // A second test in the same view aborts the first test's controller.
+    const replacement = coordinator.testNode('view-1', {
+      workflowPath: 'demo/WORKFLOW.md',
+      nodeId: 'draft',
+      input: 'three',
+    })
+    await until(() => executor.testCalls.length === 3)
+    expect(executor.testCalls[0].signal.aborted).toBe(true)
+    expect(executor.testCalls[2].signal.aborted).toBe(false)
+
+    executor.testReleaseAll()
+    await expect(first).rejects.toMatchObject({ code: 'cancelled' })
+    await expect(other).resolves.toEqual({ value: 'late-draft' })
+    await expect(replacement).resolves.toEqual({ value: 'late-draft' })
+  })
+
+  it('aborts the view node test when the view is disposed', async () => {
+    const executor = new FakeExecutor()
+    executor.testHold('draft')
+    const { coordinator, store, input } = makeHarness({ executor })
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+
+    const test = coordinator.testNode('view-1', {
+      workflowPath: 'demo/WORKFLOW.md',
+      nodeId: 'draft',
+      input: 'x',
+    })
+    await until(() => executor.testCalls.length === 1)
+
+    // Disposing an unrelated view is a no-op.
+    coordinator.cancelNodeTest('other-view')
+    expect(executor.testCalls[0].signal.aborted).toBe(false)
+
+    coordinator.cancelNodeTest('view-1')
+    expect(executor.testCalls[0].signal.aborted).toBe(true)
+
+    executor.testReleaseAll()
+    await expect(test).rejects.toMatchObject({ code: 'cancelled' })
+
+    // A fresh view session can test again; 'draft' is still held, so release
+    // the new test call too.
+    const retest = coordinator.testNode('view-1', {
+      workflowPath: 'demo/WORKFLOW.md',
+      nodeId: 'draft',
+      input: 'again',
+    })
+    await until(() => executor.testCalls.length === 2)
+    executor.testReleaseAll()
+    expect(await retest).toEqual({ value: 'late-draft' })
+  })
+
+  it('rejects a node test while a full run is active for the same workflow', async () => {
+    const executor = new FakeExecutor()
+    executor.hold('draft')
+    const { coordinator, store, input } = makeHarness({ executor })
+    const start = await coordinator.start(input)
+    expect(start.ok).toBe(true)
+    await until(() => executor.calls.some((call) => call.node.id === 'draft'))
+
+    await expect(
+      coordinator.testNode('view-1', {
+        workflowPath: 'demo/WORKFLOW.md',
+        nodeId: 'draft',
+        input: 'x',
+      }),
+    ).rejects.toMatchObject({ code: 'cancelled' })
+    expect(executor.testCalls.length).toBe(0)
+
+    executor.releaseAll()
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+  })
+
+  it('rejects a node test without a persisted run record', async () => {
+    const { coordinator } = makeHarness({})
+
+    await expect(
+      coordinator.testNode('view-1', {
+        workflowPath: 'demo/WORKFLOW.md',
+        nodeId: 'draft',
+        input: 'x',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-definition' })
+  })
+
+  it('rejects non-JSON input and unknown node ids', async () => {
+    const executor = new FakeExecutor()
+    const { coordinator, store, input } = makeHarness({ executor })
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+
+    await expect(
+      coordinator.testNode('view-1', {
+        workflowPath: 'demo/WORKFLOW.md',
+        nodeId: 'draft',
+        input: { bad: BigInt(1) } as unknown as JsonValue,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-definition' })
+    await expect(
+      coordinator.testNode('view-1', {
+        workflowPath: 'demo/WORKFLOW.md',
+        nodeId: 'missing',
+        input: 'x',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-definition' })
+    expect(executor.testCalls.length).toBe(0)
+  })
+
+  it('applies the same output schema validation to node test results', async () => {
+    const topology: WorkflowTopology = {
+      revision: 1,
+      nodes: [
+        {
+          id: 'in',
+          kind: 'input',
+          label: 'In',
+          stepPath: 'steps/in/STEP.md',
+          position: { x: 0, y: 0 },
+        },
+        {
+          id: 'draft',
+          kind: 'agent',
+          label: 'Draft',
+          stepPath: 'steps/draft/STEP.md',
+          position: { x: 1, y: 0 },
+          outputSchema: {
+            type: 'object',
+            properties: { plan: { type: 'string' } },
+          },
+        },
+        {
+          id: 'out',
+          kind: 'output',
+          label: 'Out',
+          stepPath: 'steps/out/STEP.md',
+          position: { x: 2, y: 0 },
+        },
+      ],
+      edges: [
+        { id: 'e1', source: 'in', target: 'draft' },
+        { id: 'e2', source: 'draft', target: 'out' },
+      ],
+    }
+    const executor = new FakeExecutor()
+    executor.outputs = { draft: { plan: 'ok' } }
+    const { coordinator, store, input } = makeHarness({ executor, topology })
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+
+    executor.testOutputs = { draft: { plan: 42 } }
+    await expect(
+      coordinator.testNode('view-1', {
+        workflowPath: 'demo/WORKFLOW.md',
+        nodeId: 'draft',
+        input: 'x',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-output' })
+
+    executor.testOutputs = { draft: { bad: BigInt(1) } }
+    await expect(
+      coordinator.testNode('view-1', {
+        workflowPath: 'demo/WORKFLOW.md',
+        nodeId: 'draft',
+        input: 'x',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-output' })
+  })
+
+  it('wraps unexpected executor failures as agent-failed', async () => {
+    const executor = new FakeExecutor()
+    const { coordinator, store, input } = makeHarness({ executor })
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+
+    executor.testFailOnce.add('draft')
+    await expect(
+      coordinator.testNode('view-1', {
+        workflowPath: 'demo/WORKFLOW.md',
+        nodeId: 'draft',
+        input: 'x',
+      }),
+    ).rejects.toMatchObject({ code: 'agent-failed', message: 'boom draft' })
+  })
+
+  it('passes through executor WorkflowNodeExecutionError codes unchanged', async () => {
+    const executor: WorkflowNodeExecutor = {
+      execute: async () => ({ value: null }),
+      testNode: async () => {
+        throw new WorkflowNodeExecutionError('invalid-output', 'schema says no')
+      },
+    }
+    const { coordinator, store, input } = makeHarness({ executor })
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+
+    await expect(
+      coordinator.testNode('view-1', {
+        workflowPath: 'demo/WORKFLOW.md',
+        nodeId: 'draft',
+        input: 'x',
+      }),
+    ).rejects.toMatchObject({
+      code: 'invalid-output',
+      message: 'schema says no',
+    })
   })
 })

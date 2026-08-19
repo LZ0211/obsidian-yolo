@@ -5,6 +5,7 @@ import type { WorkflowIssue } from '../domain/workflow-model'
 import type {
   JsonValue,
   WorkflowModelSnapshot,
+  WorkflowNodeExecutionResult,
   WorkflowRunSnapshot,
 } from '../execution/workflow-run-types'
 import type { WorkflowCopy } from '../i18n'
@@ -30,10 +31,27 @@ export type WorkflowRunPanelProps = Readonly<{
   onCancel(): void
   onContinue(): void
   onSelectNode(nodeId: string): void
-  onTestNode?(nodeId: string): void
+  /**
+   * Runs the selected node through the Coordinator's ephemeral test path. The
+   * void branch keeps the older pass-through wiring (the Studio surface)
+   * assignable; a handler that returns nothing is treated as a completed test
+   * without a result.
+   */
+  onTestNode?(
+    nodeId: string,
+    input: JsonValue,
+  ): void | Promise<WorkflowNodeExecutionResult>
 }>
 
 type DetailTab = 'input' | 'output' | 'error'
+
+/** Ephemeral node-test state owned by the panel, keyed to one selected node. */
+type NodeTestState = Readonly<{
+  nodeId: string
+  status: 'running' | 'done'
+  result?: WorkflowNodeExecutionResult
+  error?: string
+}>
 
 /**
  * Pure Coordinator client for the Run tab. Every piece of run state (status,
@@ -61,6 +79,7 @@ export function WorkflowRunPanel({
     defaultRunModelId(modelSnapshot),
   )
   const [detailTab, setDetailTab] = useState<DetailTab>('input')
+  const [nodeTest, setNodeTest] = useState<NodeTestState | null>(null)
 
   useEffect(() => {
     setRunModelId((current) =>
@@ -69,6 +88,12 @@ export function WorkflowRunPanel({
         : defaultRunModelId(modelSnapshot),
     )
   }, [modelSnapshot])
+
+  // A test result belongs to the node it ran for; changing the selection
+  // discards it instead of showing it under another node.
+  useEffect(() => {
+    setNodeTest(null)
+  }, [selectedNodeId])
 
   const running = run?.status === 'running'
   const continuable = run?.status === 'failed' || run?.status === 'interrupted'
@@ -93,6 +118,17 @@ export function WorkflowRunPanel({
       ? 0
       : Object.values(run.nodes).filter((node) => node.status === 'succeeded')
           .length
+  // The run snapshot's topology is the same frozen definition the node test
+  // runs against; input nodes have nothing to test, every other kind does.
+  const selectedNodeExecutable =
+    run !== null &&
+    selectedNodeId !== null &&
+    run.definition.topology.nodes.some(
+      (node) => node.id === selectedNodeId && node.kind !== 'input',
+    )
+  const testing = nodeTest?.status === 'running'
+  const testResult =
+    nodeTest !== null && nodeTest.nodeId === selectedNodeId ? nodeTest : null
 
   const handleRun = (): void => {
     if (runDisabled) return
@@ -114,6 +150,32 @@ export function WorkflowRunPanel({
     }).then((accepted) => {
       if (accepted) onContinue()
     })
+  }
+
+  const handleTestNode = (): void => {
+    if (selectedNodeId === null || running || testing || !onTestNode) return
+    const parsed = parseWorkflowRunInput(inputText)
+    if (!parsed.ok) {
+      setInputError(copy.run.invalidInput)
+      return
+    }
+    setInputError(null)
+    setNodeTest({ nodeId: selectedNodeId, status: 'running' })
+    void Promise.resolve(onTestNode(selectedNodeId, parsed.value))
+      .then((result) => {
+        setNodeTest(
+          result === undefined
+            ? { nodeId: selectedNodeId, status: 'done' }
+            : { nodeId: selectedNodeId, status: 'done', result },
+        )
+      })
+      .catch((error: unknown) => {
+        setNodeTest({
+          nodeId: selectedNodeId,
+          status: 'done',
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
   }
 
   return (
@@ -181,16 +243,14 @@ export function WorkflowRunPanel({
             <Play size={13} />
             {copy.run.run}
           </button>
-          {onTestNode !== undefined ? (
+          {onTestNode !== undefined && selectedNodeExecutable && !running ? (
             <button
               type="button"
               className="yolo-workflow-run-controls__test"
-              disabled={selectedNodeId === null || running}
-              onClick={() => {
-                if (selectedNodeId !== null) onTestNode(selectedNodeId)
-              }}
+              disabled={testing}
+              onClick={handleTestNode}
             >
-              {copy.run.testNode}
+              {testing ? copy.run.testing : copy.run.testNode}
             </button>
           ) : null}
         </div>
@@ -292,7 +352,11 @@ export function WorkflowRunPanel({
                   </pre>
                 ) : null}
                 {detailTab === 'output' ? (
-                  selectedNodeRun?.output !== undefined ? (
+                  testResult?.result !== undefined ? (
+                    <pre className="yolo-workflow-run-preview">
+                      {formatRunValue(testResult.result.value)}
+                    </pre>
+                  ) : selectedNodeRun?.output !== undefined ? (
                     <pre className="yolo-workflow-run-preview">
                       {formatRunValue(selectedNodeRun.output)}
                     </pre>
@@ -303,7 +367,11 @@ export function WorkflowRunPanel({
                   )
                 ) : null}
                 {detailTab === 'error' ? (
-                  selectedError !== null ? (
+                  testResult?.error !== undefined ? (
+                    <div className="yolo-workflow-run-error">
+                      {testResult.error}
+                    </div>
+                  ) : selectedError !== null ? (
                     <div className="yolo-workflow-run-error">
                       {selectedError}
                     </div>

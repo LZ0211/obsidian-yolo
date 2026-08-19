@@ -1,5 +1,5 @@
 import { topologicalWorkflowOrder } from '../domain/workflow-model'
-import type { WorkflowNode } from '../domain/workflow-model'
+import type { WorkflowNode, WorkflowTopology } from '../domain/workflow-model'
 
 import { createWorkflowDefinition } from './workflow-definition'
 import {
@@ -7,7 +7,9 @@ import {
   aggregateWorkflowOutputs,
   evaluateWorkflowGate,
   mergeWorkflowSources,
+  stableIncomingEdges,
 } from './workflow-run-graph'
+import type { WorkflowSourceValue } from './workflow-run-graph'
 import { WorkflowNodeExecutionError, isJsonValue } from './workflow-run-types'
 import type {
   JsonValue,
@@ -38,6 +40,29 @@ export type WorkflowRunCoordinatorOptions = Readonly<{
   createRunId?: () => string
 }>
 
+export type WorkflowNodeTestRequest = Readonly<{
+  workflowPath: string
+  nodeId: string
+  input: JsonValue
+}>
+
+/** The view-scoped node-test surface of the Coordinator. */
+export type WorkflowRunCoordinatorWithNodeTests = WorkflowRunCoordinator &
+  Readonly<{
+    testNode(
+      viewId: string,
+      request: WorkflowNodeTestRequest,
+    ): Promise<WorkflowNodeExecutionResult>
+    cancelNodeTest(viewId: string): void
+  }>
+
+/**
+ * Node id used for the single synthetic upstream value of non-condition and
+ * non-merge node tests. Condition and merge tests instead use the real
+ * predecessor node ids so the executor builds the same inputs as a full run.
+ */
+const SYNTHETIC_TEST_UPSTREAM_NODE_ID = 'test-input'
+
 type TransitionGuard = Readonly<{
   nodeId?: string
   expectedNodeStatus?: WorkflowNodeRunStatus
@@ -62,13 +87,15 @@ type ActiveRun = {
 
 export function createWorkflowRunCoordinator(
   options: WorkflowRunCoordinatorOptions,
-): WorkflowRunCoordinator {
+): WorkflowRunCoordinatorWithNodeTests {
   const { executor, store } = options
   const now = options.now ?? Date.now
   const createRunId = options.createRunId ?? (() => crypto.randomUUID())
   const background = options.background
   const activeRuns = new Map<string, ActiveRun>()
   const listeners = new Set<WorkflowRunSnapshotListener>()
+  /** One active ephemeral node test per view id; disposal aborts it. */
+  const activeNodeTests = new Map<string, AbortController>()
 
   const subscribe = (listener: WorkflowRunSnapshotListener): (() => void) => {
     listeners.add(listener)
@@ -635,6 +662,96 @@ export function createWorkflowRunCoordinator(
     await Promise.all(persists)
   }
 
+  /**
+   * Runs one node through the same executor path as a full run without
+   * creating a run snapshot, persisting, publishing, or executing
+   * dependencies. The definition comes from the persisted run record of the
+   * same workflow, so the test exercises the exact frozen definition,
+   * resolved models, prompts, schema validation, and vault-write capability
+   * of the last full run. The executor result is returned directly; the
+   * signal is the view's own controller, aborted by `cancelNodeTest`.
+   */
+  const testNode = async (
+    viewId: string,
+    request: WorkflowNodeTestRequest,
+  ): Promise<WorkflowNodeExecutionResult> => {
+    const { workflowPath, nodeId, input } = request
+    if (activeRuns.has(workflowPath))
+      throw new WorkflowNodeExecutionError(
+        'cancelled',
+        `A full run is already active for "${workflowPath}"`,
+      )
+    // One active test per view: a new test replaces (aborts) the previous.
+    activeNodeTests.get(viewId)?.abort()
+    const controller = new AbortController()
+    activeNodeTests.set(viewId, controller)
+    try {
+      if (!isJsonValue(input))
+        throw new WorkflowNodeExecutionError(
+          'invalid-definition',
+          'Workflow input must be JSON-compatible',
+        )
+      const record = await store.read(workflowPath)
+      if (record === null)
+        throw new WorkflowNodeExecutionError(
+          'invalid-definition',
+          `No run record for "${workflowPath}"; run the workflow once before testing a node`,
+        )
+      const node = record.definition.topology.nodes.find(
+        (candidate) => candidate.id === nodeId,
+      )
+      if (node === undefined)
+        throw new WorkflowNodeExecutionError(
+          'invalid-definition',
+          `Node "${nodeId}" is not part of workflow "${workflowPath}"`,
+        )
+      const executionRequest: WorkflowNodeExecutionRequest = {
+        definition: record.definition,
+        node,
+        workflowInput: input,
+        upstream: nodeTestUpstream(node, record.definition.topology, input),
+        signal: controller.signal,
+      }
+      let result: WorkflowNodeExecutionResult
+      try {
+        result = await executor.testNode(executionRequest)
+      } catch (error) {
+        throw error instanceof WorkflowNodeExecutionError
+          ? error
+          : new WorkflowNodeExecutionError(
+              'agent-failed',
+              error instanceof Error ? error.message : String(error),
+            )
+      }
+      if (controller.signal.aborted)
+        throw new WorkflowNodeExecutionError('cancelled', 'Node test cancelled')
+      if (!isJsonValue(result.value))
+        throw new WorkflowNodeExecutionError(
+          'invalid-output',
+          `Node "${nodeId}" produced a non-JSON value`,
+        )
+      if (node.outputSchema !== undefined) {
+        const schemaErrors = validateJsonSchemaOutput(
+          node.outputSchema,
+          result.value,
+        )
+        if (schemaErrors.length > 0)
+          throw new WorkflowNodeExecutionError(
+            'invalid-output',
+            `Node "${nodeId}" output failed its schema: ${schemaErrors.slice(0, 3).join('; ')}`,
+          )
+      }
+      return result
+    } finally {
+      if (activeNodeTests.get(viewId) === controller)
+        activeNodeTests.delete(viewId)
+    }
+  }
+
+  const cancelNodeTest = (viewId: string): void => {
+    activeNodeTests.get(viewId)?.abort()
+  }
+
   return Object.freeze({
     start,
     cancel,
@@ -642,7 +759,49 @@ export function createWorkflowRunCoordinator(
     initialize,
     quiesce,
     subscribe,
+    testNode,
+    cancelNodeTest,
   })
+}
+
+/**
+ * Builds the synthetic upstream for a node test. Condition and merge nodes
+ * use their real predecessor node ids exactly as a full run does: a single
+ * incoming edge carries the test input under the predecessor id, and
+ * multi-incoming-edge tests take an object keyed by those ids (stable edge
+ * id order, missing keys contribute nothing). Every other kind receives one
+ * synthetic predecessor holding the plain input.
+ */
+function nodeTestUpstream(
+  node: WorkflowNode,
+  topology: WorkflowTopology,
+  input: JsonValue,
+): readonly WorkflowSourceValue[] {
+  const incoming = stableIncomingEdges(topology, node.id)
+  if (node.kind === 'condition' || node.kind === 'merge') {
+    if (incoming.length <= 1)
+      return Object.freeze(
+        incoming.length === 0
+          ? []
+          : [{ nodeId: incoming[0].source, value: input }],
+      )
+    if (!isJsonRecord(input))
+      throw new WorkflowNodeExecutionError(
+        'invalid-definition',
+        `Node "${node.id}" test input must be an object keyed by its incoming node ids: ${incoming.map((edge) => edge.source).join(', ')}`,
+      )
+    return Object.freeze(
+      incoming.flatMap((edge) => {
+        const value = input[edge.source]
+        return value === undefined
+          ? []
+          : [{ nodeId: edge.source, value }]
+      }),
+    )
+  }
+  return Object.freeze([
+    { nodeId: SYNTHETIC_TEST_UPSTREAM_NODE_ID, value: input },
+  ])
 }
 
 function isTerminalStatus(status: WorkflowRunStatus): boolean {

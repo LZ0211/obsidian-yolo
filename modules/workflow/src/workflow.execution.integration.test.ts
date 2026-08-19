@@ -5,10 +5,8 @@ import type { WorkflowTopology } from './domain/workflow-model'
 import { createWorkflowRepository } from './domain/workflow-repository'
 import { createWorkflowDefinition } from './execution/workflow-definition'
 import { createWorkflowRunStore } from './execution/workflow-run-store'
-import type {
-  WorkflowRunCoordinator,
-  WorkflowRunSnapshot,
-} from './execution/workflow-run-types'
+import type { WorkflowRunCoordinatorWithNodeTests } from './execution/workflow-run-coordinator'
+import type { WorkflowRunSnapshot } from './execution/workflow-run-types'
 import { createWorkflowCopy } from './i18n'
 import type { WorkflowEditorModel } from './ui/workflow-editor-model'
 
@@ -19,7 +17,7 @@ type WorkflowModuleDefinition = Readonly<{
 type WorkflowModuleViewProps = Readonly<{
   viewId: string
   editor: WorkflowEditorModel
-  coordinator: WorkflowRunCoordinator
+  coordinator: WorkflowRunCoordinatorWithNodeTests
 }>
 
 type RegisteredView = Readonly<{
@@ -202,6 +200,98 @@ describe('workflow execution lifecycle through the module', () => {
       status: 'interrupted',
     })
   })
+
+  it('tests a single node through the same executor path without touching run state', async () => {
+    const host = new ExecutionHost()
+    seedWorkflow(host)
+    const agentRequests: HostAgentRequest[] = []
+    host.agent = createFakeAgent({ onRequest: (request) => agentRequests.push(request) })
+    await activateModule(host)
+
+    const element = registeredView(host).render(createViewContext('view-1'))
+    const { coordinator, editor } = element.props
+    await editor.load('demo/WORKFLOW.md')
+    const bundle = editor.getSnapshot().bundle
+    expect(bundle).not.toBeNull()
+    const started = await coordinator.start({
+      workflowPath: 'demo/WORKFLOW.md',
+      bundle: bundle!,
+      modelSnapshot: host.modelSnapshot,
+      input: { topic: 'integration' },
+    })
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await terminalStoredRun(host.store, 'demo/WORKFLOW.md')
+    const record = await host.store.read('demo/WORKFLOW.md')
+    const callsBefore = agentRequests.length
+
+    const result = await coordinator.testNode('view-1', {
+      workflowPath: 'demo/WORKFLOW.md',
+      nodeId: 'agent',
+      input: { topic: 'preview' },
+    })
+
+    // The structured submission tool result comes back unchanged.
+    expect(result).toEqual({ value: { ok: true } })
+    // The full-run record and background registry are untouched.
+    expect(await host.store.read('demo/WORKFLOW.md')).toEqual(record)
+    expect(host.background.activities.size).toBe(0)
+
+    // The test went through the same real executor path: same model
+    // resolution, prompt construction, and vault-write capability.
+    expect(agentRequests.length).toBe(callsBefore + 1)
+    const request = agentRequests.at(-1)!
+    expect(request.capability).toBe('vault-write')
+    expect(request.modelId).toBe('default-model')
+    expect(request.activity).toEqual({
+      title: 'demo/WORKFLOW.md',
+      detail: 'Agent',
+    })
+    expect(request.systemPrompt).toContain('# Agent')
+    expect(request.prompt).toContain('"workflowInput":{"topic":"preview"}')
+  })
+
+  it('aborts the view-scoped node test when the view is disposed', async () => {
+    const host = new ExecutionHost()
+    seedWorkflow(host)
+    const gate = deferred()
+    await activateModule(host)
+
+    const view = registeredView(host)
+    const context = createViewContext('view-1')
+    const element = view.render(context)
+    const { coordinator, editor } = element.props
+    await editor.load('demo/WORKFLOW.md')
+    const bundle = editor.getSnapshot().bundle
+    expect(bundle).not.toBeNull()
+    const started = await coordinator.start({
+      workflowPath: 'demo/WORKFLOW.md',
+      bundle: bundle!,
+      modelSnapshot: host.modelSnapshot,
+      input: { topic: 'integration' },
+    })
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await terminalStoredRun(host.store, 'demo/WORKFLOW.md')
+    const record = await host.store.read('demo/WORKFLOW.md')
+
+    // The agent wrapper forwards to the current agent at call time, so the
+    // node test can park on a gate while the seed run used the fast agent.
+    host.agent = createFakeAgent({ gate: gate.promise })
+    const test = coordinator.testNode('view-1', {
+      workflowPath: 'demo/WORKFLOW.md',
+      nodeId: 'agent',
+      input: { topic: 'preview' },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    context.dispose()
+    gate.resolve()
+
+    await expect(test).rejects.toMatchObject({ code: 'cancelled' })
+    expect(await host.store.read('demo/WORKFLOW.md')).toEqual(record)
+    expect(host.background.activities.size).toBe(0)
+  })
 })
 
 async function activateModule(host: ExecutionHost): Promise<void> {
@@ -318,6 +408,10 @@ function createTopology(): WorkflowTopology {
   }
 }
 
+type HostAgentRequest = Parameters<
+  YoloModuleHostApiV1['agent']['stream']
+>[0]
+
 /**
  * Host-side agent stand-in: announces awaiting_approval, submits the node's
  * result through the run-scoped tool exactly like the real host dispatcher,
@@ -325,7 +419,10 @@ function createTopology(): WorkflowTopology {
  * tests observe the running activity and abort the run from the host side.
  */
 function createFakeAgent(
-  options: Readonly<{ gate?: Promise<void> }> = {},
+  options: Readonly<{
+    gate?: Promise<void>
+    onRequest?: (request: HostAgentRequest) => void
+  }> = {},
 ): YoloModuleHostApiV1['agent'] {
   type HostAgentEvent =
     ReturnType<YoloModuleHostApiV1['agent']['stream']> extends AsyncIterable<
@@ -334,8 +431,9 @@ function createFakeAgent(
       ? Event
       : never
   const stream = async function* (
-    request: Parameters<YoloModuleHostApiV1['agent']['stream']>[0],
+    request: HostAgentRequest,
   ): AsyncGenerator<HostAgentEvent> {
+    options.onRequest?.(request)
     const tool = request.tools?.[0]
     if (tool) {
       yield {
