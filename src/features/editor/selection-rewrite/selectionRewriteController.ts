@@ -28,6 +28,8 @@ import type { ChatModel } from '../../../types/chat-model.types'
 import type { LLMProvider } from '../../../types/provider.types'
 import { selectionHighlightController } from '../selection-highlight/selectionHighlightController'
 
+import { type ReviewDiffLine, buildReviewDiff } from './reviewDiff'
+
 type SelectionRewritePhase = 'resizing' | 'waiting' | 'streaming' | 'review'
 type SelectionRewriteKind = 'instruction' | 'length'
 
@@ -47,6 +49,8 @@ type SelectionRewriteVisual = {
   frozenSurfaceRects: RewriteSurfaceRect[] | null
   overflowHeight: number
   settlingSurface: boolean
+  /** Line-oriented diff of originalText vs the committed rewrite, shown in review. */
+  reviewDiff: ReviewDiffLine[]
 }
 
 type SelectionRewriteFieldValue = {
@@ -618,6 +622,7 @@ class SelectionRewriteOutlineMarker implements LayerMarker {
     readonly settling: boolean,
     readonly outline: RewriteOutline,
     readonly candidate: RewriteCandidateProjection | null = null,
+    readonly diff: ReviewDiffLine[] | null = null,
   ) {}
 
   eq(other: LayerMarker): boolean {
@@ -634,7 +639,14 @@ class SelectionRewriteOutlineMarker implements LayerMarker {
       other.candidate?.text === this.candidate?.text &&
       other.candidate?.startIndent === this.candidate?.startIndent &&
       other.candidate?.font === this.candidate?.font &&
-      other.candidate?.letterSpacing === this.candidate?.letterSpacing
+      other.candidate?.letterSpacing === this.candidate?.letterSpacing &&
+      other.diff?.length === this.diff?.length &&
+      (other.diff?.every(
+        (line, index) =>
+          line.kind === this.diff?.[index]?.kind &&
+          line.text === this.diff[index]?.text,
+      ) ??
+        true)
     )
   }
 
@@ -694,6 +706,17 @@ class SelectionRewriteOutlineMarker implements LayerMarker {
       candidate.appendChild(text)
       element.appendChild(candidate)
     }
+    if (this.diff) {
+      const diff = document.createElement('div')
+      diff.className = 'yolo-selection-rewrite-diff'
+      for (const line of this.diff) {
+        const row = document.createElement('div')
+        row.className = `yolo-selection-rewrite-diff-line is-${line.kind}`
+        row.textContent = line.text
+        diff.appendChild(row)
+      }
+      element.appendChild(diff)
+    }
     this.adjust(element)
     return element
   }
@@ -712,7 +735,7 @@ class SelectionRewriteOutlineMarker implements LayerMarker {
 
   private adjust(element: HTMLElement): void {
     const { left, top, width, height, path: pathData } = this.outline
-    element.className = `yolo-selection-rewrite-outline is-${this.phase}${this.settling ? ' is-settling-surface' : ''}${this.candidate ? ' has-candidate' : ''}`
+    element.className = `yolo-selection-rewrite-outline is-${this.phase}${this.settling ? ' is-settling-surface' : ''}${this.candidate ? ' has-candidate' : ''}${this.diff ? ' has-diff' : ''}`
     element.dataset.yoloRewriteOutlineId = this.id
     if (this.candidate) {
       element.dataset.yoloRewriteId = this.id
@@ -962,6 +985,10 @@ function createAdaptiveRewriteMarkers(
           letterSpacing: contentStyle.letterSpacing,
         }
       : null
+  const diff =
+    outline && session.phase === 'review' && session.reviewDiff.length > 0
+      ? session.reviewDiff
+      : null
   return outline
     ? [
         new SelectionRewriteOutlineMarker(
@@ -970,6 +997,7 @@ function createAdaptiveRewriteMarkers(
           session.settlingSurface,
           outline,
           candidate,
+          diff,
         ),
       ]
     : []
@@ -1534,6 +1562,7 @@ export class SelectionRewriteController {
       to: options.to,
       originalText: options.selectedText,
       candidateText: '',
+      reviewDiff: [],
       kind: options.request.kind,
       pendingCandidateText: '',
       revealedRawLength: 0,
@@ -1967,6 +1996,9 @@ export class SelectionRewriteController {
     runtime.drag = null
     const from = runtime.from
     const to = runtime.to
+    // Diff the committed rewrite against the original selection so the review
+    // overlay can show what actually changed (del = original, ins = rewrite).
+    runtime.reviewDiff = buildReviewDiff(runtime.originalText, finalText)
     runtime.to = from + finalText.length
     runtime.view.dispatch({
       changes: { from, to, insert: finalText },
@@ -2243,6 +2275,7 @@ export class SelectionRewriteController {
       frozenSurfaceRects: runtime.frozenSurfaceRects,
       overflowHeight: runtime.overflowHeight,
       settlingSurface: runtime.settlingSurface,
+      reviewDiff: runtime.reviewDiff,
     }
   }
 

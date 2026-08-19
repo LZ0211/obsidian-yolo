@@ -26595,6 +26595,42 @@ button.yolo-selection-rewrite-length-handle:focus-visible {
     display: none !important;
   }
 }
+
+.yolo-selection-rewrite-diff {
+  position: absolute;
+  inset: 0 auto auto 0;
+  z-index: 1;
+  width: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  color: var(--text-normal);
+  font: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--background-primary) 88%, transparent);
+}
+
+.yolo-selection-rewrite-diff-line {
+  padding: 0 4px;
+}
+
+.yolo-selection-rewrite-diff-line.is-equal {
+  color: var(--text-muted);
+}
+
+.yolo-selection-rewrite-diff-line.is-del {
+  color: var(--text-muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--text-error);
+  text-decoration-thickness: 1px;
+}
+
+.yolo-selection-rewrite-diff-line.is-ins {
+  color: var(--text-normal);
+  background: color-mix(in srgb, var(--color-green) 14%, transparent);
+}
 /* ============================================
    PDF Selection - Persistent highlight for PDF text layer (CSS Custom Highlight API)
    ============================================ */
