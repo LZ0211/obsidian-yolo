@@ -11,6 +11,7 @@ import { arrayBufferToBase64 } from '../base64'
 import { sha256Hex, sha256HexSync } from '../common/content-hash'
 
 import { convertPdfViaMinerU, getMineruCacheDir } from './mineruCacheStore'
+import { resetMinerUSessionState } from './mineruClient'
 
 const endpointHashFor = (baseUrl: string): string =>
   sha256HexSync(baseUrl).slice(0, 12)
@@ -119,23 +120,54 @@ let app: App
 let file: TFile
 let zipBuffer: ArrayBuffer
 
-/** Queues the full mock requestUrl conversation for one zip conversion. */
-const mockZipConversion = (): void => {
+/**
+ * Queues the full mock sse_v3 requestUrl conversation for one zip conversion.
+ * Pass `skipConfig` when the fn_index is already cached for the session (no
+ * /config request is made).
+ */
+const mockZipConversion = (skipConfig = false): void => {
+  if (!skipConfig) {
+    mockedRequestUrl.mockResolvedValueOnce(
+      responseWithText(
+        JSON.stringify({
+          dependencies: [{ api_name: 'convert_to_markdown_stream', id: 6 }],
+        }),
+      ),
+    )
+  }
   mockedRequestUrl
+    .mockResolvedValueOnce(
+      responseWithText(JSON.stringify(['/tmp/gradio/x.pdf'])),
+    )
     .mockResolvedValueOnce(
       responseWithText(JSON.stringify({ event_id: 'evt-1' })),
     )
     .mockResolvedValueOnce(
       responseWithText(
         [
-          'data: {"type":"heartbeat"}',
+          'data: {"msg":"heartbeat","event_id":"evt-1"}',
           '',
-          `data: {"type":"complete","output":{"data":[${JSON.stringify({
-            path: '/tmp/x.zip',
-            url: `${BASE_URL}/gradio_api/file=zip`,
-            orig_name: 'x.zip',
-            meta: { _type: 'gradio.FileData' },
-          })}]}}`,
+          `data: ${JSON.stringify({
+            msg: 'process_completed',
+            event_id: 'evt-1',
+            output: {
+              data: [
+                '<div class="status">ok</div>',
+                {
+                  path: '/tmp/x.zip',
+                  url: `${BASE_URL}/gradio_api/file=zip`,
+                  orig_name: 'x.zip',
+                  meta: { _type: 'gradio.FileData' },
+                },
+              ],
+              error: null,
+              duration: 1,
+              visible: true,
+              title: '',
+            },
+            success: true,
+            title: '',
+          })}`,
         ].join('\n\n'),
       ),
     )
@@ -144,6 +176,7 @@ const mockZipConversion = (): void => {
 
 beforeEach(async () => {
   mockedRequestUrl.mockReset()
+  resetMinerUSessionState()
   adapter = new MockAdapter()
   app = {
     vault: {
@@ -219,7 +252,7 @@ describe('convertPdfViaMinerU', () => {
 
   it('serves a second conversion of the same content from the cache without hitting the network', async () => {
     const first = await convertPdfViaMinerU({ app, file, options: OPTIONS })
-    expect(mockedRequestUrl).toHaveBeenCalledTimes(3)
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(5)
 
     mockedRequestUrl.mockClear()
 
@@ -236,7 +269,7 @@ describe('convertPdfViaMinerU', () => {
     ])
 
     expect(a).toEqual(b)
-    expect(mockedRequestUrl).toHaveBeenCalledTimes(3)
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(5)
   })
 
   it('re-converts when the cache is incomplete (a listed image is missing)', async () => {
@@ -245,10 +278,11 @@ describe('convertPdfViaMinerU', () => {
     await adapter.remove(`${cacheDir}/images/1.png`)
 
     mockedRequestUrl.mockClear()
-    mockZipConversion()
+    // fn_index 已缓存：重转换不再请求 /config。
+    mockZipConversion(true)
     await convertPdfViaMinerU({ app, file, options: OPTIONS })
 
-    expect(mockedRequestUrl).toHaveBeenCalledTimes(3)
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(4)
   })
 
   it('isolates cache entries by normalized endpoint, not API credentials', async () => {
@@ -288,7 +322,7 @@ describe('convertPdfViaMinerU', () => {
 
     expect(other.markdown).toBe(first.markdown)
     expect(other.images[0]?.name).toBe('1.png')
-    expect(mockedRequestUrl).toHaveBeenCalledTimes(3)
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(5)
     expect(
       (mockedRequestUrl.mock.calls[0]?.[0] as { url?: string }).url,
     ).toContain('http://mineru-other.test')
@@ -317,16 +351,37 @@ describe('convertPdfViaMinerU', () => {
     })
     mockedRequestUrl
       .mockResolvedValueOnce(
+        responseWithText(JSON.stringify(['/tmp/gradio/x.pdf'])),
+      )
+      .mockResolvedValueOnce(
+        responseWithText(JSON.stringify({ event_id: 'evt-shared' })),
+      )
+      .mockResolvedValueOnce(
         responseWithText(
           [
-            'data: {"type":"heartbeat"}',
+            'data: {"msg":"heartbeat","event_id":"evt-shared"}',
             '',
-            `data: {"type":"complete","output":{"data":[${JSON.stringify({
-              path: '/tmp/x.zip',
-              url: `${BASE_URL}/gradio_api/file=zip-shared`,
-              orig_name: 'x.zip',
-              meta: { _type: 'gradio.FileData' },
-            })}]}}`,
+            `data: ${JSON.stringify({
+              msg: 'process_completed',
+              event_id: 'evt-shared',
+              output: {
+                data: [
+                  '<div class="status">ok</div>',
+                  {
+                    path: '/tmp/x.zip',
+                    url: `${BASE_URL}/gradio_api/file=zip-shared`,
+                    orig_name: 'x.zip',
+                    meta: { _type: 'gradio.FileData' },
+                  },
+                ],
+                error: null,
+                duration: 1,
+                visible: true,
+                title: '',
+              },
+              success: true,
+              title: '',
+            })}`,
           ].join('\n\n'),
         ),
       )
@@ -352,7 +407,13 @@ describe('convertPdfViaMinerU', () => {
     controllerA.abort()
     await expect(promiseA).rejects.toMatchObject({ name: 'AbortError' })
 
-    resolveStart?.(responseWithText(JSON.stringify({ event_id: 'evt-shared' })))
+    resolveStart?.(
+      responseWithText(
+        JSON.stringify({
+          dependencies: [{ api_name: 'convert_to_markdown_stream', id: 6 }],
+        }),
+      ),
+    )
     await expect(promiseB).resolves.toMatchObject({ markdown: MARKDOWN })
   })
 
@@ -365,11 +426,45 @@ describe('convertPdfViaMinerU', () => {
           resolveStart = resolve
         }) as unknown as RequestUrlResponsePromise,
     )
-    mockedRequestUrl.mockResolvedValueOnce(
-      responseWithText(
-        'data: {"type":"complete","output":{"data":["# shared"]}}',
-      ),
-    )
+    const zipBody = await buildZip({ 'result.md': '# shared' })
+    const dataUri = `data:application/octet-stream;base64,${arrayBufferToBase64(zipBody)}`
+    mockedRequestUrl
+      .mockResolvedValueOnce(
+        responseWithText(JSON.stringify(['/tmp/gradio/x.pdf'])),
+      )
+      .mockResolvedValueOnce(
+        responseWithText(JSON.stringify({ event_id: 'evt-shared' })),
+      )
+      .mockResolvedValueOnce(
+        responseWithText(
+          [
+            'data: {"msg":"heartbeat","event_id":"evt-shared"}',
+            '',
+            `data: ${JSON.stringify({
+              msg: 'process_completed',
+              event_id: 'evt-shared',
+              output: {
+                data: [
+                  '<div class="status">ok</div>',
+                  {
+                    url: '',
+                    path: '',
+                    data: dataUri,
+                    orig_name: 'x.zip',
+                    meta: { _type: 'gradio.FileData' },
+                  },
+                ],
+                error: null,
+                duration: 1,
+                visible: true,
+                title: '',
+              },
+              success: true,
+              title: '',
+            })}`,
+          ].join('\n\n'),
+        ),
+      )
     const controllerA = new AbortController()
 
     const promiseA = convertPdfViaMinerU({
@@ -390,7 +485,13 @@ describe('convertPdfViaMinerU', () => {
     })
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(mockedRequestUrl).toHaveBeenCalledTimes(1)
-    resolveStart?.(responseWithText(JSON.stringify({ event_id: 'evt-shared' })))
+    resolveStart?.(
+      responseWithText(
+        JSON.stringify({
+          dependencies: [{ api_name: 'convert_to_markdown_stream', id: 6 }],
+        }),
+      ),
+    )
     await expect(promiseC).resolves.toMatchObject({ markdown: '# shared' })
 
     const cacheDir = await expectedCacheDir()

@@ -65,19 +65,81 @@ const buildZip = async (
   return await zip.generateAsync({ type: 'arraybuffer' })
 }
 
-const sseCompleteZip = (fileData: Record<string, string>): string =>
+/** /config response exposing the conversion endpoint as dependency id 6. */
+const CONFIG_RESPONSE_TEXT = JSON.stringify({
+  dependencies: [{ api_name: 'convert_to_markdown_stream', id: 6 }],
+})
+
+/** /gradio_api/upload response: server-side path of the uploaded pdf. */
+const UPLOAD_RESPONSE_TEXT = JSON.stringify(['/tmp/gradio/uploaded.pdf'])
+
+const JOIN_RESPONSE_TEXT = JSON.stringify({ event_id: 'evt-1' })
+
+/** SSE terminal event in the gradio 5/6 shape: msg process_completed. */
+const sseCompletedWith = (data: unknown[]): string =>
   [
-    'data: {"type":"heartbeat"}',
+    'data: {"msg":"heartbeat","event_id":"evt-1"}',
     '',
-    `data: {"type":"complete","output":{"data":[${JSON.stringify({
-      ...fileData,
-      meta: { _type: 'gradio.FileData' },
-    })}]}}`,
+    `data: ${JSON.stringify({
+      msg: 'process_completed',
+      event_id: 'evt-1',
+      output: { data, error: null, duration: 1, visible: true, title: '' },
+      success: true,
+      title: '',
+    })}`,
   ].join('\n\n')
+
+const fileData = (
+  overrides: Record<string, string>,
+): Record<string, string> => ({
+  path: '/tmp/x.zip',
+  url: `${BASE_URL}/gradio_api/file=zip-1`,
+  orig_name: 'x.zip',
+  ...overrides,
+})
+
+/**
+ * Queues one full sse_v3 conversion: config → upload → queue/join →
+ * queue/data SSE → optional zip download. `zipBuffer` is required whenever
+ * the FileData result is downloaded via its url. Pass `skipConfig` when the
+ * fn_index is already cached for the session (no /config request is made).
+ */
+const mockZipConversion = (
+  data = fileData({}),
+  zipBuffer?: ArrayBuffer,
+  skipConfig = false,
+): void => {
+  if (!skipConfig) {
+    mockedRequestUrl.mockResolvedValueOnce(
+      responseWithText(CONFIG_RESPONSE_TEXT),
+    )
+  }
+  mockedRequestUrl
+    .mockResolvedValueOnce(responseWithText(UPLOAD_RESPONSE_TEXT))
+    .mockResolvedValueOnce(responseWithText(JOIN_RESPONSE_TEXT))
+    .mockResolvedValueOnce(
+      responseWithText(
+        sseCompletedWith([
+          '<div class="status">ok</div>',
+          { ...data, meta: { _type: 'gradio.FileData' } },
+        ]),
+      ),
+    )
+  if (zipBuffer) {
+    mockedRequestUrl.mockResolvedValueOnce(responseWithArrayBuffer(zipBuffer))
+  }
+}
 
 /** requestUrl accepts a bare string overload; normalize calls to RequestUrlParam. */
 const requestParams = (call: unknown[]): RequestUrlParam =>
   typeof call[0] === 'string' ? { url: call[0] } : (call[0] as RequestUrlParam)
+
+const decodeBody = (call: unknown[]): unknown => {
+  const body = requestParams(call).body
+  if (body === undefined) return undefined
+  const text = typeof body === 'string' ? body : new TextDecoder().decode(body)
+  return JSON.parse(text)
+}
 
 const waitUntil = async (
   condition: () => boolean,
@@ -92,12 +154,32 @@ const waitUntil = async (
   }
 }
 
+const convert = (
+  overrides: {
+    fileName?: string
+    apiKey?: string
+    signal?: AbortSignal
+  } = {},
+) =>
+  convertPdfToMarkdown({
+    pdfBytes: PDF_BYTES.buffer,
+    fileName: overrides.fileName ?? 'report.pdf',
+    baseUrl: BASE_URL,
+    apiKey: overrides.apiKey ?? API_KEY,
+    signal: overrides.signal,
+  })
+
 describe('convertPdfToMarkdown', () => {
   beforeEach(() => {
     mockedRequestUrl.mockReset()
+    resetMinerUSessionState()
   })
 
-  it('converts via the gradio protocol and parses a zip FileData result', async () => {
+  afterEach(() => {
+    resetMinerUSessionState()
+  })
+
+  it('converts via the gradio 5/6 sse_v3 protocol and parses a zip FileData result', async () => {
     const pngBytes = new Uint8Array([
       0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3,
     ])
@@ -105,161 +187,196 @@ describe('convertPdfToMarkdown', () => {
       'result.md': MARKDOWN,
       'images/1.png': pngBytes,
     })
+    mockZipConversion(fileData({}), zipBuffer)
 
-    mockedRequestUrl
-      .mockResolvedValueOnce(
-        responseWithText(JSON.stringify({ event_id: 'evt-1' })),
-      )
-      .mockResolvedValueOnce(
-        responseWithText(
-          sseCompleteZip({
-            path: '/tmp/x.zip',
-            url: `${BASE_URL}/gradio_api/file=zip-1`,
-            orig_name: 'x.zip',
-          }),
-        ),
-      )
-      .mockResolvedValueOnce(responseWithArrayBuffer(zipBuffer))
-
-    const result = await convertPdfToMarkdown({
-      pdfBytes: PDF_BYTES.buffer,
-      fileName: 'report.pdf',
-      baseUrl: BASE_URL,
-      apiKey: API_KEY,
-    })
+    const result = await convert()
 
     expect(result.markdown).toBe(MARKDOWN)
     expect(result.images).toHaveLength(1)
     expect(result.images[0]?.name).toBe('1.png')
     expect(result.images[0]?.data).toEqual(pngBytes)
 
-    expect(mockedRequestUrl).toHaveBeenCalledTimes(3)
-    const [post, sse, download] = mockedRequestUrl.mock.calls.map(requestParams)
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(5)
+    const [config, upload, join, stream, download] =
+      mockedRequestUrl.mock.calls.map(requestParams)
 
-    // POST: multipart body carrying the pdf file and the fixed conversion params
-    expect(post.url).toBe(
-      `${BASE_URL}/gradio_api/call/convert_to_markdown_stream`,
+    // ① fn_index discovery from /config (api_name → dependency id)
+    expect(config.url).toBe(`${BASE_URL}/gradio_api/config`)
+    expect(config.method).toBe('GET')
+    expect(config.headers?.['Authorization']).toBe(API_KEY)
+
+    // ② upload: multipart body with the pdf under the `files` field
+    expect(upload.url).toBe(`${BASE_URL}/gradio_api/upload`)
+    expect(upload.method).toBe('POST')
+    expect(upload.contentType).toMatch(/^multipart\/form-data; boundary=/)
+    const uploadBody = new TextDecoder().decode(upload.body as ArrayBuffer)
+    expect(uploadBody).toContain(
+      'Content-Disposition: form-data; name="files"; filename="report.pdf"',
     )
-    expect(post.method).toBe('POST')
-    expect(post.contentType).toMatch(/^multipart\/form-data; boundary=/)
-    const bodyText = new TextDecoder().decode(post.body as ArrayBuffer)
-    expect(bodyText).toContain(
-      'Content-Disposition: form-data; name="file_path"; filename="report.pdf"',
+    expect(uploadBody).toContain('%PDF-1.4')
+
+    // ③ queue/join: JSON data array in the server fn signature order
+    expect(join.url).toBe(`${BASE_URL}/gradio_api/queue/join`)
+    expect(join.method).toBe('POST')
+    expect(join.contentType).toContain('application/json')
+    const joinBody = decodeBody(mockedRequestUrl.mock.calls[2] ?? []) as {
+      data: unknown[]
+      fn_index: number
+      session_hash: string
+    }
+    expect(joinBody.fn_index).toBe(6)
+    expect(joinBody.data[0]).toMatchObject({
+      path: '/tmp/gradio/uploaded.pdf',
+      orig_name: 'report.pdf',
+      meta: { _type: 'gradio.FileData' },
+    })
+    // max_pages, force_ocr, formula_label_hybrid, table_enable,
+    // image_analysis_enable, ocr_language, backend, server_url
+    expect(joinBody.data.slice(1)).toEqual([
+      1000,
+      false,
+      true,
+      true,
+      true,
+      'ch (Chinese, English, Chinese Traditional)',
+      'hybrid-auto-engine',
+      '',
+    ])
+
+    // ④ SSE event stream keyed by the same session_hash
+    expect(stream.url).toBe(
+      `${BASE_URL}/gradio_api/queue/data?session_hash=${joinBody.session_hash}`,
     )
-    expect(bodyText).toContain('%PDF-1.4')
-    expect(bodyText).toContain('name="end_pages"')
-    expect(bodyText).toContain('1000')
-    expect(bodyText).toContain('name="is_ocr"')
-    expect(bodyText).toContain('name="formula_enable"')
-    expect(bodyText).toContain('name="table_enable"')
-    expect(bodyText).toContain('name="image_analysis"')
-    expect(bodyText).toContain('ch (Chinese, English, Chinese Traditional)')
-    expect(bodyText).toContain('name="backend"')
-    expect(bodyText).toContain('hybrid-auto-engine')
+    expect(stream.method).toBe('GET')
+    expect(stream.headers?.['Accept']).toContain('text/event-stream')
 
-    // SSE event polling on the returned event_id
-    expect(sse.url).toBe(`${BASE_URL}/gradio_api/call/evt-1`)
-    expect(sse.method).toBe('GET')
-    expect(sse.headers?.['Accept']).toContain('text/event-stream')
-
-    // FileData url download
+    // ⑤ FileData url download
     expect(download.url).toBe(`${BASE_URL}/gradio_api/file=zip-1`)
     expect(download.method).toBe('GET')
   })
 
-  it('returns a plain markdown string output directly', async () => {
-    const md = '# Plain\n\nNo images.\n'
+  it('reuses the discovered fn_index for the same endpoint within the session', async () => {
+    const zipBuffer = await buildZip({ 'result.md': MARKDOWN })
+    mockZipConversion(fileData({}), zipBuffer)
+    await convert()
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(5)
+
+    // Second conversion: no /config fetch (4 requests).
+    mockedRequestUrl.mockClear()
+    mockZipConversion(fileData({}), zipBuffer, true)
+    await convert({ fileName: 'b.pdf' })
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(4)
+    expect(requestParams(mockedRequestUrl.mock.calls[0] ?? []).url).toBe(
+      `${BASE_URL}/gradio_api/upload`,
+    )
+
+    // Session reset clears the cache: /config fetched again.
+    resetMinerUSessionState()
+    mockedRequestUrl.mockClear()
+    mockZipConversion(fileData({}), zipBuffer)
+    await convert({ fileName: 'c.pdf' })
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(5)
+  })
+
+  it('deduplicates a concurrent fn_index discovery into one config fetch', async () => {
+    const zipBuffer = await buildZip({ 'result.md': MARKDOWN })
+    // Both conversions interleave after the shared config fetch resolves:
+    // upload, upload, join, join, stream, stream, zip, zip.
     mockedRequestUrl
+      .mockResolvedValueOnce(responseWithText(CONFIG_RESPONSE_TEXT))
+      .mockResolvedValueOnce(responseWithText(UPLOAD_RESPONSE_TEXT))
+      .mockResolvedValueOnce(responseWithText(UPLOAD_RESPONSE_TEXT))
+      .mockResolvedValueOnce(responseWithText(JOIN_RESPONSE_TEXT))
+      .mockResolvedValueOnce(responseWithText(JOIN_RESPONSE_TEXT))
       .mockResolvedValueOnce(
-        responseWithText(JSON.stringify({ event_id: 'evt-2' })),
+        responseWithText(
+          sseCompletedWith([
+            '<div class="status">ok</div>',
+            { ...fileData({}), meta: { _type: 'gradio.FileData' } },
+          ]),
+        ),
       )
       .mockResolvedValueOnce(
         responseWithText(
-          `data: {"type":"complete","output":{"data":[${JSON.stringify(md)}]}}`,
+          sseCompletedWith([
+            '<div class="status">ok</div>',
+            {
+              ...fileData({ url: `${BASE_URL}/gradio_api/file=zip-2` }),
+              meta: { _type: 'gradio.FileData' },
+            },
+          ]),
         ),
       )
+      .mockResolvedValueOnce(responseWithArrayBuffer(zipBuffer))
+      .mockResolvedValueOnce(responseWithArrayBuffer(zipBuffer))
 
-    const result = await convertPdfToMarkdown({
-      pdfBytes: PDF_BYTES.buffer,
-      fileName: 'a.pdf',
-      baseUrl: BASE_URL,
-      apiKey: API_KEY,
-    })
+    const [a, b] = await Promise.all([
+      convert(),
+      convert({ fileName: 'b.pdf' }),
+    ])
+    expect(a.markdown).toBe(MARKDOWN)
+    expect(b.markdown).toBe(MARKDOWN)
+    // 1 shared config + 4 requests per conversion.
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(9)
+  })
 
-    expect(result.markdown).toBe(md)
-    expect(result.images).toEqual([])
-    expect(mockedRequestUrl).toHaveBeenCalledTimes(2)
+  it('throws when the config does not expose the conversion endpoint', async () => {
+    mockedRequestUrl.mockResolvedValueOnce(
+      responseWithText(
+        JSON.stringify({
+          dependencies: [{ api_name: 'convert_to_markdown', id: 3 }],
+        }),
+      ),
+    )
+
+    await expect(convert()).rejects.toThrow(
+      /did not expose the conversion endpoint/,
+    )
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(1)
   })
 
   it('decodes a FileData inline data URI without an extra download request', async () => {
     const md = '# Data uri'
     const zipBuffer = await buildZip({ 'result.md': md })
     const dataUri = `data:application/octet-stream;base64,${arrayBufferToBase64(zipBuffer)}`
-    mockedRequestUrl
-      .mockResolvedValueOnce(
-        responseWithText(JSON.stringify({ event_id: 'evt-8' })),
-      )
-      .mockResolvedValueOnce(
-        responseWithText(
-          `data: {"type":"complete","output":{"data":[${JSON.stringify({
-            data: dataUri,
-            orig_name: 'x.zip',
-            meta: { _type: 'gradio.FileData' },
-          })}]}}`,
-        ),
-      )
+    mockZipConversion(fileData({ url: '', path: '', data: dataUri }))
 
-    const result = await convertPdfToMarkdown({
-      pdfBytes: PDF_BYTES.buffer,
-      fileName: 'a.pdf',
-      baseUrl: BASE_URL,
-      apiKey: API_KEY,
-    })
+    const result = await convert()
 
     expect(result.markdown).toBe(md)
-    expect(mockedRequestUrl).toHaveBeenCalledTimes(2)
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(4)
+  })
+
+  it('throws when the completed event contains no downloadable FileData', async () => {
+    mockedRequestUrl
+      .mockResolvedValueOnce(responseWithText(CONFIG_RESPONSE_TEXT))
+      .mockResolvedValueOnce(responseWithText(UPLOAD_RESPONSE_TEXT))
+      .mockResolvedValueOnce(responseWithText(JOIN_RESPONSE_TEXT))
+      .mockResolvedValueOnce(
+        responseWithText(sseCompletedWith(['<div class="status">ok</div>'])),
+      )
+
+    await expect(convert()).rejects.toThrow(/no downloadable file/)
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(4)
   })
 
   it('sends the apiKey verbatim as the Authorization header on every request', async () => {
-    mockedRequestUrl
-      .mockResolvedValueOnce(
-        responseWithText(JSON.stringify({ event_id: 'evt-3' })),
-      )
-      .mockResolvedValueOnce(
-        responseWithText(
-          'data: {"type":"complete","output":{"data":["# ok"]}}',
-        ),
-      )
+    const zipBuffer = await buildZip({ 'result.md': MARKDOWN })
+    mockZipConversion(fileData({}), zipBuffer)
 
-    await convertPdfToMarkdown({
-      pdfBytes: PDF_BYTES.buffer,
-      fileName: 'a.pdf',
-      baseUrl: BASE_URL,
-      apiKey: API_KEY,
-    })
+    await convert()
 
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(5)
     for (const call of mockedRequestUrl.mock.calls) {
       expect(requestParams(call).headers?.['Authorization']).toBe(API_KEY)
     }
   })
 
   it('omits the Authorization header when apiKey is empty', async () => {
-    mockedRequestUrl
-      .mockResolvedValueOnce(
-        responseWithText(JSON.stringify({ event_id: 'evt-4' })),
-      )
-      .mockResolvedValueOnce(
-        responseWithText(
-          'data: {"type":"complete","output":{"data":["# ok"]}}',
-        ),
-      )
+    const zipBuffer = await buildZip({ 'result.md': MARKDOWN })
+    mockZipConversion(fileData({}), zipBuffer)
 
-    await convertPdfToMarkdown({
-      pdfBytes: PDF_BYTES.buffer,
-      fileName: 'a.pdf',
-      baseUrl: BASE_URL,
-      apiKey: '',
-    })
+    await convert({ apiKey: '' })
 
     for (const call of mockedRequestUrl.mock.calls) {
       expect(requestParams(call).headers?.['Authorization']).toBeUndefined()
@@ -270,15 +387,9 @@ describe('convertPdfToMarkdown', () => {
     const controller = new AbortController()
     controller.abort()
 
-    await expect(
-      convertPdfToMarkdown({
-        pdfBytes: PDF_BYTES.buffer,
-        fileName: 'a.pdf',
-        baseUrl: BASE_URL,
-        apiKey: API_KEY,
-        signal: controller.signal,
-      }),
-    ).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(convert({ signal: controller.signal })).rejects.toMatchObject({
+      name: 'AbortError',
+    })
 
     expect(mockedRequestUrl).not.toHaveBeenCalled()
   })
@@ -288,9 +399,9 @@ describe('convertPdfToMarkdown', () => {
       resolve: ((response: RequestUrlResponse) => void) | null
     } = { resolve: null }
     mockedRequestUrl
-      .mockResolvedValueOnce(
-        responseWithText(JSON.stringify({ event_id: 'evt-5' })),
-      )
+      .mockResolvedValueOnce(responseWithText(CONFIG_RESPONSE_TEXT))
+      .mockResolvedValueOnce(responseWithText(UPLOAD_RESPONSE_TEXT))
+      .mockResolvedValueOnce(responseWithText(JOIN_RESPONSE_TEXT))
       .mockImplementationOnce(
         () =>
           new Promise<RequestUrlResponse>((resolve) => {
@@ -299,15 +410,9 @@ describe('convertPdfToMarkdown', () => {
       )
     const controller = new AbortController()
 
-    const promise = convertPdfToMarkdown({
-      pdfBytes: PDF_BYTES.buffer,
-      fileName: 'a.pdf',
-      baseUrl: BASE_URL,
-      apiKey: API_KEY,
-      signal: controller.signal,
-    })
+    const promise = convert({ signal: controller.signal })
 
-    await waitUntil(() => mockedRequestUrl.mock.calls.length === 2)
+    await waitUntil(() => mockedRequestUrl.mock.calls.length === 4)
     controller.abort()
 
     await expect(promise).rejects.toMatchObject({ name: 'AbortError' })
@@ -315,13 +420,16 @@ describe('convertPdfToMarkdown', () => {
   })
 
   it('allows the event stream to outlast the former request timeout', async () => {
+    const md = '# Slow'
+    const zipBuffer = await buildZip({ 'result.md': md })
+    const dataUri = `data:application/octet-stream;base64,${arrayBufferToBase64(zipBuffer)}`
     jest.useFakeTimers()
     try {
       let resolveEvent: ((response: RequestUrlResponse) => void) | undefined
       mockedRequestUrl
-        .mockResolvedValueOnce(
-          responseWithText(JSON.stringify({ event_id: 'evt-6' })),
-        )
+        .mockResolvedValueOnce(responseWithText(CONFIG_RESPONSE_TEXT))
+        .mockResolvedValueOnce(responseWithText(UPLOAD_RESPONSE_TEXT))
+        .mockResolvedValueOnce(responseWithText(JOIN_RESPONSE_TEXT))
         .mockImplementationOnce(
           () =>
             new Promise<RequestUrlResponse>((resolve) => {
@@ -329,27 +437,26 @@ describe('convertPdfToMarkdown', () => {
             }) as unknown as RequestUrlResponsePromise,
         )
 
-      const promise = convertPdfToMarkdown({
-        pdfBytes: PDF_BYTES.buffer,
-        fileName: 'a.pdf',
-        baseUrl: BASE_URL,
-        apiKey: API_KEY,
-      })
+      const promise = convert()
       const assertion = expect(promise).resolves.toMatchObject({
-        markdown: MARKDOWN,
+        markdown: md,
       })
 
       await jest.advanceTimersByTimeAsync(FORMER_REQUEST_TIMEOUT_MS + 1000)
       resolveEvent?.(
         responseWithText(
-          `data: ${JSON.stringify({
-            type: 'complete',
-            output: { data: [MARKDOWN] },
-          })}`,
+          sseCompletedWith([
+            '<div class="status">ok</div>',
+            {
+              ...fileData({ url: '', path: '', data: dataUri }),
+              meta: { _type: 'gradio.FileData' },
+            },
+          ]),
         ),
       )
       jest.useRealTimers()
       await assertion
+      expect(mockedRequestUrl).toHaveBeenCalledTimes(4)
     } finally {
       jest.useRealTimers()
     }
@@ -361,18 +468,18 @@ describe('convertPdfToMarkdown', () => {
     try {
       let resolveDownload: ((response: RequestUrlResponse) => void) | undefined
       mockedRequestUrl
+        .mockResolvedValueOnce(responseWithText(CONFIG_RESPONSE_TEXT))
+        .mockResolvedValueOnce(responseWithText(UPLOAD_RESPONSE_TEXT))
+        .mockResolvedValueOnce(responseWithText(JOIN_RESPONSE_TEXT))
         .mockResolvedValueOnce(
           responseWithText(
-            JSON.stringify({ event_id: 'evt-download-timeout' }),
-          ),
-        )
-        .mockResolvedValueOnce(
-          responseWithText(
-            sseCompleteZip({
-              path: '/tmp/x.zip',
-              url: `${BASE_URL}/gradio_api/file=stalled`,
-              orig_name: 'x.zip',
-            }),
+            sseCompletedWith([
+              '<div class="status">ok</div>',
+              {
+                ...fileData({ url: `${BASE_URL}/gradio_api/file=stalled` }),
+                meta: { _type: 'gradio.FileData' },
+              },
+            ]),
           ),
         )
         .mockImplementationOnce(
@@ -382,45 +489,49 @@ describe('convertPdfToMarkdown', () => {
             }) as unknown as RequestUrlResponsePromise,
         )
 
-      const promise = convertPdfToMarkdown({
-        pdfBytes: PDF_BYTES.buffer,
-        fileName: 'a.pdf',
-        baseUrl: BASE_URL,
-        apiKey: API_KEY,
-      })
+      const promise = convert()
       const assertion = expect(promise).resolves.toMatchObject({
         markdown: MARKDOWN,
       })
 
-      await jest.advanceTimersByTimeAsync(
-        FORMER_REQUEST_TIMEOUT_MS + 1000,
-      )
+      await jest.advanceTimersByTimeAsync(FORMER_REQUEST_TIMEOUT_MS + 1000)
       resolveDownload?.(responseWithArrayBuffer(zipBuffer))
       jest.useRealTimers()
       await assertion
-      expect(mockedRequestUrl).toHaveBeenCalledTimes(3)
+      expect(mockedRequestUrl).toHaveBeenCalledTimes(5)
     } finally {
       jest.useRealTimers()
     }
   })
 
-  it('surfaces the server error event message', async () => {
+  it('surfaces the server error message from a failed completion', async () => {
     mockedRequestUrl
+      .mockResolvedValueOnce(responseWithText(CONFIG_RESPONSE_TEXT))
+      .mockResolvedValueOnce(responseWithText(UPLOAD_RESPONSE_TEXT))
+      .mockResolvedValueOnce(responseWithText(JOIN_RESPONSE_TEXT))
       .mockResolvedValueOnce(
-        responseWithText(JSON.stringify({ event_id: 'evt-7' })),
-      )
-      .mockResolvedValueOnce(
-        responseWithText('data: {"type":"error","error":"backend exploded"}'),
+        responseWithText(
+          [
+            'data: {"msg":"heartbeat","event_id":"evt-1"}',
+            '',
+            `data: ${JSON.stringify({
+              msg: 'process_completed',
+              event_id: 'evt-1',
+              output: {
+                data: [],
+                error: 'backend exploded',
+                duration: 1,
+                visible: true,
+                title: 'Error',
+              },
+              success: false,
+              title: 'Error',
+            })}`,
+          ].join('\n\n'),
+        ),
       )
 
-    await expect(
-      convertPdfToMarkdown({
-        pdfBytes: PDF_BYTES.buffer,
-        fileName: 'a.pdf',
-        baseUrl: BASE_URL,
-        apiKey: API_KEY,
-      }),
-    ).rejects.toThrow(/backend exploded/)
+    await expect(convert()).rejects.toThrow(/backend exploded/)
   })
 })
 
@@ -429,11 +540,21 @@ describe('probeMinerU', () => {
     mockedRequestUrl.mockReset()
   })
 
-  it('returns true when /gradio_api/info is 2xx and exposes the conversion api', async () => {
+  it('returns true for a modern (gradio 5+) info schema exposing the conversion api', async () => {
     mockedRequestUrl.mockResolvedValueOnce(
       responseWithText(
         JSON.stringify({
-          named_endpoints: { convert_to_markdown_stream: {} },
+          named_endpoints: {
+            '/convert_to_markdown_stream': {
+              parameters: [
+                {
+                  label: { key: 'upload_file', _type: 'translation_metadata' },
+                  parameter_name: 'file_path',
+                },
+              ],
+              returns: [],
+            },
+          },
         }),
       ),
     )
@@ -447,6 +568,25 @@ describe('probeMinerU', () => {
     expect(params.throw).toBe(false)
   })
 
+  it('returns false for a legacy gradio 4 info schema (string labels)', async () => {
+    mockedRequestUrl.mockResolvedValueOnce(
+      responseWithText(
+        JSON.stringify({
+          named_endpoints: {
+            '/convert_to_markdown_stream': {
+              parameters: [
+                { label: 'upload_file', parameter_name: 'file_path' },
+              ],
+              returns: [],
+            },
+          },
+        }),
+      ),
+    )
+
+    await expect(probeMinerU(BASE_URL, '')).resolves.toBe(false)
+  })
+
   it('returns false for non-2xx responses', async () => {
     mockedRequestUrl.mockResolvedValueOnce(responseWithText('not found', 404))
     await expect(probeMinerU(BASE_URL, '')).resolves.toBe(false)
@@ -456,15 +596,27 @@ describe('probeMinerU', () => {
     mockedRequestUrl.mockResolvedValueOnce(
       responseWithText(
         JSON.stringify({
-          named_endpoints: { convert_to_markdown: {} },
+          named_endpoints: {
+            '/convert_to_markdown': {
+              parameters: [
+                {
+                  label: { key: 'upload_file', _type: 'translation_metadata' },
+                  parameter_name: 'file_path',
+                },
+              ],
+              returns: [],
+            },
+          },
         }),
       ),
     )
     await expect(probeMinerU(BASE_URL, '')).resolves.toBe(false)
   })
 
-  it('returns false on network errors and empty base urls', async () => {
+  it('returns false on network errors, invalid JSON, and empty base urls', async () => {
     mockedRequestUrl.mockRejectedValueOnce(new Error('connection refused'))
+    await expect(probeMinerU(BASE_URL, '')).resolves.toBe(false)
+    mockedRequestUrl.mockResolvedValueOnce(responseWithText('not json'))
     await expect(probeMinerU(BASE_URL, '')).resolves.toBe(false)
     await expect(probeMinerU('', '')).resolves.toBe(false)
   })
@@ -510,11 +662,25 @@ describe('resolveMinerUImageRefs', () => {
 })
 
 describe('convertPdfToMarkdown job start', () => {
+  beforeEach(() => {
+    mockedRequestUrl.mockReset()
+    resetMinerUSessionState()
+  })
+
+  afterEach(() => {
+    resetMinerUSessionState()
+  })
+
   it('allows a slow job-start POST to outlast the former request timeout', async () => {
+    // JSZip generation uses timers internally; build the zip before entering
+    // fake timers so the mock queue below can reference it.
+    const zipBuffer = await buildZip({ 'result.md': MARKDOWN })
     jest.useFakeTimers()
     try {
       let resolveStart: ((response: RequestUrlResponse) => void) | undefined
       mockedRequestUrl
+        .mockResolvedValueOnce(responseWithText(CONFIG_RESPONSE_TEXT))
+        .mockResolvedValueOnce(responseWithText(UPLOAD_RESPONSE_TEXT))
         .mockImplementationOnce(
           () =>
             new Promise<RequestUrlResponse>((resolve) => {
@@ -523,25 +689,24 @@ describe('convertPdfToMarkdown job start', () => {
         )
         .mockResolvedValueOnce(
           responseWithText(
-            `data: ${JSON.stringify({
-              type: 'complete',
-              output: { data: [MARKDOWN] },
-            })}`,
+            sseCompletedWith([
+              '<div class="status">ok</div>',
+              {
+                ...fileData({}),
+                meta: { _type: 'gradio.FileData' },
+              },
+            ]),
           ),
         )
+        .mockResolvedValueOnce(responseWithArrayBuffer(zipBuffer))
 
-      const promise = convertPdfToMarkdown({
-        pdfBytes: PDF_BYTES.buffer,
-        fileName: 'a.pdf',
-        baseUrl: BASE_URL,
-        apiKey: API_KEY,
-      })
+      const promise = convert()
       const assertion = expect(promise).resolves.toMatchObject({
         markdown: MARKDOWN,
       })
 
       await jest.advanceTimersByTimeAsync(FORMER_REQUEST_TIMEOUT_MS + 1000)
-      resolveStart?.(responseWithText(JSON.stringify({ event_id: 'evt-slow' })))
+      resolveStart?.(responseWithText(JOIN_RESPONSE_TEXT))
       jest.useRealTimers()
       await assertion
     } finally {
@@ -564,14 +729,7 @@ describe('MinerU session circuit breaker', () => {
     mockedRequestUrl.mockRejectedValue(new Error('network down'))
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await expect(
-        convertPdfToMarkdown({
-          pdfBytes: PDF_BYTES.buffer,
-          fileName: 'a.pdf',
-          baseUrl: BASE_URL,
-          apiKey: API_KEY,
-        }),
-      ).rejects.toThrow('network down')
+      await expect(convert()).rejects.toThrow('network down')
     }
 
     expect(
@@ -582,22 +740,10 @@ describe('MinerU session circuit breaker', () => {
   it('clears prior failures after an actual conversion succeeds', async () => {
     markMinerUFailure(BASE_URL)
     markMinerUFailure(BASE_URL)
-    mockedRequestUrl
-      .mockResolvedValueOnce(
-        responseWithText(JSON.stringify({ event_id: 'evt-recovery' })),
-      )
-      .mockResolvedValueOnce(
-        responseWithText(
-          'data: {"type":"complete","output":{"data":["# recovered"]}}',
-        ),
-      )
+    const zipBuffer = await buildZip({ 'result.md': MARKDOWN })
+    mockZipConversion(fileData({}), zipBuffer)
 
-    await convertPdfToMarkdown({
-      pdfBytes: PDF_BYTES.buffer,
-      fileName: 'a.pdf',
-      baseUrl: BASE_URL,
-      apiKey: API_KEY,
-    })
+    await convert()
     markMinerUFailure(BASE_URL)
 
     expect(

@@ -24,7 +24,8 @@ const JSZip =
 /**
  * MinerU 端到端（mock requestUrl 模拟真实 gradio 会话）：
  * fs_read（FakeAdapter 假 PDF）→ readPdfViaMinerU → convertPdfViaMinerU →
- * convertPdfToMarkdown → HTTP 全链（POST call → GET event → 下载 zip）。
+ * convertPdfToMarkdown → HTTP 全链（config → upload → queue/join →
+ * queue/data SSE → 下载 zip）。
  *
  * 与单测的分工：mineruClient.test.ts 验证 gradio 协议、mineruCacheStore.test.ts
  * 验证缓存；本文件不 mock 转换链，只在 HTTP 边界（requestUrl）与 legacy
@@ -151,23 +152,51 @@ const responseWithArrayBuffer = (
   text: '',
 })
 
-/** Queues one full mock gradio conversation: POST → SSE complete → zip download. */
+/**
+ * Queues one full mock sse_v3 gradio conversation:
+ * config → upload → queue/join → queue/data SSE → zip download.
+ */
 const mockZipConversion = (): void => {
   mockedRequestUrl
+    .mockResolvedValueOnce(
+      responseWithText(
+        JSON.stringify({
+          dependencies: [{ api_name: 'convert_to_markdown_stream', id: 6 }],
+        }),
+      ),
+    )
+    .mockResolvedValueOnce(
+      responseWithText(JSON.stringify(['/tmp/gradio/x.pdf'])),
+    )
     .mockResolvedValueOnce(
       responseWithText(JSON.stringify({ event_id: 'evt-e2e-1' })),
     )
     .mockResolvedValueOnce(
       responseWithText(
         [
-          'data: {"type":"heartbeat"}',
+          'data: {"msg":"heartbeat","event_id":"evt-e2e-1"}',
           '',
-          `data: {"type":"complete","output":{"data":[${JSON.stringify({
-            path: '/tmp/x.zip',
-            url: `${BASE_URL}/gradio_api/file=zip-1`,
-            orig_name: 'x.zip',
-            meta: { _type: 'gradio.FileData' },
-          })}]}}`,
+          `data: ${JSON.stringify({
+            msg: 'process_completed',
+            event_id: 'evt-e2e-1',
+            output: {
+              data: [
+                '<div class="status">ok</div>',
+                {
+                  path: '/tmp/x.zip',
+                  url: `${BASE_URL}/gradio_api/file=zip-1`,
+                  orig_name: 'x.zip',
+                  meta: { _type: 'gradio.FileData' },
+                },
+              ],
+              error: null,
+              duration: 1,
+              visible: true,
+              title: '',
+            },
+            success: true,
+            title: '',
+          })}`,
         ].join('\n\n'),
       ),
     )
@@ -223,7 +252,7 @@ beforeEach(async () => {
 })
 
 describe('fs_read MinerU 端到端（mock requestUrl 模拟 gradio 会话）', () => {
-  it('全链转换：POST → event → zip 下载，md 进结果 + 图片 parts 进 contentParts', async () => {
+  it('全链转换：config/upload/queue-join/queue-data → zip 下载，md 进结果 + 图片 parts 进 contentParts', async () => {
     mockZipConversion()
 
     const result = await readFs({ paths: [PDF_PATH] })
@@ -253,15 +282,28 @@ describe('fs_read MinerU 端到端（mock requestUrl 模拟 gradio 会话）', (
       image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) },
     })
 
-    // 请求序列：POST call → GET event → 下载 zip，共 3 次。
-    expect(mockedRequestUrl).toHaveBeenCalledTimes(3)
-    const [post, sse, download] = mockedRequestUrl.mock.calls.map(requestParams)
-    expect(post.url).toBe(
-      `${BASE_URL}/gradio_api/call/convert_to_markdown_stream`,
+    // 请求序列：config → upload → queue/join → queue/data SSE → 下载 zip，共 5 次。
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(5)
+    const [config, upload, join, sse, download] =
+      mockedRequestUrl.mock.calls.map(requestParams)
+    expect(config.url).toBe(`${BASE_URL}/gradio_api/config`)
+    expect(config.method).toBe('GET')
+    expect(config.headers?.['Authorization']).toBe(API_KEY)
+    expect(upload.url).toBe(`${BASE_URL}/gradio_api/upload`)
+    expect(upload.method).toBe('POST')
+    expect(upload.headers?.['Authorization']).toBe(API_KEY)
+    expect(join.url).toBe(`${BASE_URL}/gradio_api/queue/join`)
+    expect(join.method).toBe('POST')
+    expect(join.headers?.['Authorization']).toBe(API_KEY)
+    const joinBody = JSON.parse(
+      typeof join.body === 'string'
+        ? join.body
+        : new TextDecoder().decode(join.body),
+    ) as { fn_index: number; session_hash: string }
+    expect(joinBody.fn_index).toBe(6)
+    expect(sse.url).toBe(
+      `${BASE_URL}/gradio_api/queue/data?session_hash=${joinBody.session_hash}`,
     )
-    expect(post.method).toBe('POST')
-    expect(post.headers?.['Authorization']).toBe(API_KEY)
-    expect(sse.url).toBe(`${BASE_URL}/gradio_api/call/evt-e2e-1`)
     expect(sse.method).toBe('GET')
     expect(download.url).toBe(`${BASE_URL}/gradio_api/file=zip-1`)
     expect(download.method).toBe('GET')
@@ -270,7 +312,7 @@ describe('fs_read MinerU 端到端（mock requestUrl 模拟 gradio 会话）', (
   it('同文件二次读：内容 hash 缓存命中，无新网络请求', async () => {
     mockZipConversion()
     const first = await readFs({ paths: [PDF_PATH] })
-    expect(mockedRequestUrl).toHaveBeenCalledTimes(3)
+    expect(mockedRequestUrl).toHaveBeenCalledTimes(5)
     const firstResults = parseSuccessResults(first)
 
     mockedRequestUrl.mockClear()

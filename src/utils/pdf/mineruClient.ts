@@ -36,11 +36,14 @@ export type MinerURawConversionResult = {
 export const MINERU_API_NAME = '/convert_to_markdown_stream'
 
 /**
- * gradio 4.x API protocol implemented here:
- *   POST {baseUrl}/gradio_api/call/{api_name}  body: multipart/form-data (pdf + params)
+ * gradio 5/6 API protocol implemented here (server protocol "sse_v3"):
+ *   GET  {baseUrl}/gradio_api/config        → dependency list; fn_index for the api
+ *   POST {baseUrl}/gradio_api/upload        body: multipart/form-data (files field)
+ *     → ["/tmp/gradio/<hash>/<file>.pdf"]   (server-side path)
+ *   POST {baseUrl}/gradio_api/queue/join    body: JSON data + fn_index + session_hash
  *     → { event_id }
- *   GET  {baseUrl}/gradio_api/call/{event_id}  → SSE stream (heartbeat/complete/error)
- *   complete: {"output":{"data":[FileData|string]}}
+ *   GET  {baseUrl}/gradio_api/queue/data?session_hash=<hash> → SSE stream
+ *     process_completed: {"output":{"data":[...]}} carries the FileData zip
  *   FileData: { path?, url?, data?, orig_name, meta: {_type:"gradio.FileData"} }
  */
 
@@ -53,32 +56,30 @@ type GradioFileData = {
 }
 
 type GradioEvent = {
-  type?: string
-  output?: { data?: unknown[] }
+  msg?: string
+  output?: { data?: unknown[]; error?: string | null }
   error?: string
   message?: string
+  success?: boolean
+  title?: string
 }
 
-/** Conversion params fixed to match the reference mineru_runner.py defaults. */
-type MinerUConversionParams = {
-  end_pages: number
-  is_ocr: boolean
-  formula_enable: boolean
-  table_enable: boolean
-  image_analysis: boolean
-  language: string
-  backend: string
-}
-
-const MINERU_CONVERSION_PARAMS: MinerUConversionParams = {
-  end_pages: 1000,
-  is_ocr: false,
-  formula_enable: true,
-  table_enable: true,
-  image_analysis: true,
-  language: 'ch (Chinese, English, Chinese Traditional)',
-  backend: 'hybrid-auto-engine',
-}
+/**
+ * Conversion param values fixed to match the reference MinerU gradio app, in
+ * the endpoint fn signature order: [max_pages, force_ocr,
+ * formula_label_hybrid, table_enable, image_analysis_enable, ocr_language,
+ * backend, server_url]. The job payload prepends the uploaded FileData.
+ */
+const MINERU_CONVERSION_PARAM_VALUES: unknown[] = [
+  1000, // max_pages
+  false, // force_ocr
+  true, // formula_label_hybrid
+  true, // table_enable
+  true, // image_analysis_enable
+  'ch (Chinese, English, Chinese Traditional)', // ocr_language
+  'hybrid-auto-engine', // backend
+  '', // server_url
+]
 
 const MINERU_IMAGE_EXTENSIONS = new Set([
   '.png',
@@ -141,38 +142,28 @@ export const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer =>
   ) as ArrayBuffer
 
 /**
- * Builds a multipart/form-data body byte-by-byte so the PDF is uploaded as raw
- * binary (a string body would be UTF-8-encoded and corrupt non-ASCII bytes).
+ * Builds the multipart/form-data upload body byte-by-byte so the PDF is sent
+ * as raw binary (a string body would be UTF-8-encoded and corrupt non-ASCII
+ * bytes). The gradio 5/6 upload endpoint expects the file under `files`.
  */
-function buildMultipartBody(
+function buildUploadBody(
   pdfBytes: Uint8Array,
   fileName: string,
   boundary: string,
 ): Uint8Array {
   const encoder = new TextEncoder()
-  const parts: Uint8Array[] = []
-  const pushText = (text: string): void => {
-    parts.push(encoder.encode(text))
-  }
   // Obsidian forbids some characters in file names but not quotes; sanitize so
   // the filename header cannot break out of the multipart structure.
   const safeName = fileName.replace(/["\r\n]/g, '_')
-
-  pushText(`--${boundary}\r\n`)
-  pushText(
-    `Content-Disposition: form-data; name="file_path"; filename="${safeName}"\r\n`,
-  )
-  pushText('Content-Type: application/pdf\r\n\r\n')
-  parts.push(pdfBytes)
-  pushText('\r\n')
-
-  for (const [key, value] of Object.entries(MINERU_CONVERSION_PARAMS)) {
-    pushText(`--${boundary}\r\n`)
-    pushText(`Content-Disposition: form-data; name="${key}"\r\n\r\n`)
-    pushText(String(value))
-    pushText('\r\n')
-  }
-  pushText(`--${boundary}--\r\n`)
+  const parts: Uint8Array[] = [
+    encoder.encode(`--${boundary}\r\n`),
+    encoder.encode(
+      `Content-Disposition: form-data; name="files"; filename="${safeName}"\r\n`,
+    ),
+    encoder.encode('Content-Type: application/pdf\r\n\r\n'),
+    pdfBytes,
+    encoder.encode(`\r\n--${boundary}--\r\n`),
+  ]
 
   const total = parts.reduce((sum, part) => sum + part.length, 0)
   const body = new Uint8Array(total)
@@ -208,22 +199,44 @@ const parseGradioEvent = (payload: string): GradioEvent | null => {
   }
 }
 
-/** Returns the last terminal (complete/error) event, throwing on error events. */
+/**
+ * Returns the last process_completed event, throwing on failed completions.
+ * The terminal error signal in the sse_v3 protocol is `success: false` with
+ * the reason in `output.error`, not a separate error event.
+ */
 function findTerminalEvent(payloads: string[]): GradioEvent {
   let terminal: GradioEvent | null = null
   for (const payload of payloads) {
     const event = parseGradioEvent(payload)
     if (!event) continue
-    if (event.type === 'complete' || event.type === 'error') terminal = event
+    if (event.msg === 'process_completed') terminal = event
   }
   if (!terminal) {
-    throw new Error('MinerU event stream ended without a complete event')
+    throw new Error('MinerU event stream ended without a completed event')
   }
-  if (terminal.type === 'error') {
-    const reason = terminal.error ?? terminal.message ?? 'unknown error'
+  if (terminal.success === false) {
+    const reason =
+      terminal.output?.error ??
+      terminal.error ??
+      terminal.message ??
+      terminal.title ??
+      'unknown error'
     throw new Error(`MinerU conversion failed: ${reason}`)
   }
   return terminal
+}
+
+/** Picks the downloadable FileData entry (the convert_result zip) from the
+ * terminal output; status/markdown strings and preview files are skipped. */
+function findFileDataEntry(data: unknown[]): GradioFileData | null {
+  for (const entry of data) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const fileData = entry as GradioFileData
+    if (typeof fileData.url === 'string' || typeof fileData.data === 'string') {
+      return fileData
+    }
+  }
+  return null
 }
 
 const basenameOf = (path: string): string => {
@@ -327,6 +340,56 @@ async function resolveFileDataBytes(
  * (markdown text plus extracted images). No caching here — see
  * `mineruCacheStore.convertPdfViaMinerU` for the cached entry point.
  */
+
+// Session-level fn_index cache per normalized endpoint; the /config fetch is
+// deduplicated across concurrent conversions and kept for the session.
+const mineruFnIndexPromises = new Map<string, Promise<number>>()
+
+const newSessionHash = (): string =>
+  `yolo-${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`
+
+/**
+ * Resolves the gradio fn index of the conversion endpoint from /config
+ * (the queue/join payload requires it; api names are not accepted there).
+ * Fails fast when the endpoint is absent from the dependency list.
+ */
+function resolveMinerUFnIndex(
+  baseUrl: string,
+  apiKey: string,
+  signal?: AbortSignal | null,
+): Promise<number> {
+  const existing = mineruFnIndexPromises.get(baseUrl)
+  if (existing) return withAbort(existing, signal)
+
+  const task = (async (): Promise<number> => {
+    const response = await requestUrl({
+      url: `${baseUrl}/gradio_api/config`,
+      method: 'GET',
+      headers: { Accept: 'application/json', ...authHeaders(apiKey) },
+      throw: true,
+    })
+    const config = JSON.parse(response.text) as {
+      dependencies?: Array<{ api_name?: string; id?: number }>
+    }
+    const dependency = (config.dependencies ?? []).find(
+      (entry) => entry.api_name === MINERU_API_NAME.slice(1),
+    )
+    if (!dependency || typeof dependency.id !== 'number') {
+      throw new Error('MinerU config did not expose the conversion endpoint')
+    }
+    return dependency.id
+  })()
+
+  mineruFnIndexPromises.set(baseUrl, task)
+  // A failed discovery must not poison the session: retried on the next call.
+  task.catch(() => {
+    if (mineruFnIndexPromises.get(baseUrl) === task) {
+      mineruFnIndexPromises.delete(baseUrl)
+    }
+  })
+  return withAbort(task, signal)
+}
+
 async function runMinerUConversion(input: {
   pdfBytes: ArrayBuffer
   fileName: string
@@ -341,21 +404,61 @@ async function runMinerUConversion(input: {
   if (!normalizedBaseUrl) {
     throw new Error('MinerU baseUrl is empty')
   }
-  const boundary = `----yolo-mineru-${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`
-  const multipart = buildMultipartBody(
-    new Uint8Array(pdfBytes),
-    fileName,
-    boundary,
-  )
 
-  // ① POST the PDF: { event_id }
-  const startResponse = await withAbort(
+  // ① Resolve the conversion endpoint's fn index (cached per session).
+  const fnIndex = await resolveMinerUFnIndex(normalizedBaseUrl, apiKey, signal)
+  throwIfAborted(signal)
+
+  // ② Upload the PDF; the server returns the path used in the job payload.
+  const boundary = `----yolo-mineru-${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`
+  const uploadResponse = await withAbort(
     requestUrl({
-      url: `${normalizedBaseUrl}/gradio_api/call/${MINERU_API_NAME.replace(/^\//, '')}`,
+      url: `${normalizedBaseUrl}/gradio_api/upload`,
       method: 'POST',
       contentType: `multipart/form-data; boundary=${boundary}`,
       headers: { Accept: 'application/json', ...authHeaders(apiKey) },
-      body: toArrayBuffer(multipart),
+      body: toArrayBuffer(
+        buildUploadBody(new Uint8Array(pdfBytes), fileName, boundary),
+      ),
+      throw: true,
+    }),
+    signal,
+  )
+  throwIfAborted(signal)
+
+  let serverPath: string | undefined
+  try {
+    serverPath = (JSON.parse(uploadResponse.text) as string[])[0]
+  } catch {
+    serverPath = undefined
+  }
+  if (!serverPath) {
+    throw new Error(
+      `MinerU upload did not return a server file path (HTTP ${uploadResponse.status})`,
+    )
+  }
+
+  // ③ Queue the conversion job; results stream on queue/data keyed by session.
+  const sessionHash = newSessionHash()
+  const joinResponse = await withAbort(
+    requestUrl({
+      url: `${normalizedBaseUrl}/gradio_api/queue/join`,
+      method: 'POST',
+      contentType: 'application/json',
+      headers: { Accept: 'application/json', ...authHeaders(apiKey) },
+      body: JSON.stringify({
+        data: [
+          {
+            path: serverPath,
+            orig_name: fileName,
+            meta: { _type: 'gradio.FileData' },
+          },
+          ...MINERU_CONVERSION_PARAM_VALUES,
+        ],
+        event_data: null,
+        fn_index: fnIndex,
+        session_hash: sessionHash,
+      }),
       throw: true,
     }),
     signal,
@@ -364,20 +467,20 @@ async function runMinerUConversion(input: {
 
   let eventId: string | undefined
   try {
-    eventId = (JSON.parse(startResponse.text) as { event_id?: string }).event_id
+    eventId = (JSON.parse(joinResponse.text) as { event_id?: string }).event_id
   } catch {
     eventId = undefined
   }
   if (!eventId) {
     throw new Error(
-      `MinerU job start response did not include an event_id (HTTP ${startResponse.status})`,
+      `MinerU job start response did not include an event_id (HTTP ${joinResponse.status})`,
     )
   }
 
-  // ② Poll the SSE event stream until complete/error (single long-running GET).
+  // ④ Stream the SSE events until the terminal process_completed event.
   const eventResponse = await withAbort(
     requestUrl({
-      url: `${normalizedBaseUrl}/gradio_api/call/${eventId}`,
+      url: `${normalizedBaseUrl}/gradio_api/queue/data?session_hash=${sessionHash}`,
       method: 'GET',
       headers: { Accept: 'text/event-stream', ...authHeaders(apiKey) },
       throw: true,
@@ -386,16 +489,15 @@ async function runMinerUConversion(input: {
   )
   throwIfAborted(signal)
 
-  // ③ Parse the terminal event and its output.
+  // ⑤ Resolve the result FileData (the zip) from the terminal event.
   const terminal = findTerminalEvent(parseSseDataPayloads(eventResponse.text))
-  const output = terminal.output?.data?.[0]
-
-  if (typeof output === 'string') {
-    return { markdown: output, images: [] }
+  const resultFileData = findFileDataEntry(terminal.output?.data ?? [])
+  if (!resultFileData) {
+    throw new Error('MinerU conversion result contains no downloadable file')
   }
 
   const bytes = await resolveFileDataBytes(
-    output as GradioFileData,
+    resultFileData,
     normalizedBaseUrl,
     apiKey,
     signal,
@@ -433,8 +535,9 @@ export async function convertPdfToMarkdown(input: {
 
 /**
  * Connectivity probe: GET {baseUrl}/gradio_api/info and check that the
- * conversion endpoint is exposed. Any network error, non-2xx status, or a
- * missing endpoint resolves to false.
+ * conversion endpoint is exposed with the modern (gradio 5+) schema. Any
+ * network error, non-2xx status, a missing endpoint, or a legacy gradio-4
+ * parameter shape (string labels) resolves to false.
  */
 export async function probeMinerU(
   baseUrl: string,
@@ -450,9 +553,19 @@ export async function probeMinerU(
       throw: false,
     })
     if (response.status < 200 || response.status >= 300) return false
-    // gradio 4.x exposes named endpoints with a leading slash; match the bare
-    // name so both shapes ("/convert_to_markdown_stream" and without) probe OK.
-    return response.text.includes(MINERU_API_NAME.slice(1))
+    const info = JSON.parse(response.text) as {
+      named_endpoints?: Record<string, { parameters?: unknown[] }>
+    }
+    const entry = Object.entries(info.named_endpoints ?? {}).find(
+      ([name]) => name.replace(/^\//, '') === MINERU_API_NAME.slice(1),
+    )
+    if (!entry) return false
+    // gradio 5+ describes parameters with i18n label dicts; gradio 4 uses
+    // plain strings and the legacy call protocol this client does not speak.
+    const firstParameter = (entry[1].parameters ?? [])[0] as
+      | { label?: unknown }
+      | undefined
+    return typeof firstParameter?.label === 'object'
   } catch {
     return false
   }
@@ -514,9 +627,11 @@ export function markMinerUSuccess(baseUrl: string): void {
   mineruBreakerStates.delete(normalizeMinerUEndpoint(baseUrl))
 }
 
-/** Clears the failure counter and the session break (call at session start). */
+/** Clears the failure counter, the session break, and the fn_index cache
+ * (call at session start). */
 export function resetMinerUSessionState(): void {
   mineruBreakerStates.clear()
+  mineruFnIndexPromises.clear()
 }
 
 const MARKDOWN_IMAGE_REF_RE = /!\[([^\]]*)\]\(([^)]+)\)/g
