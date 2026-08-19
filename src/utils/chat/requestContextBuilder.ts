@@ -411,15 +411,16 @@ type MemoryRequestContext = Readonly<{
 
 /**
  * Status of the SQLite-backed salience snapshot for the stable memory
- * section. `sqlite` kind (with or without salience rows) is the only state
- * that admits stable memory into the frozen system snapshot; `unavailable`
- * means no stable memory section at all and the dynamic path owns the
- * bounded markdown fallback.
+ * section. `sqlite` kind is the only state that admits stable memory into
+ * the frozen system snapshot (always with its salience rows); `unavailable`
+ * — no runtime wired, non-sqlite capability, or a query failure — means no
+ * stable memory section at all and the dynamic path owns the bounded
+ * markdown fallback.
  */
 type MemorySalienceResult =
   | {
       kind: 'sqlite'
-      salienceByMemoryKey: Record<string, number> | undefined
+      salienceByMemoryKey: Record<string, number>
     }
   | { kind: 'unavailable' }
 
@@ -3207,15 +3208,18 @@ ${previewLines.join('\n')}`)
   /**
    * Status snapshot of the SQLite salience index for the stable memory block.
    * `sqlite` kind (with salience rows when the index answers) is the only
-   * state that admits stable memory into the frozen system snapshot; without
-   * an index runtime entirely the legacy markdown render keeps its snapshot
-   * role, while a wired-but-unavailable store suppresses stable memory (C4).
+   * state that admits stable memory into the frozen system snapshot; any
+   * other state — no runtime wired, non-sqlite capability, or a query
+   * failure — suppresses stable memory and the bounded markdown fallback
+   * flows through the current request's dynamic user block only (C4). A
+   * builder without an index runtime has no SQLite, so it must never put
+   * markdown memory into the frozen snapshot.
    */
   private async loadMemorySalience(
     assistantId: string | undefined,
   ): Promise<MemorySalienceResult> {
     if (!this.memoryIndexRuntime) {
-      return { kind: 'sqlite', salienceByMemoryKey: undefined }
+      return { kind: 'unavailable' }
     }
     try {
       const store = await this.memoryIndexRuntime.getStore()

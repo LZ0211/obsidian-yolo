@@ -11,6 +11,7 @@ import { RequestContextBuilder } from '../../utils/chat/requestContextBuilder'
 import { loadMemorySourceSnapshot, memoryAdd } from './memoryManager'
 import { MemoryExtractionQueue } from './memoryExtractionQueue'
 import { openMemoryIndexStore } from './memoryIndex'
+import { cutForSearchWithJieba } from './memoryJiebaTokenizer'
 import {
   getMemoryIndexRuntimeHandle,
   closeMemoryIndexRuntime,
@@ -864,6 +865,52 @@ describe('memory wiring integration (extract → persist → reconcile → recal
         expect(messages).toEqual(inputCopy)
       } finally {
         embeddingFactory.mockImplementation(defaultFactory)
+      }
+    })
+
+    it('omits the dynamic block entirely when indexed recall fails at execution time — no markdown-fallback substitution (C4)', async () => {
+      const handle = await reconcileTwoEntries()
+      const jiebaMock = cutForSearchWithJieba as jest.Mock
+      const defaultJieba = jiebaMock.getMockImplementation()
+      const messages = [userMessageWithText('召回故障')]
+      const inputCopy = structuredClone(messages)
+
+      try {
+        // A failure inside the recall execution itself (jieba tokenization),
+        // as opposed to index unavailability: spec 4.2 says this must omit
+        // the dynamic block only — no fallback substitution.
+        jiebaMock.mockImplementation(async (text: string) => {
+          if (text.includes('召回故障')) {
+            throw new Error('jieba tokenizer down')
+          }
+          return defaultJieba?.(text)
+        })
+
+        const builder = new RequestContextBuilder(app, settings as never, {
+          memoryIndexRuntime: handle,
+          systemPromptSnapshotStore: new SystemPromptSnapshotStore(),
+        })
+        const requestMessages = await builder.generateRequestMessages({
+          messages,
+          model,
+          conversationId: 'conv-c4-recall-failure',
+          systemPromptSnapshotMode: 'create',
+        })
+
+        // Stable memory stays in the system snapshot.
+        const systemContent = getSystemContent(requestMessages)
+        expect(systemContent).toContain('<global>')
+        expect(systemContent).toContain('用户偏好极简风格的设计')
+        expect(systemContent).not.toContain('<recalled_memory')
+        // The dynamic block is omitted entirely: neither the indexed recall
+        // nor the bounded markdown fallback reaches the user message.
+        const userContent = getLastUserContent(requestMessages)
+        expect(userContent).toContain('召回故障')
+        expect(userContent).not.toContain('<recalled_memory')
+        expect(userContent).not.toContain('markdown-fallback')
+        expect(messages).toEqual(inputCopy)
+      } finally {
+        jiebaMock.mockImplementation(defaultJieba)
       }
     })
 
