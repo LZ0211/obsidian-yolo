@@ -1,6 +1,9 @@
 import { Platform, type TFile } from 'obsidian'
 
-import { buildPdfPageImageCacheKey } from '../../../database/json/chat/imageCacheStore'
+import {
+  buildImageCacheKey,
+  buildPdfPageImageCacheKey,
+} from '../../../database/json/chat/imageCacheStore'
 import type { ContentPart } from '../../../types/llm/request'
 import type { McpTool } from '../../../types/mcp.types'
 import {
@@ -10,7 +13,11 @@ import {
 import { uint8ArrayToBase64 } from '../../../utils/base64'
 import { collectWikilinkPaths } from '../../../utils/llm/annotate-wikilinks'
 import { extractMarkdownImages } from '../../../utils/llm/extract-markdown-images'
-import { tFileToImageDataUrl } from '../../../utils/llm/image'
+import {
+  isImageTFile,
+  tFileToImageDataUrl,
+  tFileToImageDataUrlWithCompression,
+} from '../../../utils/llm/image'
 import {
   chatModelSupportsPdf,
   chatModelSupportsVision,
@@ -321,6 +328,11 @@ export const fsReadDefinition = defineTool({
     const chatModelAcceptsPdf = activeChatModel
       ? chatModelSupportsPdf(activeChatModel)
       : false
+    // User-level master switch for image extraction (PDF render branch and
+    // plain image files). Declared here because both the PDF block and the
+    // image-file branch consume it.
+    const imageReadingEnabled =
+      settings?.chatOptions?.imageReadingEnabled ?? true
 
     const appendFullMinerUResult = async ({
       file,
@@ -598,8 +610,6 @@ export const fsReadDefinition = defineTool({
         //     'image'   → image if image-read setting enabled, else text
         //   ── text-only ──
         //     all paths → text (no other modality is supported)
-        const imageReadingEnabled =
-          settings?.chatOptions?.imageReadingEnabled ?? true
         const canUseImage = chatModelAcceptsImages && imageReadingEnabled
         const resolvedModality: 'pdf' | 'image' | 'text' = (() => {
           if (chatModelAcceptsPdf) {
@@ -1095,6 +1105,110 @@ export const fsReadDefinition = defineTool({
                   : JSON.stringify(error),
           })
         }
+        continue
+      }
+
+      // ── Plain image file branch ──────────────────────────────────────
+      // png/jpg/jpeg/gif/webp have no text worth reading — binary bytes
+      // decoded as UTF-8 are garbage. Handled automatically with no
+      // modality argument: a vision-capable model gets the file itself as an
+      // image_url attachment (mirrors the PDF render branch's shape),
+      // compressed first when it exceeds the image threshold. Any other
+      // model gets a text description from a configured vision engine (see
+      // `src/core/ai/visionFallback.ts`) or, when no engine succeeds, an
+      // explicit error rather than meaningless garbage text. The `modality`
+      // argument is intentionally ignored here. Lives before the generic
+      // size check because oversized images are compressed, not rejected.
+      if (isImageTFile(file)) {
+        const readImage = () =>
+          tFileToImageDataUrlWithCompression(app, file, {
+            quality: settings?.chatOptions?.imageCompressionQuality ?? 85,
+            cache: { enabled: true, settings },
+          })
+
+        if (!chatModelAcceptsImages || !imageReadingEnabled) {
+          const fallbackEnabled =
+            settings?.chatOptions?.imageReadingFallbackEnabled ?? true
+          // Dynamically imported: `src/core/ai/visionFallback.ts` pulls in
+          // `single-turn.ts`, which statically imports this file's module
+          // graph (via `localFileTools.ts`); a static import would cycle.
+          if (fallbackEnabled && settings) {
+            try {
+              const { describeImageViaVisionEngine } = await import(
+                '../../ai/visionFallback'
+              )
+              const { url: dataUrl, compressed } = await readImage()
+              const { modelId, description } =
+                await describeImageViaVisionEngine({
+                  settings,
+                  dataUrl,
+                  chatModelId,
+                  conversationMessages: ctx.conversationMessages,
+                  signal,
+                })
+              const compressedNotice = compressed
+                ? ' 原图超过 2MB，已压缩。'
+                : ''
+              results.push({
+                path,
+                ok: true,
+                totalLines: 1,
+                returnedRange: { startLine: 1, endLine: 1 },
+                hasMoreBelow: false,
+                nextStartLine: null,
+                content: description,
+                warning: subpathWarning
+                  ? `图片已由视觉模型 ${modelId} 描述（当前模型不支持图像输入）。${compressedNotice} ${subpathWarning}`
+                  : `图片已由视觉模型 ${modelId} 描述（当前模型不支持图像输入）。${compressedNotice}`,
+                ...wikilinkResultFields,
+              })
+              continue
+            } catch {
+              // Engine fallback failed; report the standard error below.
+            }
+          }
+          results.push({
+            path,
+            ok: false,
+            error: `"${path}" 是图片文件，当前模型不支持图像输入，无法读取。可派遣具有识图能力的子智能体读取。`,
+          })
+          continue
+        }
+
+        const { url, compressed } = await readImage()
+        const compressionWarning = compressed
+          ? subpathWarning
+            ? `图片超过 2MB，已压缩后发送。 ${subpathWarning}`
+            : '图片超过 2MB，已压缩后发送。'
+          : subpathWarning
+        results.push({
+          path,
+          ok: true,
+          totalLines: 1,
+          returnedRange: { startLine: 1, endLine: 1 },
+          hasMoreBelow: false,
+          nextStartLine: null,
+          content: '',
+          effectiveModality: 'image',
+          ...(compressionWarning ? { warning: compressionWarning } : {}),
+          ...wikilinkResultFields,
+        })
+        perFileAttachmentParts.push({
+          path,
+          parts: [
+            {
+              type: 'image_url',
+              image_url: {
+                url,
+                cacheKey: buildImageCacheKey(
+                  file.path,
+                  file.stat.mtime,
+                  file.stat.size,
+                ),
+              },
+            },
+          ],
+        })
         continue
       }
 

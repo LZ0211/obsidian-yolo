@@ -71,18 +71,30 @@ jest.mock('../../utils/pdf/extractPdfText', () => ({
 
 jest.mock('../../utils/llm/image', () => ({
   ...jest.requireActual('../../utils/llm/image'),
-  tFileToImageDataUrl: jest.fn(async () => 'data:image/png;base64,fake'),
+  tFileToImageDataUrlWithCompression: jest.fn(async () => ({
+    url: 'data:image/png;base64,fake',
+    compressed: false,
+  })),
+}))
+
+// Vision-engine fallback for the fs_read plain-image branch (text-only
+// models). fs_read loads this module dynamically; the mock intercepts both.
+jest.mock('../ai/visionFallback', () => ({
+  describeImageViaVisionEngine: jest.fn(),
 }))
 
 import { App, TFile, TFolder } from 'obsidian'
 
+import { buildImageCacheKey } from '../../database/json/chat/imageCacheStore'
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import type { WorkspaceAccessPolicy } from '../../types/assistant.types'
+import type { ContentPart } from '../../types/llm/request'
 import {
   ToolCallResponseStatus,
   createCompleteToolCallArguments,
 } from '../../types/tool-call.types'
 import { editUndoSnapshotStore } from '../../utils/chat/editUndoSnapshotStore'
+import { tFileToImageDataUrlWithCompression } from '../../utils/llm/image'
 import { extractPdfText } from '../../utils/pdf/extractPdfText'
 import { convertPdfViaMinerU } from '../../utils/pdf/mineruCacheStore'
 import {
@@ -112,6 +124,7 @@ import {
   resetParentSubagentTimeoutSettingsGetter,
 } from '../agent/subagent/pending-timeout-registry'
 import { runSubagent } from '../agent/subagent/runner'
+import { describeImageViaVisionEngine } from '../ai/visionFallback'
 import { findWebviewHandleByPageId } from '../browser/activeWebviewProbe'
 import { readActiveWebviewHtml } from '../browser/activeWebviewReader'
 import type {
@@ -121,6 +134,7 @@ import type {
 import { setRuntimeComponentAcquirerForTests } from '../runtime-components/runtimeComponentAccess'
 import { searchFilesByMetadataDsl } from '../search/metadataSearch'
 import { executeBuiltinTool } from '../tools/dispatcher'
+import { buildFsReadModalitySchema } from '../tools/fs_read/schema-helpers'
 import type { LocalToolCallResult, ToolContext } from '../tools/types'
 
 import { buildJsSandboxToolDescription } from './jsSandboxSettings'
@@ -2841,6 +2855,290 @@ describe('fs_read wikilink resolution', () => {
     expect(results[0]).toEqual(
       expect.objectContaining({ path: 'Skills/pkg/reference.md', ok: true }),
     )
+  })
+})
+
+describe('fs_read image file reading', () => {
+  const makeImageFile = (
+    path: string,
+    size = 500,
+    mtime = 1000,
+    extension = 'png',
+  ): TFile =>
+    Object.assign(new TFile(), {
+      path,
+      name: path.split('/').pop(),
+      extension,
+      stat: { size, mtime },
+    })
+
+  const makeImageReadApp = (file: TFile, textContent = 'garbage-text'): App =>
+    ({
+      vault: {
+        getFileByPath: jest.fn().mockReturnValue(file),
+        read: jest.fn().mockResolvedValue(textContent),
+      },
+      metadataCache: {
+        getFirstLinkpathDest: jest.fn().mockReturnValue(null),
+        getFileCache: jest.fn().mockReturnValue(null),
+      },
+    }) as unknown as App
+
+  const buildModelSettings = (
+    modalities: string[],
+    chatOptions: Record<string, unknown> = {},
+  ): YoloSettings =>
+    ({
+      chatModels: [
+        {
+          id: 'test/model',
+          providerId: 'test',
+          model: 'model',
+          modalities,
+        },
+      ],
+      chatOptions,
+    }) as unknown as YoloSettings
+
+  beforeEach(() => {
+    ;(tFileToImageDataUrlWithCompression as jest.Mock).mockReset()
+    ;(tFileToImageDataUrlWithCompression as jest.Mock).mockResolvedValue({
+      url: 'data:image/png;base64,fake',
+      compressed: false,
+    })
+    ;(describeImageViaVisionEngine as jest.Mock).mockReset()
+    // Default: no engine available, so the fallback path fails over to the
+    // error + subagent suggestion. Individual tests override this.
+    ;(describeImageViaVisionEngine as jest.Mock).mockRejectedValue(
+      new Error('所有视觉引擎均失败'),
+    )
+  })
+
+  it('returns a vision model an image_url attachment for a plain image file', async () => {
+    const file = makeImageFile('Pics/Diagram.png')
+    const app = makeImageReadApp(file)
+
+    const result = await callLocalFileTool({
+      app,
+      settings: buildModelSettings(['text', 'vision']),
+      chatModelId: 'test/model',
+      toolName: 'fs_read',
+      args: { paths: ['Pics/Diagram.png'] },
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    const { results } = JSON.parse((result as { text: string }).text) as {
+      results: Array<Record<string, unknown>>
+    }
+    expect(results).toEqual([
+      expect.objectContaining({
+        path: 'Pics/Diagram.png',
+        ok: true,
+        content: '',
+        totalLines: 1,
+        effectiveModality: 'image',
+      }),
+    ])
+    expect((result as { contentParts?: ContentPart[] }).contentParts).toEqual([
+      {
+        type: 'image_url',
+        image_url: {
+          url: 'data:image/png;base64,fake',
+          cacheKey: buildImageCacheKey('Pics/Diagram.png', 1000, 500),
+        },
+      },
+    ])
+    expect(tFileToImageDataUrlWithCompression).toHaveBeenCalled()
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Jest mock function accessed for assertion
+    expect(app.vault.read).not.toHaveBeenCalled()
+  })
+
+  it('accepts an oversized image, compresses it, and warns the model', async () => {
+    const file = makeImageFile('Pics/big.png', 3 * 1024 * 1024)
+    const app = makeImageReadApp(file)
+    ;(tFileToImageDataUrlWithCompression as jest.Mock).mockResolvedValue({
+      url: 'data:image/jpeg;base64,compressed',
+      compressed: true,
+    })
+
+    const result = await callLocalFileTool({
+      app,
+      settings: buildModelSettings(['text', 'vision']),
+      chatModelId: 'test/model',
+      toolName: 'fs_read',
+      args: { paths: ['Pics/big.png'] },
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    const { results } = JSON.parse((result as { text: string }).text) as {
+      results: Array<Record<string, unknown>>
+    }
+    expect(results[0]).toEqual(
+      expect.objectContaining({
+        path: 'Pics/big.png',
+        ok: true,
+        content: '',
+        effectiveModality: 'image',
+      }),
+    )
+    expect(results[0]?.warning).toMatch(/已压缩/)
+    expect((result as { contentParts?: ContentPart[] }).contentParts).toEqual([
+      {
+        type: 'image_url',
+        image_url: {
+          url: 'data:image/jpeg;base64,compressed',
+          cacheKey: buildImageCacheKey('Pics/big.png', 1000, 3 * 1024 * 1024),
+        },
+      },
+    ])
+    expect(tFileToImageDataUrlWithCompression).toHaveBeenCalledWith(
+      expect.anything(),
+      file,
+      expect.objectContaining({
+        quality: 85,
+        cache: expect.objectContaining({ enabled: true }),
+      }),
+    )
+  })
+
+  it('ignores an explicit text modality and still sends the image to a vision model', async () => {
+    const file = makeImageFile('Pics/Diagram.png')
+    const app = makeImageReadApp(file, 'binary-garbage')
+
+    const result = await callLocalFileTool({
+      app,
+      settings: buildModelSettings(['text', 'vision']),
+      chatModelId: 'test/model',
+      toolName: 'fs_read',
+      args: { paths: ['Pics/Diagram.png'], modality: 'text' },
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    const { results } = JSON.parse((result as { text: string }).text) as {
+      results: Array<Record<string, unknown>>
+    }
+    expect(results[0]).toEqual(
+      expect.objectContaining({
+        path: 'Pics/Diagram.png',
+        ok: true,
+        content: '',
+        effectiveModality: 'image',
+      }),
+    )
+    expect((result as { contentParts?: ContentPart[] }).contentParts).toEqual([
+      {
+        type: 'image_url',
+        image_url: {
+          url: 'data:image/png;base64,fake',
+          cacheKey: buildImageCacheKey('Pics/Diagram.png', 1000, 500),
+        },
+      },
+    ])
+    expect(tFileToImageDataUrlWithCompression).toHaveBeenCalled()
+  })
+
+  it('returns an error with a subagent suggestion when the model cannot see images and no vision engine succeeds', async () => {
+    const file = makeImageFile('Pics/Diagram.png')
+    const app = makeImageReadApp(file, 'binary-garbage')
+
+    const result = await callLocalFileTool({
+      app,
+      settings: buildModelSettings(['text']),
+      chatModelId: 'test/model',
+      toolName: 'fs_read',
+      args: { paths: ['Pics/Diagram.png'] },
+    })
+
+    const { results } = JSON.parse((result as { text: string }).text) as {
+      results: Array<Record<string, unknown>>
+    }
+    expect(results[0]).toEqual(
+      expect.objectContaining({
+        path: 'Pics/Diagram.png',
+        ok: false,
+      }),
+    )
+    expect(results[0]?.error).toMatch(/不支持图像输入/)
+    expect(results[0]?.error).toMatch(/子智能体/)
+    expect(describeImageViaVisionEngine).toHaveBeenCalled()
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Jest mock function accessed for assertion
+    expect(app.vault.read).not.toHaveBeenCalled()
+  })
+
+  it('falls back to a vision engine and returns its description when the model cannot see images', async () => {
+    const file = makeImageFile('Pics/Diagram.png')
+    const app = makeImageReadApp(file, 'binary-garbage')
+    ;(describeImageViaVisionEngine as jest.Mock).mockResolvedValue({
+      modelId: 'qwen-vl',
+      description: '图中有红色报错横幅。',
+    })
+
+    const result = await callLocalFileTool({
+      app,
+      settings: buildModelSettings(['text']),
+      chatModelId: 'test/model',
+      toolName: 'fs_read',
+      args: { paths: ['Pics/Diagram.png'] },
+    })
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    const { results } = JSON.parse((result as { text: string }).text) as {
+      results: Array<Record<string, unknown>>
+    }
+    expect(results[0]).toEqual(
+      expect.objectContaining({
+        path: 'Pics/Diagram.png',
+        ok: true,
+        content: '图中有红色报错横幅。',
+      }),
+    )
+    expect(results[0]?.warning).toMatch(/已由视觉模型 qwen-vl 描述/)
+    expect(describeImageViaVisionEngine).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dataUrl: 'data:image/png;base64,fake',
+        chatModelId: 'test/model',
+      }),
+    )
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Jest mock function accessed for assertion
+    expect(app.vault.read).not.toHaveBeenCalled()
+  })
+
+  it('skips the vision engine fallback entirely when disabled', async () => {
+    const file = makeImageFile('Pics/Diagram.png')
+    const app = makeImageReadApp(file, 'binary-garbage')
+
+    const result = await callLocalFileTool({
+      app,
+      settings: buildModelSettings(['text'], {
+        imageReadingFallbackEnabled: false,
+      }),
+      chatModelId: 'test/model',
+      toolName: 'fs_read',
+      args: { paths: ['Pics/Diagram.png'] },
+    })
+
+    const { results } = JSON.parse((result as { text: string }).text) as {
+      results: Array<Record<string, unknown>>
+    }
+    expect(results[0]?.ok).toBe(false)
+    expect(results[0]?.error).toMatch(/子智能体/)
+    expect(describeImageViaVisionEngine).not.toHaveBeenCalled()
+  })
+
+  it('keeps modality as a PDF-only override while image files are automatic', () => {
+    expect(buildFsReadModalitySchema(['text', 'vision', 'pdf'])?.enum).toEqual([
+      'text',
+      'pdf',
+    ])
+    expect(buildFsReadModalitySchema(['text', 'vision'])?.enum).toEqual([
+      'text',
+      'image',
+    ])
+    expect(buildFsReadModalitySchema(['text', 'pdf'])?.enum).toEqual([
+      'text',
+      'pdf',
+    ])
+    expect(buildFsReadModalitySchema(['text'])).toBeUndefined()
   })
 })
 

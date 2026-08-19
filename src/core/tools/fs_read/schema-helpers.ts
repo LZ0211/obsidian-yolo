@@ -146,6 +146,11 @@ export const sliceLinesForFsReadOperation = (
  * Build the modality enum + description fragment exposed to the current chat
  * model in fs_read's schema.
  *
+ * The field is a **PDF-only override**: plain image files
+ * (png/jpg/jpeg/gif/webp) are read automatically — a vision-capable model
+ * gets the file as an image_url attachment with no argument, any other model
+ * gets an explicit error — so no enum value is needed for them.
+ *
  *   - PDF-capable model      → ['text', 'pdf']
  *   - vision (non-PDF) model → ['text', 'image']
  *   - text-only model        → undefined (field is omitted from schema)
@@ -172,7 +177,7 @@ export const buildFsReadModalitySchema = (
       type: 'string',
       enum: ['text', 'image', 'pdf'],
       description:
-        'PDF-only modality override. Omit for the default per active model. text = plain text extraction. image = render pages as images (only available on vision-capable, non-PDF-capable models). pdf = native PDF input (only available on PDF-capable models). Ignored for non-PDF files.',
+        'PDF-only modality override. Plain image files (.png/.jpg/.jpeg/.gif/.webp) are always read as images automatically when the active model supports vision. Omit for the default per active model. text = plain text extraction. image = render pages as images (only available on vision-capable, non-PDF-capable models). pdf = native PDF input (only available on PDF-capable models).',
     }
   }
 
@@ -181,7 +186,7 @@ export const buildFsReadModalitySchema = (
       type: 'string',
       enum: ['text', 'pdf'],
       description:
-        'PDF-only modality override. Omit for default (= "pdf"). "text" = plain text extraction (cheap and fast; pick this only when the user explicitly asks for text-only). "pdf" = native PDF input (highest fidelity). Ignored for non-PDF files.',
+        'PDF-only modality override. Plain image files (.png/.jpg/.jpeg/.gif/.webp) are always read as images automatically. Omit for default (= "pdf"). "text" = plain text extraction (cheap and fast; pick this only when the user explicitly asks for text-only). "pdf" = native PDF input (highest fidelity).',
     }
   }
 
@@ -190,7 +195,7 @@ export const buildFsReadModalitySchema = (
       type: 'string',
       enum: ['text', 'image'],
       description:
-        'PDF-only modality override. Omit for default (= "text"). "text" = plain text extraction. "image" = render the requested pages as images — opt in ONLY when text is insufficient (formulas, figures, scans, complex layout); avoid for large page ranges. Ignored for non-PDF files.',
+        'PDF-only modality override. Plain image files (.png/.jpg/.jpeg/.gif/.webp) are always read as images automatically. Omit for default (= "text"). "text" = plain text extraction. "image" = render the requested pages as images — opt in ONLY when text is insufficient (formulas, figures, scans, complex layout); avoid for large page ranges.',
     }
   }
 
