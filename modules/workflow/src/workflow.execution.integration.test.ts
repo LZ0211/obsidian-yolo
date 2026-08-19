@@ -18,6 +18,10 @@ type WorkflowModuleViewProps = Readonly<{
   viewId: string
   editor: WorkflowEditorModel
   coordinator: WorkflowRunCoordinatorWithNodeTests
+  runs: Readonly<{
+    subscribe(listener: () => void): () => void
+    getSnapshot(): Readonly<Record<string, WorkflowRunSnapshot>>
+  }>
 }>
 
 type RegisteredView = Readonly<{
@@ -117,6 +121,51 @@ describe('workflow execution lifecycle through the module', () => {
     expect(host.openView).toHaveBeenCalledWith({
       state: { path: 'demo/WORKFLOW.md' },
     })
+
+    // A view opened after activation already sees the recovered run through
+    // the shared module-level run selection layer: Continue is reachable
+    // instead of the view showing `run === null`.
+    const element = registeredView(host).render(createViewContext('view-1'))
+    expect(element.props.runs.getSnapshot()['demo/WORKFLOW.md']?.status).toBe(
+      'interrupted',
+    )
+  })
+
+  it('shares one run selection layer across views and reflects later publishes', async () => {
+    const host = new ExecutionHost()
+    seedWorkflow(host)
+    await activateModule(host)
+
+    const view = registeredView(host)
+    const firstElement = view.render(createViewContext('view-1'))
+    const secondElement = view.render(createViewContext('view-2'))
+    const firstRuns = firstElement.props.runs
+    const secondRuns = secondElement.props.runs
+    // One module-level selection layer, not one per view.
+    expect(firstRuns).toBe(secondRuns)
+    expect(firstRuns.getSnapshot()).toEqual({})
+
+    const { coordinator, editor } = firstElement.props
+    await editor.load('demo/WORKFLOW.md')
+    const bundle = editor.getSnapshot().bundle
+    expect(bundle).not.toBeNull()
+    const started = await coordinator.start({
+      workflowPath: 'demo/WORKFLOW.md',
+      bundle: bundle!,
+      modelSnapshot: host.modelSnapshot,
+      input: { topic: 'integration' },
+    })
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await terminalStoredRun(host.store, 'demo/WORKFLOW.md')
+
+    // Both views observe the terminal snapshot through the shared layer.
+    expect(firstRuns.getSnapshot()['demo/WORKFLOW.md']?.status).toBe(
+      'succeeded',
+    )
+    expect(secondRuns.getSnapshot()['demo/WORKFLOW.md']?.status).toBe(
+      'succeeded',
+    )
   })
 
   it('keeps a full run running when the view that started it is disposed', async () => {

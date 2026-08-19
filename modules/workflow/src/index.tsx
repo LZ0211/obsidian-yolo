@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  useSyncExternalStore,
-} from 'react'
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 
 import { createWorkflowRepository } from './domain/workflow-repository'
 import { createWorkflowChatTools } from './domain/workflow-tools'
@@ -42,29 +36,48 @@ type BackgroundActivity = Parameters<
 /**
  * The view-facing selection layer over Coordinator publishes. Snapshots are
  * keyed by Workflow path so a view can select the current Workflow's run
- * without copying run state into React local state.
+ * without copying run state into React local state. One module-level layer is
+ * created before `initialize()` and passed to every view, so recovered runs
+ * publish into the layer and all views observe the same run.
  */
 type RunSnapshotIndex = Readonly<{
   subscribe(listener: () => void): () => void
   getSnapshot(): Readonly<Record<string, WorkflowRunSnapshot>>
 }>
 
+/**
+ * The layer subscribes to the Coordinator eagerly at creation, so publishes
+ * that happen before any view exists (recovery during `initialize()`) still
+ * land in the layer. Views register listeners through the returned
+ * `subscribe`; every publish notifies all of them.
+ */
 function createRunSnapshotIndex(
   coordinator: WorkflowRunCoordinatorWithNodeTests,
 ): RunSnapshotIndex {
   let snapshots: Readonly<Record<string, WorkflowRunSnapshot>> = Object.freeze(
     {},
   )
-  const subscribe = (listener: () => void): (() => void) =>
-    coordinator.subscribe((snapshot) => {
-      snapshots = Object.freeze({
-        ...snapshots,
-        [snapshot.workflowPath]: snapshot,
-      })
-      listener()
+  const listeners = new Set<() => void>()
+  coordinator.subscribe((snapshot) => {
+    snapshots = Object.freeze({
+      ...snapshots,
+      [snapshot.workflowPath]: snapshot,
     })
+    for (const listener of [...listeners]) {
+      try {
+        listener()
+      } catch {
+        // A subscriber failure must not corrupt the run selection layer.
+      }
+    }
+  })
   return Object.freeze({
-    subscribe,
+    subscribe: (listener: () => void): (() => void) => {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
     getSnapshot: () => snapshots,
   })
 }
@@ -153,6 +166,10 @@ yolo.registerModule({
       },
     })
     const coordinator = createWorkflowRunCoordinator({ executor, store })
+    // One module-level run selection layer shared by every view, created
+    // before initialize() so recovery publishes land in the layer and a view
+    // opened after activation already sees the recovered run.
+    const runs = createRunSnapshotIndex(coordinator)
     coordinator.subscribe((snapshot) => {
       switch (snapshot.status) {
         case 'succeeded':
@@ -209,6 +226,7 @@ yolo.registerModule({
           viewId={context.id}
           editor={getEditor(context)}
           coordinator={coordinator}
+          runs={runs}
           getCopy={getCopy}
           getLocaleSnapshot={host.i18n.getSnapshot}
           subscribeLocale={host.i18n.subscribe}
@@ -260,6 +278,7 @@ function WorkflowModuleView({
   viewId,
   editor,
   coordinator,
+  runs,
   getCopy,
   getLocaleSnapshot,
   subscribeLocale,
@@ -274,6 +293,7 @@ function WorkflowModuleView({
   viewId: string
   editor: ReturnType<typeof createWorkflowEditorModel>
   coordinator: WorkflowRunCoordinatorWithNodeTests
+  runs: RunSnapshotIndex
   getCopy(): ReturnType<typeof createWorkflowCopy>
   getLocaleSnapshot(): Readonly<{ locale: string }>
   subscribeLocale(listener: () => void): () => void
@@ -304,8 +324,7 @@ function WorkflowModuleView({
     editor.getSnapshot,
     editor.getSnapshot,
   )
-  // One run selection layer per view over the shared module Coordinator.
-  const runs = useMemo(() => createRunSnapshotIndex(coordinator), [coordinator])
+  // The module-level run selection layer shared by every view.
   const runByPath = useSyncExternalStore(
     runs.subscribe,
     runs.getSnapshot,

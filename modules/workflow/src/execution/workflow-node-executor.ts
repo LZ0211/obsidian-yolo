@@ -323,6 +323,9 @@ function createOutputSubmissionTool(
 // ---------------------------------------------------------------------------
 // Condition nodes: the model judges each active source; the gate is computed
 // deterministically and the source data is preserved as the node output.
+// This model-judged path is a contract-complete executor capability, but the
+// coordinator evaluates condition nodes locally for full runs and node tests,
+// so neither runtime path reaches it.
 // ---------------------------------------------------------------------------
 
 async function executeCondition(

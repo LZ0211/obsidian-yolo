@@ -65,7 +65,7 @@ describe('workflow module chat mode', () => {
     expect(mode.tools[1]?.requiresApproval).toBeUndefined()
   })
 
-  it('passes the shared coordinator and view id into every Studio view', async () => {
+  it('passes the shared coordinator and run selection layer into every Studio view', async () => {
     expect(moduleDefinition).not.toBeNull()
     const host = fakeWorkflowHost()
     await moduleDefinition!.activate(host as unknown as YoloModuleHostApiV1)
@@ -74,6 +74,7 @@ describe('workflow module chat mode', () => {
       render(context: unknown): ReactElement<{
         viewId: string
         coordinator: unknown
+        runs: unknown
         editor: WorkflowEditorModel
       }>
     }
@@ -84,6 +85,9 @@ describe('workflow module chat mode', () => {
     expect(secondElement.props.viewId).toBe('workflow-view-2')
     expect(firstElement.props.coordinator).toBeDefined()
     expect(firstElement.props.coordinator).toBe(secondElement.props.coordinator)
+    // One module-level run selection layer shared by every view.
+    expect(firstElement.props.runs).toBeDefined()
+    expect(firstElement.props.runs).toBe(secondElement.props.runs)
     expect(host.lifecycle.onQuiesce).toHaveBeenCalledTimes(1)
   })
 

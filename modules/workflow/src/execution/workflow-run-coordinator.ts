@@ -59,7 +59,8 @@ export type WorkflowRunCoordinatorWithNodeTests = WorkflowRunCoordinator &
 /**
  * Node id used for the single synthetic upstream value of non-condition and
  * non-merge node tests. Condition and merge tests instead use the real
- * predecessor node ids so the executor builds the same inputs as a full run.
+ * predecessor node ids so the gate and the executor build the same inputs as
+ * a full run.
  */
 const SYNTHETIC_TEST_UPSTREAM_NODE_ID = 'test-input'
 
@@ -663,13 +664,16 @@ export function createWorkflowRunCoordinator(
   }
 
   /**
-   * Runs one node through the same executor path as a full run without
+   * Runs one node through the same execution path as a full run without
    * creating a run snapshot, persisting, publishing, or executing
    * dependencies. The definition comes from the persisted run record of the
    * same workflow, so the test exercises the exact frozen definition,
    * resolved models, prompts, schema validation, and vault-write capability
-   * of the last full run. The executor result is returned directly; the
-   * signal is the view's own controller, aborted by `cancelNodeTest`.
+   * of the last full run. Condition nodes are the one exception: they are
+   * judged by the coordinator's deterministic local gate exactly like a full
+   * run, so the preview never consults the model. The executor result is
+   * returned directly; the signal is the view's own controller, aborted by
+   * `cancelNodeTest`.
    */
   const testNode = async (
     viewId: string,
@@ -705,6 +709,29 @@ export function createWorkflowRunCoordinator(
           'invalid-definition',
           `Node "${nodeId}" is not part of workflow "${workflowPath}"`,
         )
+      // Same deterministic local gate as the full-run condition branch; the
+      // executor's model-judged condition path stays out of run and testNode.
+      if (node.kind === 'condition') {
+        const sources = nodeTestUpstream(
+          node,
+          record.definition.topology,
+          input,
+        )
+        if (sources.length === 0)
+          throw new WorkflowNodeExecutionError(
+            'invalid-output',
+            `Condition node "${node.id}" requires at least one active source`,
+          )
+        try {
+          const gate = evaluateWorkflowGate(node.gateType ?? 'ifElse', sources)
+          return { value: gate.value, conditionResult: gate.conditionResult }
+        } catch (error) {
+          throw new WorkflowNodeExecutionError(
+            'invalid-output',
+            error instanceof Error ? error.message : String(error),
+          )
+        }
+      }
       const executionRequest: WorkflowNodeExecutionRequest = {
         definition: record.definition,
         node,

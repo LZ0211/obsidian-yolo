@@ -10,6 +10,7 @@ import type {
   JsonValue,
   WorkflowModelSnapshot,
   WorkflowNodeExecutionRequest,
+  WorkflowNodeExecutionResult,
   WorkflowNodeExecutor,
   WorkflowRunSnapshot,
   WorkflowRunStartInput,
@@ -906,7 +907,7 @@ describe('workflow run coordinator', () => {
     expect(await store.read('demo/WORKFLOW.md')).toEqual(record)
   })
 
-  it('uses the real predecessor node ids for condition and merge node tests', async () => {
+  it('evaluates condition node tests locally and keeps merge tests on the executor', async () => {
     const executor = new FakeExecutor()
     const { coordinator, store, input } = makeHarness({ executor })
     await coordinator.start(input)
@@ -915,15 +916,16 @@ describe('workflow run coordinator', () => {
         (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
     )
 
+    // Condition tests use the real predecessor node id as upstream but are
+    // judged by the same deterministic local gate as a full run; the executor
+    // is never involved, so the preview matches what the run will decide.
     const condition = await coordinator.testNode('view-1', {
       workflowPath: 'demo/WORKFLOW.md',
       nodeId: 'gate',
       input: 'truthy',
     })
-    expect(condition).toEqual({ value: 'test-gate' })
-    expect(executor.testCalls[0].upstream).toEqual([
-      { nodeId: 'draft', value: 'truthy' },
-    ])
+    expect(condition).toEqual({ value: 'truthy', conditionResult: true })
+    expect(executor.testCalls.length).toBe(0)
 
     // The merge has two incoming edges; sources use their real node ids in
     // the same stable edge-id order as a full run.
@@ -933,10 +935,97 @@ describe('workflow run coordinator', () => {
       input: { yes: 'y', no: 'n' },
     })
     expect(merge).toEqual({ value: 'test-merged' })
-    expect(executor.testCalls[1].upstream).toEqual([
+    expect(executor.testCalls).toHaveLength(1)
+    expect(executor.testCalls[0].upstream).toEqual([
       { nodeId: 'no', value: 'n' },
       { nodeId: 'yes', value: 'y' },
     ])
+  })
+
+  it('aligns condition node test results with the full-run gate evaluation', async () => {
+    const runAndTest = async (
+      draftOutput: JsonValue,
+    ): Promise<{
+      runConditionResult: boolean | undefined
+      testResult: WorkflowNodeExecutionResult
+    }> => {
+      const executor = new FakeExecutor()
+      executor.outputs = { draft: draftOutput }
+      const { coordinator, store, input } = makeHarness({ executor })
+      await coordinator.start(input)
+      await until(
+        async () =>
+          (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+      )
+      const record = await store.read('demo/WORKFLOW.md')
+      const testResult = await coordinator.testNode('view-1', {
+        workflowPath: 'demo/WORKFLOW.md',
+        nodeId: 'gate',
+        input: draftOutput,
+      })
+      return {
+        runConditionResult: record?.nodes.gate.conditionResult,
+        testResult,
+      }
+    }
+
+    const truthy = await runAndTest('drafted')
+    expect(truthy.runConditionResult).toBe(true)
+    expect(truthy.testResult).toEqual({
+      value: 'drafted',
+      conditionResult: true,
+    })
+
+    const falsy = await runAndTest('')
+    expect(falsy.runConditionResult).toBe(false)
+    expect(falsy.testResult).toEqual({ value: '', conditionResult: false })
+  })
+
+  it('rejects a condition node test without any active source', async () => {
+    const topology: WorkflowTopology = {
+      revision: 1,
+      nodes: [
+        {
+          id: 'in',
+          kind: 'input',
+          label: 'In',
+          stepPath: 'steps/in/STEP.md',
+          position: { x: 0, y: 0 },
+        },
+        {
+          id: 'gate',
+          kind: 'condition',
+          label: 'Gate',
+          stepPath: 'steps/gate/STEP.md',
+          position: { x: 1, y: 0 },
+          gateType: 'ifElse',
+        },
+        {
+          id: 'out',
+          kind: 'output',
+          label: 'Out',
+          stepPath: 'steps/out/STEP.md',
+          position: { x: 2, y: 0 },
+        },
+      ],
+      edges: [{ id: 'e1', source: 'in', target: 'out' }],
+    }
+    const executor = new FakeExecutor()
+    const { coordinator, store, input } = makeHarness({ executor, topology })
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+
+    await expect(
+      coordinator.testNode('view-1', {
+        workflowPath: 'demo/WORKFLOW.md',
+        nodeId: 'gate',
+        input: 'x',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-output' })
+    expect(executor.testCalls.length).toBe(0)
   })
 
   it('keeps one active node test per view and replaces it on a new test', async () => {
