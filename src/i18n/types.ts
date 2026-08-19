@@ -854,6 +854,10 @@ export type TranslationKeys = {
       imageReadingBlockTitle?: string
       imageReadingEnabled?: string
       imageReadingEnabledDesc?: string
+      imageReadingFallbackEnabled?: string
+      imageReadingFallbackEnabledDesc?: string
+      imageReadingFallbackModelIds?: string
+      imageReadingFallbackModelIdsDesc?: string
       externalImageFetchEnabled?: string
       externalImageFetchEnabledDesc?: string
       imageCompressionEnabled?: string

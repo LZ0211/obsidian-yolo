@@ -30,12 +30,12 @@ import { REASONING_LEVELS, ReasoningLevel } from '../../types/reasoning'
 import { rerankModelSchema } from '../../types/rerank-model.types'
 import { sttModelSchema } from '../../types/stt-model.types'
 import { ttsModelSchema } from '../../types/tts-model.types'
-import { DEFAULT_CHAT_QUICK_ACCESS_ENTRIES } from '../chatQuickAccess'
 import {
   DEFAULT_TOOL_RESULT_MAX_CHARS,
   MAX_TOOL_RESULT_MAX_CHARS,
   MIN_TOOL_RESULT_MAX_CHARS,
 } from '../../utils/chat/contextBudget'
+import { DEFAULT_CHAT_QUICK_ACCESS_ENTRIES } from '../chatQuickAccess'
 
 import { SETTINGS_SCHEMA_VERSION } from './migrations/version'
 
@@ -917,6 +917,11 @@ export const yoloSettingsSchema = z.object({
       imageReadingEnabled: z.boolean().optional(),
       imageCompressionEnabled: z.boolean().optional(),
       imageCompressionQuality: z.number().min(1).max(100).optional(),
+      // Vision-engine fallback: when the active chat model cannot take
+      // images, a configured vision-capable model describes the picture and
+      // the text comes back. modelIds empty = auto-discover vision models.
+      imageReadingFallbackEnabled: z.boolean().optional(),
+      imageReadingFallbackModelIds: z.array(z.string()).optional(),
       // Fetch external (http/https) image URLs referenced in Markdown
       externalImageFetchEnabled: z.boolean().optional(),
       // Include assistant reasoning in exported chat markdown
@@ -975,6 +980,8 @@ export const yoloSettingsSchema = z.object({
       imageReadingEnabled: true,
       imageCompressionEnabled: true,
       imageCompressionQuality: 85,
+      imageReadingFallbackEnabled: true,
+      imageReadingFallbackModelIds: [],
       externalImageFetchEnabled: false,
       chatExportIncludeThinking: false,
       chatExportIncludeToolCalls: false,

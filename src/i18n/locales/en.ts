@@ -1030,8 +1030,8 @@ export const en: TranslationKeys = {
         writeExcludeBadge: 'DENY WRITE',
         writeExcludeEmpty: 'No write exclusions.',
         denyDisabledHint: 'Set a workspace root first to configure deny lists.',
-        toolBypassNotice: 'Agents with terminal commands or third-party MCP tools enabled can go around this range — it is not a security boundary.',
-
+        toolBypassNotice:
+          'Agents with terminal commands or third-party MCP tools enabled can go around this range — it is not a security boundary.',
       },
       editorTabModel: 'Model',
       editorName: 'Name',
@@ -1103,6 +1103,12 @@ export const en: TranslationKeys = {
       imageReadingEnabled: 'Image reading',
       imageReadingEnabledDesc:
         'Automatically extract embedded images when reading Markdown files, sending them to the model as multimodal content.',
+      imageReadingFallbackEnabled: 'Image reading fallback',
+      imageReadingFallbackEnabledDesc:
+        'When the active model cannot accept images, describe the picture with a configured vision-capable model and return the text to the model.',
+      imageReadingFallbackModelIds: 'Fallback vision models',
+      imageReadingFallbackModelIdsDesc:
+        'Vision models used as the fallback, in priority order. Leave empty to auto-use every enabled vision model.',
       externalImageFetchEnabled: 'Fetch external image URLs',
       externalImageFetchEnabledDesc:
         'Also fetch http(s) image URLs referenced in Markdown (image hosts, CDNs). Disabled by default — enabling it will send outbound requests to third-party hosts. Fetches time out after 5s and skip images larger than 10MB.',
@@ -1457,18 +1463,23 @@ export const en: TranslationKeys = {
         title: 'CLI Runtime MCP Sharing',
         desc: 'When enabled, the YOLO local MCP server is shared with CLI runtimes (Claude Code / Hermes / OpenCode) over HTTP; when disabled, each SDK uses its own configuration.',
         enabledLabel: 'Enable MCP sharing',
-        enabledDesc: 'Injects the local MCP HTTP endpoint only into active CLI sessions without changing global CLI configuration. Enabling also turns on the local MCP server and generates a token.',
-        noToken: 'The local MCP server token is missing; enable the local MCP server first.',
+        enabledDesc:
+          'Injects the local MCP HTTP endpoint only into active CLI sessions without changing global CLI configuration. Enabling also turns on the local MCP server and generates a token.',
+        noToken:
+          'The local MCP server token is missing; enable the local MCP server first.',
       },
       cliInjection: {
         title: 'CLI Runtime Provider Injection',
         desc: 'When enabled, CLI runtimes (Claude Code / Codex / Hermes / Pi / OpenCode) use the provider and model below; when disabled, each SDK uses its own configuration.',
         enabledLabel: 'Enable provider injection',
-        enabledDesc: 'Inject the provider credentials and model from YOLO settings into CLI runtime processes.',
+        enabledDesc:
+          'Inject the provider credentials and model from YOLO settings into CLI runtime processes.',
         providerLabel: 'Provider',
-        providerDesc: 'The CLI runtimes will use this provider endpoint and credentials.',
+        providerDesc:
+          'The CLI runtimes will use this provider endpoint and credentials.',
         modelLabel: 'Model',
-        modelDesc: 'The CLI runtimes will use this model (selectable after picking a provider).',
+        modelDesc:
+          'The CLI runtimes will use this model (selectable after picking a provider).',
         providerPlaceholder: 'Select provider',
         modelPlaceholder: 'Select model',
       },
@@ -2781,7 +2792,7 @@ export const en: TranslationKeys = {
       entryModel: 'Model',
       entryFile: 'File',
       entryFolder: 'Folder',
-            entryConversation: 'Open conversations',
+      entryConversation: 'Open conversations',
       categoryEmpty: 'Nothing here yet',
     },
     slashCommands: {

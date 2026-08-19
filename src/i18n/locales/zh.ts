@@ -939,8 +939,8 @@ export const zh: TranslationKeys = {
         writeExcludeBadge: 'DENY WRITE',
         writeExcludeEmpty: '暂无写入黑名单。',
         denyDisabledHint: '请先设置工作空间根目录，再配置黑名单。',
-        toolBypassNotice: '若该 Agent 启用了终端命令或第三方 MCP 工具，此范围可被绕过，不构成安全边界。',
-
+        toolBypassNotice:
+          '若该 Agent 启用了终端命令或第三方 MCP 工具，此范围可被绕过，不构成安全边界。',
       },
       editorTabModel: '模型',
       editorName: '名称',
@@ -1010,6 +1010,12 @@ export const zh: TranslationKeys = {
       imageReadingEnabled: '图片读取',
       imageReadingEnabledDesc:
         '读取 Markdown 文件时自动提取内嵌图片，以多模态方式传递给模型。',
+      imageReadingFallbackEnabled: '图片读取兜底',
+      imageReadingFallbackEnabledDesc:
+        '当前模型不支持图像输入时，用配置的视觉模型描述图片，把文本结果返回给模型。',
+      imageReadingFallbackModelIds: '兜底视觉模型',
+      imageReadingFallbackModelIdsDesc:
+        '按优先级排列的兜底视觉模型。留空时自动使用所有已启用的视觉模型。',
       externalImageFetchEnabled: '抓取外部图片链接',
       externalImageFetchEnabledDesc:
         '同时抓取 Markdown 中引用的 http(s) 图片链接（图床、CDN）。默认关闭——启用后会向第三方主机发起请求。单张图片超时 5 秒、超过 10MB 将被跳过。',
@@ -1346,14 +1352,16 @@ export const zh: TranslationKeys = {
         title: 'CLI Runtime MCP 共享',
         desc: '开启后通过 HTTP 把 YOLO 本地 MCP 服务共享给 CLI runtime（Claude Code / Hermes / OpenCode）；关闭时各 SDK 使用自身配置。',
         enabledLabel: '启用 MCP 共享',
-        enabledDesc: '仅向活动的 CLI 会话注入本地 MCP HTTP 服务，不修改 CLI 全局配置。开启时自动启用本地 MCP 服务并生成 token。',
+        enabledDesc:
+          '仅向活动的 CLI 会话注入本地 MCP HTTP 服务，不修改 CLI 全局配置。开启时自动启用本地 MCP 服务并生成 token。',
         noToken: '本地 MCP 服务的 token 未生成，请先启用本地 MCP 服务。',
       },
       cliInjection: {
         title: 'CLI Runtime Provider 注入',
         desc: '开启后 CLI runtime（Claude Code / Codex / Hermes / Pi / OpenCode）使用下方配置的 Provider 与模型；关闭时各 SDK 使用自身配置。',
         enabledLabel: '启用 Provider 注入',
-        enabledDesc: '将 YOLO 配置的 Provider 凭据与模型注入 CLI runtime 进程。',
+        enabledDesc:
+          '将 YOLO 配置的 Provider 凭据与模型注入 CLI runtime 进程。',
         providerLabel: 'Provider',
         providerDesc: 'CLI runtime 将使用该 Provider 的地址与凭据。',
         modelLabel: '模型',
@@ -2610,7 +2618,7 @@ export const zh: TranslationKeys = {
       entryModel: '模型',
       entryFile: '文件',
       entryFolder: '文件夹',
-            entryConversation: '打开的对话',
+      entryConversation: '打开的对话',
       categoryEmpty: '暂无内容',
     },
     slashCommands: {
