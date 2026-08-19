@@ -20,6 +20,20 @@ type Entry =
     }>
   | Readonly<{ kind: 'folder'; path: string; name: string }>
 
+type AgentRequestSnapshot = Readonly<{
+  modelId?: string
+  prompt?: string
+  toolNames: readonly string[]
+}>
+
+type BackgroundActivitySnapshot = Readonly<{
+  id: string
+  title?: string
+  status?: string
+}>
+
+type ConfirmCallSnapshot = Readonly<{ title: string; message: string }>
+
 type E2EState = {
   files: Map<string, string>
   folders: Set<string>
@@ -36,10 +50,34 @@ type E2EState = {
   holdAssistant: boolean
   assistantStarted(): boolean
   releaseAssistant(): void
+  // Phase-2 run harness: per-test agent behavior controls.
+  holdRun: boolean
+  failRun: boolean
+  runErrorMessage: string
+  runOutput: unknown
+  confirmResult: boolean
+  releaseRun(): void
+  lastAgentRequest(): AgentRequestSnapshot | null
+  backgroundActivities(): readonly BackgroundActivitySnapshot[]
+  confirmCalls(): readonly ConfirmCallSnapshot[]
+  listRunFiles(): Promise<readonly string[]>
+  readRunFile(workflowPath: string): Promise<unknown>
+  seedRun(
+    workflowPath: string,
+    patch: Readonly<Record<string, unknown>>,
+  ): Promise<void>
 }
 
 let assistantRelease: (() => void) | null = null
 let assistantStarted = false
+let runRelease: (() => void) | null = null
+const agentRequests: AgentRequestSnapshot[] = []
+const backgroundActivities = new Map<
+  string,
+  { title?: string; status?: string }
+>()
+const confirmCalls: ConfirmCallSnapshot[] = []
+
 const copy = createWorkflowCopy('en')
 const localeSnapshot = { locale: 'en' }
 const topology: WorkflowTopology = {
@@ -58,6 +96,14 @@ const topology: WorkflowTopology = {
       label: 'Agent',
       stepPath: 'steps/agent/STEP.md',
       position: { x: 315, y: 90 },
+      // The demo agent carries an output schema so full runs and node tests
+      // exercise the executor's submit_workflow_output tool path.
+      outputSchema: {
+        type: 'object',
+        properties: { ok: { type: 'boolean' } },
+        required: ['ok'],
+        additionalProperties: false,
+      },
     },
     {
       id: 'output',
@@ -90,16 +136,157 @@ const state: E2EState = {
     assistantRelease?.()
     assistantRelease = null
   },
+  holdRun: false,
+  failRun: false,
+  runErrorMessage: 'Browser harness agent failure',
+  runOutput: { ok: true },
+  confirmResult: true,
+  releaseRun: () => {
+    runRelease?.()
+    runRelease = null
+  },
+  lastAgentRequest: () => agentRequests.at(-1) ?? null,
+  backgroundActivities: () =>
+    [...backgroundActivities.entries()].map(([id, activity]) => ({
+      id,
+      ...activity,
+    })),
+  confirmCalls: () => [...confirmCalls],
+  listRunFiles: () => listRunFiles(),
+  readRunFile: (workflowPath) => readRunFile(workflowPath),
+  seedRun: (workflowPath, patch) => seedRun(workflowPath, patch),
 }
 
 let openFilePath: string | null = null
 let noticeMessage: string | null = null
+
+// ---------------------------------------------------------------------------
+// Device-local run persistence. The blobs map backs the module's run store;
+// it is mirrored to localStorage so a seeded run record survives the page
+// reload the recovery test relies on.
+// ---------------------------------------------------------------------------
+
+const BLOBS_STORAGE_KEY = 'yolo-workflow-e2e-device-local'
+const blobs = new Map<string, string>()
+
+function persistBlobs(): void {
+  try {
+    window.localStorage.setItem(
+      BLOBS_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(blobs)),
+    )
+  } catch {
+    // The harness never depends on persistence succeeding.
+  }
+}
+
+function hydrateBlobs(): void {
+  try {
+    const raw = window.localStorage.getItem(BLOBS_STORAGE_KEY)
+    if (raw === null) return
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
+      return
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === 'string') blobs.set(key, value)
+    }
+  } catch {
+    // A malformed store hydrates to an empty device-local scope.
+  }
+}
+
+function writeBlob(key: string, value: string): void {
+  blobs.set(key, value)
+  persistBlobs()
+}
+
+function removeBlob(key: string): boolean {
+  const removed = blobs.delete(key)
+  if (removed) persistBlobs()
+  return removed
+}
+
+async function runFileKey(workflowPath: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(workflowPath),
+  )
+  const hex = [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+  return `runs/${hex}.json`
+}
+
+async function listRunFiles(): Promise<readonly string[]> {
+  return [...blobs.keys()].filter((key) => key.startsWith('runs/')).sort()
+}
+
+async function readRunFile(workflowPath: string): Promise<unknown> {
+  const raw = blobs.get(await runFileKey(workflowPath))
+  return raw === undefined ? null : (JSON.parse(raw) as unknown)
+}
+
+/** A persisted run record for the demo workflow, valid per the run store. */
+function seededDefinition(workflowPath: string): Record<string, unknown> {
+  const stepContents: Record<string, string> = {}
+  const modelByNodeId: Record<string, string> = {}
+  for (const node of topology.nodes) {
+    stepContents[node.id] = `# ${node.label}\n`
+    modelByNodeId[node.id] = 'browser-model'
+  }
+  return {
+    workflowPath,
+    workflowContextMarkdown: '',
+    topology,
+    stepContents,
+    modelByNodeId,
+    policy: {
+      capability: 'vault-write',
+      mapConcurrency: 3,
+      mergeStrategy: 'concat',
+    },
+    definitionHash: `seeded-${workflowPath}`,
+  }
+}
+
+async function seedRun(
+  workflowPath: string,
+  patch: Readonly<Record<string, unknown>>,
+): Promise<void> {
+  const pendingNodes: Record<string, { status: string }> = {}
+  for (const node of topology.nodes)
+    pendingNodes[node.id] = { status: 'pending' }
+  const nodes =
+    patch.nodes !== undefined &&
+    typeof patch.nodes === 'object' &&
+    patch.nodes !== null
+      ? (patch.nodes as Record<string, { status: string }>)
+      : pendingNodes
+  const snapshot = {
+    schemaVersion: 1,
+    runId:
+      typeof patch.runId === 'string'
+        ? patch.runId
+        : `seeded-${Math.random().toString(36).slice(2)}`,
+    workflowPath,
+    definition: seededDefinition(workflowPath),
+    input: patch.input ?? null,
+    status: patch.status,
+    nodes,
+    outputs: patch.outputs ?? {},
+    ...(patch.error !== undefined ? { error: patch.error } : {}),
+    startedAt:
+      typeof patch.startedAt === 'number' ? patch.startedAt : Date.now(),
+  }
+  writeBlob(await runFileKey(workflowPath), JSON.stringify(snapshot))
+}
 
 const manifest = updateWorkflowManagedBlocks('# Demo\n', topology, copy)
 putFile(state.manifestPath, manifest)
 putFile('workflows/demo/steps/input/STEP.md', '# Input\n')
 putFile('workflows/demo/steps/agent/STEP.md', '# Agent\n')
 putFile('workflows/demo/steps/output/STEP.md', '# Output\n')
+hydrateBlobs()
 
 async function mount(): Promise<void> {
   const moduleDefinition = (
@@ -132,10 +319,9 @@ function createHost(): unknown {
     defaultModelId: 'browser-model',
     models: [
       { id: 'browser-model', name: 'Browser model', providerId: 'browser' },
+      { id: 'deepseek-model', name: 'DeepSeek model', providerId: 'deepseek' },
     ],
   }
-  // Device-local run persistence, mirroring the module's own test fakes.
-  const blobs = new Map<string, string>()
   const deviceLocalScope = {
     list: async (directoryPrefix?: string): Promise<readonly string[]> => {
       const prefix = directoryPrefix === undefined ? '' : `${directoryPrefix}/`
@@ -144,16 +330,21 @@ function createHost(): unknown {
     readText: async (key: string): Promise<string | null> =>
       blobs.get(key) ?? null,
     writeText: async (key: string, value: string): Promise<void> => {
-      blobs.set(key, value)
+      writeBlob(key, value)
     },
-    removeFile: async (key: string): Promise<boolean> => blobs.delete(key),
+    removeFile: async (key: string): Promise<boolean> => removeBlob(key),
   }
-  const backgroundActivityIds = new Set<string>()
   return {
     agent: {
       stream: async function* (request: {
+        modelId?: string
+        prompt?: string
+        systemPrompt?: string
+        capability?: string
+        activity?: Readonly<{ title?: string; detail?: string }>
         tools?: readonly [
           {
+            name?: string
             handler(
               value: Record<string, unknown>,
             ): Promise<{ isError?: boolean; content: string }>
@@ -161,33 +352,87 @@ function createHost(): unknown {
         ]
         signal?: AbortSignal
       }) {
-        if (state.holdAssistant) {
-          assistantStarted = true
+        agentRequests.push({
+          modelId: request.modelId,
+          prompt: request.prompt,
+          toolNames: (request.tools ?? []).map((tool) => tool.name ?? ''),
+        })
+        const tool = request.tools?.[0]
+        if (tool?.name === 'submit_workflow_proposal') {
+          if (state.holdAssistant) {
+            assistantStarted = true
+            await new Promise<void>((resolve) => {
+              assistantRelease = resolve
+              request.signal?.addEventListener(
+                'abort',
+                () => {
+                  assistantRelease = null
+                  resolve()
+                },
+                { once: true },
+              )
+            })
+          }
+          const result = await tool.handler({
+            content: `${state.readManifest()}\nReviewed by browser harness.\n`,
+          })
+          if (result.isError) {
+            yield { type: 'error', message: result.content }
+            return
+          }
+          yield { type: 'completed', text: '' }
+          return
+        }
+        // Run path: the executor submits structured results through
+        // submit_workflow_output (schema nodes) or finishes in plain text
+        // (text nodes and node tests); condition submissions carry one
+        // boolean per active source id.
+        if (tool)
+          yield {
+            type: 'tool',
+            name: tool.name,
+            status: 'awaiting_approval',
+            arguments: {},
+          }
+        if (state.holdRun) {
           await new Promise<void>((resolve) => {
-            assistantRelease = resolve
+            runRelease = resolve
             request.signal?.addEventListener(
               'abort',
               () => {
-                assistantRelease = null
+                runRelease = null
                 resolve()
               },
               { once: true },
             )
           })
         }
-        const tool = request.tools?.[0]
-        if (!tool) {
-          yield { type: 'error', message: 'proposal tool missing' }
+        if (request.signal?.aborted) return
+        if (state.failRun) {
+          yield { type: 'error', message: state.runErrorMessage }
           return
         }
-        const result = await tool.handler({
-          content: `${state.readManifest()}\nReviewed by browser harness.\n`,
-        })
-        if (result.isError) {
-          yield { type: 'error', message: result.content }
+        if (tool) {
+          const input =
+            tool.name === 'submit_workflow_condition'
+              ? conditionSubmission(request.prompt)
+              : { value: state.runOutput }
+          const result = await tool.handler(input)
+          if (result.isError) {
+            yield { type: 'error', message: result.content }
+            return
+          }
+          yield { type: 'tool', name: tool.name, status: 'completed' }
+          yield { type: 'completed', text: '' }
           return
         }
-        yield { type: 'completed', text: '' }
+        yield {
+          type: 'completed',
+          text:
+            typeof state.runOutput === 'string'
+              ? state.runOutput
+              : JSON.stringify(state.runOutput),
+        }
       },
     },
     chat: {
@@ -196,11 +441,14 @@ function createHost(): unknown {
     lifecycle: { add: () => undefined, onQuiesce: () => undefined },
     privateStorage: { deviceLocal: deviceLocalScope },
     background: {
-      upsert: (activity: { id: string }) => {
-        backgroundActivityIds.add(activity.id)
+      upsert: (activity: { id: string; title?: string; status?: string }) => {
+        backgroundActivities.set(activity.id, {
+          title: activity.title,
+          status: activity.status,
+        })
       },
       remove: (id: string) => {
-        backgroundActivityIds.delete(id)
+        backgroundActivities.delete(id)
       },
     },
     workspace: {
@@ -232,7 +480,10 @@ function createHost(): unknown {
         openFilePath = typeof input === 'string' ? input : input.path
         return true
       },
-      confirm: async () => true,
+      confirm: async (options: { title: string; message: string }) => {
+        confirmCalls.push({ title: options.title, message: options.message })
+        return state.confirmResult
+      },
     },
     paths: {
       getSnapshot: () => ({ contentRoot: 'workflows' }),
@@ -331,4 +582,24 @@ function listChildren(folder: string): Entry[] {
   return [...children]
     .map((filePath) => entry(filePath))
     .filter((value): value is Entry => value !== null)
+}
+
+/**
+ * The condition submission tool requires one boolean per active upstream
+ * source id; the executor embeds the sources in the prompt. The coordinator
+ * judges condition nodes locally, so this path is defensive completeness.
+ */
+function conditionSubmission(prompt?: string): Record<string, boolean> {
+  try {
+    const value = JSON.parse(prompt ?? '') as {
+      upstream?: readonly { nodeId?: unknown }[]
+    }
+    const input: Record<string, boolean> = {}
+    for (const source of value.upstream ?? []) {
+      if (typeof source?.nodeId === 'string') input[source.nodeId] = true
+    }
+    return input
+  } catch {
+    return {}
+  }
 }

@@ -571,6 +571,472 @@ test('keeps every desktop canvas toolbar action reachable', async ({
     ).toBe(true)
 })
 
+const DEMO_WORKFLOW_PATH = 'demo/WORKFLOW.md'
+const DEMO_RUN_ACTIVITY_ID = `workflow:run:${DEMO_WORKFLOW_PATH}`
+
+test('switches between the Assistant and Run studio tabs', async ({ page }) => {
+  const consoleIssues: string[] = []
+  page.on('console', (message) => {
+    if (message.type() === 'error' || message.type() === 'warning')
+      consoleIssues.push(`${message.type()}: ${message.text()}`)
+  })
+  await page.goto(baseUrl)
+  await expect(page.locator('.yolo-workflow-module-root')).toBeVisible()
+
+  const assistantTab = page.getByRole('tab', { name: 'Assistant', exact: true })
+  const runTab = page.getByRole('tab', { name: 'Run', exact: true })
+  await expect(assistantTab).toBeVisible()
+  await expect(runTab).toBeVisible()
+  await expect(assistantTab).toHaveClass(/is-active/)
+  await expect(page.locator('.yolo-workflow-assistant')).toBeVisible()
+
+  await runTab.click()
+  await expect(runTab).toHaveClass(/is-active/)
+  await expect(page.locator('.yolo-workflow-run-panel')).toBeVisible()
+  await expect(page.locator('.yolo-workflow-run-panel')).toContainText(
+    'No output yet',
+  )
+
+  await assistantTab.click()
+  await expect(assistantTab).toHaveClass(/is-active/)
+  await expect(page.locator('.yolo-workflow-assistant')).toBeVisible()
+  expect(consoleIssues).toEqual([])
+})
+
+test('parses run input as JSON or plain text', async ({ page }) => {
+  await page.goto(baseUrl)
+  await expect(page.locator('.yolo-workflow-module-root')).toBeVisible()
+  await page.getByRole('tab', { name: 'Run', exact: true }).click()
+
+  const input = page.getByRole('textbox', { name: 'Run input' })
+  const runButton = page
+    .locator('.yolo-workflow-run-panel')
+    .getByRole('button', { name: 'Run', exact: true })
+
+  await input.fill('{"a": 1}')
+  await runButton.click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async (workflowPath) =>
+          (await window.__workflowE2E?.readRunFile(workflowPath)) as {
+            status?: string
+            input?: unknown
+          } | null,
+        DEMO_WORKFLOW_PATH,
+      ),
+    )
+    .toEqual(expect.objectContaining({ status: 'succeeded', input: { a: 1 } }))
+
+  await input.fill('plain run text')
+  await runButton.click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async (workflowPath) =>
+          (
+            (await window.__workflowE2E?.readRunFile(workflowPath)) as {
+              input?: unknown
+            } | null
+          )?.input,
+        DEMO_WORKFLOW_PATH,
+      ),
+    )
+    .toBe('plain run text')
+  // The detail preview shows the parsed string form of the plain-text input.
+  await expect(page.locator('.yolo-workflow-run-preview')).toContainText(
+    'plain run text',
+  )
+})
+
+test('runs a workflow end to end and persists the run record', async ({
+  page,
+}) => {
+  const pageErrors: string[] = []
+  page.on('pageerror', (error) => pageErrors.push(error.message))
+  await page.goto(baseUrl)
+  await expect(page.locator('.yolo-workflow-module-root')).toBeVisible()
+  const runPanel = page.locator('.yolo-workflow-run-panel')
+  await page.getByRole('tab', { name: 'Run', exact: true }).click()
+
+  await page.evaluate(() => {
+    if (window.__workflowE2E) window.__workflowE2E.holdRun = true
+  })
+  await page
+    .getByRole('textbox', { name: 'Run input' })
+    .fill('{"question": "life"}')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'running',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Running',
+  )
+  // The background activity is present while the run is active.
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__workflowE2E?.backgroundActivities() ?? []),
+    )
+    .toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: DEMO_RUN_ACTIVITY_ID }),
+      ]),
+    )
+
+  await page.evaluate(() => window.__workflowE2E?.releaseRun())
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'succeeded',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Succeeded',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__progress')).toHaveText(
+    '3/3',
+  )
+  // The output area shows the run outputs with the submitted agent value.
+  await expect(page.locator('.yolo-workflow-run-output__value')).toContainText(
+    '"ok"',
+  )
+  // The run record is persisted with the submitted value and input.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async (workflowPath) =>
+          (await window.__workflowE2E?.readRunFile(workflowPath)) as {
+            status?: string
+            input?: unknown
+            outputs?: unknown
+          } | null,
+        DEMO_WORKFLOW_PATH,
+      ),
+    )
+    .toEqual(
+      expect.objectContaining({
+        status: 'succeeded',
+        input: { question: 'life' },
+        outputs: { output: { ok: true } },
+      }),
+    )
+  // The background activity is removed once the run finishes.
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__workflowE2E?.backgroundActivities() ?? []),
+    )
+    .toEqual([])
+  expect(pageErrors).toEqual([])
+})
+
+test('stops a running workflow', async ({ page }) => {
+  await page.goto(baseUrl)
+  await expect(page.locator('.yolo-workflow-module-root')).toBeVisible()
+  const runPanel = page.locator('.yolo-workflow-run-panel')
+  await page.getByRole('tab', { name: 'Run', exact: true }).click()
+
+  await page.evaluate(() => {
+    if (window.__workflowE2E) window.__workflowE2E.holdRun = true
+  })
+  await page.getByRole('textbox', { name: 'Run input' }).fill('stop me')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'running',
+  )
+  await runPanel.getByRole('button', { name: 'Stop', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'cancelled',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Cancelled',
+  )
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__workflowE2E?.backgroundActivities() ?? []),
+    )
+    .toEqual([])
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async (workflowPath) =>
+          (
+            (await window.__workflowE2E?.readRunFile(workflowPath)) as {
+              status?: string
+            } | null
+          )?.status,
+        DEMO_WORKFLOW_PATH,
+      ),
+    )
+    .toBe('cancelled')
+})
+
+test('continues a failed run from the failed node after confirmation', async ({
+  page,
+}) => {
+  await page.goto(baseUrl)
+  await expect(page.locator('.yolo-workflow-module-root')).toBeVisible()
+  const runPanel = page.locator('.yolo-workflow-run-panel')
+  await page.getByRole('tab', { name: 'Run', exact: true }).click()
+
+  await page.evaluate(() => {
+    const e2e = window.__workflowE2E
+    if (!e2e) return
+    e2e.failRun = true
+    e2e.runErrorMessage = 'Simulated step failure'
+  })
+  await page.getByRole('textbox', { name: 'Run input' }).fill('retry me')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'failed',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Failed',
+  )
+  const agentNode = page.locator('.yolo-workflow-run-node', {
+    hasText: 'Agent',
+  })
+  await expect(agentNode.locator('.yolo-workflow-run-node__badge')).toHaveClass(
+    /badge--failed/,
+  )
+  await page.getByRole('tab', { name: 'Error', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-run-error')).toContainText(
+    'Simulated step failure',
+  )
+  expect(
+    await page.evaluate(() => window.__workflowE2E?.confirmCalls() ?? []),
+  ).toEqual([])
+
+  await page.evaluate(() => {
+    if (window.__workflowE2E) window.__workflowE2E.failRun = false
+  })
+  await runPanel.getByRole('button', { name: 'Continue', exact: true }).click()
+  // Continuing asks for side-effect confirmation first.
+  await expect
+    .poll(() => page.evaluate(() => window.__workflowE2E?.confirmCalls() ?? []))
+    .toContainEqual(
+      expect.objectContaining({
+        title: 'Continue',
+        message:
+          'Continuing resumes the workflow from the first unfinished step; that step may re-apply side effects at least once.',
+      }),
+    )
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'succeeded',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Succeeded',
+  )
+  // The previously failed node was reset and re-executed.
+  await expect(agentNode.locator('.yolo-workflow-run-node__badge')).toHaveClass(
+    /badge--succeeded/,
+  )
+})
+
+test('tests a single node and hides the test button during full runs', async ({
+  page,
+}) => {
+  await page.goto(baseUrl)
+  await expect(page.locator('.yolo-workflow-module-root')).toBeVisible()
+  const runPanel = page.locator('.yolo-workflow-run-panel')
+  await page.getByRole('tab', { name: 'Run', exact: true }).click()
+
+  // A full run first, so a persisted record exists for the test path.
+  await page.getByRole('textbox', { name: 'Run input' }).fill('seed run')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'succeeded',
+  )
+
+  // Select the agent node and test it with a controlled submitted value.
+  await page.locator('.yolo-workflow-run-node', { hasText: 'Agent' }).click()
+  await page.evaluate(() => {
+    if (window.__workflowE2E) window.__workflowE2E.runOutput = { ok: false }
+  })
+  await page.getByRole('tab', { name: 'Output', exact: true }).click()
+  await runPanel.getByRole('button', { name: 'Test node', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-run-preview')).toContainText(
+    '"ok": false',
+  )
+
+  // The test button disappears while a full run is active and returns after.
+  await page.evaluate(() => {
+    const e2e = window.__workflowE2E
+    if (!e2e) return
+    e2e.holdRun = true
+    e2e.runOutput = { ok: true }
+  })
+  await page.getByRole('textbox', { name: 'Run input' }).fill('second run')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'running',
+  )
+  await expect(
+    runPanel.getByRole('button', { name: 'Test node', exact: true }),
+  ).toHaveCount(0)
+  await page.evaluate(() => window.__workflowE2E?.releaseRun())
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'succeeded',
+  )
+  await expect(
+    runPanel.getByRole('button', { name: 'Test node', exact: true }),
+  ).toBeVisible()
+})
+
+test('locks editing controls while a run is active', async ({ page }) => {
+  await page.goto(baseUrl)
+  await expect(page.locator('.yolo-workflow-module-root')).toBeVisible()
+  const runPanel = page.locator('.yolo-workflow-run-panel')
+  await page.getByRole('tab', { name: 'Run', exact: true }).click()
+
+  const addNodeButton = page
+    .locator('.yolo-workflow-add-node-bar button')
+    .first()
+  await expect(addNodeButton).toBeEnabled()
+  await page.evaluate(() => {
+    if (window.__workflowE2E) window.__workflowE2E.holdRun = true
+  })
+  await page.getByRole('textbox', { name: 'Run input' }).fill('lock me')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'running',
+  )
+  await expect(addNodeButton).toBeDisabled()
+  await expect(
+    runPanel.getByRole('button', { name: 'Run', exact: true }),
+  ).toBeDisabled()
+
+  await page.evaluate(() => window.__workflowE2E?.releaseRun())
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'succeeded',
+  )
+  await expect(addNodeButton).toBeEnabled()
+})
+
+test('recovers a persisted running run as interrupted after reload', async ({
+  page,
+}) => {
+  await page.goto(baseUrl)
+  await expect(page.locator('.yolo-workflow-module-root')).toBeVisible()
+
+  await page.evaluate((workflowPath) => {
+    window.__workflowE2E?.seedRun(workflowPath, {
+      status: 'running',
+      nodes: {
+        input: { status: 'succeeded', output: 'seeded' },
+        agent: { status: 'running' },
+        output: { status: 'pending' },
+      },
+    })
+  }, DEMO_WORKFLOW_PATH)
+
+  await page.reload()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'interrupted',
+  )
+  await page.getByRole('tab', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Interrupted',
+  )
+  const continueButton = page
+    .locator('.yolo-workflow-run-panel')
+    .getByRole('button', { name: 'Continue', exact: true })
+  await expect(continueButton).toBeVisible()
+  // The recovered run shows as a reminder in the background.
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__workflowE2E?.backgroundActivities() ?? []),
+    )
+    .toEqual([
+      expect.objectContaining({
+        id: DEMO_RUN_ACTIVITY_ID,
+        status: 'reminder',
+      }),
+    ])
+  // The interrupted status is persisted back over the running record.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async (workflowPath) =>
+          (
+            (await window.__workflowE2E?.readRunFile(workflowPath)) as {
+              status?: string
+            } | null
+          )?.status,
+        DEMO_WORKFLOW_PATH,
+      ),
+    )
+    .toBe('interrupted')
+
+  // Continuing the recovered run finishes it.
+  await continueButton.click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'succeeded',
+  )
+})
+
+test('uses the selected run model for agent requests', async ({ page }) => {
+  await page.goto(baseUrl)
+  await expect(page.locator('.yolo-workflow-module-root')).toBeVisible()
+  const runPanel = page.locator('.yolo-workflow-run-panel')
+  await page.getByRole('tab', { name: 'Run', exact: true }).click()
+
+  const modelSelect = runPanel.getByRole('combobox', {
+    name: 'Run model',
+    exact: true,
+  })
+  await expect(modelSelect).toHaveValue('browser-model')
+  await modelSelect.selectOption('deepseek-model')
+  await page.getByRole('textbox', { name: 'Run input' }).fill('model check')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'succeeded',
+  )
+  await expect
+    .poll(() => page.evaluate(() => window.__workflowE2E?.lastAgentRequest()))
+    .toEqual(expect.objectContaining({ modelId: 'deepseek-model' }))
+})
+
+test('shows the failing agent error in the Error tab', async ({ page }) => {
+  await page.goto(baseUrl)
+  await expect(page.locator('.yolo-workflow-module-root')).toBeVisible()
+  const runPanel = page.locator('.yolo-workflow-run-panel')
+  await page.getByRole('tab', { name: 'Run', exact: true }).click()
+
+  await page.evaluate(() => {
+    const e2e = window.__workflowE2E
+    if (!e2e) return
+    e2e.failRun = true
+    e2e.runErrorMessage = 'Broken step'
+  })
+  await page.getByRole('textbox', { name: 'Run input' }).fill('fail me')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'failed',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Failed',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__error')).toContainText(
+    'Broken step',
+  )
+  await page.getByRole('tab', { name: 'Error', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-run-error')).toContainText(
+    'Broken step',
+  )
+})
+
 type LayoutBox = Readonly<{
   left: number
   right: number
