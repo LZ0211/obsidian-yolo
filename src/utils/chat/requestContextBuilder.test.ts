@@ -36,7 +36,11 @@ import {
 } from '../../core/skills/liteSkills'
 import { readPromptSnapshotEntries } from '../../database/json/chat/promptSnapshotStore'
 import type { YoloSettings } from '../../settings/schema/setting.types'
-import type { ChatToolMessage, ChatUserMessage } from '../../types/chat'
+import type {
+  ChatMessage,
+  ChatToolMessage,
+  ChatUserMessage,
+} from '../../types/chat'
 import type { ChatModel } from '../../types/chat-model.types'
 import type { ContentPart, RequestMessage } from '../../types/llm/request'
 import { ToolCallResponseStatus } from '../../types/tool-call.types'
@@ -1700,14 +1704,14 @@ describe('RequestContextBuilder generateRequestMessages', () => {
     // The retained window (user-2 onward) must survive after the summary.
     const retainedIndex = requestMessages.findIndex(
       (message) =>
-        message.role === 'user' &&
-        message.content === 'retained turn prompt',
+        message.role === 'user' && message.content === 'retained turn prompt',
     )
     expect(retainedIndex).toBeGreaterThan(summaryIndex)
     expect(
       requestMessages.some(
         (message) =>
-          message.role === 'assistant' && message.content === 'old phase answer',
+          message.role === 'assistant' &&
+          message.content === 'old phase answer',
       ),
     ).toBe(false)
   })
@@ -2732,6 +2736,16 @@ describe('RequestContextBuilder system prompt freezing', () => {
     return system.content
   }
 
+  // C4 splits memory into a stable snapshot path and a per-request dynamic
+  // path: only the stable call receives the `salienceByMemoryKey` option, and
+  // only it is subject to snapshot freezing. Call-count assertions below
+  // therefore count stable-path calls only — the dynamic fallback re-reads
+  // memory per request by design and must not fail the freeze assertions.
+  const stableMemoryCalls = (): unknown[][] =>
+    memMock.mock.calls.filter(
+      (call) => 'salienceByMemoryKey' in (call[0] as Record<string, unknown>),
+    )
+
   afterAll(() => {
     memMock.mockResolvedValue({ global: null, assistant: null })
   })
@@ -3086,10 +3100,11 @@ describe('RequestContextBuilder system prompt freezing', () => {
       hasMemoryTools: true,
       systemPromptSnapshotMode: 'create',
     })
-    // Frozen: still V1, and memory was not re-read for the second iteration.
+    // Frozen: still V1, and stable memory was not re-read for the second
+    // iteration (the per-request dynamic fallback re-read is C4 behavior).
     expect(getSystemContent(second)).toContain('MEM_V1')
     expect(getSystemContent(second)).not.toContain('MEM_V2')
-    expect(memMock).toHaveBeenCalledTimes(1)
+    expect(stableMemoryCalls()).toHaveLength(1)
 
     // A fresh conversation picks up the latest memory.
     const other = await builder.generateRequestMessages({
@@ -3135,7 +3150,7 @@ describe('RequestContextBuilder system prompt freezing', () => {
     })
 
     expect(getSystemContent(second)).toContain('MEM_EXTERNAL')
-    expect(memMock).toHaveBeenCalledTimes(2)
+    expect(stableMemoryCalls()).toHaveLength(2)
   })
 
   it('refreshes memory in the system prompt after conversation compaction', async () => {
@@ -3185,7 +3200,7 @@ describe('RequestContextBuilder system prompt freezing', () => {
       systemPromptSnapshotMode: 'create',
     })
     expect(getSystemContent(afterCompact)).toContain('MEM_AFTER_COMPACT')
-    expect(memMock).toHaveBeenCalledTimes(2)
+    expect(stableMemoryCalls()).toHaveLength(2)
   })
 
   it('refreshes the snapshot when a prompt-relevant setting changes', async () => {
@@ -3315,6 +3330,309 @@ describe('RequestContextBuilder system prompt freezing', () => {
       systemPromptSnapshotMode: 'create',
     })
     expect(getSystemContent(real)).toContain('MEM_V2')
+  })
+})
+
+describe('RequestContextBuilder C4 memory layering (stable snapshot / dynamic user block)', () => {
+  const settings = {
+    systemPrompt: '',
+    currentAssistantId: undefined,
+    assistants: [],
+    yolo: { baseDir: 'YOLO' },
+    chatOptions: {
+      includeCurrentFileContent: false,
+      mentionContextMode: 'light',
+    },
+    skills: {},
+  } as unknown as YoloSettings
+
+  const model = {
+    provider: 'openai',
+    model: 'gpt-test',
+    name: 'gpt-test',
+  } as never
+
+  const memMock = jest.mocked(getMemoryPromptContext)
+
+  const makeApp = () =>
+    createMockApp({ files: [], fileContents: new Map() }) as never
+
+  const emptyArgs = createCompleteToolCallArguments({ value: {} })
+
+  // Capture the file-wide default before this describe's tests override it,
+  // and restore it in afterAll — never install a new default for later suites.
+  const priorMemMockImplementation = memMock.getMockImplementation()
+
+  afterAll(() => {
+    memMock.mockImplementation(priorMemMockImplementation)
+  })
+
+  it('merges the dynamic memory block into the last real user message, preserving tool-loop order and input immutability (C4)', async () => {
+    memMock.mockResolvedValue({ global: 'MEM_FALLBACK', assistant: null })
+
+    const builder = new RequestContextBuilder(makeApp(), settings, {
+      includeSkills: false,
+    })
+
+    const messages: ChatMessage[] = [
+      {
+        role: 'user',
+        id: 'user-1',
+        content: null,
+        promptContent: 'hello',
+        mentionables: [],
+      },
+      {
+        role: 'assistant',
+        id: 'assistant-tools',
+        content: 'checking files',
+        toolCallRequests: [
+          {
+            id: 'tool-1',
+            name: 'yolo_local__fs_read',
+            arguments: emptyArgs,
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        id: 'tool-1-result',
+        toolCalls: [
+          {
+            request: {
+              id: 'tool-1',
+              name: 'yolo_local__fs_read',
+              arguments: emptyArgs,
+            },
+            response: {
+              status: ToolCallResponseStatus.Success,
+              data: { type: 'text', text: 'tool result' },
+            },
+          },
+        ],
+      },
+    ]
+    const inputCopy = structuredClone(messages)
+
+    const requestMessages = await builder.generateRequestMessages({
+      messages,
+      model,
+      conversationId: 'conv-c4-tool-loop',
+      systemPromptSnapshotMode: 'create',
+    })
+
+    // The dynamic block is merged into the existing last user message — never
+    // a fresh user message appended after the tool result.
+    expect(requestMessages.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'tool',
+    ])
+    expect(
+      requestMessages.filter((message) => message.role === 'user'),
+    ).toHaveLength(1)
+
+    const lastUser = requestMessages.filter(
+      (message) => message.role === 'user',
+    )[0]
+    expect(typeof lastUser.content).toBe('string')
+    // RED before C4: no dynamic block exists at all (SQLite unavailable →
+    // markdown bounded fallback must land in the current user message).
+    expect(lastUser.content).toContain('<recalled_memory')
+    expect(lastUser.content).toContain('MEM_FALLBACK')
+
+    // Neither the input array nor the original ChatMessage objects change.
+    expect(messages).toEqual(inputCopy)
+  })
+
+  it('attributes the dynamic block to a single memory.dynamic section and keeps memory.context stable (C4)', async () => {
+    memMock.mockResolvedValue({ global: 'MEM_STABLE', assistant: null })
+
+    const builder = new RequestContextBuilder(makeApp(), settings, {
+      includeSkills: false,
+    })
+
+    const sections = await builder.generateRequestSections({
+      messages: [
+        {
+          role: 'user',
+          id: 'user-1',
+          content: null,
+          promptContent: 'hello',
+          mentionables: [],
+        },
+      ],
+      model,
+      conversationId: 'conv-c4-sections',
+      systemPromptSnapshotMode: 'create',
+    })
+
+    const dynamicSections = sections.filter((section) =>
+      section.id.startsWith('memory.dynamic.'),
+    )
+    // RED before C4: the dynamic block lives inside the frozen system section,
+    // so there is no dedicated memory.dynamic section at all.
+    expect(dynamicSections).toHaveLength(1)
+    expect(dynamicSections[0]?.bucket).toBe('memory')
+    const dynamicContent = dynamicSections[0]?.content
+    expect(typeof dynamicContent).toBe('string')
+    expect(dynamicContent).toContain('<recalled_memory')
+
+    // The stable section survives with its snapshot identity.
+    expect(sections.some((section) => section.id === 'memory.context')).toBe(
+      true,
+    )
+
+    // The same block must not be double-counted under the conversation bucket.
+    const conversation = sections.find((section) =>
+      section.id.startsWith('conversation.'),
+    )
+    expect(conversation).toBeDefined()
+    expect(JSON.stringify(conversation?.content)).not.toContain(
+      '<recalled_memory',
+    )
+  })
+
+  it('keeps request order across a compaction boundary — the block merges into the last real user message, never after the tool result (C4)', async () => {
+    memMock.mockResolvedValue({ global: 'MEM_FALLBACK', assistant: null })
+
+    const builder = new RequestContextBuilder(makeApp(), settings, {
+      includeSkills: false,
+    })
+
+    const messages: ChatMessage[] = [
+      {
+        role: 'user',
+        id: 'user-pre',
+        content: null,
+        promptContent: 'before compact',
+        mentionables: [],
+      },
+      {
+        role: 'assistant',
+        id: 'assistant-compact',
+        content: 'compacting',
+        toolCallRequests: [
+          {
+            id: 'compact-1',
+            name: 'yolo_local__context_compact',
+            arguments: emptyArgs,
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        id: 'tool-compact',
+        toolCalls: [
+          {
+            request: {
+              id: 'compact-1',
+              name: 'yolo_local__context_compact',
+              arguments: emptyArgs,
+            },
+            response: {
+              status: ToolCallResponseStatus.Success,
+              data: {
+                type: 'text',
+                text: JSON.stringify({
+                  tool: 'context_compact',
+                  toolCallId: 'compact-1',
+                  operation: 'compact_restart',
+                }),
+              },
+            },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        id: 'user-2',
+        content: null,
+        promptContent: 'new turn after compact',
+        mentionables: [],
+      },
+    ]
+    const inputCopy = structuredClone(messages)
+
+    const requestMessages = await builder.generateRequestMessages({
+      messages,
+      model,
+      conversationId: 'conv-c4-compaction',
+      hasTools: true,
+      compaction: {
+        anchorMessageId: 'tool-compact',
+        summary: 'Earlier history summary',
+        compactedAt: 1,
+        triggerToolCallId: 'compact-1',
+      },
+      systemPromptSnapshotMode: 'create',
+    })
+
+    // Compaction summary message + the retained window; the dynamic block
+    // merges into the last real user message (user-2) — never a fresh user
+    // message appended after the tool result.
+    expect(requestMessages.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'tool',
+      'user',
+    ])
+    const lastMessage = requestMessages.at(-1)
+    expect(lastMessage).toEqual(
+      expect.objectContaining({
+        role: 'user',
+        content: expect.stringContaining('new turn after compact'),
+      }),
+    )
+    expect(typeof lastMessage?.content).toBe('string')
+    expect(lastMessage?.content).toContain('<recalled_memory')
+    expect(lastMessage?.content).toContain('MEM_FALLBACK')
+    expect(messages).toEqual(inputCopy)
+  })
+
+  it('keeps request order with no assistant selected — the block merges into the single user message before the assistant turn (C4)', async () => {
+    memMock.mockResolvedValue({ global: 'MEM_FALLBACK', assistant: null })
+
+    const builder = new RequestContextBuilder(makeApp(), settings, {
+      includeSkills: false,
+    })
+
+    const requestMessages = await builder.generateRequestMessages({
+      messages: [
+        {
+          role: 'user',
+          id: 'user-1',
+          content: null,
+          promptContent: 'hello',
+          mentionables: [],
+        },
+        {
+          role: 'assistant',
+          id: 'assistant-1',
+          content: 'hi there',
+        },
+      ],
+      model,
+      conversationId: 'conv-c4-no-assistant',
+      systemPromptSnapshotMode: 'create',
+    })
+
+    // No assistant configured: the recall partition is global, and the block
+    // still lands in the existing user message — nothing is appended after
+    // the assistant message.
+    expect(requestMessages.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+    ])
+    const lastUser = requestMessages.filter(
+      (message) => message.role === 'user',
+    )[0]
+    expect(typeof lastUser.content).toBe('string')
+    expect(lastUser.content).toContain('<recalled_memory')
+    expect(lastUser.content).toContain('MEM_FALLBACK')
   })
 })
 

@@ -21,6 +21,7 @@ import { runMemoryAgentWithFallback } from '../../core/memory/memoryAgent'
 import { MemoryEmbeddingStore } from '../../core/memory/memoryEmbeddings'
 import {
   type MemoryIndexMaintenanceStore,
+  type MemoryIndexStore,
   buildMemoryPartition,
 } from '../../core/memory/memoryIndex'
 import type { MemoryIndexRuntimeHandle } from '../../core/memory/memoryIndexRuntime'
@@ -234,6 +235,101 @@ const stripUserSelectedSkillsFromMessage = (
   return message
 }
 
+/**
+ * The dynamic `<recalled_memory>...</recalled_memory>` block produced by
+ * `MemoryRecallOrchestrator.render` and `buildMarkdownMemoryFallbackBlock`.
+ * Only the dynamic path injects it — the stable `<memory>` section never
+ * carries it. The attribute group allows `source="..."` variants; the regex
+ * is global so a message can carry multiple blocks.
+ */
+const RECALLED_MEMORY_BLOCK_RE =
+  /<recalled_memory(?:\s[^>]*)?>[\s\S]*?<\/recalled_memory>/gu
+
+/**
+ * Pull every `<recalled_memory>` block out of a user `RequestMessage`. Each
+ * extracted block is the bare XML; the conversation-copy strip removes the
+ * same text so the block is never double-counted under the conversation
+ * bucket. Mirror of `extractUserSelectedSkillsFromMessage`.
+ */
+const extractRecalledMemoryBlocksFromMessage = (
+  message: RequestMessage,
+): string[] => {
+  const matches: string[] = []
+  const collectFromText = (text: string): void => {
+    // Fresh regex per text so the global flag's lastIndex cannot leak between
+    // messages (same guard as the skills extraction above).
+    const re = new RegExp(RECALLED_MEMORY_BLOCK_RE.source, 'g')
+    let m: RegExpExecArray | null
+    while ((m = re.exec(text)) !== null) {
+      matches.push(m[0])
+    }
+  }
+  if (Array.isArray(message.content)) {
+    for (const part of message.content) {
+      if (part.type === 'text') collectFromText(part.text)
+    }
+  } else if (typeof message.content === 'string') {
+    collectFromText(message.content)
+  }
+  return matches
+}
+
+const stripRecalledMemoryBlocksFromString = (text: string): string =>
+  text.replace(RECALLED_MEMORY_BLOCK_RE, '')
+
+/**
+ * Return a structurally-cloned `RequestMessage` with any `<recalled_memory>`
+ * blocks removed from its text content. Used only by the breakdown estimator —
+ * the LLM request still carries the original block. Image/file parts and role
+ * metadata are preserved; an empty text part stays a legal user message.
+ */
+const stripRecalledMemoryBlocksFromMessage = (
+  message: RequestMessage,
+): RequestMessage => {
+  if (message.role === 'user' && Array.isArray(message.content)) {
+    let mutated = false
+    const nextParts: ContentPart[] = message.content.map((part) => {
+      if (part.type === 'text') {
+        const next = stripRecalledMemoryBlocksFromString(part.text)
+        if (next !== part.text) {
+          mutated = true
+          return { ...part, text: next }
+        }
+      }
+      return part
+    })
+    if (!mutated) return message
+    return { ...message, content: nextParts }
+  }
+  if (typeof message.content === 'string') {
+    const next = stripRecalledMemoryBlocksFromString(message.content)
+    if (next === message.content) return message
+    return { ...message, content: next }
+  }
+  return message
+}
+
+/**
+ * Return a new user message object with the dynamic `<recalled_memory>` block
+ * appended to its text content (string or text `ContentPart[]`). Never
+ * mutates the input message.
+ */
+const mergeRecalledMemoryIntoUserMessage = (
+  userMsg: Extract<RequestMessage, { role: 'user' }>,
+  block: string,
+): Extract<RequestMessage, { role: 'user' }> => {
+  if (typeof userMsg.content === 'string') {
+    return { ...userMsg, content: `${userMsg.content}\n\n${block}` }
+  }
+  if (Array.isArray(userMsg.content)) {
+    return {
+      ...userMsg,
+      content: [...userMsg.content, { type: 'text', text: block }],
+    }
+  }
+  return userMsg
+}
+
 type RequestContextBuilderOptions = {
   includeSkills?: boolean
   /**
@@ -299,6 +395,33 @@ export type PromptSection = {
  * Exported so the per-conversation snapshot store can type its payload
  * against the same shape without duplicating the definition. */
 export type SystemPromptSections = PromptSection[]
+
+/**
+ * The two memory halves of one request (C4): `stableSystem` is only the
+ * `getMemoryPromptContext`-wrapped stable `<memory>` section extracted from
+ * the frozen system snapshot by `id === 'memory.context'`; `dynamicUser` is
+ * only the `MemoryRecallOrchestrator.render` / markdown-fallback
+ * `<recalled_memory>` block. Neither side may ever be inferred from an
+ * arbitrary string.
+ */
+type MemoryRequestContext = Readonly<{
+  stableSystem: string | null
+  dynamicUser: string | null
+}>
+
+/**
+ * Status of the SQLite-backed salience snapshot for the stable memory
+ * section. `sqlite` kind (with or without salience rows) is the only state
+ * that admits stable memory into the frozen system snapshot; `unavailable`
+ * means no stable memory section at all and the dynamic path owns the
+ * bounded markdown fallback.
+ */
+type MemorySalienceResult =
+  | {
+      kind: 'sqlite'
+      salienceByMemoryKey: Record<string, number> | undefined
+    }
+  | { kind: 'unavailable' }
 
 type MarkdownAtxHeading = {
   level: number
@@ -798,7 +921,6 @@ export class RequestContextBuilder {
         }
       : await this.resolveSystemPromptSnapshot({
           conversationId,
-          messages,
           hasTools,
           hasMemoryTools,
           hasOnDemandTools,
@@ -829,8 +951,29 @@ export class RequestContextBuilder {
       })),
     ]
 
-    const withInjections = await appendContextualInjectionsToLastUserMessage(
+    // C4: dynamic recall runs AFTER the system snapshot is assembled, so it
+    // can never freeze into the snapshot. The stable half is read back from
+    // the snapshot sections by identity; the dynamic block is merged into the
+    // last real user message of the request copy.
+    const memoryContext: MemoryRequestContext = {
+      stableSystem:
+        (systemSections.find((section) => section.id === 'memory.context')
+          ?.content as string | undefined) ?? null,
+      dynamicUser: await this.buildIndexedMemoryRecallBlock(
+        compiledMessages,
+        compaction,
+        (contextPolicy?.useAssistant ?? true)
+          ? this.getCurrentAssistant()?.id
+          : undefined,
+      ),
+    }
+    const withDynamicMemory = this.appendDynamicMemoryToLastUserMessage(
       baseRequestMessages,
+      memoryContext.dynamicUser,
+    )
+
+    const withInjections = await appendContextualInjectionsToLastUserMessage(
+      withDynamicMemory,
       contextualInjections ?? [],
       { app: this.app, settings: this.settings },
     )
@@ -944,8 +1087,26 @@ export class RequestContextBuilder {
         })
       }
 
+      // C4: the per-request dynamic `<recalled_memory>` block is merged into
+      // the last real user message; carve it out of the conversation copy and
+      // count it under the memory bucket so the breakdown never mis-attributes
+      // it to conversation tokens. Same role guard as skills above.
+      const memoryBlocks =
+        msg.role === 'user' ? extractRecalledMemoryBlocksFromMessage(msg) : []
+      for (let s = 0; s < memoryBlocks.length; s += 1) {
+        sections.push({
+          bucket: 'memory',
+          id: `memory.dynamic.${i}.${s}`,
+          content: memoryBlocks[s],
+        })
+      }
+
       const stripped =
-        skillsBlocks.length > 0 ? stripUserSelectedSkillsFromMessage(msg) : msg
+        skillsBlocks.length > 0 || memoryBlocks.length > 0
+          ? stripRecalledMemoryBlocksFromMessage(
+              stripUserSelectedSkillsFromMessage(msg),
+            )
+          : msg
 
       // Carve out assistant reasoning (chain-of-thought) into its own bucket so
       // the popover can show how much of the context is spent on prior-turn
@@ -1965,7 +2126,6 @@ ${entries}
    */
   private async resolveSystemPromptSnapshot({
     conversationId,
-    messages,
     hasTools,
     hasMemoryTools,
     hasOnDemandTools,
@@ -1978,7 +2138,6 @@ ${entries}
     mode,
   }: {
     conversationId: string
-    messages: ChatMessage[]
     hasTools: boolean
     hasMemoryTools: boolean
     hasOnDemandTools: boolean
@@ -1994,7 +2153,6 @@ ${entries}
   }): Promise<SystemPromptSnapshot> {
     const build = async (): Promise<SystemPromptSnapshot> => {
       const systemSections = await this.buildSystemPromptSections(
-        messages,
         hasTools,
         hasMemoryTools,
         hasOnDemandTools,
@@ -2003,7 +2161,6 @@ ${entries}
         modePersonaModuleId,
         moduleChatModeId,
         contextPolicy,
-        compaction,
       )
       const systemContent = systemSections
         .map((section) =>
@@ -2146,7 +2303,6 @@ ${entries}
    * byte-for-byte. Buckets are assigned per the breakdown spec.
    */
   private async buildSystemPromptSections(
-    messages: ChatMessage[],
     hasTools: boolean,
     hasMemoryTools: boolean,
     hasOnDemandTools: boolean,
@@ -2155,7 +2311,6 @@ ${entries}
     modePersonaModuleId: string | undefined,
     moduleChatModeId: string | undefined,
     contextPolicy: ChatContextPolicy | undefined,
-    compaction: ChatConversationCompactionLike | null | undefined,
   ): Promise<SystemPromptSections> {
     const sections: SystemPromptSections = []
     const useAssistant = contextPolicy?.useAssistant ?? true
@@ -2172,9 +2327,7 @@ ${entries}
     // legacy parts[] order in `buildCustomInstructionsSection`.
     const customInstructionSubsections =
       await this.buildCustomInstructionsSubsections(
-        messages,
         hasMemoryTools,
-        compaction,
         useAssistant,
         modePersonaPrompt,
         modePersonaModuleId,
@@ -2274,9 +2427,7 @@ ${entries}
    * second path that re-reads memory files or skill entries.
    */
   private async buildCustomInstructionsSubsections(
-    messages: ChatMessage[],
     hasMemoryTools: boolean,
-    compaction: ChatConversationCompactionLike | null | undefined,
     useAssistant = true,
     modePersonaPrompt?: string,
     modePersonaModuleId?: string,
@@ -2357,35 +2508,30 @@ ${delegatableAssistants
 
     // Memory block — bucket: memory. Stable profile/preferences come from the
     // markdown snapshot (bounded to the always-loaded budget, salience-ordered
-    // via the SQLite index); dynamic recall comes from the index too (jieba
-    // keywords → three-path RRF fusion).
-    const salienceByMemoryKey = await this.loadMemorySalience(
-      currentAssistant?.id,
-    )
-    const memoryContext = await getMemoryPromptContext({
-      app: this.app,
-      settings: this.settings,
-      assistantId: currentAssistant?.id,
-      salienceByMemoryKey,
-    })
+    // via the SQLite index). Only SQLite-backed setups admit stable memory
+    // into the frozen system snapshot (C4); without the index the bounded
+    // markdown fallback flows through the current request's dynamic user
+    // block instead. Dynamic recall never participates in the snapshot.
+    const salience = await this.loadMemorySalience(currentAssistant?.id)
+    const memoryContext =
+      salience.kind === 'sqlite'
+        ? await getMemoryPromptContext({
+            app: this.app,
+            settings: this.settings,
+            assistantId: currentAssistant?.id,
+            salienceByMemoryKey: salience.salienceByMemoryKey,
+          })
+        : null
     const memoryParts: string[] = []
-    if (memoryContext.global) {
+    if (memoryContext?.global) {
       memoryParts.push(`<global>
 ${memoryContext.global}
 </global>`)
     }
-    if (memoryContext.assistant) {
+    if (memoryContext?.assistant) {
       memoryParts.push(`<assistant>
 ${memoryContext.assistant}
 </assistant>`)
-    }
-    const recalledMemoryBlock = await this.buildIndexedMemoryRecallBlock(
-      messages,
-      compaction,
-      currentAssistant?.id,
-    )
-    if (recalledMemoryBlock) {
-      memoryParts.push(recalledMemoryBlock)
     }
     if (memoryParts.length > 0) {
       sections.push({
@@ -3059,18 +3205,23 @@ ${previewLines.join('\n')}`)
   }
 
   /**
-   * Snapshot of stored salience per memory key for the always-loaded memory
-   * block (lets the bounded markdown render order by reinforcement/decay).
-   * Undefined when the index is unavailable — callers then inject the full
-   * markdown as before.
+   * Status snapshot of the SQLite salience index for the stable memory block.
+   * `sqlite` kind (with salience rows when the index answers) is the only
+   * state that admits stable memory into the frozen system snapshot; without
+   * an index runtime entirely the legacy markdown render keeps its snapshot
+   * role, while a wired-but-unavailable store suppresses stable memory (C4).
    */
   private async loadMemorySalience(
     assistantId: string | undefined,
-  ): Promise<Record<string, number> | undefined> {
-    if (!this.memoryIndexRuntime) return undefined
+  ): Promise<MemorySalienceResult> {
+    if (!this.memoryIndexRuntime) {
+      return { kind: 'sqlite', salienceByMemoryKey: undefined }
+    }
     try {
       const store = await this.memoryIndexRuntime.getStore()
-      if (store.capability !== 'sqlite') return undefined
+      if (store.capability !== 'sqlite') {
+        return { kind: 'unavailable' }
+      }
       const partition = buildMemoryPartition({
         scope: assistantId ? 'assistant' : 'global',
         ...(assistantId ? { assistantId } : {}),
@@ -3084,33 +3235,49 @@ ${previewLines.join('\n')}`)
       )
       const byKey: Record<string, number> = {}
       for (const row of rows) byKey[row.memory_key] = row.salience
-      return byKey
+      return { kind: 'sqlite', salienceByMemoryKey: byKey }
     } catch (error) {
       console.warn(
-        '[YOLO][Memory] salience snapshot unavailable; injecting unbounded memory',
+        '[YOLO][Memory] salience snapshot unavailable; stable memory stays out of the snapshot',
         error,
       )
-      return undefined
+      return { kind: 'unavailable' }
     }
   }
 
   /**
-   * Dynamic memory recall from the SQLite memory index: builds a
+   * Dynamic memory recall for the CURRENT request (C4): builds a
    * jieba-enhanced recall target from the recent user messages, runs the
    * three-path RRF retrieval (lexical + vector + graph), and renders the
-   * fused entries into a `<recalled_memory>` block. Returns null when the
-   * index is unavailable (md-only fallback) or nothing matched.
+   * fused entries into a `<recalled_memory>` block. Runs after the system
+   * snapshot is assembled and never participates in it. When the index is
+   * not queryable (no runtime, non-sqlite capability, or store failure) the
+   * bounded markdown fallback takes over; an indexed-recall failure omits
+   * the dynamic block entirely (stable memory and conversation stay intact).
    */
   private async buildIndexedMemoryRecallBlock(
     messages: ChatMessage[],
     compaction: ChatConversationCompactionLike | null | undefined,
     assistantId: string | undefined,
   ): Promise<string | null> {
-    if (!this.memoryIndexRuntime) return null
+    if (!this.memoryIndexRuntime) {
+      return await this.buildMarkdownMemoryFallbackBlock(assistantId)
+    }
+    let store: MemoryIndexStore
     try {
-      const store = await this.memoryIndexRuntime.getStore()
-      if (store.capability !== 'sqlite') return null
+      store = await this.memoryIndexRuntime.getStore()
+    } catch (error) {
+      console.warn(
+        '[YOLO][Memory] index store unavailable for dynamic recall',
+        error,
+      )
+      return await this.buildMarkdownMemoryFallbackBlock(assistantId)
+    }
+    if (store.capability !== 'sqlite') {
+      return await this.buildMarkdownMemoryFallbackBlock(assistantId)
+    }
 
+    try {
       const recentUserMessages = messages
         .filter(
           (message): message is ChatUserMessage => message.role === 'user',
@@ -3180,10 +3347,76 @@ ${previewLines.join('\n')}`)
         partition,
         snapshot.sourceFileFingerprint,
       )
-      return orchestrator.render(context, (_key, fallback) => fallback)
+      // `await` on the currently-synchronous render keeps every call site on
+      // the same awaiting path, so the later async render result shape adds
+      // no second orchestration path (C4 task ruling).
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- C4 ruling: uniform await at every render call site; render stays sync `string | null` until Task 4 introduces the async result shape.
+      const rendered = await orchestrator.render(
+        context,
+        (_key, fallback) => fallback,
+      )
+      return rendered
     } catch (error) {
       console.warn('[YOLO][Memory] indexed recall unavailable', error)
       return null
     }
+  }
+
+  /**
+   * Bounded Markdown fallback for the dynamic path (C4): renders the same
+   * `getMemoryPromptContext` global/assistant scopes the stable section would
+   * have used — each scope still bounded to `MAX_ALWAYS_LOADED_MEMORY_CHARS`
+   * — wrapped in a `<recalled_memory source="markdown-fallback">` block.
+   * Used only when the SQLite index is unavailable; never writes to SQLite
+   * and never reaches the frozen system snapshot.
+   */
+  private async buildMarkdownMemoryFallbackBlock(
+    assistantId: string | undefined,
+  ): Promise<string | null> {
+    const memoryContext = await getMemoryPromptContext({
+      app: this.app,
+      settings: this.settings,
+      assistantId,
+    })
+    const memoryParts: string[] = []
+    if (memoryContext.global) {
+      memoryParts.push(`<global>
+${memoryContext.global}
+</global>`)
+    }
+    if (memoryContext.assistant) {
+      memoryParts.push(`<assistant>
+${memoryContext.assistant}
+</assistant>`)
+    }
+    if (memoryParts.length === 0) return null
+    return `<recalled_memory source="markdown-fallback">
+${memoryParts.join('\n\n')}
+</recalled_memory>`
+  }
+
+  /**
+   * Merge the dynamic `<recalled_memory>` block into the LAST real user
+   * message of the request copy (C4). When the tail is an assistant/tool
+   * message, the block still merges into the last user message further back
+   * — a fresh user message is never appended after assistant/tool. Without
+   * any user message the array is returned unchanged. Input arrays and
+   * ChatMessage objects are never mutated; the merge produces a new user
+   * message object.
+   */
+  private appendDynamicMemoryToLastUserMessage(
+    requestMessages: RequestMessage[],
+    dynamicUser: string | null,
+  ): RequestMessage[] {
+    if (!dynamicUser) return requestMessages
+    const out = [...requestMessages]
+    for (let i = out.length - 1; i >= 0; i -= 1) {
+      const message = out[i]
+      if (message?.role !== 'user') continue
+      // The role guard above narrows `message` to the user variant.
+      out[i] = mergeRecalledMemoryIntoUserMessage(message, dynamicUser)
+      break
+    }
+    return out
   }
 }
