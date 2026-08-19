@@ -28,8 +28,9 @@ import { AgentService } from '../../src/core/agent/service'
 import { createAgentConversationPersistence } from '../../src/core/agent/conversationPersistence'
 import { createAgentEventStore } from '../../src/core/agent/agentEventStore'
 import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from '../../src/core/agent/subagent/tool-name-utils'
-import { callLocalFileTool } from '../../src/core/mcp/localFileTools'
 import { getLocalFileToolServerName } from '../../src/core/mcp/localFileToolNames'
+import { executeBuiltinTool } from '../../src/core/tools/dispatcher'
+import type { ToolContext } from '../../src/core/tools/types'
 import type { McpManager } from '../../src/core/mcp/mcpManager'
 import { getToolName, parseToolName } from '../../src/core/mcp/tool-name-utils'
 import { getYoloBaseDir } from '../../src/core/paths/yoloPaths'
@@ -215,25 +216,40 @@ function createMockMcpManager({
         }
         if (serverName === getLocalFileToolServerName()) {
           // 与生产 mcpManager.callTool 的本地分支逐字段同构（mcpManager.ts
-          // :1201-1242）：Success 包 data.text，Aborted 透传 data，其余状态
-          // 原样返回（PendingApproval 不在此路径出现——审批在 gateway 前置）。
-          const localResult = await callLocalFileTool({
-            app: app as never,
-            settings: getSettings(),
-            conversationId: params.conversationId,
-            conversationMessages: params.conversationMessages as never,
-            roundId: params.roundId,
-            toolCallId: params.id,
+          // :1288-1380）：D9 重构后本地工具经注册表 dispatcher
+          // （executeBuiltinTool）执行，旧 callLocalFileTool 分派已删除——
+          // Success 包 data.text，Aborted 透传 data，Rejected 透传 reason，
+          // 其余状态转 Error（PendingApproval 不在此路径出现——审批在
+          // gateway 前置）。
+          const localResult = await executeBuiltinTool(
             toolName,
-            args: (args ?? {}) as Record<string, unknown>,
-            requireReview: params.requireReview,
-            signal: params.signal,
-            chatModelId: params.chatModelId,
-            workspaceAccessPolicy: params.workspaceAccessPolicy as never,
-            allowedSkillPaths: params.allowedSkillPaths,
-            runContext: params.runContext as never,
-            subagentParentContext: params.subagentParentContext as never,
-          })
+            (args ?? {}) as Record<string, unknown>,
+            {
+              app: app as never,
+              settings: getSettings(),
+              openApplyReview: async () => true,
+              conversationId: params.conversationId,
+              conversationMessages: params.conversationMessages as never,
+              roundId: params.roundId,
+              toolCallId: params.id,
+              requireReview: params.requireReview,
+              signal: params.signal,
+              chatModelId: params.chatModelId,
+              workspaceAccessPolicy: params.workspaceAccessPolicy as never,
+              allowedSkillPaths: params.allowedSkillPaths,
+              // 与 mcpManager 同款注入：delegate_subagent 经 ToolContext
+              // 的 runSubagent 懒加载 runner（动态 import 避开模块初始化
+              // 顺序隐患——runner.ts 传递到达 tool-preferences.ts 的
+              // TOOL_NAME_DELIMITER 读取）。
+              runSubagent: async (input) => {
+                const { runSubagent } = await import(
+                  '../../src/core/agent/subagent/runner'
+                )
+                return (runSubagent as ToolContext['runSubagent'])!(input)
+              },
+              subagentParentContext: params.subagentParentContext,
+            },
+          )
           if (localResult.status === ToolCallResponseStatus.Success) {
             return {
               status: ToolCallResponseStatus.Success,
@@ -253,7 +269,18 @@ function createMockMcpManager({
               }),
             }
           }
-          return localResult
+          if (localResult.status === ToolCallResponseStatus.Rejected) {
+            return {
+              status: ToolCallResponseStatus.Rejected,
+              ...(localResult.reason !== undefined && {
+                reason: localResult.reason,
+              }),
+            }
+          }
+          return {
+            status: ToolCallResponseStatus.Error,
+            error: localResult.error,
+          }
         }
         return {
           status: ToolCallResponseStatus.Success,
@@ -506,11 +533,21 @@ function buildSettings(input: {
         id: 'template-1',
         name: 'Template One',
         agentModeAllowed: true,
+        // D9（2026-08-15 工具注册表重构）之后，内置工具（含
+        // delegate_subagent）的启用/审批档位只读
+        // `builtinCapabilityPreferences`（capability 键），
+        // `toolPreferences` 仅承载远程 MCP 工具——harness 若仍把
+        // delegate_subagent 写在 toolPreferences，isAssistantToolEnabled /
+        // getEnabledAssistantToolNames 会按 capability 默认值
+        // （subagent_delegation defaultEnabled: false）解析，工具被 gateway
+        // 拒绝（Tool not available），场景 f 审批 UI 永不出现。
+        // delegate_subagent：full_access 免审批自动执行（mock 侧预允许），
+        // enabled 使父 run 的 allowedToolNames 含该工具（gateway isToolAllowed）
         toolPreferences: {
           [HARNESS_TOOL_NAME]: { enabled: true },
-          // delegate_subagent：full_access 免审批自动执行（mock 侧预允许），
-          // enabled 使父 run 的 allowedToolNames 含该工具（gateway isToolAllowed）
-          [DELEGATE_SUBAGENT_TOOL_NAME]: {
+        },
+        builtinCapabilityPreferences: {
+          subagent_delegation: {
             enabled: true,
             approvalMode: 'full_access',
           },
