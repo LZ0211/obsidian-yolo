@@ -1,10 +1,10 @@
+import { runWorkflowReview } from './assistant/workflow-review'
 import { updateWorkflowManagedBlocks } from './domain/workflow-document'
 import {
   type WorkflowTopology,
   validateWorkflowTopology,
 } from './domain/workflow-model'
 import { createWorkflowRepository } from './domain/workflow-repository'
-import { runWorkflowReview } from './assistant/workflow-review'
 import { createWorkflowCopy } from './i18n'
 import { createWorkflowEditorModel } from './ui/workflow-editor-model'
 
@@ -102,8 +102,32 @@ function createTopology(): WorkflowTopology {
 class IntegrationHost {
   readonly files = new Map<string, string>()
   private readonly folders = new Set<string>()
+  readonly deviceLocal = fakePrivateStorageScope()
+  readonly background = fakeBackgroundRegistry()
+  readonly openView = jest.fn(async () => undefined)
+  readonly onQuiesce = jest.fn()
+  readonly modelSnapshot: YoloModuleHostModelSnapshotV1 = {
+    defaultModelId: 'default-model',
+    models: [
+      { id: 'default-model', name: 'Default model', providerId: 'provider' },
+      { id: 'explicit-model', name: 'Explicit model', providerId: 'provider' },
+    ],
+  }
 
   readonly api = {
+    agent: { stream: jest.fn() },
+    assets: { readText: jest.fn(async () => '') },
+    background: this.background,
+    chat: { registerMode: jest.fn() },
+    i18n: {
+      getSnapshot: () => ({ locale: 'en' }),
+      subscribe: () => () => undefined,
+    },
+    lifecycle: {
+      add: jest.fn(),
+      whenActive: jest.fn(),
+      onQuiesce: this.onQuiesce,
+    },
     paths: {
       getSnapshot: () => ({ contentRoot: 'managed/workflows' }),
       subscribe: () => () => undefined,
@@ -111,6 +135,19 @@ class IntegrationHost {
         _namespace: string,
         operation: () => T | PromiseLike<T>,
       ) => operation(),
+    },
+    privateStorage: {
+      synchronized: fakePrivateStorageScope(),
+      deviceLocal: this.deviceLocal,
+    },
+    settings: {
+      getModelSnapshot: () => this.modelSnapshot,
+      subscribeModels: () => () => undefined,
+    },
+    ui: {
+      notice: jest.fn(),
+      confirm: jest.fn(async () => true),
+      openFileAt: jest.fn(async () => true),
     },
     vault: {
       getEntry: (path: string) => this.entry(path),
@@ -146,7 +183,13 @@ class IntegrationHost {
       removeFileExact: async (path: string) => this.files.delete(path),
       subscribe: () => () => undefined,
     },
-  } as unknown as Pick<YoloModuleHostApiV1, 'paths' | 'vault'>
+    workspace: {
+      registerView: jest.fn(),
+      registerRibbonAction: jest.fn(),
+      registerCommand: jest.fn(),
+      openView: this.openView,
+    },
+  } as unknown as YoloModuleHostApiV1
 
   file(path: string, content: string): void {
     this.addFolder(path.slice(0, path.lastIndexOf('/')))
@@ -180,5 +223,57 @@ class IntegrationHost {
         path.startsWith(prefix) && !path.slice(prefix.length).includes('/'),
     )
     return paths.map((path) => this.entry(path)!).filter(Boolean)
+  }
+}
+
+type BackgroundActivity = Parameters<
+  YoloModuleHostApiV1['background']['upsert']
+>[0]
+
+/**
+ * In-memory ModulePrivateStorageScopeV1 stand-in recording every blob. The
+ * module's run store only uses `list`/`readText`/`writeText`/`removeFile`;
+ * the rest exists so the fixture matches the real scope shape.
+ */
+function fakePrivateStorageScope() {
+  const blobs = new Map<string, string>()
+  return {
+    blobs,
+    list: jest.fn(async (directoryPrefix?: string) => {
+      const prefix = directoryPrefix === undefined ? '' : `${directoryPrefix}/`
+      return [...blobs.keys()].filter((key) => key.startsWith(prefix)).sort()
+    }),
+    stat: jest.fn(async (key: string) =>
+      blobs.has(key)
+        ? { type: 'file' as const, size: blobs.get(key)!.length }
+        : null,
+    ),
+    readJson: jest.fn(async (key: string) => {
+      const raw = blobs.get(key)
+      return raw === undefined ? null : (JSON.parse(raw) as unknown)
+    }),
+    readText: jest.fn(async (key: string) => blobs.get(key) ?? null),
+    writeJson: jest.fn(async (key: string, value: unknown) => {
+      blobs.set(key, JSON.stringify(value))
+    }),
+    writeText: jest.fn(async (key: string, value: string) => {
+      blobs.set(key, value)
+    }),
+    mkdir: jest.fn(async () => undefined),
+    removeFile: jest.fn(async (key: string) => blobs.delete(key)),
+  }
+}
+
+/** Background registry recording every upsert/remove in call order. */
+function fakeBackgroundRegistry() {
+  const activities = new Map<string, BackgroundActivity>()
+  return {
+    activities,
+    upsert: jest.fn((activity: BackgroundActivity) => {
+      activities.set(activity.id, activity)
+    }),
+    remove: jest.fn((id: string) => {
+      activities.delete(id)
+    }),
   }
 }

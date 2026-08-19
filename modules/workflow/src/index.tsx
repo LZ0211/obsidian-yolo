@@ -1,17 +1,95 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 
-import { createWorkflowEditorModel } from './ui/workflow-editor-model'
-import { WorkflowStudio } from './ui/workflow-studio'
 import { createWorkflowRepository } from './domain/workflow-repository'
 import { createWorkflowChatTools } from './domain/workflow-tools'
+import { createWorkflowNodeExecutor } from './execution/workflow-node-executor'
+import { createWorkflowRunCoordinator } from './execution/workflow-run-coordinator'
+import { createWorkflowRunStore } from './execution/workflow-run-store'
+import type {
+  WorkflowRunCoordinator,
+  WorkflowRunSnapshot,
+} from './execution/workflow-run-types'
 import { createWorkflowCopy, createWorkflowLocalizedText } from './i18n'
+import { createWorkflowEditorModel } from './ui/workflow-editor-model'
+import { WorkflowStudio } from './ui/workflow-studio'
 
 const MODULE_ID = 'workflow'
 const VIEW_TYPE = 'yolo-workflow-view'
+/**
+ * Deterministic background activity id derived from the Workflow path. The
+ * path is stable across sessions, so a recovered activity can be resumed and
+ * a cleared one stays cleared after re-activation.
+ */
+const RUN_ACTIVITY_ID_PREFIX = 'workflow:run:'
+
+type BackgroundActivity = Parameters<
+  YoloModuleHostApiV1['background']['upsert']
+>[0]
+
+/**
+ * The view-facing selection layer over Coordinator publishes. Snapshots are
+ * keyed by Workflow path so a view can select the current Workflow's run
+ * without copying run state into React local state.
+ */
+type RunSnapshotIndex = Readonly<{
+  subscribe(listener: () => void): () => void
+  getSnapshot(): Readonly<Record<string, WorkflowRunSnapshot>>
+}>
+
+function createRunSnapshotIndex(
+  coordinator: WorkflowRunCoordinator,
+): RunSnapshotIndex {
+  let snapshots: Readonly<Record<string, WorkflowRunSnapshot>> = Object.freeze(
+    {},
+  )
+  const subscribe = (listener: () => void): (() => void) =>
+    coordinator.subscribe((snapshot) => {
+      snapshots = Object.freeze({
+        ...snapshots,
+        [snapshot.workflowPath]: snapshot,
+      })
+      listener()
+    })
+  return Object.freeze({
+    subscribe,
+    getSnapshot: () => snapshots,
+  })
+}
+
+function workflowRunActivityId(workflowPath: string): string {
+  return `${RUN_ACTIVITY_ID_PREFIX}${workflowPath}`
+}
+
+function workflowRunActivity(
+  workflowPath: string,
+  status: BackgroundActivity['status'],
+  openWorkflow: (path: string) => void | Promise<void>,
+): BackgroundActivity {
+  return {
+    id: workflowRunActivityId(workflowPath),
+    title: workflowPath,
+    status,
+    onOpen: () => openWorkflow(workflowPath),
+  }
+}
+
+function isWaitingForApproval(
+  snapshot: WorkflowRunSnapshot,
+  pendingApprovalNodeIds: ReadonlySet<string>,
+): boolean {
+  for (const node of snapshot.definition.topology.nodes) {
+    if (
+      snapshot.nodes[node.id]?.status === 'running' &&
+      pendingApprovalNodeIds.has(node.id)
+    )
+      return true
+  }
+  return false
+}
 
 yolo.registerModule({
   id: MODULE_ID,
-  activate(host) {
+  async activate(host) {
     const repository = createWorkflowRepository(host)
     const getCopy = () => createWorkflowCopy(host.i18n.getSnapshot().locale)
     const editors = new Map<
@@ -31,7 +109,80 @@ yolo.registerModule({
     }
     const tools = createWorkflowChatTools(repository, getCopy)
     const openView = (): Promise<void> => host.workspace.openView()
+    const openWorkflow = (path: string): Promise<void> =>
+      host.workspace.openView({ state: { path } })
     const readStyle = (): Promise<string> => host.assets.readText('style.css')
+
+    const store = createWorkflowRunStore(host.privateStorage.deviceLocal)
+    // Node ids whose agent call is currently awaiting approval, and the
+    // Workflow path each running node belongs to. Both are derived from
+    // Coordinator publishes and agent events, never a parallel run state.
+    const pendingApprovalNodeIds = new Set<string>()
+    const runningNodeWorkflow = new Map<string, string>()
+    const executor = createWorkflowNodeExecutor({
+      agent: host.agent,
+      onAgentEvent: (nodeId, event) => {
+        if (event.type !== 'tool') return
+        if (event.status === 'awaiting_approval') {
+          pendingApprovalNodeIds.add(nodeId)
+          const workflowPath = runningNodeWorkflow.get(nodeId)
+          if (workflowPath !== undefined)
+            host.background.upsert(
+              workflowRunActivity(workflowPath, 'waiting', openWorkflow),
+            )
+          return
+        }
+        if (event.status === 'completed' || event.status === 'error')
+          pendingApprovalNodeIds.delete(nodeId)
+      },
+    })
+    const coordinator = createWorkflowRunCoordinator({ executor, store })
+    coordinator.subscribe((snapshot) => {
+      switch (snapshot.status) {
+        case 'succeeded':
+        case 'cancelled':
+          host.background.remove(workflowRunActivityId(snapshot.workflowPath))
+          break
+        case 'running':
+          host.background.upsert(
+            workflowRunActivity(
+              snapshot.workflowPath,
+              isWaitingForApproval(snapshot, pendingApprovalNodeIds)
+                ? 'waiting'
+                : 'running',
+              openWorkflow,
+            ),
+          )
+          break
+        case 'failed':
+          host.background.upsert(
+            workflowRunActivity(snapshot.workflowPath, 'failed', openWorkflow),
+          )
+          break
+        case 'interrupted':
+          host.background.upsert(
+            workflowRunActivity(
+              snapshot.workflowPath,
+              'reminder',
+              openWorkflow,
+            ),
+          )
+          break
+      }
+      for (const node of snapshot.definition.topology.nodes) {
+        if (
+          snapshot.status === 'running' &&
+          snapshot.nodes[node.id]?.status === 'running'
+        ) {
+          runningNodeWorkflow.set(node.id, snapshot.workflowPath)
+        } else {
+          runningNodeWorkflow.delete(node.id)
+          pendingApprovalNodeIds.delete(node.id)
+        }
+      }
+    })
+    await coordinator.initialize()
+    host.lifecycle.onQuiesce(() => coordinator.quiesce())
 
     host.workspace.registerView({
       type: VIEW_TYPE,
@@ -39,7 +190,9 @@ yolo.registerModule({
       icon: 'git-branch',
       render: (context) => (
         <WorkflowModuleView
+          viewId={context.id}
           editor={getEditor(context)}
+          coordinator={coordinator}
           getCopy={getCopy}
           getLocaleSnapshot={host.i18n.getSnapshot}
           subscribeLocale={host.i18n.subscribe}
@@ -88,7 +241,9 @@ yolo.registerModule({
 })
 
 function WorkflowModuleView({
+  viewId,
   editor,
+  coordinator,
   getCopy,
   getLocaleSnapshot,
   subscribeLocale,
@@ -100,7 +255,9 @@ function WorkflowModuleView({
   notice,
   confirm,
 }: Readonly<{
+  viewId: string
   editor: ReturnType<typeof createWorkflowEditorModel>
+  coordinator: WorkflowRunCoordinator
   getCopy(): ReturnType<typeof createWorkflowCopy>
   getLocaleSnapshot(): Readonly<{ locale: string }>
   subscribeLocale(listener: () => void): () => void
@@ -126,6 +283,22 @@ function WorkflowModuleView({
     getModelSnapshot,
     getModelSnapshot,
   )
+  const editorSnapshot = useSyncExternalStore(
+    editor.subscribe,
+    editor.getSnapshot,
+    editor.getSnapshot,
+  )
+  // One run selection layer per view over the shared module Coordinator.
+  const runs = useMemo(() => createRunSnapshotIndex(coordinator), [coordinator])
+  const runByPath = useSyncExternalStore(
+    runs.subscribe,
+    runs.getSnapshot,
+    runs.getSnapshot,
+  )
+  const currentRun =
+    editorSnapshot.path === null
+      ? null
+      : (runByPath[editorSnapshot.path] ?? null)
   useEffect(() => {
     let active = true
     void readStyle()
@@ -140,7 +313,11 @@ function WorkflowModuleView({
     }
   }, [readStyle])
   return (
-    <div className="yolo-workflow-module-root">
+    <div
+      className="yolo-workflow-module-root"
+      data-yolo-view-id={viewId}
+      data-yolo-run-status={currentRun?.status ?? ''}
+    >
       {styleText ? (
         <style data-yolo-workflow-style="true">{styleText}</style>
       ) : null}
