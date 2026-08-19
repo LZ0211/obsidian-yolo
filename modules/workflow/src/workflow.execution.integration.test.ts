@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 
 import { updateWorkflowManagedBlocks } from './domain/workflow-document'
-import type { WorkflowTopology } from './domain/workflow-model'
+import type { WorkflowNode, WorkflowTopology } from './domain/workflow-model'
 import { createWorkflowRepository } from './domain/workflow-repository'
 import { createWorkflowDefinition } from './execution/workflow-definition'
 import type { WorkflowRunCoordinatorWithNodeTests } from './execution/workflow-run-coordinator'
@@ -497,6 +497,123 @@ describe('workflow execution lifecycle through the module', () => {
       totalTokens: 10,
     })
   })
+
+  it('repairs a rejected schema submission end to end', async () => {
+    const host = new ExecutionHost()
+    seedWorkflow(host)
+    const agentRequests: HostAgentRequest[] = []
+    host.agent = createFakeAgent({
+      onRequest: (request) => agentRequests.push(request),
+      // Round 1 submits a wrong-typed value (rejected by the run-scoped
+      // tool); the executor's repair round submits the corrected value.
+      outputValues: [{ ok: 'not-a-boolean' }, { ok: true }],
+    })
+    await activateModule(host)
+
+    const element = registeredView(host).render(createViewContext('view-1'))
+    const { coordinator, editor } = element.props
+    await editor.load('demo/WORKFLOW.md')
+    const bundle = editor.getSnapshot().bundle
+    expect(bundle).not.toBeNull()
+    const started = await coordinator.start({
+      workflowPath: 'demo/WORKFLOW.md',
+      bundle: bundle!,
+      modelSnapshot: host.modelSnapshot,
+      input: { topic: 'integration' },
+    })
+    expect(started).toEqual({ ok: true, runId: expect.any(String) })
+    if (!started.ok) return
+
+    const snapshot = await terminalStoredRun(host.store, 'demo/WORKFLOW.md')
+    expect(snapshot.status).toBe('succeeded')
+    // The run output is the repaired round-2 value, not the rejected one.
+    expect(snapshot.outputs).toEqual({ output: { ok: true } })
+    expect(snapshot.nodes.agent).toMatchObject({ status: 'succeeded' })
+    // Two streams: the original round and the repair round, whose prompt
+    // carries the rejection feedback from round 1.
+    expect(agentRequests).toHaveLength(2)
+    expect(agentRequests[1].prompt).toContain(
+      'previous submission was rejected',
+    )
+  })
+
+  it('verification hard failure fails the run with verification-failed', async () => {
+    const host = new ExecutionHost()
+    seedWorkflow(host, {
+      verification: {
+        schema: {
+          type: 'object',
+          properties: { ok: { const: true } },
+          required: ['ok'],
+          additionalProperties: false,
+        },
+        mode: 'hard',
+      },
+    })
+    // The submitted value passes the node output schema ({ ok: boolean })
+    // but violates the hard verification postcondition ({ ok: true }).
+    host.agent = createFakeAgent({ outputValues: [{ ok: false }] })
+    await activateModule(host)
+
+    const element = registeredView(host).render(createViewContext('view-1'))
+    const { coordinator, editor } = element.props
+    await editor.load('demo/WORKFLOW.md')
+    const bundle = editor.getSnapshot().bundle
+    expect(bundle).not.toBeNull()
+    const started = await coordinator.start({
+      workflowPath: 'demo/WORKFLOW.md',
+      bundle: bundle!,
+      modelSnapshot: host.modelSnapshot,
+      input: { topic: 'integration' },
+    })
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+
+    const snapshot = await terminalStoredRun(host.store, 'demo/WORKFLOW.md')
+    expect(snapshot.status).toBe('failed')
+    expect(snapshot.nodes.agent).toMatchObject({
+      status: 'failed',
+      error: { code: 'verification-failed', nodeId: 'agent' },
+    })
+    expect(snapshot.error).toMatchObject({
+      code: 'verification-failed',
+      nodeId: 'agent',
+      message: expect.stringMatching(/^verification: /),
+    })
+  })
+
+  it('routes a tier alias to the mapped model', async () => {
+    const host = new ExecutionHost()
+    seedWorkflow(host, { modelId: 'deep' })
+    const agentRequests: HostAgentRequest[] = []
+    host.agent = createFakeAgent({
+      onRequest: (request) => agentRequests.push(request),
+    })
+    await activateModule(host)
+
+    const element = registeredView(host).render(createViewContext('view-1'))
+    const { coordinator, editor } = element.props
+    await editor.load('demo/WORKFLOW.md')
+    const bundle = editor.getSnapshot().bundle
+    expect(bundle).not.toBeNull()
+    const started = await coordinator.start({
+      workflowPath: 'demo/WORKFLOW.md',
+      bundle: bundle!,
+      modelSnapshot: host.modelSnapshot,
+      tierMap: { deep: 'deep-model' },
+      input: { topic: 'integration' },
+    })
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+
+    const snapshot = await terminalStoredRun(host.store, 'demo/WORKFLOW.md')
+    expect(snapshot.status).toBe('succeeded')
+    // The alias resolved to the mapped model both in the frozen definition
+    // and on the agent request the executor made.
+    expect(snapshot.definition.modelByNodeId.agent).toBe('deep-model')
+    expect(agentRequests).toHaveLength(1)
+    expect(agentRequests[0].modelId).toBe('deep-model')
+  })
 })
 
 async function activateModule(host: ExecutionHost): Promise<void> {
@@ -561,11 +678,14 @@ function deferred(): Readonly<{
   return { promise, resolve }
 }
 
-function seedWorkflow(host: ExecutionHost): void {
+function seedWorkflow(
+  host: ExecutionHost,
+  agentPatch?: Readonly<Partial<WorkflowNode>>,
+): void {
   const copy = createWorkflowCopy('en')
   const manifest = updateWorkflowManagedBlocks(
     '# Demo\n',
-    createTopology(),
+    createTopology(agentPatch),
     copy,
   )
   host.file('managed/workflows/demo/WORKFLOW.md', manifest)
@@ -574,7 +694,9 @@ function seedWorkflow(host: ExecutionHost): void {
   host.file('managed/workflows/demo/steps/output/STEP.md', '# Output\n')
 }
 
-function createTopology(): WorkflowTopology {
+function createTopology(
+  agentPatch: Readonly<Partial<WorkflowNode>> = {},
+): WorkflowTopology {
   return {
     revision: 1,
     nodes: [
@@ -597,6 +719,7 @@ function createTopology(): WorkflowTopology {
           required: ['ok'],
           additionalProperties: false,
         },
+        ...agentPatch,
       },
       {
         id: 'output',
@@ -617,9 +740,10 @@ type HostAgentRequest = Parameters<YoloModuleHostApiV1['agent']['stream']>[0]
 
 /**
  * Host-side agent stand-in: announces awaiting_approval, submits the node's
- * result through the run-scoped tool exactly like the real host dispatcher,
- * then completes. With `gate` the stream parks until released, which lets
- * tests observe the running activity and abort the run from the host side.
+ * result through the run-scoped `submit_workflow_output` tool exactly like
+ * the real host dispatcher, then completes. With `gate` the stream parks
+ * until released, which lets tests observe the running activity and abort
+ * the run from the host side.
  */
 function createFakeAgent(
   options: Readonly<{
@@ -630,6 +754,15 @@ function createFakeAgent(
       outputTokens?: number
       totalTokens?: number
     }>
+    /**
+     * Scripted values for `submit_workflow_output`, one per executor round:
+     * round 1 submits index 0, the repair round index 1, and so on. A
+     * rejected submission ends its round normally (the executor starts the
+     * repair round instead of failing the node); an accepted one completes
+     * the round. Exhausted scripts fall back to `{ ok: true }`, the same
+     * value the unscripted agent always submits.
+     */
+    outputValues?: readonly unknown[]
   }> = {},
 ): YoloModuleHostApiV1['agent'] {
   type HostAgentEvent =
@@ -638,11 +771,14 @@ function createFakeAgent(
     >
       ? Event
       : never
+  let outputRound = 0
   const stream = async function* (
     request: HostAgentRequest,
   ): AsyncGenerator<HostAgentEvent> {
     options.onRequest?.(request)
-    const tool = request.tools?.[0]
+    const tool = request.tools?.find(
+      (candidate) => candidate.name === 'submit_workflow_output',
+    )
     if (tool) {
       yield {
         type: 'tool',
@@ -652,16 +788,26 @@ function createFakeAgent(
       }
       if (options.gate) await options.gate
       if (request.signal?.aborted) return
-      const result = await tool.handler({ value: { ok: true } })
-      if (result.isError)
-        throw new Error(
-          'workflow execution test agent: output submission rejected',
-        )
+      const scripted = options.outputValues
+      const value = scripted ? scripted[outputRound++] : { ok: true }
+      const result = await tool.handler({ value })
+      if (result.isError) {
+        // Rejected: end the round without an error event so the executor
+        // records the rejection and runs its repair round.
+        yield { type: 'completed', text: 'done' }
+        return
+      }
       yield { type: 'tool', name: tool.name, status: 'completed' }
-    } else {
-      if (options.gate) await options.gate
-      if (request.signal?.aborted) return
+      yield {
+        type: 'completed',
+        text: 'done',
+        ...(options.usage ? { usage: options.usage } : {}),
+      }
+      return
     }
+    // Text-mode calls (no tools): finish in plain text.
+    if (options.gate) await options.gate
+    if (request.signal?.aborted) return
     yield {
       type: 'completed',
       text: 'done',
@@ -746,6 +892,8 @@ class ExecutionHost {
     models: [
       { id: 'default-model', name: 'Default model', providerId: 'provider' },
       { id: 'explicit-model', name: 'Explicit model', providerId: 'provider' },
+      // Mapped target for the tier-alias routing test.
+      { id: 'deep-model', name: 'Deep model', providerId: 'provider' },
     ],
   }
   /** Swappable per test; `api.agent` forwards to the current value. */

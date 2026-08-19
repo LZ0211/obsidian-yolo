@@ -1330,6 +1330,82 @@ describe('workflow studio UI interactions', () => {
 
     expect(selectNode).toHaveBeenCalledWith('agent')
   })
+
+  it('shows the tier hint only for tier-alias nodes with a frozen resolved model', async () => {
+    const tierTopology: WorkflowTopology = {
+      ...createTopology(),
+      nodes: createTopology().nodes.map((node) =>
+        node.id === 'agent' ? { ...node, modelId: 'deep' } : node,
+      ),
+    }
+    const hintSelector = '.yolo-workflow-inspector__hint'
+
+    // A tier-alias node with the resolved model frozen in the last run
+    // definition shows the hint with the mapped model.
+    const { model } = createModel({
+      topology: tierTopology,
+      selectedNodeId: 'agent',
+    })
+    await renderStudio(model, jest.fn(), jest.fn(async () => true), {
+      run: createRunSnapshot({
+        definition: {
+          ...createRunSnapshot().definition,
+          modelByNodeId: { input: 'provider/model', agent: 'deep-model' },
+        },
+      }),
+    })
+    const hint = testContainer.querySelector<HTMLSpanElement>(hintSelector)
+    expect(hint).not.toBeNull()
+    expect(hint!.textContent).toContain('Deep tier model')
+    expect(hint!.textContent).toContain('Resolves to: deep-model')
+
+    // Hides when the run has no frozen resolution for the node.
+    act(() => testRoot.unmount())
+    testRoot = createRoot(testContainer)
+    const { model: noResolution } = createModel({
+      topology: tierTopology,
+      selectedNodeId: 'agent',
+    })
+    await renderStudio(
+      noResolution,
+      jest.fn(),
+      jest.fn(async () => true),
+      {
+        run: createRunSnapshot({
+          definition: {
+            ...createRunSnapshot().definition,
+            modelByNodeId: { input: 'provider/model' },
+          },
+        }),
+      },
+    )
+    expect(testContainer.querySelector(hintSelector)).toBeNull()
+
+    // Hides when the node model id is not a tier alias.
+    act(() => testRoot.unmount())
+    testRoot = createRoot(testContainer)
+    const { model: explicitModel } = createModel({
+      topology: createTopology(),
+      selectedNodeId: 'agent',
+    })
+    await renderStudio(
+      explicitModel,
+      jest.fn(),
+      jest.fn(async () => true),
+      { run: createRunSnapshot() },
+    )
+    expect(testContainer.querySelector(hintSelector)).toBeNull()
+
+    // Hides without a run: there is no frozen resolution to show.
+    act(() => testRoot.unmount())
+    testRoot = createRoot(testContainer)
+    const { model: idleModel } = createModel({
+      topology: tierTopology,
+      selectedNodeId: 'agent',
+    })
+    await renderStudio(idleModel)
+    expect(testContainer.querySelector(hintSelector)).toBeNull()
+  })
 })
 
 async function renderStudio(

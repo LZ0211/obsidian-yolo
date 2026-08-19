@@ -618,6 +618,12 @@
   font-size: 10px;
 }
 
+.yolo-workflow-inspector__hint {
+  color: var(--yolo-workflow-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .yolo-workflow-inspector__field input,
 .yolo-workflow-inspector__field select,
 .yolo-workflow-inspector__field textarea,
