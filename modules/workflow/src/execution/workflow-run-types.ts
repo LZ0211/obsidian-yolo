@@ -45,6 +45,7 @@ export type WorkflowRunError = Readonly<{
     | 'model-unavailable'
     | 'agent-failed'
     | 'invalid-output'
+    | 'verification-failed'
     | 'storage-failed'
     | 'cancelled'
   nodeId?: string
@@ -102,6 +103,12 @@ export type WorkflowNodeExecutionResult = Readonly<{
   conditionResult?: boolean
   /** Token usage of the node's agent calls, when the provider reported it. */
   usage?: WorkflowTokenUsage
+  /**
+   * Node verification results. Each entry is a full `verification: <msg>`
+   * string; the coordinator appends them to the node run detail on a full
+   * run and returns them to the caller of a node test.
+   */
+  warnings?: readonly string[]
 }>
 
 export type WorkflowNodeExecutor = Readonly<{

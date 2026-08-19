@@ -35,7 +35,10 @@ import type {
   WorkflowRunStore,
   WorkflowTokenUsage,
 } from './workflow-run-types'
-import { validateJsonSchemaOutput } from './workflow-schema'
+import {
+  validateJsonSchemaOutput,
+  workflowSchemaValidator,
+} from './workflow-schema'
 
 export type WorkflowRunCoordinatorOptions = Readonly<{
   executor: WorkflowNodeExecutor
@@ -117,6 +120,32 @@ const terminal = (
     ...(usage ? { usage } : {}),
     ...patch,
   })
+}
+
+/**
+ * Applies a node's verification postcondition to a produced value and is the
+ * single judge for every node result: the executor path, the coordinator's
+ * direct-compute output path, and the node-test path all share it, so the
+ * same value is judged identically in a full run and in a preview. Returns
+ * the verification warnings (always full `verification: <msg>` strings) when
+ * the value passed or failed softly; a hard mismatch throws
+ * `WorkflowNodeExecutionError('verification-failed', ...)`.
+ */
+function finalizeNodeResult(
+  node: WorkflowNode,
+  value: JsonValue,
+): Readonly<{ warnings?: readonly string[] }> {
+  const verification = node.verification
+  if (verification === undefined) return {}
+  const check = workflowSchemaValidator.validateValue(
+    verification.schema,
+    value,
+  )
+  if (check.ok) return { warnings: ['verification: ok'] }
+  const message = `verification: ${check.message}`
+  if (verification.mode === 'hard')
+    throw new WorkflowNodeExecutionError('verification-failed', message)
+  return { warnings: [message] }
 }
 
 export function createWorkflowRunCoordinator(
@@ -328,6 +357,20 @@ export function createWorkflowRunCoordinator(
         return
       }
     }
+    let warnings: readonly string[] | undefined
+    try {
+      warnings = finalizeNodeResult(node, result.value).warnings
+    } catch (error) {
+      await failNode(
+        run,
+        node.id,
+        error instanceof WorkflowNodeExecutionError
+          ? error.code
+          : 'verification-failed',
+        error instanceof Error ? error.message : String(error),
+      )
+      return
+    }
     const succeeded = transition(
       run,
       { nodeId: node.id, expectedNodeStatus: 'running' },
@@ -336,6 +379,7 @@ export function createWorkflowRunCoordinator(
           status: 'succeeded',
           output: cloneJsonValue(result.value),
           ...(result.usage ? { usage: result.usage } : {}),
+          ...(warnings ? { detail: warnings.join('; ') } : {}),
           finishedAt: now(),
         }),
     )
@@ -422,6 +466,20 @@ export function createWorkflowRunCoordinator(
         sources.length === 1
           ? sources[0].value
           : mergeWorkflowSources(sources, strategy)
+      let warnings: readonly string[] | undefined
+      try {
+        warnings = finalizeNodeResult(node, value).warnings
+      } catch (error) {
+        await failNode(
+          run,
+          node.id,
+          error instanceof WorkflowNodeExecutionError
+            ? error.code
+            : 'verification-failed',
+          error instanceof Error ? error.message : String(error),
+        )
+        return
+      }
       const next = transition(
         run,
         { nodeId: node.id, expectedNodeStatus: 'pending' },
@@ -429,6 +487,7 @@ export function createWorkflowRunCoordinator(
           withNodeRun(snapshot, node.id, {
             status: 'succeeded',
             output: cloneJsonValue(value),
+            ...(warnings ? { detail: warnings.join('; ') } : {}),
             startedAt: now(),
             finishedAt: now(),
           }),
@@ -978,7 +1037,10 @@ export function createWorkflowRunCoordinator(
             `Node "${nodeId}" output failed its schema: ${schemaErrors.slice(0, 3).join('; ')}`,
           )
       }
-      return result
+      // Warnings ride the result back to the UI; a hard mismatch rejects
+      // with the shared finalize helper's verification-failed error.
+      const { warnings } = finalizeNodeResult(node, result.value)
+      return warnings ? { ...result, warnings } : result
     } finally {
       if (activeNodeTests.get(viewId) === controller)
         activeNodeTests.delete(viewId)
