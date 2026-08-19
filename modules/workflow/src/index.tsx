@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 
 import { createWorkflowRepository } from './domain/workflow-repository'
 import { createWorkflowChatTools } from './domain/workflow-tools'
@@ -6,9 +12,13 @@ import { createWorkflowNodeExecutor } from './execution/workflow-node-executor'
 import { createWorkflowRunCoordinator } from './execution/workflow-run-coordinator'
 import { createWorkflowRunStore } from './execution/workflow-run-store'
 import type {
+  JsonValue,
   WorkflowRunCoordinator,
+  WorkflowRunError,
   WorkflowRunSnapshot,
+  WorkflowRunStartFailureReason,
 } from './execution/workflow-run-types'
+import type { WorkflowCopy } from './i18n'
 import { createWorkflowCopy, createWorkflowLocalizedText } from './i18n'
 import { createWorkflowEditorModel } from './ui/workflow-editor-model'
 import { WorkflowStudio } from './ui/workflow-studio'
@@ -299,6 +309,50 @@ function WorkflowModuleView({
     editorSnapshot.path === null
       ? null
       : (runByPath[editorSnapshot.path] ?? null)
+  const startRun = useCallback(
+    (input: JsonValue, modelId: string): void => {
+      const snapshot = editor.getSnapshot()
+      if (!snapshot.path || !snapshot.bundle) return
+      void coordinator
+        .start({
+          workflowPath: snapshot.path,
+          bundle: snapshot.bundle,
+          modelSnapshot: { ...models, defaultModelId: modelId },
+          input,
+        })
+        .then((result) => {
+          if (!result.ok)
+            notice(
+              runStartFailureMessage(result.reason, getCopy(), result.error),
+            )
+        })
+        .catch((error: unknown) =>
+          notice(error instanceof Error ? error.message : String(error)),
+        )
+    },
+    [coordinator, editor, getCopy, models, notice],
+  )
+  const cancelRun = useCallback((): void => {
+    const path = editor.getSnapshot().path
+    if (path !== null) void coordinator.cancel(path)
+  }, [coordinator, editor])
+  const continueRun = useCallback((): void => {
+    const path = editor.getSnapshot().path
+    if (path === null) return
+    void coordinator
+      .continueRun(path, { confirmSideEffects: true })
+      .then((result) => {
+        if (result.ok) return
+        if (result.reason === 'already-running') {
+          notice(getCopy().run.alreadyRunning)
+          return
+        }
+        notice(result.error?.message ?? getCopy().run.error)
+      })
+      .catch((error: unknown) =>
+        notice(error instanceof Error ? error.message : String(error)),
+      )
+  }, [coordinator, editor, getCopy, notice])
   useEffect(() => {
     let active = true
     void readStyle()
@@ -329,7 +383,22 @@ function WorkflowModuleView({
         confirm={confirm}
         agent={agent}
         models={models}
+        run={currentRun}
+        onStart={startRun}
+        onCancel={cancelRun}
+        onContinue={continueRun}
       />
     </div>
   )
+}
+
+function runStartFailureMessage(
+  reason: WorkflowRunStartFailureReason,
+  copy: WorkflowCopy,
+  error?: WorkflowRunError,
+): string {
+  if (reason === 'already-running') return copy.run.alreadyRunning
+  if (reason === 'model-unavailable') return copy.run.noModel
+  if (reason === 'invalid-definition') return copy.run.invalidDefinition
+  return error?.message ?? copy.run.error
 }

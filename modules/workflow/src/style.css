@@ -94,16 +94,6 @@
   text-transform: uppercase;
 }
 
-.yolo-workflow-toolbar__session-boundary {
-  display: block;
-  max-width: 300px;
-  overflow: hidden;
-  color: var(--yolo-workflow-muted) !important;
-  font-size: 9px !important;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .yolo-workflow-toolbar__identity strong {
   overflow: hidden;
   color: var(--text-normal);
@@ -1371,15 +1361,21 @@
   display: none;
 }
 
-.yolo-workflow-assistant {
+.yolo-workflow-studio-bottom {
   display: flex;
   grid-column: 2;
   grid-row: 5;
-  min-height: 176px;
-  max-height: 245px;
+  min-height: 0;
   flex-direction: column;
   border-top: 1px solid var(--yolo-workflow-border);
   background: color-mix(in srgb, var(--yolo-workflow-panel) 97%, transparent);
+}
+
+.yolo-workflow-assistant {
+  display: flex;
+  min-height: 176px;
+  max-height: 245px;
+  flex-direction: column;
 }
 
 .yolo-workflow-assistant__header {
@@ -1612,6 +1608,454 @@
   text-align: center;
 }
 
+.yolo-workflow-studio-tabs {
+  display: flex;
+  min-height: 34px;
+  flex: 0 0 auto;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 4px 10px 0;
+  border-bottom: 1px solid var(--yolo-workflow-border);
+}
+
+.yolo-workflow-studio-tabs button {
+  min-height: 29px;
+  padding: 0 13px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--yolo-workflow-muted);
+  cursor: pointer;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.yolo-workflow-studio-tabs button:hover:not(.is-active) {
+  color: var(--yolo-workflow-accent);
+}
+
+.yolo-workflow-studio-tabs button.is-active {
+  border-color: var(--yolo-workflow-border-strong);
+  background: var(--yolo-workflow-panel-strong);
+  color: var(--yolo-workflow-accent);
+  font-weight: 700;
+}
+
+.yolo-workflow-run-panel {
+  display: flex;
+  min-height: 176px;
+  max-height: 245px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  overflow: hidden;
+}
+
+.yolo-workflow-run-controls {
+  display: flex;
+  min-height: 0;
+  flex: 0 0 auto;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.yolo-workflow-run-controls__field {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  color: var(--yolo-workflow-muted);
+  font-size: 10px;
+}
+
+.yolo-workflow-run-controls__model {
+  width: min(170px, 30%);
+}
+
+.yolo-workflow-run-controls__input {
+  flex: 1 1 180px;
+}
+
+.yolo-workflow-run-controls__field select,
+.yolo-workflow-run-controls__field textarea {
+  width: 100%;
+  border: 1px solid var(--yolo-workflow-border-strong);
+  border-radius: 7px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: 10px;
+}
+
+.yolo-workflow-run-controls__field select {
+  min-height: 28px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.yolo-workflow-run-controls__field textarea {
+  min-height: 28px;
+  max-height: 52px;
+  resize: vertical;
+  padding: 5px 8px;
+  font-family: var(--font-monospace);
+  line-height: 1.5;
+}
+
+.yolo-workflow-run-controls__field textarea::placeholder {
+  color: var(--yolo-workflow-muted);
+}
+
+.yolo-workflow-run-controls__field select:focus,
+.yolo-workflow-run-controls__field textarea:focus {
+  border-color: var(--yolo-workflow-accent);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--yolo-workflow-accent-soft);
+}
+
+.yolo-workflow-run-controls__actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.yolo-workflow-run-controls__actions button {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 11px;
+  border: 1px solid var(--yolo-workflow-border-strong);
+  border-radius: 7px;
+  background: var(--yolo-workflow-panel-strong);
+  color: var(--text-normal);
+  cursor: pointer;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.yolo-workflow-run-controls__actions button:hover:not(:disabled) {
+  border-color: var(--yolo-workflow-accent);
+  background: var(--yolo-workflow-accent-soft);
+  color: var(--yolo-workflow-accent);
+}
+
+.yolo-workflow-run-controls__actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.yolo-workflow-run-controls__actions .yolo-workflow-run-controls__run {
+  border-color: var(--yolo-workflow-accent);
+  background: var(--yolo-workflow-accent);
+  color: var(--text-on-accent);
+}
+
+.yolo-workflow-run-controls__actions
+  .yolo-workflow-run-controls__run:hover:not(:disabled) {
+  background: var(--yolo-workflow-accent);
+  color: var(--text-on-accent);
+  filter: brightness(1.08);
+}
+
+.yolo-workflow-run-controls__actions .yolo-workflow-run-controls__stop {
+  border-color: color-mix(
+    in srgb,
+    var(--yolo-workflow-danger) 52%,
+    var(--yolo-workflow-border)
+  );
+  color: var(--yolo-workflow-danger);
+}
+
+.yolo-workflow-run-input-error {
+  color: var(--yolo-workflow-danger);
+  font-size: 9px;
+}
+
+.yolo-workflow-run-confirmation {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid
+    color-mix(in srgb, var(--yolo-workflow-warning) 42%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--yolo-workflow-warning) 9%, transparent);
+  color: var(--yolo-workflow-warning);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.yolo-workflow-run-panel__empty {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+}
+
+.yolo-workflow-run-body {
+  display: grid;
+  min-height: 0;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(86px, 0.55fr) minmax(128px, 1fr) minmax(
+      168px,
+      1.45fr
+    );
+  gap: 8px;
+  overflow: hidden;
+}
+
+.yolo-workflow-run-status {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--yolo-workflow-border);
+  border-radius: 9px;
+  background: var(--yolo-workflow-panel-strong);
+  overflow: hidden;
+}
+
+.yolo-workflow-run-status__badge {
+  align-self: flex-start;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.yolo-workflow-run-status__badge--running {
+  background: var(--yolo-workflow-accent-soft);
+  color: var(--yolo-workflow-accent);
+}
+
+.yolo-workflow-run-status__badge--succeeded {
+  background: color-mix(in srgb, var(--yolo-workflow-success) 13%, transparent);
+  color: var(--yolo-workflow-success);
+}
+
+.yolo-workflow-run-status__badge--failed {
+  background: color-mix(in srgb, var(--yolo-workflow-danger) 13%, transparent);
+  color: var(--yolo-workflow-danger);
+}
+
+.yolo-workflow-run-status__badge--cancelled,
+.yolo-workflow-run-status__badge--interrupted {
+  background: color-mix(in srgb, var(--yolo-workflow-warning) 13%, transparent);
+  color: var(--yolo-workflow-warning);
+}
+
+.yolo-workflow-run-status__progress {
+  color: var(--yolo-workflow-muted);
+  font-family: var(--font-monospace);
+  font-size: 10px;
+}
+
+.yolo-workflow-run-status__error {
+  overflow: hidden;
+  color: var(--yolo-workflow-danger);
+  font-size: 9px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.yolo-workflow-run-nodes {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--yolo-workflow-border);
+  border-radius: 9px;
+  background: var(--yolo-workflow-panel-strong);
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.yolo-workflow-run-node {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-normal);
+  cursor: pointer;
+  font-size: 10px;
+  text-align: left;
+}
+
+.yolo-workflow-run-node:hover,
+.yolo-workflow-run-node.is-active {
+  border-color: color-mix(
+    in srgb,
+    var(--yolo-workflow-accent) 35%,
+    var(--yolo-workflow-border)
+  );
+  background: var(--yolo-workflow-accent-soft);
+}
+
+.yolo-workflow-run-node__badge {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--yolo-workflow-muted);
+  opacity: 0.55;
+}
+
+.yolo-workflow-run-node__badge--running {
+  background: var(--yolo-workflow-accent);
+  opacity: 1;
+}
+
+.yolo-workflow-run-node__badge--succeeded {
+  background: var(--yolo-workflow-success);
+  opacity: 1;
+}
+
+.yolo-workflow-run-node__badge--failed {
+  background: var(--yolo-workflow-danger);
+  opacity: 1;
+}
+
+.yolo-workflow-run-node__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.yolo-workflow-run-node small {
+  margin-left: auto;
+  flex: none;
+  color: var(--yolo-workflow-muted);
+  font-size: 8px;
+  white-space: nowrap;
+}
+
+.yolo-workflow-run-detail {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--yolo-workflow-border);
+  border-radius: 9px;
+  background: var(--yolo-workflow-panel-strong);
+  overflow: hidden;
+}
+
+.yolo-workflow-run-detail__tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.yolo-workflow-run-detail__tabs button {
+  min-height: 22px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--yolo-workflow-muted);
+  cursor: pointer;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.yolo-workflow-run-detail__tabs button:hover:not(.is-active) {
+  color: var(--yolo-workflow-accent);
+}
+
+.yolo-workflow-run-detail__tabs button.is-active {
+  border-color: color-mix(
+    in srgb,
+    var(--yolo-workflow-accent) 35%,
+    transparent
+  );
+  background: var(--yolo-workflow-accent-soft);
+  color: var(--yolo-workflow-accent);
+}
+
+.yolo-workflow-run-detail__content {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-items: flex-start;
+  overflow: hidden;
+}
+
+.yolo-workflow-run-preview,
+.yolo-workflow-run-error {
+  width: 100%;
+  max-height: 110px;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--yolo-workflow-border);
+  border-radius: 7px;
+  background: var(--background-primary);
+  font-family: var(--font-monospace);
+  font-size: 9px;
+  line-height: 1.6;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+  white-space: pre-wrap;
+}
+
+.yolo-workflow-run-preview {
+  color: var(--text-normal);
+}
+
+.yolo-workflow-run-error {
+  border-color: color-mix(
+    in srgb,
+    var(--yolo-workflow-danger) 45%,
+    var(--yolo-workflow-border)
+  );
+  background: color-mix(in srgb, var(--yolo-workflow-danger) 8%, transparent);
+  color: var(--yolo-workflow-danger);
+}
+
+.yolo-workflow-run-output {
+  display: flex;
+  min-height: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.yolo-workflow-run-output__value {
+  max-height: 64px;
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--yolo-workflow-border);
+  border-radius: 7px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-family: var(--font-monospace);
+  font-size: 9px;
+  line-height: 1.6;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 1050px) {
   .yolo-workflow-studio {
     grid-template-columns: minmax(165px, 25%) minmax(0, 1fr) minmax(215px, 29%);
@@ -1640,7 +2084,7 @@
   }
 
   .yolo-workflow-studio--rail-closed
-    :is(.yolo-workflow-add-node-bar, .yolo-workflow-assistant) {
+    :is(.yolo-workflow-add-node-bar, .yolo-workflow-studio-bottom) {
     grid-column: 1;
   }
 
@@ -1694,7 +2138,7 @@
 
   .yolo-workflow-canvas-shell,
   .yolo-workflow-add-node-bar,
-  .yolo-workflow-assistant {
+  .yolo-workflow-studio-bottom {
     grid-column: 1;
   }
 
@@ -1776,6 +2220,45 @@
 
   .yolo-workflow-assistant__proposal {
     min-height: 130px;
+  }
+
+  .yolo-workflow-run-panel {
+    padding: 8px;
+  }
+
+  .yolo-workflow-run-controls {
+    flex-wrap: wrap;
+  }
+
+  .yolo-workflow-run-controls__model {
+    width: 48%;
+  }
+
+  .yolo-workflow-run-controls__input {
+    flex: 1 1 100%;
+    order: 3;
+  }
+
+  .yolo-workflow-run-controls__actions {
+    margin-left: auto;
+  }
+
+  .yolo-workflow-run-body {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+
+  .yolo-workflow-run-status {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .yolo-workflow-run-nodes {
+    max-height: 108px;
+  }
+
+  .yolo-workflow-run-detail {
+    min-height: 120px;
   }
 
   .yolo-workflow-apply-float {

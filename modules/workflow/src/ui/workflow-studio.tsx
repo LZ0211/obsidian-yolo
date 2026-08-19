@@ -17,6 +17,7 @@ import {
   Maximize2,
   PanelLeft,
   PanelRight,
+  Play,
   Plus,
   Redo2,
   Save,
@@ -57,10 +58,15 @@ import {
 import type { WorkflowCopy } from '../i18n'
 import type { WorkflowBundle } from '../domain/workflow-repository'
 import type {
+  JsonValue,
+  WorkflowRunSnapshot,
+} from '../execution/workflow-run-types'
+import type {
   WorkflowEditorModel,
   WorkflowEditorSnapshot,
 } from './workflow-editor-model'
 import { WorkflowGraph, type WorkflowGraphController } from './workflow-graph'
+import { WorkflowRunPanel } from './workflow-run-panel'
 
 export type WorkflowStudioProps = Readonly<{
   model: WorkflowEditorModel
@@ -77,6 +83,13 @@ export type WorkflowStudioProps = Readonly<{
   ): Promise<boolean>
   agent: YoloModuleHostApiV1['agent']
   models: YoloModuleHostModelSnapshotV1
+  /** The current path's run snapshot, or null when it has no run record. */
+  run: WorkflowRunSnapshot | null
+  onStart(input: JsonValue, modelId: string): void
+  onCancel(): void
+  onContinue(): void
+  /** Wired in a later task; hidden until the Coordinator exposes testNode. */
+  onTestNode?(nodeId: string): void
 }>
 
 type PendingConnection = Readonly<{
@@ -125,12 +138,21 @@ export function WorkflowStudio({
   confirm,
   agent,
   models,
+  run,
+  onStart,
+  onCancel,
+  onContinue,
+  onTestNode,
 }: WorkflowStudioProps) {
   const snapshot = useSyncExternalStore(
     model.subscribe,
     model.getSnapshot,
     model.getSnapshot,
   )
+  const [studioTab, setStudioTab] = useState<'assistant' | 'run'>('assistant')
+  // The only editor lock is UI-layer gating derived from the run snapshot;
+  // the editor model itself stays run-agnostic.
+  const runActive = run !== null && run.status === 'running'
   const rootRef = useRef<HTMLDivElement | null>(null)
   const importRef = useRef<HTMLInputElement | null>(null)
   const [controller, setController] = useState<WorkflowGraphController | null>(
@@ -294,11 +316,12 @@ export function WorkflowStudio({
 
   const updateTopology = useCallback(
     (next: WorkflowTopology) => {
+      if (runActive) return
       setPendingConnection(null)
       setConnectionMessage(null)
       model.updateTopology(next)
     },
-    [model],
+    [model, runActive],
   )
 
   const updateNode = useCallback(
@@ -323,6 +346,7 @@ export function WorkflowStudio({
 
   const addConnection = useCallback(
     (candidate: WorkflowConnectionCandidate) => {
+      if (runActive) return
       const topology = snapshot.topology
       if (!topology) return
       const problem = connectionProblem(topology, candidate)
@@ -348,7 +372,7 @@ export function WorkflowStudio({
         : [...topology.edges, edge]
       updateTopology({ ...topology, edges })
     },
-    [copy, showConnectionMessage, snapshot.topology, updateTopology],
+    [copy, runActive, showConnectionMessage, snapshot.topology, updateTopology],
   )
 
   const chooseConnectionBranch = useCallback(
@@ -461,6 +485,7 @@ export function WorkflowStudio({
 
   const addNode = useCallback(
     (kind: WorkflowNodeKind) => {
+      if (runActive) return
       const topology = snapshot.topology
       if (!topology) return
       const nodeId = nextNodeId(topology.nodes, kind)
@@ -495,6 +520,7 @@ export function WorkflowStudio({
       copy.chatToolError.applyFailed,
       copy.nodeKind,
       model,
+      runActive,
       selectNode,
       showNotice,
       snapshot.topology,
@@ -502,7 +528,7 @@ export function WorkflowStudio({
   )
 
   const applyChanges = useCallback(() => {
-    if (saving) return
+    if (runActive || saving) return
     setSaving(true)
     void model
       .apply()
@@ -525,6 +551,7 @@ export function WorkflowStudio({
     copy.chatToolError.applyFailed,
     copy.state.conflict,
     model,
+    runActive,
     saving,
     showNotice,
   ])
@@ -553,6 +580,7 @@ export function WorkflowStudio({
 
   const deleteNode = useCallback(
     (nodeId: string) => {
+      if (runActive) return
       void model
         .removeNode(nodeId)
         .then((removed) => {
@@ -565,7 +593,7 @@ export function WorkflowStudio({
           showNotice(error instanceof Error ? error.message : String(error)),
         )
     },
-    [copy.chatToolError.applyFailed, model, selectNode, showNotice],
+    [copy.chatToolError.applyFailed, model, runActive, selectNode, showNotice],
   )
 
   const reconnectEdge = useCallback(
@@ -672,6 +700,7 @@ export function WorkflowStudio({
   )
 
   const acceptAssistantProposal = useCallback(() => {
+    if (runActive) return
     if (!assistantProposal) return
     if (!snapshot.bundle) return
     if (
@@ -693,6 +722,7 @@ export function WorkflowStudio({
     assistantProposal,
     copy.assistant.stale,
     model,
+    runActive,
     showNotice,
     snapshot.bundle,
     snapshot.topology,
@@ -700,7 +730,7 @@ export function WorkflowStudio({
 
   const saveFile = useCallback(
     (nodeId: string) => {
-      if (saving) return
+      if (runActive || saving) return
       setSaving(true)
       void model
         .saveFile(nodeId)
@@ -722,6 +752,7 @@ export function WorkflowStudio({
       copy.chatToolError.applyFailed,
       copy.state.conflict,
       model,
+      runActive,
       saving,
       showNotice,
     ],
@@ -815,9 +846,6 @@ export function WorkflowStudio({
               <strong>{copy.studio.title}</strong>
               <span>{copy.studio.editorOnly}</span>
             </div>
-            <span className="yolo-workflow-toolbar__session-boundary">
-              {copy.studio.sessionBoundary}
-            </span>
           </div>
         </div>
         <div className="yolo-workflow-toolbar__status" role="status">
@@ -958,26 +986,40 @@ export function WorkflowStudio({
             <CanvasToolbarButton
               icon={<Save size={13} />}
               label={copy.toolbar.save}
-              disabled={saving || !snapshot.dirty}
+              disabled={runActive || saving || !snapshot.dirty}
               onClick={applyChanges}
             />
             <CanvasToolbarButton
               icon={<Undo2 size={13} />}
               label={copy.toolbar.undo}
-              disabled={!snapshot.canUndo}
-              onClick={() => model.undo()}
+              disabled={runActive || !snapshot.canUndo}
+              onClick={() => {
+                if (!runActive) model.undo()
+              }}
             />
             <CanvasToolbarButton
               icon={<Redo2 size={13} />}
               label={copy.toolbar.redo}
-              disabled={!snapshot.canRedo}
-              onClick={() => model.redo()}
+              disabled={runActive || !snapshot.canRedo}
+              onClick={() => {
+                if (!runActive) model.redo()
+              }}
             />
             <CanvasToolbarButton
               icon={<LayoutDashboard size={13} />}
               label={copy.toolbar.layout}
-              disabled={!snapshot.topology}
-              onClick={() => model.autoLayout()}
+              disabled={runActive || !snapshot.topology}
+              onClick={() => {
+                if (!runActive) model.autoLayout()
+              }}
+            />
+            <CanvasToolbarButton
+              icon={runActive ? <CircleStop size={13} /> : <Play size={13} />}
+              label={runActive ? copy.run.stop : copy.run.run}
+              onClick={() => {
+                setStudioTab('run')
+                if (runActive) onCancel()
+              }}
             />
             <CanvasToolbarButton
               icon={<Trash2 size={13} />}
@@ -1067,6 +1109,7 @@ export function WorkflowStudio({
             bundle={snapshot.bundle}
             markdownTarget={markdownTarget}
             copy={copy}
+            readOnly={runActive}
             onChange={updateNode}
             onChangeFile={model.updateFile}
             onSaveFile={saveFile}
@@ -1085,7 +1128,7 @@ export function WorkflowStudio({
           className="yolo-workflow-apply-float"
           aria-label={copy.toolbar.apply}
           title={copy.toolbar.apply}
-          disabled={saving || !snapshot.dirty}
+          disabled={runActive || saving || !snapshot.dirty}
           onClick={applyChanges}
         >
           <Check size={14} />
@@ -1095,26 +1138,69 @@ export function WorkflowStudio({
       ) : null}
       <WorkflowAddNodeBar
         copy={copy}
-        disabled={!snapshot.topology}
+        disabled={runActive || !snapshot.topology}
         onAdd={addNode}
       />
-      <WorkflowAssistant
-        snapshot={snapshot}
-        copy={copy}
-        action={assistantAction}
-        proposal={assistantProposal}
-        modelId={assistantModelId}
-        models={models}
-        instruction={assistantInstruction}
-        running={assistantRunning}
-        onAction={runAssistant}
-        onModelChange={setAssistantModelId}
-        onInstructionChange={setAssistantInstruction}
-        onCancel={cancelAssistant}
-        onFocus={focusIssue}
-        onAccept={acceptAssistantProposal}
-        onReject={() => setAssistantProposal(null)}
-      />
+      <section className="yolo-workflow-studio-bottom">
+        <div
+          className="yolo-workflow-studio-tabs"
+          role="tablist"
+          aria-label={copy.studio.title}
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={studioTab === 'assistant'}
+            className={studioTab === 'assistant' ? 'is-active' : undefined}
+            onClick={() => setStudioTab('assistant')}
+          >
+            {copy.run.tabs.assistant}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={studioTab === 'run'}
+            className={studioTab === 'run' ? 'is-active' : undefined}
+            onClick={() => setStudioTab('run')}
+          >
+            {copy.run.tabs.run}
+          </button>
+        </div>
+        {studioTab === 'assistant' ? (
+          <WorkflowAssistant
+            snapshot={snapshot}
+            copy={copy}
+            action={assistantAction}
+            proposal={assistantProposal}
+            modelId={assistantModelId}
+            models={models}
+            instruction={assistantInstruction}
+            running={assistantRunning}
+            onAction={runAssistant}
+            onModelChange={setAssistantModelId}
+            onInstructionChange={setAssistantInstruction}
+            onCancel={cancelAssistant}
+            onFocus={focusIssue}
+            onAccept={acceptAssistantProposal}
+            onReject={() => setAssistantProposal(null)}
+          />
+        ) : (
+          <WorkflowRunPanel
+            copy={copy}
+            run={run}
+            selectedNodeId={snapshot.selectedNodeId}
+            modelSnapshot={models}
+            dirty={snapshot.dirty}
+            issues={snapshot.issues}
+            confirm={confirm}
+            onStart={onStart}
+            onCancel={onCancel}
+            onContinue={onContinue}
+            onTestNode={onTestNode}
+            onSelectNode={selectNode}
+          />
+        )}
+      </section>
     </div>
   )
 }
@@ -1212,6 +1298,7 @@ function WorkflowInspector({
   bundle,
   markdownTarget,
   copy,
+  readOnly = false,
   onChange,
   onChangeFile,
   onSaveFile,
@@ -1227,6 +1314,7 @@ function WorkflowInspector({
   bundle: WorkflowBundle | null
   markdownTarget: string
   copy: WorkflowCopy
+  readOnly?: boolean
   onChange(nodeId: string, patch: Partial<WorkflowNode>): void
   onChangeFile(nodeId: string, content: string): boolean
   onSaveFile(nodeId: string): void
@@ -1289,7 +1377,7 @@ function WorkflowInspector({
           <textarea
             aria-label={copy.inspector.markdownContent}
             value={markdownFile?.snapshot.content ?? ''}
-            disabled={!markdownFile}
+            disabled={!markdownFile || readOnly}
             onInput={(event) => {
               if (markdownFile)
                 onChangeFile(markdownFile.nodeId, event.currentTarget.value)
@@ -1299,7 +1387,7 @@ function WorkflowInspector({
         <div className="yolo-workflow-markdown-actions">
           <button
             type="button"
-            disabled={!markdownFile}
+            disabled={!markdownFile || readOnly}
             onClick={() => markdownFile && onSaveFile(markdownFile.nodeId)}
           >
             <Save size={13} />
@@ -1329,6 +1417,7 @@ function WorkflowInspector({
             <InspectorField label={copy.inspector.source}>
               <select
                 value={edge.source}
+                disabled={readOnly}
                 onChange={(event) =>
                   onReconnectEdge(
                     edge.id,
@@ -1347,6 +1436,7 @@ function WorkflowInspector({
             <InspectorField label={copy.inspector.target}>
               <select
                 value={edge.target}
+                disabled={readOnly}
                 onChange={(event) =>
                   onReconnectEdge(
                     edge.id,
@@ -1362,7 +1452,7 @@ function WorkflowInspector({
                 ))}
               </select>
             </InspectorField>
-            <button type="button" onClick={onDeleteEdge}>
+            <button type="button" disabled={readOnly} onClick={onDeleteEdge}>
               <Trash2 size={13} />
               {copy.inspector.deleteEdge}
             </button>
@@ -1385,6 +1475,7 @@ function WorkflowInspector({
             <InspectorField label={copy.inspector.label}>
               <input
                 value={node.label}
+                disabled={readOnly}
                 onChange={(event) =>
                   onChange(node.id, { label: event.currentTarget.value })
                 }
@@ -1393,6 +1484,7 @@ function WorkflowInspector({
             <InspectorField label={copy.inspector.kind}>
               <select
                 value={node.kind}
+                disabled={readOnly}
                 onChange={(event) =>
                   onChange(node.id, {
                     kind: event.currentTarget.value as WorkflowNodeKind,
@@ -1412,6 +1504,7 @@ function WorkflowInspector({
             <InspectorField label={copy.inspector.stage}>
               <input
                 value={node.stage ?? ''}
+                disabled={readOnly}
                 onChange={(event) =>
                   onChange(node.id, {
                     stage: event.currentTarget.value || undefined,
@@ -1422,6 +1515,7 @@ function WorkflowInspector({
             <InspectorField label={copy.inspector.model}>
               <input
                 value={node.modelId ?? ''}
+                disabled={readOnly}
                 onChange={(event) =>
                   onChange(node.id, {
                     modelId: event.currentTarget.value || undefined,
@@ -1434,6 +1528,7 @@ function WorkflowInspector({
                 <InspectorField label={copy.inspector.gate}>
                   <select
                     value={node.gateType ?? 'ifElse'}
+                    disabled={readOnly}
                     onChange={(event) =>
                       onChange(node.id, {
                         gateType: event.currentTarget.value as WorkflowGateType,
@@ -1450,6 +1545,7 @@ function WorkflowInspector({
                 <InspectorField label={copy.inspector.predicate}>
                   <input
                     value={node.predicate ?? ''}
+                    disabled={readOnly}
                     onChange={(event) =>
                       onChange(node.id, {
                         predicate: event.currentTarget.value || undefined,
@@ -1467,7 +1563,9 @@ function WorkflowInspector({
             <button
               type="button"
               aria-label={copy.inspector.deleteNode}
-              disabled={node.kind === 'input' || node.kind === 'output'}
+              disabled={
+                readOnly || node.kind === 'input' || node.kind === 'output'
+              }
               onClick={() => onDeleteNode(node.id)}
             >
               <Trash2 size={13} />
