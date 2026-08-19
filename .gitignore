@@ -45,3 +45,5 @@ scripts/bench-tool-disclosure/
 .yolo-update-staging/
 supabase/
 .tmp/
+# Playwright harness output
+scripts/qa-workflow-harness/test-results/
