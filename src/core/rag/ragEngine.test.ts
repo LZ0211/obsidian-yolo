@@ -3,6 +3,11 @@ import {
   LLMAPIKeyNotSetException,
   LLMRateLimitExceededException,
 } from '../llm/exception'
+import {
+  clearFlightLog,
+  getFlightEvents,
+  setFlightLogEnabled,
+} from '../../utils/debug/flightLog'
 
 import { RAGEngine, dedupeRagQueryResults } from './ragEngine'
 import type { RetrievalTrace } from './retrievalTraceTypes'
@@ -997,5 +1002,79 @@ describe('RAGEngine', () => {
       embeddingRetryCount: 1,
       embeddingRecoveredAfterRetry: true,
     })
+  })
+})
+
+describe('RAGEngine flight log spans', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'debug').mockImplementation(() => undefined)
+    setFlightLogEnabled(true)
+    clearFlightLog()
+  })
+
+  afterEach(() => {
+    setFlightLogEnabled(false)
+    clearFlightLog()
+    jest.restoreAllMocks()
+  })
+
+  it('records a query span with hit count on success', async () => {
+    const vectorManager = {
+      reconcile: jest.fn(),
+      performSimilaritySearch: jest.fn().mockResolvedValue({
+        rows: [
+          {
+            id: 'one',
+            path: 'one.md',
+            content: 'one',
+            similarity: 0.9,
+            metadata: { startLine: 1, endLine: 1 },
+          },
+        ],
+        trace: {},
+      }),
+    }
+    const engine = new RAGEngine(
+      {} as never,
+      baseSettings as never,
+      vectorManager as never,
+      (_key, fallback) => fallback ?? '',
+    )
+
+    const results = await engine.processQuery({ query: 'match me' })
+
+    expect(results).toHaveLength(1)
+    const events = getFlightEvents()
+    expect(events.map((event) => event.event)).toEqual([
+      'span:query:start',
+      'span:query:done',
+    ])
+    expect(events[1]).toMatchObject({
+      scope: 'rag',
+      detail: expect.stringMatching(/^hits=1 \d+ms$/),
+    })
+  })
+
+  it('records a query span with error detail on failure', async () => {
+    const vectorManager = {
+      reconcile: jest.fn(),
+      performSimilaritySearch: jest
+        .fn()
+        .mockRejectedValue(new Error('vector backend down')),
+    }
+    const engine = new RAGEngine(
+      {} as never,
+      baseSettings as never,
+      vectorManager as never,
+      (_key, fallback) => fallback ?? '',
+    )
+
+    await expect(engine.processQuery({ query: 'match me' })).rejects.toThrow(
+      'vector backend down',
+    )
+
+    const done = getFlightEvents().find((event) => event.event === 'span:query:done')
+    expect(done).toBeDefined()
+    expect(done?.detail).toContain('vector backend down')
   })
 })

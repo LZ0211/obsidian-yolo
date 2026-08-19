@@ -16,6 +16,7 @@ import {
   VectorManager,
 } from '../../database/modules/vector/VectorManager'
 import { YoloSettings } from '../../settings/schema/setting.types'
+import { startFlightSpan } from '../../utils/debug/flightLog'
 import { EmbeddingModelClient } from '../../types/embedding'
 import type { RerankModelClient } from '../../types/rerank'
 import {
@@ -203,6 +204,9 @@ export class RAGEngine {
     if (!this.embeddingModel) {
       throw new Error('Embedding model is not set')
     }
+    const querySpan = startFlightSpan('rag', 'query', {
+      detail: `q=${query.slice(0, 80)}`,
+    })
     const embeddingModel = this.embeddingModel
     const startedAt = Date.now()
     const timingsMs: RetrievalTrace['timingsMs'] = {
@@ -343,8 +347,18 @@ export class RAGEngine {
         diagnostic: queryDiagnostic,
       })
 
+      querySpan.finish(
+        `hits=${dedupedQueryResult.length} ${Date.now() - startedAt}ms`,
+      )
       return dedupedQueryResult
     } catch (error) {
+      if (signal?.aborted) {
+        querySpan.cancel()
+      } else {
+        querySpan.finish(
+          `error=${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
       timingsMs.total = Date.now() - startedAt
       queryDiagnostic = this.mergeTraceDiagnostics(
         queryDiagnostic,
