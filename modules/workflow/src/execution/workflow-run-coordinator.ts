@@ -107,6 +107,8 @@ export function createWorkflowRunCoordinator(
   const listeners = new Set<WorkflowRunSnapshotListener>()
   /** One active ephemeral node test per view id; disposal aborts it. */
   const activeNodeTests = new Map<string, AbortController>()
+  /** Paths whose rename migration is in flight; start/continueRun refuse them. */
+  const renamingPaths = new Set<string>()
 
   const subscribe = (listener: WorkflowRunSnapshotListener): (() => void) => {
     listeners.add(listener)
@@ -472,6 +474,10 @@ export function createWorkflowRunCoordinator(
     input: WorkflowRunStartInput,
   ): Promise<WorkflowRunStartResult> => {
     const { workflowPath } = input
+    // A rename lease refuses new runs for the path before the synchronous
+    // reservation: the record migration must land first.
+    if (renamingPaths.has(workflowPath))
+      return { ok: false, reason: 'already-running' }
     if (activeRuns.has(workflowPath))
       return { ok: false, reason: 'already-running' }
     // A full run supersedes every pending node test, in every view: a stale
@@ -641,10 +647,43 @@ export function createWorkflowRunCoordinator(
     publish(cancelled)
   }
 
+  const notifyRenamedWorkflow = async (
+    oldPath: string,
+    newPath: string,
+  ): Promise<void> => {
+    // No record: nothing to migrate. The rename itself already succeeded.
+    const record = await store.read(oldPath)
+    if (!record) return
+    // Re-key the record (workflowPath and definition.workflowPath) while the
+    // definition hash stays unchanged: the migrated run resumes against the
+    // same definition. Storage errors propagate so the wiring can surface a
+    // rename whose migration failed.
+    const migrated = freezeRun({
+      ...record,
+      workflowPath: newPath,
+      definition: { ...record.definition, workflowPath: newPath },
+    })
+    await store.write(migrated)
+    await store.remove(oldPath)
+    publish(migrated)
+  }
+
+  const beginRename = (path: string): void => {
+    renamingPaths.add(path)
+  }
+  const endRename = (path: string): void => {
+    renamingPaths.delete(path)
+  }
+  const isRenaming = (path: string): boolean => renamingPaths.has(path)
+
   const continueRun = async (
     workflowPath: string,
     confirmation: WorkflowRunContinueConfirmation,
   ): Promise<WorkflowRunContinueResult> => {
+    // Same synchronous refusal as start: a renamed path must not be resumed
+    // while its record migration is in flight.
+    if (renamingPaths.has(workflowPath))
+      return { ok: false, reason: 'already-running' }
     const active = activeRuns.get(workflowPath)
     if (active?.snapshot?.paused) {
       // In-memory pause: no node ever re-executes, so no side-effect
@@ -928,6 +967,10 @@ export function createWorkflowRunCoordinator(
     pause,
     cancel,
     continueRun,
+    notifyRenamedWorkflow,
+    isRenaming,
+    beginRename,
+    endRename,
     initialize,
     quiesce,
     subscribe,

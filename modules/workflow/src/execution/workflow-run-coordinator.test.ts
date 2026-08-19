@@ -1799,4 +1799,69 @@ describe('workflow run coordinator', () => {
       executor.calls.filter((call) => call.node.id === 'draft').length,
     ).toBe(2)
   })
+
+  it('migrates the run record and publishes it under the new path on rename', async () => {
+    const { coordinator, store, snapshots, input } = makeHarness({})
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+    const before = await store.read('demo/WORKFLOW.md')
+
+    await coordinator.notifyRenamedWorkflow(
+      'demo/WORKFLOW.md',
+      'renamed/WORKFLOW.md',
+    )
+
+    const migrated = await store.read('renamed/WORKFLOW.md')
+    expect(migrated).not.toBeNull()
+    expect(migrated?.workflowPath).toBe('renamed/WORKFLOW.md')
+    expect(migrated?.definition.workflowPath).toBe('renamed/WORKFLOW.md')
+    expect(migrated?.definition.definitionHash).toBe(
+      before?.definition.definitionHash,
+    )
+    expect(migrated?.runId).toBe(before?.runId)
+    expect(await store.read('demo/WORKFLOW.md')).toBeNull()
+    expect(snapshots.at(-1)?.workflowPath).toBe('renamed/WORKFLOW.md')
+    expect(snapshots.at(-1)?.definition.workflowPath).toBe(
+      'renamed/WORKFLOW.md',
+    )
+  })
+
+  it('treats a missing run record as a no-op success', async () => {
+    const { coordinator, snapshots } = makeHarness({})
+
+    await expect(
+      coordinator.notifyRenamedWorkflow(
+        'missing/WORKFLOW.md',
+        'renamed/WORKFLOW.md',
+      ),
+    ).resolves.toBeUndefined()
+    expect(snapshots).toHaveLength(0)
+  })
+
+  it('refuses start and continue while the rename lease is held', async () => {
+    const { coordinator, store, input } = makeHarness({})
+    coordinator.beginRename('demo/WORKFLOW.md')
+    expect(coordinator.isRenaming('demo/WORKFLOW.md')).toBe(true)
+
+    await expect(coordinator.start(input)).resolves.toEqual({
+      ok: false,
+      reason: 'already-running',
+    })
+    await expect(
+      coordinator.continueRun('demo/WORKFLOW.md', {
+        confirmSideEffects: true,
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'already-running' })
+    expect(await store.read('demo/WORKFLOW.md')).toBeNull()
+
+    coordinator.endRename('demo/WORKFLOW.md')
+    expect(coordinator.isRenaming('demo/WORKFLOW.md')).toBe(false)
+    await expect(coordinator.start(input)).resolves.toEqual({
+      ok: true,
+      runId: 'run-1',
+    })
+  })
 })

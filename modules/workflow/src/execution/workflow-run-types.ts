@@ -210,6 +210,16 @@ export type WorkflowRunCoordinator = Readonly<{
     workflowPath: string,
     confirmation: WorkflowRunContinueConfirmation,
   ): Promise<WorkflowRunContinueResult>
+  /**
+   * Migrates the run record of a renamed workflow to the new path and
+   * publishes it; a no-op when no record exists for the old path.
+   */
+  notifyRenamedWorkflow(oldPath: string, newPath: string): Promise<void>
+  /** True while a rename lease is held for the path; start and continueRun refuse such paths. */
+  isRenaming(path: string): boolean
+  /** Holds a rename lease for the path; release it with `endRename`. */
+  beginRename(path: string): void
+  endRename(path: string): void
   initialize(): Promise<void>
   quiesce(): Promise<void>
   subscribe(listener: WorkflowRunSnapshotListener): () => void

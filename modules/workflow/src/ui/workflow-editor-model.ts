@@ -80,6 +80,7 @@ export type WorkflowEditorModel = Readonly<{
   autoLayout(): boolean
   create(input: CreateWorkflowInput): Promise<CreateWorkflowResult>
   trashCurrent(): Promise<boolean>
+  rename(nextSlug: string): Promise<boolean>
   dispose(): void
 }>
 
@@ -104,6 +105,8 @@ export function createWorkflowEditorModel(
   const savedFiles = new Map<string, WorkflowTextFile['snapshot']>()
   let saving = false
   let addingNode = false
+  /** A rename is in flight; repository events only refresh the list then. */
+  let renaming = false
   let disposed = false
   const getCopy = typeof copy === 'function' ? copy : () => copy
 
@@ -707,6 +710,20 @@ export function createWorkflowEditorModel(
     return deleted
   }
 
+  const rename = async (nextSlug: string): Promise<boolean> => {
+    if (disposed || renaming || snapshot.dirty || !snapshot.path) return false
+    renaming = true
+    try {
+      const result = await repository.renameWorkflow(snapshot.path, nextSlug)
+      if (!result.ok) return false
+      await load(result.nextPath, { discardDirty: true })
+      refreshWorkflows()
+      return true
+    } finally {
+      renaming = false
+    }
+  }
+
   const selectNode = (nodeId: string | null): void => {
     if (disposed) return
     if (
@@ -744,7 +761,9 @@ export function createWorkflowEditorModel(
   }
 
   const onRepositoryEvent = (event: WorkflowRepositoryEvent): void => {
-    if (saving) {
+    // While a save or rename is in flight the migration's own vault events
+    // must not trigger a mid-flight reload of a half-moved workflow.
+    if (saving || renaming) {
       refreshWorkflows()
       return
     }
@@ -781,6 +800,7 @@ export function createWorkflowEditorModel(
     create,
     removeNode,
     trashCurrent,
+    rename,
     dispose: () => {
       if (disposed) return
       disposed = true

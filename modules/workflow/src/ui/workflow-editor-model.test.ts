@@ -651,6 +651,74 @@ describe('workflow editor model', () => {
 
     expect(repository.read).toHaveBeenCalledTimes(1)
   })
+
+  it('renames the current workflow and loads the new path', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+
+    await expect(model.rename('alpha')).resolves.toBe(true)
+
+    expect(repository.renameWorkflow).toHaveBeenCalledWith(
+      'quality/WORKFLOW.md',
+      'alpha',
+    )
+    const snapshot = model.getSnapshot()
+    expect(snapshot.path).toBe('alpha/WORKFLOW.md')
+    expect(snapshot.status).toBe('ready')
+    expect(snapshot.dirty).toBe(false)
+    expect(snapshot.workflows).toEqual([
+      { path: 'alpha/WORKFLOW.md', title: 'alpha' },
+    ])
+  })
+
+  it('refuses rename while dirty', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    model.updateTopology({
+      ...topology,
+      nodes: [
+        { ...topology.nodes[0], label: 'Changed' },
+        ...topology.nodes.slice(1),
+      ],
+    })
+
+    await expect(model.rename('alpha')).resolves.toBe(false)
+    expect(repository.renameWorkflow).not.toHaveBeenCalled()
+    expect(model.getSnapshot().path).toBe('quality/WORKFLOW.md')
+  })
+
+  it('does not auto-reload mid-rename while the migration is in flight', async () => {
+    const repository = createRepository()
+    const model = createWorkflowEditorModel(repository, en)
+    await model.load('quality/WORKFLOW.md')
+    const pending =
+      deferred<Awaited<ReturnType<WorkflowRepository['renameWorkflow']>>>()
+    repository.renameWorkflow.mockImplementationOnce(() => pending.promise)
+
+    const renaming = model.rename('alpha')
+    repository.emit({
+      type: 'vault',
+      event: {
+        type: 'modify',
+        entry: {
+          kind: 'file',
+          path: repository.manifestPath,
+          name: 'WORKFLOW.md',
+          ctime: 1,
+          mtime: 2,
+        },
+      },
+    })
+    await Promise.resolve()
+    expect(repository.read).toHaveBeenCalledTimes(1)
+
+    pending.resolve({ ok: true, nextPath: 'alpha/WORKFLOW.md' })
+    await expect(renaming).resolves.toBe(true)
+    expect(repository.read).toHaveBeenCalledTimes(2)
+    expect(model.getSnapshot().path).toBe('alpha/WORKFLOW.md')
+  })
 })
 
 function createRepository(): WorkflowRepository & {
@@ -660,6 +728,7 @@ function createRepository(): WorkflowRepository & {
   replaceFile: jest.Mock
   read: jest.Mock
   trashStep: jest.Mock
+  renameWorkflow: jest.Mock
   setList(entries: readonly { path: string; title: string }[]): void
   bundle: WorkflowBundle
 } {
@@ -714,6 +783,11 @@ function createRepository(): WorkflowRepository & {
     document: { ...bundle.document, content },
     files: [{ ...bundle.files[0], snapshot: { path: manifestPath, content } }],
   }))
+  const renameWorkflow = jest.fn(async (_path: string, nextSlug: string) => {
+    const nextPath = `${nextSlug}/WORKFLOW.md`
+    entries = [{ path: nextPath, title: nextSlug }]
+    return { ok: true as const, nextPath }
+  })
   return {
     manifestPath,
     list: () => entries,
@@ -724,6 +798,7 @@ function createRepository(): WorkflowRepository & {
     replaceFile,
     trash: async () => true,
     trashStep,
+    renameWorkflow,
     subscribe: (nextListener: (event: WorkflowRepositoryEvent) => void) => {
       listener = nextListener
       return () => {
@@ -747,6 +822,7 @@ function createRepository(): WorkflowRepository & {
     replaceFile: jest.Mock
     createStep: jest.Mock
     trashStep: jest.Mock
+    renameWorkflow: jest.Mock
     read: jest.Mock
     setList(entries: readonly { path: string; title: string }[]): void
     bundle: WorkflowBundle
