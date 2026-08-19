@@ -78,6 +78,14 @@ export async function createWorkflowDefinition(
     if (!isJsonSchema(node.outputSchema))
       return invalid(`Node "${node.id}" has an invalid JSON Schema`, node.id)
   }
+  for (const node of topology.nodes) {
+    if (node.verification === undefined) continue
+    if (!isJsonSchema(node.verification.schema))
+      return invalid(
+        `Node "${node.id}" has an invalid verification schema`,
+        node.id,
+      )
+  }
 
   if (modelSnapshot.defaultModelId.trim().length === 0)
     return unavailable('The run default model id must be non-empty')

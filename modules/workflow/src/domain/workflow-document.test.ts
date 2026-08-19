@@ -370,6 +370,38 @@ describe('workflow document', () => {
     expect(parseDshFlowJson(exported)).toEqual(imported)
   })
 
+  it('round-trips verification through DSH import and export', () => {
+    const withVerification: WorkflowTopology = {
+      ...topology,
+      nodes: [
+        topology.nodes[0],
+        {
+          ...topology.nodes[1],
+          verification: { schema: { type: 'object' }, mode: 'hard' },
+        },
+        topology.nodes[2],
+      ],
+    }
+    const exported = exportDshFlowJson({
+      title: 'Demo workflow',
+      content: '# Demo',
+      topology: withVerification,
+    })
+    expect(
+      (
+        exported.nodes as ReadonlyArray<{
+          data: Readonly<Record<string, unknown>>
+        }>
+      )[1].data.verification,
+    ).toEqual({ schema: { type: 'object' }, mode: 'hard' })
+
+    const imported = parseDshFlowJson(exported)
+    expect(imported?.topology.nodes[1].verification).toEqual({
+      schema: { type: 'object' },
+      mode: 'hard',
+    })
+  })
+
   it('rejects invalid and path-escaping dsh imports before a repository write', () => {
     expect(parseDshFlowJson('{bad json')).toBeNull()
     expect(

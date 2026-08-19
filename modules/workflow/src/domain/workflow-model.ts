@@ -21,6 +21,11 @@ export type WorkflowBranch =
 
 export type WorkflowNodeMergeStrategy = 'concat' | 'dedupe'
 
+export type WorkflowVerification = Readonly<{
+  schema: unknown
+  mode: 'warn' | 'hard'
+}>
+
 export type WorkflowNode = Readonly<{
   id: string
   kind: WorkflowNodeKind
@@ -34,6 +39,7 @@ export type WorkflowNode = Readonly<{
   inputPredicates?: Readonly<Record<string, string>>
   outputSchema?: unknown
   mergeStrategy?: WorkflowNodeMergeStrategy
+  verification?: WorkflowVerification
 }>
 
 export type WorkflowEdge = Readonly<{
@@ -98,6 +104,11 @@ const NODE_KINDS = new Set<WorkflowNodeKind>([
   'mapAgent',
   'condition',
   'merge',
+  'output',
+])
+const VERIFICATION_NODE_KINDS: ReadonlySet<WorkflowNodeKind> = new Set([
+  'agent',
+  'mapAgent',
   'output',
 ])
 const GATE_TYPES = new Set<WorkflowGateType>([
@@ -334,6 +345,14 @@ export function layoutWorkflowNodes(
       ...(node.outputSchema === undefined
         ? {}
         : { outputSchema: cloneForLayout(node.outputSchema) }),
+      ...(node.verification === undefined
+        ? {}
+        : {
+            verification: {
+              schema: cloneForLayout(node.verification.schema),
+              mode: node.verification.mode,
+            },
+          }),
     }
   })
   return deepFreeze({
@@ -391,6 +410,14 @@ function parseNode(value: unknown): WorkflowNode | null {
     ? cloneOutputSchema(value.outputSchema)
     : undefined
   if (hasOutputSchema && !outputSchema) return null
+  const hasVerification = Object.prototype.hasOwnProperty.call(
+    value,
+    'verification',
+  )
+  const verification = hasVerification
+    ? parseVerification(value.verification, value.kind as WorkflowNodeKind)
+    : undefined
+  if (hasVerification && !verification) return null
   return {
     id: value.id,
     kind: value.kind as WorkflowNodeKind,
@@ -408,7 +435,20 @@ function parseNode(value: unknown): WorkflowNode | null {
     ...(isText(value.predicate) ? { predicate: value.predicate } : {}),
     ...(inputPredicates ? { inputPredicates } : {}),
     ...(outputSchema ?? {}),
+    ...(verification ? { verification } : {}),
   }
+}
+
+function parseVerification(
+  value: unknown,
+  kind: WorkflowNodeKind,
+): WorkflowVerification | null {
+  if (!VERIFICATION_NODE_KINDS.has(kind)) return null
+  if (!isRecord(value)) return null
+  if (value.mode !== 'warn' && value.mode !== 'hard') return null
+  const cloned = cloneAcyclic(value.schema)
+  if (!cloned.valid) return null
+  return { schema: cloned.value, mode: value.mode }
 }
 
 function parseEdge(value: unknown): WorkflowEdge | null {
@@ -539,7 +579,10 @@ function isRuntimeNode(value: unknown): value is WorkflowNode {
     (value.inputPredicates === undefined ||
       stringRecord(value.inputPredicates) !== null) &&
     (!Object.prototype.hasOwnProperty.call(value, 'outputSchema') ||
-      cloneOutputSchema(value.outputSchema) !== null)
+      cloneOutputSchema(value.outputSchema) !== null) &&
+    (!Object.prototype.hasOwnProperty.call(value, 'verification') ||
+      parseVerification(value.verification, value.kind as WorkflowNodeKind) !==
+        null)
   )
 }
 function isRuntimeEdge(value: unknown): value is WorkflowEdge {

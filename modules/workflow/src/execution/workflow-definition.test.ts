@@ -389,6 +389,67 @@ describe('workflow definition', () => {
     })
   })
 
+  it('rejects an uncompilable verification schema at definition build', async () => {
+    const withVerification = (schema: unknown) =>
+      bundle().document.topology!.nodes.map((node) =>
+        node.id === 'draft'
+          ? { ...node, verification: { schema, mode: 'hard' as const } }
+          : node,
+      )
+
+    const result = await build({
+      bundle: {
+        ...bundle(),
+        document: {
+          ...bundle().document,
+          topology: {
+            ...bundle().document.topology!,
+            nodes: withVerification({ type: 'nonsense' }),
+          },
+        },
+      },
+    })
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'invalid-definition',
+        nodeId: 'draft',
+        message: expect.any(String),
+      },
+    })
+  })
+
+  it('accepts a compilable verification schema at definition build', async () => {
+    const result = await build({
+      bundle: {
+        ...bundle(),
+        document: {
+          ...bundle().document,
+          topology: {
+            ...bundle().document.topology!,
+            nodes: bundle().document.topology!.nodes.map((node) =>
+              node.id === 'draft'
+                ? {
+                    ...node,
+                    verification: {
+                      schema: { type: 'object' },
+                      mode: 'hard' as const,
+                    },
+                  }
+                : node,
+            ),
+          },
+        },
+      },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(
+      result.definition.topology.nodes.find((node) => node.id === 'draft')
+        ?.verification,
+    ).toEqual({ schema: { type: 'object' }, mode: 'hard' })
+  })
+
   it('resolves an empty node modelId to the run default and rejects unknown ids', async () => {
     const withModelIds = (
       modelIds: Readonly<Record<string, string | undefined>>,
