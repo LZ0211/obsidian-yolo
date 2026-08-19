@@ -17,7 +17,6 @@ export const zh = {
   studio: {
     title: '流程工作室',
     editorOnly: '仅编辑',
-    sessionBoundary: '请在当前 Session 中运行工作流。',
     synced: '已同步 Markdown',
   },
   state: {
@@ -164,5 +163,42 @@ export const zh = {
     invalidInput: '工作流工具输入无效。',
     notFound: '未找到请求的工作流。',
     targetExists: '工作流目标已存在。',
+  },
+  run: {
+    tabs: {
+      assistant: '助手',
+      run: '运行',
+    },
+    model: '运行模型',
+    input: '运行输入',
+    run: '运行',
+    stop: '停止',
+    continue: '继续',
+    confirmSideEffects:
+      '继续将从未完成的第一个步骤恢复工作流，该步骤可能至少重复应用一次副作用。',
+    invalidInput: '请输入 JSON 值或纯文本作为运行输入。',
+    noModel: '尚未配置运行模型。',
+    dirty: '请先保存或放弃当前修改再运行。',
+    invalidDefinition: '请先解决工作流检查结果再运行。',
+    alreadyRunning: '此工作流正在运行。',
+    status: {
+      running: '运行中',
+      succeeded: '成功',
+      failed: '失败',
+      cancelled: '已取消',
+      interrupted: '已中断',
+    },
+    nodeStatus: {
+      pending: '等待中',
+      running: '运行中',
+      succeeded: '成功',
+      failed: '失败',
+      skipped: '已跳过',
+    },
+    output: '输出',
+    error: '错误',
+    noOutput: '暂无输出',
+    testNode: '测试节点',
+    testing: '测试中…',
   },
 } as const satisfies WorkflowCopy

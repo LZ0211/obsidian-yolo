@@ -6,7 +6,7 @@ import { createWorkflowCopy } from './i18n'
 import type { WorkflowEditorModel } from './ui/workflow-editor-model'
 
 type WorkflowModuleDefinition = Readonly<{
-  activate(host: YoloModuleHostApiV1): void
+  activate(host: YoloModuleHostApiV1): void | Promise<void>
 }>
 
 let moduleDefinition: WorkflowModuleDefinition | null = null
@@ -28,7 +28,7 @@ describe('workflow module chat mode', () => {
     moduleDefinition = definition
     const host = fakeHost()
 
-    definition.activate(host as unknown as YoloModuleHostApiV1)
+    await definition.activate(host as unknown as YoloModuleHostApiV1)
 
     expect(globalYolo.yolo.registerModule).toHaveBeenCalledTimes(1)
     expect(host.chat.registerMode).toHaveBeenCalledTimes(1)
@@ -65,10 +65,36 @@ describe('workflow module chat mode', () => {
     expect(mode.tools[1]?.requiresApproval).toBeUndefined()
   })
 
+  it('passes the shared coordinator and run selection layer into every Studio view', async () => {
+    expect(moduleDefinition).not.toBeNull()
+    const host = fakeWorkflowHost()
+    await moduleDefinition!.activate(host as unknown as YoloModuleHostApiV1)
+
+    const view = host.workspace.registerView.mock.calls[0]?.[0] as {
+      render(context: unknown): ReactElement<{
+        viewId: string
+        coordinator: unknown
+        runs: unknown
+        editor: WorkflowEditorModel
+      }>
+    }
+    const firstElement = view.render(createViewContext('workflow-view-1'))
+    const secondElement = view.render(createViewContext('workflow-view-2'))
+
+    expect(firstElement.props.viewId).toBe('workflow-view-1')
+    expect(secondElement.props.viewId).toBe('workflow-view-2')
+    expect(firstElement.props.coordinator).toBeDefined()
+    expect(firstElement.props.coordinator).toBe(secondElement.props.coordinator)
+    // One module-level run selection layer shared by every view.
+    expect(firstElement.props.runs).toBeDefined()
+    expect(firstElement.props.runs).toBe(secondElement.props.runs)
+    expect(host.lifecycle.onQuiesce).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps dirty editor state when the host restores the current view state', async () => {
     expect(moduleDefinition).not.toBeNull()
     const host = fakeWorkflowHost()
-    moduleDefinition!.activate(host as unknown as YoloModuleHostApiV1)
+    await moduleDefinition!.activate(host as unknown as YoloModuleHostApiV1)
 
     const view = host.workspace.registerView.mock.calls[0]?.[0] as {
       render(context: unknown): ReactElement<{ editor: WorkflowEditorModel }>
@@ -99,7 +125,7 @@ describe('workflow module chat mode', () => {
   it('creates independent editor state for independent view instances', async () => {
     expect(moduleDefinition).not.toBeNull()
     const host = fakeWorkflowHost()
-    moduleDefinition!.activate(host as unknown as YoloModuleHostApiV1)
+    await moduleDefinition!.activate(host as unknown as YoloModuleHostApiV1)
 
     const view = host.workspace.registerView.mock.calls[0]?.[0] as {
       render(context: unknown): ReactElement<{ editor: WorkflowEditorModel }>
@@ -139,8 +165,13 @@ function createViewContext(id: string) {
 function fakeHost(): RegistrationHost {
   return {
     agent: { stream: jest.fn() },
+    background: { upsert: jest.fn(), remove: jest.fn() },
     chat: { registerMode: jest.fn() },
-    lifecycle: { add: jest.fn() },
+    lifecycle: {
+      add: jest.fn(),
+      whenActive: jest.fn(),
+      onQuiesce: jest.fn(),
+    },
     workspace: {
       registerView: jest.fn(),
       registerRibbonAction: jest.fn(),
@@ -159,6 +190,10 @@ function fakeHost(): RegistrationHost {
       getSnapshot: () => ({ contentRoot: 'managed/workflows' }),
       subscribe: jest.fn(() => () => undefined),
     },
+    privateStorage: {
+      synchronized: fakePrivateStorageScope(),
+      deviceLocal: fakePrivateStorageScope(),
+    },
     settings: {
       getModelSnapshot: () => ({ defaultModelId: '', models: [] }),
       subscribeModels: jest.fn(() => () => undefined),
@@ -170,6 +205,40 @@ function fakeHost(): RegistrationHost {
   } as unknown as RegistrationHost
 }
 
+/**
+ * In-memory ModulePrivateStorageScopeV1 stand-in recording every blob. The
+ * module's run store only uses `list`/`readText`/`writeText`/`removeFile`;
+ * the rest exists so the fixture matches the real scope shape.
+ */
+function fakePrivateStorageScope() {
+  const blobs = new Map<string, string>()
+  return {
+    blobs,
+    list: jest.fn(async (directoryPrefix?: string) => {
+      const prefix = directoryPrefix === undefined ? '' : `${directoryPrefix}/`
+      return [...blobs.keys()].filter((key) => key.startsWith(prefix)).sort()
+    }),
+    stat: jest.fn(async (key: string) =>
+      blobs.has(key)
+        ? { type: 'file' as const, size: blobs.get(key)!.length }
+        : null,
+    ),
+    readJson: jest.fn(async (key: string) => {
+      const raw = blobs.get(key)
+      return raw === undefined ? null : (JSON.parse(raw) as unknown)
+    }),
+    readText: jest.fn(async (key: string) => blobs.get(key) ?? null),
+    writeJson: jest.fn(async (key: string, value: unknown) => {
+      blobs.set(key, JSON.stringify(value))
+    }),
+    writeText: jest.fn(async (key: string, value: string) => {
+      blobs.set(key, value)
+    }),
+    mkdir: jest.fn(async () => undefined),
+    removeFile: jest.fn(async (key: string) => blobs.delete(key)),
+  }
+}
+
 type RegistrationHost = Omit<YoloModuleHostApiV1, 'chat' | 'workspace'> & {
   chat: { registerMode: jest.Mock }
   workspace: {
@@ -177,6 +246,11 @@ type RegistrationHost = Omit<YoloModuleHostApiV1, 'chat' | 'workspace'> & {
     registerRibbonAction: jest.Mock
     registerCommand: jest.Mock
     openView: jest.Mock
+  }
+  lifecycle: {
+    add: jest.Mock
+    whenActive: jest.Mock
+    onQuiesce: jest.Mock
   }
 }
 

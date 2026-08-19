@@ -16,7 +16,6 @@ export const en = {
   studio: {
     title: 'Workflow Studio',
     editorOnly: 'Edit only',
-    sessionBoundary: 'Run workflows from the current session.',
     synced: 'Markdown synced',
   },
   state: {
@@ -159,5 +158,42 @@ export const en = {
     invalidInput: 'The workflow tool input is invalid.',
     notFound: 'The requested workflow was not found.',
     targetExists: 'The workflow target already exists.',
+  },
+  run: {
+    tabs: {
+      assistant: 'Assistant',
+      run: 'Run',
+    },
+    model: 'Run model',
+    input: 'Run input',
+    run: 'Run',
+    stop: 'Stop',
+    continue: 'Continue',
+    confirmSideEffects:
+      'Continuing resumes the workflow from the first unfinished step; that step may re-apply side effects at least once.',
+    invalidInput: 'Enter a JSON value or plain text as the run input.',
+    noModel: 'No run model is configured.',
+    dirty: 'Save or discard the current edits before running.',
+    invalidDefinition: 'Resolve the workflow findings before running.',
+    alreadyRunning: 'This workflow is already running.',
+    status: {
+      running: 'Running',
+      succeeded: 'Succeeded',
+      failed: 'Failed',
+      cancelled: 'Cancelled',
+      interrupted: 'Interrupted',
+    },
+    nodeStatus: {
+      pending: 'Pending',
+      running: 'Running',
+      succeeded: 'Succeeded',
+      failed: 'Failed',
+      skipped: 'Skipped',
+    },
+    output: 'Output',
+    error: 'Error',
+    noOutput: 'No output yet',
+    testNode: 'Test node',
+    testing: 'Testing…',
   },
 } as const satisfies WorkflowCopy

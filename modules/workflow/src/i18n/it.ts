@@ -19,7 +19,6 @@ export const it = {
   studio: {
     title: 'Studio del flusso di lavoro',
     editorOnly: 'Solo modifica',
-    sessionBoundary: 'Esegui i flussi dalla sessione corrente.',
     synced: 'Markdown sincronizzato',
   },
   state: {
@@ -163,5 +162,43 @@ export const it = {
     invalidInput: 'L’input dello strumento del flusso non è valido.',
     notFound: 'Il flusso di lavoro richiesto non è stato trovato.',
     targetExists: 'La destinazione del flusso di lavoro esiste già.',
+  },
+  run: {
+    tabs: {
+      assistant: 'Assistente',
+      run: 'Esegui',
+    },
+    model: 'Modello di esecuzione',
+    input: 'Input di esecuzione',
+    run: 'Esegui',
+    stop: 'Interrompi',
+    continue: 'Continua',
+    confirmSideEffects:
+      'La continuazione riprende il flusso dal primo passaggio incompleto; tale passaggio può riapplicare gli effetti collaterali almeno una volta.',
+    invalidInput:
+      'Inserisci un valore JSON o testo semplice come input di esecuzione.',
+    noModel: 'Nessun modello di esecuzione configurato.',
+    dirty: 'Salva o scarta le modifiche correnti prima di eseguire.',
+    invalidDefinition: 'Risolvi i rilievi del flusso prima di eseguire.',
+    alreadyRunning: 'Questo flusso è già in esecuzione.',
+    status: {
+      running: 'In esecuzione',
+      succeeded: 'Riuscito',
+      failed: 'Non riuscito',
+      cancelled: 'Annullato',
+      interrupted: 'Interrotto',
+    },
+    nodeStatus: {
+      pending: 'In attesa',
+      running: 'In esecuzione',
+      succeeded: 'Riuscito',
+      failed: 'Non riuscito',
+      skipped: 'Saltato',
+    },
+    output: 'Output',
+    error: 'Errore',
+    noOutput: 'Nessun output',
+    testNode: 'Testa nodo',
+    testing: 'Test in corso…',
   },
 } as const satisfies WorkflowCopy

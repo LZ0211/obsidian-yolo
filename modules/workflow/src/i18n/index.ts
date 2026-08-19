@@ -9,7 +9,6 @@ export type WorkflowCopy = Readonly<{
   studio: Readonly<{
     title: string
     editorOnly: string
-    sessionBoundary: string
     synced: string
   }>
   state: Readonly<{
@@ -160,6 +159,34 @@ export type WorkflowCopy = Readonly<{
       string
     >
   >
+  run: Readonly<{
+    tabs: Readonly<{ assistant: string; run: string }>
+    model: string
+    input: string
+    run: string
+    stop: string
+    continue: string
+    confirmSideEffects: string
+    invalidInput: string
+    noModel: string
+    dirty: string
+    invalidDefinition: string
+    alreadyRunning: string
+    status: Readonly<
+      Record<
+        'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted',
+        string
+      >
+    >
+    nodeStatus: Readonly<
+      Record<'pending' | 'running' | 'succeeded' | 'failed' | 'skipped', string>
+    >
+    output: string
+    error: string
+    noOutput: string
+    testNode: string
+    testing: string
+  }>
 }>
 
 export type WorkflowLocale = 'en' | 'zh' | 'it'

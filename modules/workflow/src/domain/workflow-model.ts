@@ -19,6 +19,8 @@ export type WorkflowBranch =
   | 'false'
   | Exclude<WorkflowGateType, 'ifElse'>
 
+export type WorkflowNodeMergeStrategy = 'concat' | 'dedupe'
+
 export type WorkflowNode = Readonly<{
   id: string
   kind: WorkflowNodeKind
@@ -31,6 +33,7 @@ export type WorkflowNode = Readonly<{
   predicate?: string
   inputPredicates?: Readonly<Record<string, string>>
   outputSchema?: unknown
+  mergeStrategy?: WorkflowNodeMergeStrategy
 }>
 
 export type WorkflowEdge = Readonly<{
@@ -370,6 +373,11 @@ function parseNode(value: unknown): WorkflowNode | null {
     !GATE_TYPES.has(value.gateType as WorkflowGateType)
   )
     return null
+  if (
+    value.mergeStrategy !== undefined &&
+    !isMergeStrategy(value.mergeStrategy)
+  )
+    return null
   const inputPredicates =
     value.inputPredicates === undefined
       ? undefined
@@ -394,6 +402,9 @@ function parseNode(value: unknown): WorkflowNode | null {
     ...(value.gateType === undefined
       ? {}
       : { gateType: value.gateType as WorkflowGateType }),
+    ...(value.mergeStrategy === undefined
+      ? {}
+      : { mergeStrategy: value.mergeStrategy }),
     ...(isText(value.predicate) ? { predicate: value.predicate } : {}),
     ...(inputPredicates ? { inputPredicates } : {}),
     ...(outputSchema ?? {}),
@@ -496,6 +507,9 @@ function isBranch(value: unknown): value is WorkflowBranch {
     (GATE_TYPES.has(value as WorkflowGateType) && value !== 'ifElse')
   )
 }
+function isMergeStrategy(value: unknown): value is WorkflowNodeMergeStrategy {
+  return value === 'concat' || value === 'dedupe'
+}
 export function isSafeWorkflowStepPath(value: unknown): value is string {
   return (
     isText(value) &&
@@ -517,6 +531,8 @@ function isRuntimeNode(value: unknown): value is WorkflowNode {
     isPosition(value.position) &&
     (value.gateType === undefined ||
       GATE_TYPES.has(value.gateType as WorkflowGateType)) &&
+    (value.mergeStrategy === undefined ||
+      isMergeStrategy(value.mergeStrategy)) &&
     (value.stage === undefined || isText(value.stage)) &&
     (value.modelId === undefined || isText(value.modelId)) &&
     (value.predicate === undefined || isText(value.predicate)) &&

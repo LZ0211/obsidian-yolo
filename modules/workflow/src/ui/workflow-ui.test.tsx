@@ -4,17 +4,19 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 
-import type { WorkflowNode, WorkflowTopology } from '../domain/workflow-model'
-import { createWorkflowCopy } from '../i18n'
-import type {
-  WorkflowEditorModel,
-  WorkflowEditorSnapshot,
-} from './workflow-editor-model'
-import type { WorkflowBundle } from '../domain/workflow-repository'
 import {
   parseWorkflowDocument,
   updateWorkflowManagedBlocks,
 } from '../domain/workflow-document'
+import type { WorkflowNode, WorkflowTopology } from '../domain/workflow-model'
+import type { WorkflowBundle } from '../domain/workflow-repository'
+import type { WorkflowRunSnapshot } from '../execution/workflow-run-types'
+import { createWorkflowCopy } from '../i18n'
+
+import type {
+  WorkflowEditorModel,
+  WorkflowEditorSnapshot,
+} from './workflow-editor-model'
 import { WorkflowGraph } from './workflow-graph'
 import { WorkflowStudio } from './workflow-studio'
 
@@ -142,7 +144,7 @@ describe('workflow studio UI interactions', () => {
     expect(
       testContainer.querySelector('textarea[aria-label="Markdown content"]'),
     ).not.toBeNull()
-    expect(testContainer.textContent).toContain(
+    expect(testContainer.textContent).not.toContain(
       'Run workflows from the current session.',
     )
     expect(testContainer.textContent).toContain('Checks & suggestions')
@@ -364,7 +366,7 @@ describe('workflow studio UI interactions', () => {
     const stream = jest.fn(async function* (request: AgentRequest) {
       expect(request.modelId).toBe('provider/slow')
       expect(request.prompt).toContain('Tighten the instructions')
-      const result = await request.tools![0]!.handler({
+      const result = await request.tools![0].handler({
         content: `${source}\nReviewed by the assistant.\n`,
       })
       expect(result.isError).toBeUndefined()
@@ -438,7 +440,7 @@ describe('workflow studio UI interactions', () => {
       stream: jest.fn(async function* (request: AgentRequest) {
         signal = request.signal
         await pending
-        await request.tools![0]!.handler({
+        await request.tools![0].handler({
           content: model.getSnapshot().bundle!.document.content,
         })
         yield { type: 'completed' as const, text: '' }
@@ -496,7 +498,7 @@ describe('workflow studio UI interactions', () => {
     const agent = {
       stream: jest.fn(async function* (request: AgentRequest) {
         await pending
-        await request.tools![0]!.handler({
+        await request.tools![0].handler({
           content: model.getSnapshot().bundle!.document.content,
         })
         yield { type: 'completed' as const, text: '' }
@@ -534,7 +536,7 @@ describe('workflow studio UI interactions', () => {
     const agent = {
       stream: jest.fn(async function* (request: AgentRequest) {
         const content = `${model.getSnapshot().bundle!.document.content}\n1. Input\n2. Agent\n3. Output\n`
-        await request.tools![0]!.handler({ content })
+        await request.tools![0].handler({ content })
         yield { type: 'completed' as const, text: '' }
       }),
     }
@@ -981,6 +983,253 @@ describe('workflow studio UI interactions', () => {
 
     expect(notice).toHaveBeenCalledWith('workflow-step-cleanup-failed')
   })
+
+  it('keeps the Run tab reachable while Assistant remains available', async () => {
+    const { model } = createModel({ bundle: createValidBundle() })
+    await renderStudio(
+      model,
+      jest.fn(),
+      jest.fn(async () => true),
+      {
+        run: createRunSnapshot({ status: 'running' }),
+      },
+    )
+
+    expect(
+      testContainer.querySelector('.yolo-workflow-assistant'),
+    ).not.toBeNull()
+    expect(testContainer.querySelector('.yolo-workflow-run-panel')).toBeNull()
+
+    const tabButtons = Array.from(
+      testContainer.querySelectorAll<HTMLButtonElement>('button[role="tab"]'),
+    )
+    const runTab = tabButtons.find((button) => button.textContent === 'Run')
+    const assistantTab = tabButtons.find(
+      (button) => button.textContent === 'Assistant',
+    )
+    expect(runTab).not.toBeUndefined()
+    expect(assistantTab).not.toBeUndefined()
+
+    act(() => runTab!.click())
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-panel'),
+    ).not.toBeNull()
+    expect(testContainer.querySelector('.yolo-workflow-assistant')).toBeNull()
+
+    act(() => assistantTab!.click())
+    expect(
+      testContainer.querySelector('.yolo-workflow-assistant'),
+    ).not.toBeNull()
+    expect(testContainer.querySelector('.yolo-workflow-run-panel')).toBeNull()
+  })
+
+  it('switches to the Run tab from the toolbar Run button and Stop cancels', async () => {
+    const { model } = createModel({ bundle: createValidBundle() })
+    const onCancel = jest.fn()
+    await renderStudio(
+      model,
+      jest.fn(),
+      jest.fn(async () => true),
+      {
+        run: createRunSnapshot({ status: 'running' }),
+        onCancel,
+      },
+    )
+
+    let canvasToolbar = testContainer.querySelector(
+      '.yolo-workflow-canvas-toolbar',
+    )
+    expect(canvasToolbar).not.toBeNull()
+    expect(findButton(canvasToolbar!, 'Stop')).not.toBeNull()
+
+    await act(async () => {
+      findButton(canvasToolbar!, 'Stop')!.click()
+      await Promise.resolve()
+    })
+
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-panel'),
+    ).not.toBeNull()
+
+    act(() => testRoot.unmount())
+    testRoot = createRoot(testContainer)
+
+    const { model: idleModel } = createModel({ bundle: createValidBundle() })
+    const idleCancel = jest.fn()
+    await renderStudio(
+      idleModel,
+      jest.fn(),
+      jest.fn(async () => true),
+      {
+        onCancel: idleCancel,
+      },
+    )
+    canvasToolbar = testContainer.querySelector('.yolo-workflow-canvas-toolbar')
+    expect(findButton(canvasToolbar!, 'Run')).not.toBeNull()
+
+    await act(async () => {
+      findButton(canvasToolbar!, 'Run')!.click()
+      await Promise.resolve()
+    })
+
+    expect(idleCancel).not.toHaveBeenCalled()
+    expect(
+      testContainer.querySelector('.yolo-workflow-run-panel'),
+    ).not.toBeNull()
+  })
+
+  it('makes editing controls read-only during an active run and restores them after', async () => {
+    const { model, addNode } = createModel({
+      bundle: createValidBundle(),
+      dirty: true,
+    })
+    await renderStudio(
+      model,
+      jest.fn(),
+      jest.fn(async () => true),
+      {
+        run: createRunSnapshot({ status: 'running' }),
+      },
+    )
+
+    const addButton = testContainer.querySelector<HTMLButtonElement>(
+      'button[aria-label="Add node: Condition"]',
+    )
+    expect(addButton).not.toBeNull()
+    expect(addButton!.disabled).toBe(true)
+
+    const saveButton = testContainer.querySelector<HTMLButtonElement>(
+      'button[aria-label="Save"]',
+    )
+    expect(saveButton!.disabled).toBe(true)
+
+    const markdown = testContainer.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Markdown content"]',
+    )
+    expect(markdown).not.toBeNull()
+    expect(markdown!.disabled).toBe(true)
+
+    const labelField = testContainer.querySelector<HTMLInputElement>(
+      '.yolo-workflow-node-inspector input[value="Input"]',
+    )
+    expect(labelField).not.toBeNull()
+    expect(labelField!.disabled).toBe(true)
+
+    await act(async () => {
+      addButton!.click()
+      await Promise.resolve()
+    })
+    expect(addNode).not.toHaveBeenCalled()
+
+    act(() => testRoot.unmount())
+    testRoot = createRoot(testContainer)
+
+    await renderStudio(
+      model,
+      jest.fn(),
+      jest.fn(async () => true),
+      {
+        run: createRunSnapshot({ status: 'succeeded' }),
+      },
+    )
+    expect(
+      testContainer.querySelector<HTMLButtonElement>(
+        'button[aria-label="Add node: Condition"]',
+      )!.disabled,
+    ).toBe(false)
+    expect(
+      testContainer.querySelector<HTMLButtonElement>(
+        'button[aria-label="Save"]',
+      )!.disabled,
+    ).toBe(false)
+    expect(
+      testContainer.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Markdown content"]',
+      )!.disabled,
+    ).toBe(false)
+    expect(
+      testContainer.querySelector<HTMLInputElement>(
+        '.yolo-workflow-node-inspector input[value="Input"]',
+      )!.disabled,
+    ).toBe(false)
+
+    await act(async () => {
+      testContainer
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Add node: Condition"]',
+        )!
+        .click()
+      await Promise.resolve()
+    })
+    expect(addNode).toHaveBeenCalledTimes(1)
+  })
+
+  it('disables workflow deletion during an active run and restores it after', async () => {
+    const { model, trashCurrent } = createModel({ bundle: createValidBundle() })
+    await renderStudio(
+      model,
+      jest.fn(),
+      jest.fn(async () => true),
+      {
+        run: createRunSnapshot({ status: 'running' }),
+      },
+    )
+
+    const deleteButton = testContainer.querySelector<HTMLButtonElement>(
+      'button[aria-label="Delete workflow"]',
+    )
+    expect(deleteButton).not.toBeNull()
+    expect(deleteButton!.disabled).toBe(true)
+
+    await act(async () => {
+      deleteButton!.click()
+      await Promise.resolve()
+    })
+    expect(trashCurrent).not.toHaveBeenCalled()
+
+    act(() => testRoot.unmount())
+    testRoot = createRoot(testContainer)
+
+    await renderStudio(
+      model,
+      jest.fn(),
+      jest.fn(async () => true),
+      {
+        run: createRunSnapshot({ status: 'succeeded' }),
+      },
+    )
+    expect(
+      testContainer.querySelector<HTMLButtonElement>(
+        'button[aria-label="Delete workflow"]',
+      )!.disabled,
+    ).toBe(false)
+  })
+
+  it('reuses the editor selection when a run node is clicked', async () => {
+    const { model, selectNode } = createModel({ bundle: createValidBundle() })
+    await renderStudio(
+      model,
+      jest.fn(),
+      jest.fn(async () => true),
+      {
+        run: createRunSnapshot({ status: 'running' }),
+      },
+    )
+
+    const runTab = Array.from(
+      testContainer.querySelectorAll<HTMLButtonElement>('button[role="tab"]'),
+    ).find((button) => button.textContent === 'Run')
+    act(() => runTab!.click())
+
+    const nodes = testContainer.querySelectorAll('.yolo-workflow-run-node')
+    expect(nodes.length).toBe(2)
+    act(() => {
+      ;(nodes[1] as HTMLButtonElement).click()
+    })
+
+    expect(selectNode).toHaveBeenCalledWith('agent')
+  })
 })
 
 async function renderStudio(
@@ -990,6 +1239,11 @@ async function renderStudio(
   options: Readonly<{
     agent?: YoloModuleHostApiV1['agent']
     models?: YoloModuleHostModelSnapshotV1
+    run?: WorkflowRunSnapshot | null
+    onStart?: jest.Mock
+    onCancel?: jest.Mock
+    onContinue?: jest.Mock
+    onTestNode?: jest.Mock
   }> = {},
 ): Promise<void> {
   await act(async () => {
@@ -1009,6 +1263,11 @@ async function renderStudio(
             ],
           }
         }
+        run={options.run ?? null}
+        onStart={options.onStart ?? jest.fn()}
+        onCancel={options.onCancel ?? jest.fn()}
+        onContinue={options.onContinue ?? jest.fn()}
+        onTestNode={options.onTestNode}
       />,
     )
     await Promise.resolve()
@@ -1038,11 +1297,11 @@ async function flushAssistant(): Promise<void> {
 }
 
 function setInputValue(input: HTMLInputElement, value: string): void {
-  const setter = Object.getOwnPropertyDescriptor(
+  const setValue = Object.getOwnPropertyDescriptor(
     HTMLInputElement.prototype,
     'value',
-  )?.set
-  setter?.call(input, value)
+  )?.set?.bind(input)
+  setValue?.(value)
   input.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
@@ -1150,6 +1409,38 @@ function createSnapshot(
     canUndo: false,
     canRedo: false,
     issues: [],
+    ...overrides,
+  }
+}
+
+function createRunSnapshot(
+  overrides: Partial<WorkflowRunSnapshot> = {},
+): WorkflowRunSnapshot {
+  return {
+    schemaVersion: 1,
+    runId: 'run-1',
+    workflowPath: 'demo/WORKFLOW.md',
+    definition: {
+      workflowPath: 'demo/WORKFLOW.md',
+      workflowContextMarkdown: '',
+      topology: createTopology(),
+      stepContents: { input: '# Input\n', agent: '# Agent\n' },
+      modelByNodeId: { input: 'provider/model', agent: 'provider/model' },
+      policy: {
+        capability: 'vault-write',
+        mapConcurrency: 3,
+        mergeStrategy: 'concat',
+      },
+      definitionHash: 'hash',
+    },
+    input: { topic: 'demo' },
+    status: 'running',
+    nodes: {
+      input: { status: 'succeeded', output: { topic: 'demo' } },
+      agent: { status: 'pending' },
+    },
+    outputs: {},
+    startedAt: 0,
     ...overrides,
   }
 }

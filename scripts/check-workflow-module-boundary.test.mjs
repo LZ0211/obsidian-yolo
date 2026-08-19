@@ -19,7 +19,7 @@ const forbiddenSourceRoots = [
   path.join(repositoryRoot, 'src', 'core'),
   path.join(repositoryRoot, 'src', 'components'),
 ]
-const declaredProductionPackages = ['lucide-react', 'react']
+const declaredProductionPackages = ['ajv', 'lucide-react', 'react']
 
 test('declares the Workflow production dependencies', async () => {
   const packageJson = JSON.parse(
