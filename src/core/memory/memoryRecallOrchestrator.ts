@@ -272,6 +272,11 @@ const fitOmittedNotice = async (
       }
     }
   }
+  // Advisory semantics: the `[+N more omitted]` notice counts candidates
+  // omitted BEFORE this notice-fit pass (greedy omissions plus output-cap
+  // drops). Entries removed here to make room for the notice itself are NOT
+  // reflected in N — the caller keeps the pre-fit `omittedCount` and only the
+  // rendered selection shrinks, so N may understate the true skip count.
   while (work.length > 0) {
     work.pop()
     if ((await estimateTextTokens(blockWithNotice(work))) <= maxTokens) {

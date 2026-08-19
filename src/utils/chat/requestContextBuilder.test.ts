@@ -179,6 +179,14 @@ function createMockApp({
       getFolderByPath: jest.fn((path: string) => {
         return folderEntries.find((folder) => folder.path === path) ?? null
       }),
+      // Project-instruction reads (getProjectInstructionsSection) need the
+      // vault root and abstract-path lookup. Keeping these on the mock makes
+      // the cachedRead call count a reliable "did a snapshot rebuild happen?"
+      // signal for the freezing tests.
+      getRoot: jest.fn(() => ({ path: '', children: [] })),
+      getAbstractFileByPath: jest.fn((path: string) => {
+        return files.find((file) => file.path === path) ?? null
+      }),
     },
   }
 }
@@ -3176,6 +3184,94 @@ describe('RequestContextBuilder system prompt freezing', () => {
     expect(getLastUserContent(second)).toContain('MEM_EXTERNAL')
     expect(getLastUserContent(second)).not.toContain('MEM_V1')
     expect(stableMemoryCalls()).toHaveLength(0)
+  })
+
+  it('keeps the frozen system prompt byte-identical across chatOptions churn and refreshes it when prompt sources change (revision bump)', async () => {
+    // System-prompt-bearing input: vault-root project instructions, enabled
+    // by the assistant and read fresh on every snapshot build. chatOptions
+    // must not be part of the fingerprint — the frozen snapshot must be
+    // REUSED, observable as zero additional vault reads — while an external
+    // source edit (the file watcher bumps the revision) must rebuild the
+    // snapshot so the new bytes reach the model.
+    const settings = {
+      ...baseSettings,
+      currentAssistantId: 'agent-1',
+      assistants: [
+        {
+          id: 'agent-1',
+          name: 'Instructions agent',
+          systemPrompt: '',
+          enableProjectInstructions: true,
+        },
+      ],
+    } as unknown as YoloSettings
+    const fileContents = new Map([['CLAUDE.md', 'PROJECT_RULES_V1']])
+    // One shared app across the three builders: the vault read count is the
+    // rebuild signal, and the fileContents map must stay mutable between
+    // calls (unlike the other freezing tests' per-builder fresh apps).
+    const app = createMockApp({
+      files: [createMockFile('CLAUDE.md')],
+      fileContents,
+    }) as never
+    const store = new SystemPromptSnapshotStore()
+    let revision = 1
+    const builderOptions = {
+      includeSkills: false,
+      systemPromptSnapshotStore: store,
+      getPromptSourceRevision: () => revision,
+    }
+    const cachedRead = (app as { vault: { cachedRead: jest.Mock } }).vault
+      .cachedRead
+    const cachedReadCalls = (): number => cachedRead.mock.calls.length
+
+    const builderA = new RequestContextBuilder(app, settings, builderOptions)
+    const a = await builderA.generateRequestMessages({
+      messages: userMessages,
+      model,
+      conversationId: 'conv-1',
+      systemPromptSnapshotMode: 'create',
+    })
+    expect(getSystemContent(a)).toContain('PROJECT_RULES_V1')
+    const readsAfterFirstBuild = cachedReadCalls()
+    expect(readsAfterFirstBuild).toBeGreaterThan(0)
+
+    // chatOptions-only churn: identical fingerprint -> the snapshot is reused
+    // byte-for-byte and no rebuild happens (no additional vault read).
+    const builderB = new RequestContextBuilder(
+      app,
+      {
+        ...settings,
+        chatOptions: {
+          includeCurrentFileContent: true,
+          mentionContextMode: 'full',
+        },
+      } as unknown as YoloSettings,
+      builderOptions,
+    )
+    const b = await builderB.generateRequestMessages({
+      messages: userMessages,
+      model,
+      conversationId: 'conv-1',
+      systemPromptSnapshotMode: 'create',
+    })
+    expect(getSystemContent(b)).toBe(getSystemContent(a))
+    expect(cachedReadCalls()).toBe(readsAfterFirstBuild)
+
+    // External prompt-source edit (the watcher bumps the revision): the
+    // snapshot rebuilds and the new project rules reach the system prompt.
+    revision += 1
+    fileContents.set('CLAUDE.md', 'PROJECT_RULES_V2')
+    const builderC = new RequestContextBuilder(app, settings, builderOptions)
+    const c = await builderC.generateRequestMessages({
+      messages: userMessages,
+      model,
+      conversationId: 'conv-1',
+      systemPromptSnapshotMode: 'create',
+    })
+    expect(getSystemContent(c)).not.toBe(getSystemContent(a))
+    expect(getSystemContent(c)).toContain('PROJECT_RULES_V2')
+    expect(getSystemContent(c)).not.toContain('PROJECT_RULES_V1')
+    expect(cachedReadCalls()).toBe(readsAfterFirstBuild + 1)
   })
 
   it('keeps memory flowing per request across a conversation compaction (C4)', async () => {

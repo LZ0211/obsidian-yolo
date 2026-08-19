@@ -13,6 +13,7 @@ import {
   MAX_RECALL_RENDER_ENTRIES,
   MAX_RECALL_RENDER_TOKENS,
   MemoryRecallOrchestrator,
+  packMemoryRecallLines,
 } from './memoryRecallOrchestrator'
 import type { MemoryRecallContext } from './memoryRecallOrchestrator'
 import type { MemoryAgentEntryLike } from './memoryRecallOrchestrator'
@@ -356,6 +357,113 @@ describe('MemoryRecallOrchestrator token packer (C1+C2)', () => {
     expect(result.selectedCount).toBe(1)
     expect(result.truncatedCount).toBe(1)
     expect(result.omittedCount).toBe(3)
+  })
+
+  it('caps the final output at maxEntries and folds the capped entries into the omission notice', async () => {
+    // Ten 13-token lines plus the 54-token wrapper (184 tokens) fit the
+    // generous 300-token budget, so the greedy pass selects all ten; the
+    // final-output cap (spec 6.2) then drops the tail seven and reports them
+    // in the [+7 more omitted] notice (54 + 3x13 + 17 = 110 still fits).
+    const contents = [
+      'alpha',
+      'bravo',
+      'charlie',
+      'delta',
+      'echo',
+      'foxtrot',
+      'golf',
+      'hotel',
+      'india',
+      'juliet',
+    ]
+    const limits = { maxTokens: 300, maxEntries: 3 }
+    const result = await makeOrchestrator().render(
+      renderContext(
+        contents.map((content, index) =>
+          makeEntry(`key-${index + 1}`, content),
+        ),
+      ),
+      translate,
+      limits,
+    )
+    expect(result.selectedCount).toBe(3)
+    expect(result.omittedCount).toBe(7)
+    expect(result.truncatedCount).toBe(0)
+    // The first three entries stay verbatim, in order…
+    for (const content of contents.slice(0, 3)) {
+      expect(result.content).toContain(`[other] ${content}`)
+    }
+    // …the rest are dropped from the tail and counted, not rendered…
+    for (const content of contents.slice(3)) {
+      expect(result.content).not.toContain(`[other] ${content}`)
+    }
+    // …and the notice count matches the dropped tail exactly.
+    expect(result.content).toContain('[+7 more omitted]')
+    expect(result.tokenCount).toBeLessThanOrEqual(limits.maxTokens)
+  })
+
+  it('returns a null block when there is nothing to pack', async () => {
+    const direct = await packMemoryRecallLines(
+      [],
+      'lexical',
+      { maxTokens: 100 },
+      translate,
+    )
+    expect(direct).toEqual({
+      content: null,
+      tokenCount: 0,
+      selectedCount: 0,
+      truncatedCount: 0,
+      omittedCount: 0,
+    })
+    const viaRender = await makeOrchestrator().render(
+      renderContext([]),
+      translate,
+    )
+    expect(viaRender.content).toBeNull()
+    expect(viaRender.omittedCount).toBe(0)
+    expect(viaRender.tokenCount).toBe(0)
+  })
+
+  it('renders a notice-only block when no entry can fit any prefix, and an empty block when the notice cannot fit either', async () => {
+    // Long-category entries make even a one-code-point line
+    // (`[very-long-category] y`, 24 tokens) too large — a prefix needs
+    // wrapper 54 + 24 = 78 tokens. The `[+3 more omitted]` notice needs only
+    // 54 + 17 = 71, so at maxTokens 71 the notice fits alone while every
+    // entry is omitted; at maxTokens 70 even the notice cannot fit and the
+    // packer emits the empty wrapper block (content is not null — only a
+    // wrapper that cannot fit at all returns null), with the omission
+    // reported through the stats only.
+    const entries = ['first', 'second', 'third'].map((memoryKey) =>
+      makeEntry(memoryKey, 'y'.repeat(1000), 'very-long-category'),
+    )
+    const noticeFits = await makeOrchestrator().render(
+      renderContext(entries),
+      translate,
+      { maxTokens: 71 },
+    )
+    expect(noticeFits.content).toBe(
+      '<recalled_memory source="lexical">\n[+3 more omitted]\n</recalled_memory>',
+    )
+    expect(noticeFits.content).not.toContain('[very-long-category]')
+    expect(noticeFits.selectedCount).toBe(0)
+    expect(noticeFits.omittedCount).toBe(3)
+    expect(noticeFits.tokenCount).toBe(71)
+    expect(noticeFits.tokenCount).toBeLessThanOrEqual(71)
+
+    const noticeDoesNotFit = await makeOrchestrator().render(
+      renderContext(entries),
+      translate,
+      { maxTokens: 70 },
+    )
+    expect(noticeDoesNotFit.content).toBe(
+      '<recalled_memory source="lexical">\n\n</recalled_memory>',
+    )
+    expect(noticeDoesNotFit.content).not.toContain('omitted')
+    expect(noticeDoesNotFit.selectedCount).toBe(0)
+    expect(noticeDoesNotFit.omittedCount).toBe(3)
+    expect(noticeDoesNotFit.tokenCount).toBe(54)
+    expect(noticeDoesNotFit.tokenCount).toBeLessThanOrEqual(70)
   })
 
   it('packs content exactly at the token budget and truncates one token over', async () => {
