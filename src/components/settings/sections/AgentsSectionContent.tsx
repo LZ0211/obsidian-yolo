@@ -400,6 +400,7 @@ function createNewAgent(): Assistant {
     name: '',
     description: '',
     systemPrompt: '',
+    delegatable: false,
     persona: DEFAULT_PERSONA,
     // Omit modelId so new agents follow the global chat model.
     enableTools: true,
@@ -420,6 +421,7 @@ function createNewAgent(): Assistant {
 function toDraftAgent(assistant: Assistant): Assistant {
   return {
     ...assistant,
+    delegatable: assistant.delegatable === true,
     persona: assistant.persona ?? DEFAULT_PERSONA,
     // Preserve empty/undefined modelId as "follow default".
     modelId: assistant.modelId || undefined,
@@ -2031,6 +2033,28 @@ export function AgentsSectionContent({
                   }}
                 />
               </ObsidianSetting>
+              {!workspaceAgentDraft && (
+                <ObsidianSetting
+                  name={t(
+                    'settings.agent.editorDelegatable',
+                    'Allow subagent delegation',
+                  )}
+                  desc={t(
+                    'settings.agent.editorDelegatableDesc',
+                    'Allow another Agent to select this template as a specialist child role.',
+                  )}
+                >
+                  <ObsidianToggle
+                    value={draftAgent.delegatable === true}
+                    onChange={(value) => {
+                      setDraftAgent({
+                        ...draftAgent,
+                        delegatable: value,
+                      })
+                    }}
+                  />
+                </ObsidianSetting>
+              )}
             </div>
           )}
 

@@ -188,6 +188,18 @@ describe('AgentsSectionContent workspace agent tabs', () => {
     await expect(renderEditor(false)).resolves.not.toContain('Tokens')
   })
 
+  it('shows the subagent delegation toggle for assistant templates', async () => {
+    await expect(renderEditor(false)).resolves.toContain(
+      'Allow subagent delegation',
+    )
+  })
+
+  it('does not show the subagent delegation toggle for workspace agents', async () => {
+    await expect(renderEditor(true)).resolves.not.toContain(
+      'Allow subagent delegation',
+    )
+  })
+
   it('subscribes to tool catalog changes and releases the subscription', async () => {
     await renderEditor(false)
 
