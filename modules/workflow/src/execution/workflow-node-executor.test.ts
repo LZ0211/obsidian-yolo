@@ -815,4 +815,209 @@ describe('workflow node executor', () => {
     expect(tool.name).toBe('submit_workflow_output')
     expect(typeof tool.handler).toBe('function')
   })
+
+  it('repairs exactly once after a rejected submission, then succeeds', async () => {
+    const schema = outputSchema()
+    const { agent, executor } = makeExecutor(async function* (request) {
+      const tool = request.tools?.[0]
+      if (!tool) throw new Error('expected a submit tool')
+      if (agent.calls.length === 1) {
+        // First round: one schema rejection and no valid submission, so the
+        // repair round is the one that submits the accepted value.
+        const rejected = await tool.handler({ value: { plan: 42 } })
+        expect(rejected.isError).toBe(true)
+      } else {
+        const accepted = await tool.handler({ value: { plan: 'draft' } })
+        expect(accepted.isError).not.toBe(true)
+      }
+      yield completed()
+    })
+    const result = await executor.execute(
+      makeRequest({
+        node: node('agent', 'agent', 'steps/agent/STEP.md', {
+          outputSchema: schema,
+        }),
+        upstream: [{ nodeId: 'in', value: 'v1' }],
+      }),
+    )
+    expect(result).toEqual({ value: { plan: 'draft' } })
+    expect(agent.calls.length).toBe(2)
+    // The repair round keeps the stable system prompt and only changes the
+    // prompt with the rejection feedback.
+    expect(agent.calls[1].systemPrompt).toBe(agent.calls[0].systemPrompt)
+    expect(agent.calls[1].prompt).toContain('previous submission was rejected')
+    expect(agent.calls[1].prompt).toContain('Rejected value: {"plan":42}')
+  })
+
+  it('does not repair when the stream ends without any submission', async () => {
+    const { agent, executor } = makeExecutor(async function* () {
+      yield completed('model prose without a submission')
+    })
+    await expect(
+      executor.execute(
+        makeRequest({
+          node: node('agent', 'agent', 'steps/agent/STEP.md', {
+            outputSchema: outputSchema(),
+          }),
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'agent-failed' })
+    expect(agent.calls.length).toBe(1)
+  })
+
+  it('does not repair when the first round ended with error or aborted', async () => {
+    const schemaNode = node('agent', 'agent', 'steps/agent/STEP.md', {
+      outputSchema: outputSchema(),
+    })
+
+    // Error event ends the first round: agent-failed, single call.
+    const errorRound = makeExecutor(async function* () {
+      yield { type: 'error', message: 'provider exploded' }
+    })
+    await expect(
+      errorRound.executor.execute(makeRequest({ node: schemaNode })),
+    ).rejects.toMatchObject({
+      code: 'agent-failed',
+      message: 'Agent failed: provider exploded',
+    })
+    expect(errorRound.agent.calls.length).toBe(1)
+
+    // Aborted event without a cancelled signal: agent-failed, single call.
+    const abortedRound = makeExecutor(async function* () {
+      yield { type: 'aborted' }
+    })
+    await expect(
+      abortedRound.executor.execute(makeRequest({ node: schemaNode })),
+    ).rejects.toMatchObject({ code: 'agent-failed' })
+    expect(abortedRound.agent.calls.length).toBe(1)
+
+    // Aborted event on a cancelled signal: cancelled, single call.
+    const cancelled = makeExecutor(async function* () {
+      yield { type: 'aborted' }
+    })
+    const controller = new AbortController()
+    const cancelledRun = cancelled.executor.execute(
+      makeRequest({ node: schemaNode, signal: controller.signal }),
+    )
+    controller.abort()
+    await expect(cancelledRun).rejects.toMatchObject({ code: 'cancelled' })
+    expect(cancelled.agent.calls.length).toBe(1)
+  })
+
+  it('does not repair when an earlier invalid submission was followed by a valid one', async () => {
+    const schema = outputSchema()
+    const { agent, executor } = makeExecutor(async function* (request) {
+      const tool = request.tools?.[0]
+      if (!tool) throw new Error('expected a submit tool')
+      const rejected = await tool.handler({ value: { plan: 42 } })
+      expect(rejected.isError).toBe(true)
+      const accepted = await tool.handler({ value: { plan: 'draft' } })
+      expect(accepted.isError).not.toBe(true)
+      yield completed()
+    })
+    const result = await executor.execute(
+      makeRequest({
+        node: node('agent', 'agent', 'steps/agent/STEP.md', {
+          outputSchema: schema,
+        }),
+      }),
+    )
+    expect(result).toEqual({ value: { plan: 'draft' } })
+    // The same-round valid submission wins; no repair round runs.
+    expect(agent.calls.length).toBe(1)
+  })
+
+  it('does not count duplicate submissions as schema rejections', async () => {
+    const schema = outputSchema()
+    const { agent, executor } = makeExecutor(async function* (request) {
+      const tool = request.tools?.[0]
+      if (!tool) throw new Error('expected a submit tool')
+      const accepted = await tool.handler({ value: { plan: 'draft' } })
+      expect(accepted.isError).not.toBe(true)
+      const duplicate = await tool.handler({ value: { plan: 'second' } })
+      expect(duplicate.isError).toBe(true)
+      yield completed()
+    })
+    const result = await executor.execute(
+      makeRequest({
+        node: node('agent', 'agent', 'steps/agent/STEP.md', {
+          outputSchema: schema,
+        }),
+      }),
+    )
+    expect(result).toEqual({ value: { plan: 'draft' } })
+    // The duplicate is a tool error, not a schema rejection: no repair round.
+    expect(agent.calls.length).toBe(1)
+  })
+
+  it('includes the rejected value and Ajv message in the final error after a failed repair', async () => {
+    const schema = outputSchema()
+    const { agent, executor } = makeExecutor(async function* (request) {
+      const tool = request.tools?.[0]
+      if (!tool) throw new Error('expected a submit tool')
+      // Both rounds submit the same schema-invalid value.
+      const rejected = await tool.handler({ value: { plan: 42 } })
+      expect(rejected.isError).toBe(true)
+      yield completed()
+    })
+    const run = executor.execute(
+      makeRequest({
+        node: node('agent', 'agent', 'steps/agent/STEP.md', {
+          outputSchema: schema,
+        }),
+      }),
+    )
+    const rejection = run.then(
+      () => new Error('schema agent unexpectedly succeeded'),
+      (error: unknown) => error,
+    )
+    await until(() => agent.calls.length === 2)
+    const error = (await rejection) as WorkflowNodeExecutionError
+    expect(error).toBeInstanceOf(WorkflowNodeExecutionError)
+    expect(error.code).toBe('agent-failed')
+    expect(error.message).toBe(
+      'Agent output rejected twice. Round 1: /value/plan must be string (value: {"plan":42}); after repair attempt: rejected (/value/plan must be string)',
+    )
+    expect(agent.calls.length).toBe(2)
+  })
+
+  it('shares the abort signal with the repair round', async () => {
+    const schema = outputSchema()
+    const { agent, executor } = makeExecutor(async function* (request) {
+      const tool = request.tools?.[0]
+      if (!tool) throw new Error('expected a submit tool')
+      await tool.handler({ value: { plan: 42 } })
+      if (agent.calls.length === 2) {
+        // The repair round blocks until the run is cancelled mid-stream.
+        const signal = request.signal
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) resolve()
+          else
+            signal?.addEventListener('abort', () => resolve(), { once: true })
+        })
+        yield { type: 'aborted' }
+        return
+      }
+      yield completed()
+    })
+    const controller = new AbortController()
+    const run = executor.execute(
+      makeRequest({
+        node: node('agent', 'agent', 'steps/agent/STEP.md', {
+          outputSchema: schema,
+        }),
+        signal: controller.signal,
+      }),
+    )
+    const rejection = run.then(
+      () => new Error('schema agent unexpectedly succeeded'),
+      (error: unknown) => error,
+    )
+    await until(() => agent.calls.length === 2)
+    // The repair round runs under the same abort signal as the first round.
+    expect(agent.calls[1].signal).toBe(controller.signal)
+    controller.abort()
+    await expect(rejection).resolves.toMatchObject({ code: 'cancelled' })
+    expect(agent.calls.length).toBe(2)
+  })
 })
