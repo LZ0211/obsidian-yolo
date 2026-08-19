@@ -131,6 +131,7 @@ export const HOST_SETTINGS_CLASSIFICATIONS = [
   hostSetting('memoryAgentModelId', '记忆提取模型'),
   hostSetting('advancedMemoryIndexEnabled', '高级记忆索引'),
   hostSetting('memoryReflectionEnabled', '记忆反思'),
+  hostSetting('memoryExtractionQualityGate', '记忆提取质量门'),
   hostSetting('rerankModels', '重排模型列表'),
   hostSetting('rerankModelId', '默认重排模型'),
   hostSetting('bots', 'Bot 平台'),

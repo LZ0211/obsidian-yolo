@@ -9,7 +9,7 @@ import { FileSystemAdapter } from 'obsidian'
 import { openSqliteRuntime } from '../../database/sqlite/sqliteNativeRuntime'
 
 import { MemoryEmbeddingStore } from './memoryEmbeddings'
-import { openMemoryIndexStore } from './memoryIndex'
+import { buildMemoryKey, openMemoryIndexStore } from './memoryIndex'
 import { buildMemoryPartition } from './memoryIndex'
 import type { MemoryIndexMaintenanceStore } from './memoryIndex'
 import {
@@ -23,6 +23,7 @@ import {
   planMemorySettingsReconcile,
   resolveMemoryRename,
 } from './memoryIndexRuntime'
+import { MEMORY_INDEX_SCHEMA_VERSION } from './memoryIndexSchema'
 import { MemoryIndexMaintenanceQueue } from './memoryIndexMaintenanceQueue'
 import type { MemorySourceSnapshot } from './memoryManager'
 import { MemoryRecallOrchestrator } from './memoryRecallOrchestrator'
@@ -621,6 +622,79 @@ describe('memory index runtime adapter', () => {
     }
   })
 
+  it('returns the candidate pool instead of the final 8 entries / 3000 chars', async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'memory-index-candidates-'),
+    )
+    const partition = buildMemoryPartition({ scope: 'global' })
+    const entries = Array.from({ length: 12 }, (_, index) => ({
+      localId: `Memory_${index + 1}`,
+      content: `candidate ${index + 1} `.repeat(30),
+      keywords: [],
+      category: 'other' as const,
+      partition,
+      sourcePath: 'global.md',
+      entryFingerprint: `candidate-v${index + 1}`,
+    }))
+    const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
+    const store = await openMemoryIndexStore({
+      app,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot: async () => ({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: 'file-v1',
+        parserVersion: 'p',
+        entries,
+        valid: true,
+      }),
+    })
+    try {
+      await store.reconcilePartition({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: 'file-v1',
+        parserVersion: 'p',
+        entries,
+      })
+      const fusedKeys = entries.map(({ localId }) =>
+        buildMemoryKey(partition.partitionKey, localId),
+      )
+      const rows = await store.query({
+        partition,
+        sourceFileFingerprint: 'file-v1',
+        target: {
+          query: '',
+          keywords: [],
+          entities: [],
+          categories: ['other'],
+          scopes: ['global'],
+          sector: null,
+          confidence: 1,
+          isReferential: false,
+          source: 'lexical',
+        },
+        memoryKeys: fusedKeys,
+        // Candidate-pool limits (Task 4): the store must not cap the query at
+        // the final render limits of 8 entries / 3000 chars.
+        maxEntries: 32,
+        maxChars: 12_000,
+      })
+      const totalChars = rows.reduce((sum, row) => sum + row.content.length, 0)
+      // RED: today the store caps maxEntries at 8 and the char post-filter at
+      // 3000, so the candidate pool never reaches the query layer.
+      expect(rows.length).toBe(entries.length)
+      expect(totalChars).toBeGreaterThan(3000)
+      expect(rows.map(({ id }) => id)).toEqual(
+        entries.map(({ localId }) => localId),
+      )
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('keeps prior rows after a failed transaction and marks the partition dirty', async () => {
     const root = fs.mkdtempSync(
       path.join(os.tmpdir(), 'memory-index-rollback-'),
@@ -1168,9 +1242,7 @@ describe('vector recall path write-through', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-vector-hang-'))
     const partition = buildMemoryPartition({ scope: 'global' })
     const fingerprint = 'file-v1'
-    const entries = [
-      makeEntry('Memory_hang', '永不返回的嵌入请求', partition),
-    ]
+    const entries = [makeEntry('Memory_hang', '永不返回的嵌入请求', partition)]
     // A hung embedding call (never resolves, never rejects) must not pin
     // the serialized operationChain — later store.query calls await it.
     const embedContent = jest.fn(() => new Promise<number[]>(() => undefined))
@@ -1425,6 +1497,312 @@ describe('recall reinforce wiring', () => {
       expect((await row('Memory_minimal'))?.last_recalled_at).not.toBeNull()
       expect((await row('Memory_noise'))?.salience).toBe(0.5)
       expect((await row('Memory_noise'))?.last_recalled_at).toBeNull()
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('memory reinforce interval gating', () => {
+  const HOUR_MS = 60 * 60 * 1000
+  const partition = buildMemoryPartition({ scope: 'global' })
+
+  const makeIntervalEntry = (partition: MemoryPartition) => ({
+    localId: 'Memory_1',
+    content: '需要间隔门控的记忆',
+    keywords: ['interval'],
+    category: 'other' as const,
+    partition,
+    sourcePath: 'global.md',
+    entryFingerprint: 'interval-v1',
+  })
+
+  const openTestStore = async (
+    root: string,
+    partition: MemoryPartition,
+    extraOptions: Partial<Parameters<typeof openMemoryIndexStore>[0]> = {},
+  ) => {
+    const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
+    return openMemoryIndexStore({
+      app,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot: async () => ({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: 'file-v1',
+        parserVersion: 'p',
+        entries: [makeIntervalEntry(partition)],
+        valid: true,
+      }),
+      ...extraOptions,
+    })
+  }
+
+  const readReinforceRow = (
+    store: MemoryIndexMaintenanceStore,
+    partition: MemoryPartition,
+  ) =>
+    store.getRuntime().then((runtime) =>
+      runtime.queryOne<{
+        salience: number
+        last_recalled_at: number | null
+        last_reinforced_at: number | null
+      }>(
+        `select salience, last_recalled_at, last_reinforced_at
+         from memory_index
+         where partition_key = ? and local_id = ?`,
+        [partition.partitionKey, 'Memory_1'],
+      ),
+    )
+
+  const reconcile = async (store: MemoryIndexMaintenanceStore) => {
+    await store.reconcilePartition({
+      partition,
+      sourcePath: 'global.md',
+      sourceFileFingerprint: 'file-v1',
+      parserVersion: 'p',
+      entries: [makeIntervalEntry(partition)],
+    })
+  }
+
+  it('reinforces once per one-hour window and refreshes last_recalled_at inside it', async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'memory-reinforce-interval-'),
+    )
+    const store = await openTestStore(root, partition)
+    try {
+      await reconcile(store)
+      const t0 = Date.parse('2026-08-01T00:00:00Z')
+
+      // First hit outside any window: salience +0.05 and the window opens.
+      await store.reinforce({ partition, localId: 'Memory_1', nowMs: t0 })
+      expect(await readReinforceRow(store, partition)).toMatchObject({
+        salience: expect.closeTo(0.55, 10),
+        last_recalled_at: t0,
+        last_reinforced_at: t0,
+      })
+
+      // Second hit inside the same one-hour window: only the recall time
+      // refreshes, the salience bump is skipped.
+      await store.reinforce({
+        partition,
+        localId: 'Memory_1',
+        nowMs: t0 + HOUR_MS / 2,
+      })
+      expect(await readReinforceRow(store, partition)).toMatchObject({
+        salience: expect.closeTo(0.55, 10),
+        last_recalled_at: t0 + HOUR_MS / 2,
+        last_reinforced_at: t0,
+      })
+
+      // Third hit after the window closed: salience +0.05 again.
+      await store.reinforce({
+        partition,
+        localId: 'Memory_1',
+        nowMs: t0 + HOUR_MS + 60_000,
+      })
+      expect(await readReinforceRow(store, partition)).toMatchObject({
+        salience: expect.closeTo(0.6, 10),
+        last_recalled_at: t0 + HOUR_MS + 60_000,
+        last_reinforced_at: t0 + HOUR_MS + 60_000,
+      })
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('caps salience at 1 so repeated reinforcement never overflows', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-reinforce-cap-'))
+    const store = await openTestStore(root, partition)
+    try {
+      await reconcile(store)
+      const t0 = Date.parse('2026-08-01T00:00:00Z')
+      const hits = 15
+      for (let index = 0; index < hits; index += 1) {
+        await store.reinforce({
+          partition,
+          localId: 'Memory_1',
+          nowMs: t0 + index * (HOUR_MS + 60_000),
+        })
+      }
+      const row = await readReinforceRow(store, partition)
+      expect(row?.salience).toBe(1)
+      expect(row?.last_recalled_at).toBe(t0 + (hits - 1) * (HOUR_MS + 60_000))
+      expect(row?.last_reinforced_at).toBe(t0 + (hits - 1) * (HOUR_MS + 60_000))
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reinforces at most once when concurrent hits share the same window', async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'memory-reinforce-concurrent-'),
+    )
+    const store = await openTestStore(root, partition)
+    try {
+      await reconcile(store)
+      const t0 = Date.parse('2026-08-01T00:00:00Z')
+      await Promise.all([
+        store.reinforce({ partition, localId: 'Memory_1', nowMs: t0 }),
+        store.reinforce({ partition, localId: 'Memory_1', nowMs: t0 }),
+      ])
+      const row = await readReinforceRow(store, partition)
+      expect(row?.salience).toEqual(expect.closeTo(0.55, 10))
+      expect(row?.last_recalled_at).toBe(t0)
+      expect(row?.last_reinforced_at).toBe(t0)
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('gates on the injected reinforcement interval instead of the default', async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'memory-reinforce-interval-injected-'),
+    )
+    const store = await openTestStore(root, partition, {
+      reinforcementIntervalMs: 5 * 60 * 1000,
+    })
+    try {
+      await reconcile(store)
+      const t0 = Date.parse('2026-08-01T00:00:00Z')
+      // Four minutes after the first hit is inside a five-minute injected
+      // window: only the recall time refreshes, the salience bump is skipped.
+      await store.reinforce({ partition, localId: 'Memory_1', nowMs: t0 })
+      await store.reinforce({
+        partition,
+        localId: 'Memory_1',
+        nowMs: t0 + 4 * 60 * 1000,
+      })
+      expect(await readReinforceRow(store, partition)).toMatchObject({
+        salience: expect.closeTo(0.55, 10),
+        last_recalled_at: t0 + 4 * 60 * 1000,
+        last_reinforced_at: t0,
+      })
+      // Six minutes after the first hit is outside the injected window.
+      await store.reinforce({
+        partition,
+        localId: 'Memory_1',
+        nowMs: t0 + 6 * 60 * 1000,
+      })
+      expect(await readReinforceRow(store, partition)).toMatchObject({
+        salience: expect.closeTo(0.6, 10),
+        last_reinforced_at: t0 + 6 * 60 * 1000,
+      })
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('writes salience and timestamps in one atomic statement, never reading the row first', async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'memory-reinforce-atomic-'),
+    )
+    const store = await openTestStore(root, partition)
+    try {
+      await reconcile(store)
+      const t0 = Date.parse('2026-08-01T00:00:00Z')
+      const runtime = await store.getRuntime()
+      // The store reuses this exact facade object inside `reinforce`, so a
+      // SELECT against memory_index here proves the app layer read the row
+      // before writing it. The window decision must be made by the UPDATE's
+      // own CASE against the row value at execution time — the store's
+      // enqueue serializes store calls, so the behavioral concurrency test
+      // cannot tell a single-statement UPDATE from a serialized read+write.
+      const originalQuery = runtime.query.bind(runtime)
+      const originalQueryOne = runtime.queryOne.bind(runtime)
+      const originalPrepare = runtime.prepare.bind(runtime)
+      let rowReads = 0
+      runtime.query = (<T>(sql: string, params?: unknown[]): T[] => {
+        if (/memory_index/i.test(String(sql))) rowReads += 1
+        return originalQuery(sql, params) as T[]
+      }) as typeof runtime.query
+      runtime.queryOne = ((sql: string, params?: unknown[]) => {
+        if (/memory_index/i.test(String(sql))) rowReads += 1
+        return originalQueryOne(sql, params)
+      }) as typeof runtime.queryOne
+      runtime.prepare = ((sql: string) => {
+        if (/memory_index/i.test(String(sql))) rowReads += 1
+        return originalPrepare(sql)
+      }) as typeof runtime.prepare
+
+      await store.reinforce({ partition, localId: 'Memory_1', nowMs: t0 })
+
+      expect(rowReads).toBe(0)
+      expect(await readReinforceRow(store, partition)).toMatchObject({
+        salience: expect.closeTo(0.55, 10),
+        last_recalled_at: t0,
+        last_reinforced_at: t0,
+      })
+    } finally {
+      if ('close' in store && typeof store.close === 'function')
+        await store.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the reinforcement window across an unchanged re-index and resets it for changed entries', async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'memory-reinforce-reindex-'),
+    )
+    // The store reconciles from its snapshot provider, not from the
+    // reconcilePartition input, so the entry fingerprint must live in the
+    // provider closure to simulate a source-file change.
+    let entryFingerprint = 'interval-v1'
+    const app = { vault: { adapter: new TestFileSystemAdapter(root) } } as never
+    const store = await openMemoryIndexStore({
+      app,
+      getSettings: () => ({ yolo: { baseDir: 'YOLO' } }),
+      getSourceSnapshot: async () => ({
+        partition,
+        sourcePath: 'global.md',
+        sourceFileFingerprint: 'file-v1',
+        parserVersion: 'p',
+        entries: [{ ...makeIntervalEntry(partition), entryFingerprint }],
+        valid: true,
+      }),
+    })
+    try {
+      const reconcileAll = () =>
+        store.reconcilePartition({
+          partition,
+          sourcePath: 'global.md',
+          sourceFileFingerprint: 'file-v1',
+          parserVersion: 'p',
+          entries: [{ ...makeIntervalEntry(partition), entryFingerprint }],
+        })
+      await reconcileAll()
+      const t0 = Date.parse('2026-08-01T00:00:00Z')
+      await store.reinforce({ partition, localId: 'Memory_1', nowMs: t0 })
+      expect(await readReinforceRow(store, partition)).toMatchObject({
+        salience: expect.closeTo(0.55, 10),
+        last_reinforced_at: t0,
+      })
+      // Unchanged entry re-indexed: the upsert writes
+      // `last_reinforced_at = excluded.last_reinforced_at`, so the window
+      // survives re-indexing instead of being mistaken for a first hit.
+      await reconcileAll()
+      expect(await readReinforceRow(store, partition)).toMatchObject({
+        salience: expect.closeTo(0.55, 10),
+        last_reinforced_at: t0,
+      })
+      // Changed entry re-indexed: fresh content restarts salience and window.
+      entryFingerprint = 'interval-v2'
+      await reconcileAll()
+      expect(await readReinforceRow(store, partition)).toMatchObject({
+        salience: 0.5,
+        last_recalled_at: null,
+        last_reinforced_at: null,
+      })
     } finally {
       if ('close' in store && typeof store.close === 'function')
         await store.close()
@@ -1750,7 +2128,7 @@ const LEGACY_V2_SCHEMA_SQL: readonly string[] = [
   );`,
 ]
 
-describe('legacy schema migration (v2 → v3 dead columns)', () => {
+describe('legacy schema migration (v2 → current dead columns)', () => {
   it('migrates a legacy database so reconcile inserts succeed and data survives', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-migrate-'))
     const dbPath = path.join(root, 'YOLO', 'memory', 'index.sqlite')
@@ -1816,7 +2194,7 @@ describe('legacy schema migration (v2 → v3 dead columns)', () => {
         runtime.queryOne<{ value: string }>(
           "select value from memory_schema_meta where key = 'schema_version'",
         )?.value,
-      ).toBe('3')
+      ).toBe(String(MEMORY_INDEX_SCHEMA_VERSION))
       const columns = runtime
         .query<{ name: string }>('pragma table_info(memory_index)')
         .map(({ name }) => name)

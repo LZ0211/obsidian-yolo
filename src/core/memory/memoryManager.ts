@@ -16,6 +16,14 @@ export type MemorySettingsLike = {
   advancedMemoryIndexEnabled?: boolean
   memoryReflectionEnabled?: boolean
   memoryAgentModelId?: string
+  /**
+   * Deterministic pre-extraction quality gate (C5): 'off' restores the raw
+   * path, 'shadow' records quality-outcome events without skipping, and
+   * 'enabled' skips the hidden extraction LLM for turns that are only
+   * whitespace, control characters, or punctuation. Legacy configs parse to
+   * 'shadow' via the settings schema catch.
+   */
+  memoryExtractionQualityGate?: 'off' | 'shadow' | 'enabled'
   yolo?: {
     baseDir?: string
   }

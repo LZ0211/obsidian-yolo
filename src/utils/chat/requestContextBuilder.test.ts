@@ -36,7 +36,11 @@ import {
 } from '../../core/skills/liteSkills'
 import { readPromptSnapshotEntries } from '../../database/json/chat/promptSnapshotStore'
 import type { YoloSettings } from '../../settings/schema/setting.types'
-import type { ChatToolMessage, ChatUserMessage } from '../../types/chat'
+import type {
+  ChatMessage,
+  ChatToolMessage,
+  ChatUserMessage,
+} from '../../types/chat'
 import type { ChatModel } from '../../types/chat-model.types'
 import type { ContentPart, RequestMessage } from '../../types/llm/request'
 import { ToolCallResponseStatus } from '../../types/tool-call.types'
@@ -174,6 +178,14 @@ function createMockApp({
       }),
       getFolderByPath: jest.fn((path: string) => {
         return folderEntries.find((folder) => folder.path === path) ?? null
+      }),
+      // Project-instruction reads (getProjectInstructionsSection) need the
+      // vault root and abstract-path lookup. Keeping these on the mock makes
+      // the cachedRead call count a reliable "did a snapshot rebuild happen?"
+      // signal for the freezing tests.
+      getRoot: jest.fn(() => ({ path: '', children: [] })),
+      getAbstractFileByPath: jest.fn((path: string) => {
+        return files.find((file) => file.path === path) ?? null
       }),
     },
   }
@@ -1700,14 +1712,14 @@ describe('RequestContextBuilder generateRequestMessages', () => {
     // The retained window (user-2 onward) must survive after the summary.
     const retainedIndex = requestMessages.findIndex(
       (message) =>
-        message.role === 'user' &&
-        message.content === 'retained turn prompt',
+        message.role === 'user' && message.content === 'retained turn prompt',
     )
     expect(retainedIndex).toBeGreaterThan(summaryIndex)
     expect(
       requestMessages.some(
         (message) =>
-          message.role === 'assistant' && message.content === 'old phase answer',
+          message.role === 'assistant' &&
+          message.content === 'old phase answer',
       ),
     ).toBe(false)
   })
@@ -2732,6 +2744,26 @@ describe('RequestContextBuilder system prompt freezing', () => {
     return system.content
   }
 
+  const getLastUserContent = (messages: RequestMessage[]): string => {
+    const user = [...messages]
+      .reverse()
+      .find((message) => message.role === 'user')
+    if (!user || typeof user.content !== 'string') {
+      throw new Error('Expected a string user message')
+    }
+    return user.content
+  }
+
+  // C4 splits memory into a stable snapshot path and a per-request dynamic
+  // path: only the stable call receives the `salienceByMemoryKey` option.
+  // These builders have no index runtime, so the stable path must never be
+  // invoked at all — `stableMemoryCalls()` is asserted to stay empty while
+  // the bounded markdown fallback carries memory in the dynamic user block.
+  const stableMemoryCalls = (): unknown[][] =>
+    memMock.mock.calls.filter(
+      (call) => 'salienceByMemoryKey' in (call[0] as Record<string, unknown>),
+    )
+
   afterAll(() => {
     memMock.mockResolvedValue({ global: null, assistant: null })
   })
@@ -3057,7 +3089,7 @@ describe('RequestContextBuilder system prompt freezing', () => {
     )
   })
 
-  it('freezes memory in the system prompt for the conversation lifetime (create mode)', async () => {
+  it('keeps memory out of the frozen system prompt and fresh in the per-request dynamic block (create mode)', async () => {
     const store = new SystemPromptSnapshotStore()
     const builder = new RequestContextBuilder(makeApp(), baseSettings, {
       includeSkills: false,
@@ -3074,7 +3106,14 @@ describe('RequestContextBuilder system prompt freezing', () => {
       hasMemoryTools: true,
       systemPromptSnapshotMode: 'create',
     })
-    expect(getSystemContent(first)).toContain('MEM_V1')
+    // No index runtime → memory never reaches the frozen system snapshot;
+    // the bounded markdown fallback rides the current user message instead.
+    expect(getSystemContent(first)).not.toContain('MEM_V1')
+    expect(stableMemoryCalls()).toHaveLength(0)
+    expect(getLastUserContent(first)).toContain(
+      '<recalled_memory source="markdown-fallback"',
+    )
+    expect(getLastUserContent(first)).toContain('MEM_V1')
 
     // Memory is rewritten mid-conversation (e.g. a memory_add tool call).
     memMock.mockResolvedValue({ global: 'MEM_V2', assistant: null })
@@ -3086,10 +3125,14 @@ describe('RequestContextBuilder system prompt freezing', () => {
       hasMemoryTools: true,
       systemPromptSnapshotMode: 'create',
     })
-    // Frozen: still V1, and memory was not re-read for the second iteration.
-    expect(getSystemContent(second)).toContain('MEM_V1')
+    // The system snapshot stays frozen (and memory-free), while the dynamic
+    // block refreshes to the latest memory on the very next request.
+    expect(getSystemContent(second)).toBe(getSystemContent(first))
+    expect(getSystemContent(second)).not.toContain('MEM_V1')
     expect(getSystemContent(second)).not.toContain('MEM_V2')
-    expect(memMock).toHaveBeenCalledTimes(1)
+    expect(stableMemoryCalls()).toHaveLength(0)
+    expect(getLastUserContent(second)).toContain('MEM_V2')
+    expect(getLastUserContent(second)).not.toContain('MEM_V1')
 
     // A fresh conversation picks up the latest memory.
     const other = await builder.generateRequestMessages({
@@ -3099,10 +3142,10 @@ describe('RequestContextBuilder system prompt freezing', () => {
       hasMemoryTools: true,
       systemPromptSnapshotMode: 'create',
     })
-    expect(getSystemContent(other)).toContain('MEM_V2')
+    expect(getLastUserContent(other)).toContain('MEM_V2')
   })
 
-  it('refreshes on the next real request after an external prompt source change', async () => {
+  it('keeps the dynamic memory block current across an external prompt source change', async () => {
     const store = new SystemPromptSnapshotStore()
     let revision = 0
     const builder = new RequestContextBuilder(makeApp(), baseSettings, {
@@ -3121,7 +3164,9 @@ describe('RequestContextBuilder system prompt freezing', () => {
       hasMemoryTools: true,
       systemPromptSnapshotMode: 'create',
     })
-    expect(getSystemContent(first)).toContain('MEM_V1')
+    expect(getSystemContent(first)).not.toContain('MEM_V1')
+    expect(stableMemoryCalls()).toHaveLength(0)
+    expect(getLastUserContent(first)).toContain('MEM_V1')
 
     revision += 1
     memMock.mockResolvedValue({ global: 'MEM_EXTERNAL', assistant: null })
@@ -3134,11 +3179,102 @@ describe('RequestContextBuilder system prompt freezing', () => {
       systemPromptSnapshotMode: 'create',
     })
 
-    expect(getSystemContent(second)).toContain('MEM_EXTERNAL')
-    expect(memMock).toHaveBeenCalledTimes(2)
+    // The dynamic block always reflects current memory — it is never gated by
+    // the snapshot, so an external prompt source change cannot freeze it.
+    expect(getLastUserContent(second)).toContain('MEM_EXTERNAL')
+    expect(getLastUserContent(second)).not.toContain('MEM_V1')
+    expect(stableMemoryCalls()).toHaveLength(0)
   })
 
-  it('refreshes memory in the system prompt after conversation compaction', async () => {
+  it('keeps the frozen system prompt byte-identical across chatOptions churn and refreshes it when prompt sources change (revision bump)', async () => {
+    // System-prompt-bearing input: vault-root project instructions, enabled
+    // by the assistant and read fresh on every snapshot build. chatOptions
+    // must not be part of the fingerprint — the frozen snapshot must be
+    // REUSED, observable as zero additional vault reads — while an external
+    // source edit (the file watcher bumps the revision) must rebuild the
+    // snapshot so the new bytes reach the model.
+    const settings = {
+      ...baseSettings,
+      currentAssistantId: 'agent-1',
+      assistants: [
+        {
+          id: 'agent-1',
+          name: 'Instructions agent',
+          systemPrompt: '',
+          enableProjectInstructions: true,
+        },
+      ],
+    } as unknown as YoloSettings
+    const fileContents = new Map([['CLAUDE.md', 'PROJECT_RULES_V1']])
+    // One shared app across the three builders: the vault read count is the
+    // rebuild signal, and the fileContents map must stay mutable between
+    // calls (unlike the other freezing tests' per-builder fresh apps).
+    const app = createMockApp({
+      files: [createMockFile('CLAUDE.md')],
+      fileContents,
+    }) as never
+    const store = new SystemPromptSnapshotStore()
+    let revision = 1
+    const builderOptions = {
+      includeSkills: false,
+      systemPromptSnapshotStore: store,
+      getPromptSourceRevision: () => revision,
+    }
+    const cachedRead = (app as { vault: { cachedRead: jest.Mock } }).vault
+      .cachedRead
+    const cachedReadCalls = (): number => cachedRead.mock.calls.length
+
+    const builderA = new RequestContextBuilder(app, settings, builderOptions)
+    const a = await builderA.generateRequestMessages({
+      messages: userMessages,
+      model,
+      conversationId: 'conv-1',
+      systemPromptSnapshotMode: 'create',
+    })
+    expect(getSystemContent(a)).toContain('PROJECT_RULES_V1')
+    const readsAfterFirstBuild = cachedReadCalls()
+    expect(readsAfterFirstBuild).toBeGreaterThan(0)
+
+    // chatOptions-only churn: identical fingerprint -> the snapshot is reused
+    // byte-for-byte and no rebuild happens (no additional vault read).
+    const builderB = new RequestContextBuilder(
+      app,
+      {
+        ...settings,
+        chatOptions: {
+          includeCurrentFileContent: true,
+          mentionContextMode: 'full',
+        },
+      } as unknown as YoloSettings,
+      builderOptions,
+    )
+    const b = await builderB.generateRequestMessages({
+      messages: userMessages,
+      model,
+      conversationId: 'conv-1',
+      systemPromptSnapshotMode: 'create',
+    })
+    expect(getSystemContent(b)).toBe(getSystemContent(a))
+    expect(cachedReadCalls()).toBe(readsAfterFirstBuild)
+
+    // External prompt-source edit (the watcher bumps the revision): the
+    // snapshot rebuilds and the new project rules reach the system prompt.
+    revision += 1
+    fileContents.set('CLAUDE.md', 'PROJECT_RULES_V2')
+    const builderC = new RequestContextBuilder(app, settings, builderOptions)
+    const c = await builderC.generateRequestMessages({
+      messages: userMessages,
+      model,
+      conversationId: 'conv-1',
+      systemPromptSnapshotMode: 'create',
+    })
+    expect(getSystemContent(c)).not.toBe(getSystemContent(a))
+    expect(getSystemContent(c)).toContain('PROJECT_RULES_V2')
+    expect(getSystemContent(c)).not.toContain('PROJECT_RULES_V1')
+    expect(cachedReadCalls()).toBe(readsAfterFirstBuild + 1)
+  })
+
+  it('keeps memory flowing per request across a conversation compaction (C4)', async () => {
     const store = new SystemPromptSnapshotStore()
     const builder = new RequestContextBuilder(makeApp(), baseSettings, {
       includeSkills: false,
@@ -3155,7 +3291,8 @@ describe('RequestContextBuilder system prompt freezing', () => {
       hasMemoryTools: true,
       systemPromptSnapshotMode: 'create',
     })
-    expect(getSystemContent(beforeCompact)).toContain('MEM_BEFORE_COMPACT')
+    expect(getSystemContent(beforeCompact)).not.toContain('MEM_BEFORE_COMPACT')
+    expect(getLastUserContent(beforeCompact)).toContain('MEM_BEFORE_COMPACT')
 
     memMock.mockResolvedValue({ global: 'MEM_AFTER_COMPACT', assistant: null })
 
@@ -3166,10 +3303,9 @@ describe('RequestContextBuilder system prompt freezing', () => {
       hasMemoryTools: true,
       systemPromptSnapshotMode: 'create',
     })
-    expect(getSystemContent(afterMemoryWrite)).toContain('MEM_BEFORE_COMPACT')
-    expect(getSystemContent(afterMemoryWrite)).not.toContain(
-      'MEM_AFTER_COMPACT',
-    )
+    // Memory is not frozen into the snapshot: the very next request already
+    // sees the rewritten memory in its dynamic block — no compaction needed.
+    expect(getLastUserContent(afterMemoryWrite)).toContain('MEM_AFTER_COMPACT')
 
     const afterCompact = await builder.generateRequestMessages({
       messages: userMessages,
@@ -3184,8 +3320,8 @@ describe('RequestContextBuilder system prompt freezing', () => {
       },
       systemPromptSnapshotMode: 'create',
     })
-    expect(getSystemContent(afterCompact)).toContain('MEM_AFTER_COMPACT')
-    expect(memMock).toHaveBeenCalledTimes(2)
+    expect(getLastUserContent(afterCompact)).toContain('MEM_AFTER_COMPACT')
+    expect(stableMemoryCalls()).toHaveLength(0)
   })
 
   it('refreshes the snapshot when a prompt-relevant setting changes', async () => {
@@ -3246,7 +3382,7 @@ describe('RequestContextBuilder system prompt freezing', () => {
     expect(getSystemContent(agent)).not.toContain('Ask mode prompt')
   })
 
-  it('does NOT refresh the snapshot for a setting that never reaches the system prompt', async () => {
+  it('never freezes memory into the system prompt — even for settings outside the fingerprint', async () => {
     const store = new SystemPromptSnapshotStore()
     memMock.mockResolvedValue({ global: 'MEM_V1', assistant: null })
 
@@ -3261,10 +3397,13 @@ describe('RequestContextBuilder system prompt freezing', () => {
       hasMemoryTools: true,
       systemPromptSnapshotMode: 'create',
     })
-    expect(getSystemContent(a)).toContain('MEM_V1')
+    expect(getSystemContent(a)).not.toContain('MEM_V1')
+    expect(stableMemoryCalls()).toHaveLength(0)
+    expect(getLastUserContent(a)).toContain('MEM_V1')
 
     // Memory changes AND an unrelated, non-system setting (chatOptions) changes.
-    // The fingerprint must be unchanged, so the frozen V1 snapshot is kept.
+    // Without an index runtime memory never reaches the system prompt; the
+    // dynamic block stays current regardless of the fingerprint.
     memMock.mockResolvedValue({ global: 'MEM_V2', assistant: null })
     const builderB = new RequestContextBuilder(
       makeApp(),
@@ -3284,11 +3423,13 @@ describe('RequestContextBuilder system prompt freezing', () => {
       hasMemoryTools: true,
       systemPromptSnapshotMode: 'create',
     })
-    expect(getSystemContent(b)).toContain('MEM_V1')
+    expect(getSystemContent(b)).not.toContain('MEM_V1')
     expect(getSystemContent(b)).not.toContain('MEM_V2')
+    expect(stableMemoryCalls()).toHaveLength(0)
+    expect(getLastUserContent(b)).toContain('MEM_V2')
   })
 
-  it('reuse mode never freezes ahead of the real request', async () => {
+  it('reuse mode never freezes the dynamic memory block ahead of the real request', async () => {
     const store = new SystemPromptSnapshotStore()
     const builder = new RequestContextBuilder(makeApp(), baseSettings, {
       includeSkills: false,
@@ -3303,7 +3444,8 @@ describe('RequestContextBuilder system prompt freezing', () => {
       hasMemoryTools: true,
       systemPromptSnapshotMode: 'reuse',
     })
-    expect(getSystemContent(estimate)).toContain('MEM_V1')
+    expect(getSystemContent(estimate)).not.toContain('MEM_V1')
+    expect(getLastUserContent(estimate)).toContain('MEM_V1')
 
     // The estimate must not have frozen V1: the real request sees current memory.
     memMock.mockResolvedValue({ global: 'MEM_V2', assistant: null })
@@ -3314,7 +3456,313 @@ describe('RequestContextBuilder system prompt freezing', () => {
       hasMemoryTools: true,
       systemPromptSnapshotMode: 'create',
     })
-    expect(getSystemContent(real)).toContain('MEM_V2')
+    expect(getLastUserContent(real)).toContain('MEM_V2')
+    expect(getLastUserContent(real)).not.toContain('MEM_V1')
+  })
+})
+
+describe('RequestContextBuilder C4 memory layering (stable snapshot / dynamic user block)', () => {
+  const settings = {
+    systemPrompt: '',
+    currentAssistantId: undefined,
+    assistants: [],
+    yolo: { baseDir: 'YOLO' },
+    chatOptions: {
+      includeCurrentFileContent: false,
+      mentionContextMode: 'light',
+    },
+    skills: {},
+  } as unknown as YoloSettings
+
+  const model = {
+    provider: 'openai',
+    model: 'gpt-test',
+    name: 'gpt-test',
+  } as never
+
+  const memMock = jest.mocked(getMemoryPromptContext)
+
+  const makeApp = () =>
+    createMockApp({ files: [], fileContents: new Map() }) as never
+
+  const emptyArgs = createCompleteToolCallArguments({ value: {} })
+
+  // Capture the file-wide default before this describe's tests override it,
+  // and restore it in afterAll — never install a new default for later suites.
+  const priorMemMockImplementation = memMock.getMockImplementation()
+
+  afterAll(() => {
+    memMock.mockImplementation(priorMemMockImplementation)
+  })
+
+  it('merges the dynamic memory block into the last real user message, preserving tool-loop order and input immutability (C4)', async () => {
+    memMock.mockResolvedValue({ global: 'MEM_FALLBACK', assistant: null })
+
+    const builder = new RequestContextBuilder(makeApp(), settings, {
+      includeSkills: false,
+    })
+
+    const messages: ChatMessage[] = [
+      {
+        role: 'user',
+        id: 'user-1',
+        content: null,
+        promptContent: 'hello',
+        mentionables: [],
+      },
+      {
+        role: 'assistant',
+        id: 'assistant-tools',
+        content: 'checking files',
+        toolCallRequests: [
+          {
+            id: 'tool-1',
+            name: 'yolo_local__fs_read',
+            arguments: emptyArgs,
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        id: 'tool-1-result',
+        toolCalls: [
+          {
+            request: {
+              id: 'tool-1',
+              name: 'yolo_local__fs_read',
+              arguments: emptyArgs,
+            },
+            response: {
+              status: ToolCallResponseStatus.Success,
+              data: { type: 'text', text: 'tool result' },
+            },
+          },
+        ],
+      },
+    ]
+    const inputCopy = structuredClone(messages)
+
+    const requestMessages = await builder.generateRequestMessages({
+      messages,
+      model,
+      conversationId: 'conv-c4-tool-loop',
+      systemPromptSnapshotMode: 'create',
+    })
+
+    // The dynamic block is merged into the existing last user message — never
+    // a fresh user message appended after the tool result.
+    expect(requestMessages.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'tool',
+    ])
+    expect(
+      requestMessages.filter((message) => message.role === 'user'),
+    ).toHaveLength(1)
+
+    const lastUser = requestMessages.filter(
+      (message) => message.role === 'user',
+    )[0]
+    expect(typeof lastUser.content).toBe('string')
+    // RED before C4: no dynamic block exists at all (SQLite unavailable →
+    // markdown bounded fallback must land in the current user message).
+    expect(lastUser.content).toContain('<recalled_memory')
+    expect(lastUser.content).toContain('MEM_FALLBACK')
+
+    // Neither the input array nor the original ChatMessage objects change.
+    expect(messages).toEqual(inputCopy)
+  })
+
+  it('attributes the dynamic block to a single memory.dynamic section and emits no stable memory section without SQLite (C4)', async () => {
+    memMock.mockResolvedValue({ global: 'MEM_STABLE', assistant: null })
+
+    const builder = new RequestContextBuilder(makeApp(), settings, {
+      includeSkills: false,
+    })
+
+    const sections = await builder.generateRequestSections({
+      messages: [
+        {
+          role: 'user',
+          id: 'user-1',
+          content: null,
+          promptContent: 'hello',
+          mentionables: [],
+        },
+      ],
+      model,
+      conversationId: 'conv-c4-sections',
+      systemPromptSnapshotMode: 'create',
+    })
+
+    const dynamicSections = sections.filter((section) =>
+      section.id.startsWith('memory.dynamic.'),
+    )
+    // RED before C4: the dynamic block lives inside the frozen system section,
+    // so there is no dedicated memory.dynamic section at all.
+    expect(dynamicSections).toHaveLength(1)
+    expect(dynamicSections[0]?.bucket).toBe('memory')
+    const dynamicContent = dynamicSections[0]?.content
+    expect(typeof dynamicContent).toBe('string')
+    expect(dynamicContent).toContain('<recalled_memory')
+
+    // No index runtime in this harness → no stable memory section at all
+    // (double injection would put the same markdown in system AND user). The
+    // integration suite verifies memory.context stability with a real index.
+    expect(sections.some((section) => section.id === 'memory.context')).toBe(
+      false,
+    )
+
+    // The same block must not be double-counted under the conversation bucket.
+    const conversation = sections.find((section) =>
+      section.id.startsWith('conversation.'),
+    )
+    expect(conversation).toBeDefined()
+    expect(JSON.stringify(conversation?.content)).not.toContain(
+      '<recalled_memory',
+    )
+  })
+
+  it('keeps request order across a compaction boundary — the block merges into the last real user message, never after the tool result (C4)', async () => {
+    memMock.mockResolvedValue({ global: 'MEM_FALLBACK', assistant: null })
+
+    const builder = new RequestContextBuilder(makeApp(), settings, {
+      includeSkills: false,
+    })
+
+    const messages: ChatMessage[] = [
+      {
+        role: 'user',
+        id: 'user-pre',
+        content: null,
+        promptContent: 'before compact',
+        mentionables: [],
+      },
+      {
+        role: 'assistant',
+        id: 'assistant-compact',
+        content: 'compacting',
+        toolCallRequests: [
+          {
+            id: 'compact-1',
+            name: 'yolo_local__context_compact',
+            arguments: emptyArgs,
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        id: 'tool-compact',
+        toolCalls: [
+          {
+            request: {
+              id: 'compact-1',
+              name: 'yolo_local__context_compact',
+              arguments: emptyArgs,
+            },
+            response: {
+              status: ToolCallResponseStatus.Success,
+              data: {
+                type: 'text',
+                text: JSON.stringify({
+                  tool: 'context_compact',
+                  toolCallId: 'compact-1',
+                  operation: 'compact_restart',
+                }),
+              },
+            },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        id: 'user-2',
+        content: null,
+        promptContent: 'new turn after compact',
+        mentionables: [],
+      },
+    ]
+    const inputCopy = structuredClone(messages)
+
+    const requestMessages = await builder.generateRequestMessages({
+      messages,
+      model,
+      conversationId: 'conv-c4-compaction',
+      hasTools: true,
+      compaction: {
+        anchorMessageId: 'tool-compact',
+        summary: 'Earlier history summary',
+        compactedAt: 1,
+        triggerToolCallId: 'compact-1',
+      },
+      systemPromptSnapshotMode: 'create',
+    })
+
+    // Compaction summary message + the retained window; the dynamic block
+    // merges into the last real user message (user-2) — never a fresh user
+    // message appended after the tool result.
+    expect(requestMessages.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'tool',
+      'user',
+    ])
+    const lastMessage = requestMessages.at(-1)
+    expect(lastMessage).toEqual(
+      expect.objectContaining({
+        role: 'user',
+        content: expect.stringContaining('new turn after compact'),
+      }),
+    )
+    expect(typeof lastMessage?.content).toBe('string')
+    expect(lastMessage?.content).toContain('<recalled_memory')
+    expect(lastMessage?.content).toContain('MEM_FALLBACK')
+    expect(messages).toEqual(inputCopy)
+  })
+
+  it('keeps request order with no assistant selected — the block merges into the single user message before the assistant turn (C4)', async () => {
+    memMock.mockResolvedValue({ global: 'MEM_FALLBACK', assistant: null })
+
+    const builder = new RequestContextBuilder(makeApp(), settings, {
+      includeSkills: false,
+    })
+
+    const requestMessages = await builder.generateRequestMessages({
+      messages: [
+        {
+          role: 'user',
+          id: 'user-1',
+          content: null,
+          promptContent: 'hello',
+          mentionables: [],
+        },
+        {
+          role: 'assistant',
+          id: 'assistant-1',
+          content: 'hi there',
+        },
+      ],
+      model,
+      conversationId: 'conv-c4-no-assistant',
+      systemPromptSnapshotMode: 'create',
+    })
+
+    // No assistant configured: the recall partition is global, and the block
+    // still lands in the existing user message — nothing is appended after
+    // the assistant message.
+    expect(requestMessages.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+    ])
+    const lastUser = requestMessages.filter(
+      (message) => message.role === 'user',
+    )[0]
+    expect(typeof lastUser.content).toBe('string')
+    expect(lastUser.content).toContain('<recalled_memory')
+    expect(lastUser.content).toContain('MEM_FALLBACK')
   })
 })
 
@@ -3393,7 +3841,7 @@ describe('RequestContextBuilder ChatContextPolicy (module chat modes)', () => {
     }))
   })
 
-  async function buildSystemContent(
+  async function buildRequestMessages(
     settings: YoloSettings,
     opts: {
       conversationId: string
@@ -3402,12 +3850,12 @@ describe('RequestContextBuilder ChatContextPolicy (module chat modes)', () => {
       modePersonaModuleId?: string
       store?: SystemPromptSnapshotStore
     },
-  ): Promise<string> {
+  ): Promise<RequestMessage[]> {
     const builder = new RequestContextBuilder(makeApp() as never, settings, {
       includeSkills: false,
       systemPromptSnapshotStore: opts.store,
     })
-    const requestMessages = await builder.generateRequestMessages({
+    return await builder.generateRequestMessages({
       systemPromptSnapshotMode: 'create',
       messages: [
         {
@@ -3424,30 +3872,48 @@ describe('RequestContextBuilder ChatContextPolicy (module chat modes)', () => {
       modePersonaPrompt: opts.modePersonaPrompt,
       modePersonaModuleId: opts.modePersonaModuleId,
     })
-    const system = requestMessages.find((m) => m.role === 'system')
+  }
+
+  const systemContentOf = (messages: RequestMessage[]): string => {
+    const system = messages.find((m) => m.role === 'system')
     expect(system).toBeDefined()
     return typeof system!.content === 'string' ? system!.content : ''
   }
 
+  const lastUserContentOf = (messages: RequestMessage[]): string => {
+    const user = [...messages].reverse().find((m) => m.role === 'user')
+    if (!user || typeof user.content !== 'string') {
+      throw new Error('Expected a string user message')
+    }
+    return user.content
+  }
+
   it('keeps built-in-mode behavior unchanged when contextPolicy is omitted', async () => {
-    const content = await buildSystemContent(settingsWithAssistant, {
+    const messages = await buildRequestMessages(settingsWithAssistant, {
       conversationId: 'conv-builtin-mode',
     })
+    const content = systemContentOf(messages)
 
     expect(content).toContain('<assistant_instructions name="Scoped agent">')
     expect(content).toContain('ASSISTANT_INSTRUCTIONS')
-    expect(content).toContain('ASSISTANT_MEMORY')
     expect(content).toContain('<workspace_scope>')
     expect(content).not.toContain('module_mode_instructions')
+
+    // Memory is not part of the frozen system prompt without an index
+    // runtime; it flows through the dynamic user block, assistant-scoped.
+    expect(content).not.toContain('ASSISTANT_MEMORY')
+    expect(lastUserContentOf(messages)).toContain('GLOBAL_MEMORY')
+    expect(lastUserContentOf(messages)).toContain('ASSISTANT_MEMORY')
   })
 
   it('replaces assistant instructions with the module persona and cuts the assistant out of memory/workspace scope/project instructions', async () => {
-    const content = await buildSystemContent(settingsWithAssistant, {
+    const messages = await buildRequestMessages(settingsWithAssistant, {
       conversationId: 'conv-module-mode',
       contextPolicy: { useAssistant: false },
       modePersonaPrompt: 'You are the learning course assistant.',
       modePersonaModuleId: 'learning',
     })
+    const content = systemContentOf(messages)
 
     // In-place substitution: same slot as assistant instructions would use.
     expect(content).toContain('<module_mode_instructions module="learning">')
@@ -3455,9 +3921,10 @@ describe('RequestContextBuilder ChatContextPolicy (module chat modes)', () => {
     expect(content).not.toContain('ASSISTANT_INSTRUCTIONS')
     expect(content).not.toContain('<assistant_instructions')
 
-    // Assistant memory dropped; global memory retained.
-    expect(content).toContain('GLOBAL_MEMORY')
-    expect(content).not.toContain('ASSISTANT_MEMORY')
+    // Assistant memory dropped; global memory retained — verified on the
+    // dynamic block, which is where memory lives without an index runtime.
+    expect(lastUserContentOf(messages)).toContain('GLOBAL_MEMORY')
+    expect(lastUserContentOf(messages)).not.toContain('ASSISTANT_MEMORY')
 
     // Workspace scope and project instructions are assistant-scoped fields —
     // fully cut off, not partially preserved.
@@ -3469,10 +3936,11 @@ describe('RequestContextBuilder ChatContextPolicy (module chat modes)', () => {
   })
 
   it('omits the persona section when a module mode has no persona text (defensive)', async () => {
-    const content = await buildSystemContent(settingsWithAssistant, {
+    const messages = await buildRequestMessages(settingsWithAssistant, {
       conversationId: 'conv-module-mode-empty-persona',
       contextPolicy: { useAssistant: false },
     })
+    const content = systemContentOf(messages)
 
     expect(content).not.toContain('module_mode_instructions')
     expect(content).not.toContain('<assistant_instructions')
@@ -3481,32 +3949,35 @@ describe('RequestContextBuilder ChatContextPolicy (module chat modes)', () => {
   it('includes contextPolicy and the persona prompt in the system prompt fingerprint', async () => {
     const store = new SystemPromptSnapshotStore()
 
-    const builtIn = await buildSystemContent(settingsWithAssistant, {
-      conversationId: 'conv-fingerprint',
-      store,
-    })
+    const builtIn = systemContentOf(
+      await buildRequestMessages(settingsWithAssistant, {
+        conversationId: 'conv-fingerprint',
+        store,
+      }),
+    )
     // Same conversationId, 'create' mode: only a fingerprint change refreshes
     // the frozen snapshot — proves contextPolicy/modePersonaPrompt are part
     // of the cache key, not silently reusing the built-in-mode snapshot.
-    const moduleMode = await buildSystemContent(settingsWithAssistant, {
-      conversationId: 'conv-fingerprint',
-      store,
-      contextPolicy: { useAssistant: false },
-      modePersonaPrompt: 'Persona V1',
-      modePersonaModuleId: 'learning',
-    })
+    const moduleMode = systemContentOf(
+      await buildRequestMessages(settingsWithAssistant, {
+        conversationId: 'conv-fingerprint',
+        store,
+        contextPolicy: { useAssistant: false },
+        modePersonaPrompt: 'Persona V1',
+        modePersonaModuleId: 'learning',
+      }),
+    )
     expect(moduleMode).not.toEqual(builtIn)
     expect(moduleMode).toContain('Persona V1')
 
-    const moduleModePersonaChanged = await buildSystemContent(
-      settingsWithAssistant,
-      {
+    const moduleModePersonaChanged = systemContentOf(
+      await buildRequestMessages(settingsWithAssistant, {
         conversationId: 'conv-fingerprint',
         store,
         contextPolicy: { useAssistant: false },
         modePersonaPrompt: 'Persona V2',
         modePersonaModuleId: 'learning',
-      },
+      }),
     )
     expect(moduleModePersonaChanged).not.toEqual(moduleMode)
     expect(moduleModePersonaChanged).toContain('Persona V2')

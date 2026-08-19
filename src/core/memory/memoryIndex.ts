@@ -220,6 +220,11 @@ type MemoryIndexStoreOptions = {
   ) => Promise<MemorySourceFingerprint>
   /** Test seam: shorten the per-embedding bound of the operationChain. */
   embedTimeoutMs?: number
+  /**
+   * Test seam: shorten the reinforcement interval without waiting an hour.
+   * Defaults to `DEFAULT_MEMORY_REINFORCEMENT_INTERVAL_MS`.
+   */
+  reinforcementIntervalMs?: number
   clock?: () => number
 }
 
@@ -236,6 +241,7 @@ type MemoryIndexRow = {
   content_hash: string
   salience: number
   last_recalled_at: number | null
+  last_reinforced_at: number | null
   created_at: number
   updated_at: number
   source_path: string
@@ -260,13 +266,26 @@ type MemoryReflectionStateRow = {
   dirty_reason: string | null
 }
 
-const DEFAULT_MAX_ENTRIES = 8
-const DEFAULT_MAX_CHARS = 3000
+/**
+ * Query safety caps (C1+C2): same semantics as the recall candidate limits —
+ * the query layer is a fault-protection bound against pathological data, not
+ * the final render budget. Must cover at least the candidate values (32
+ * entries / 12_000 chars) so the candidate pool reaches the query layer.
+ */
+const MAX_QUERY_ENTRIES = 32
+const MAX_QUERY_CHARS = 12_000
 const MAX_SOURCE_ENTRIES = 20_000
 const RECONCILE_HASH_BATCH_SIZE = 500
 const MAX_QUERY_KEYWORDS = 64
 const MAX_GRAPH_SOURCE_KEYWORDS = 256
 const MAX_GRAPH_TRIM_BATCH = 64
+/**
+ * Minimum gap between two reinforcement bumps of the same entry. A recall
+ * hit inside the window only refreshes `last_recalled_at`; the salience
+ * bump (and the `last_reinforced_at` record) happens at most once per
+ * window, decided inside the UPDATE statement itself.
+ */
+export const DEFAULT_MEMORY_REINFORCEMENT_INTERVAL_MS = 60 * 60 * 1000
 const DEFAULT_SECTOR = (
   category: MemoryAgentEntry['category'],
 ): MemorySector =>
@@ -296,6 +315,7 @@ const rowToEntry = (row: MemoryIndexRow): IndexedMemoryEntry => ({
   contentHash: row.content_hash,
   salience: row.salience,
   lastRecalledAt: row.last_recalled_at,
+  lastReinforcedAt: row.last_reinforced_at,
   sourceFingerprint: row.source_file_fingerprint,
 })
 
@@ -757,12 +777,18 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
             const lastRecalledAt = unchanged
               ? (old?.last_recalled_at ?? null)
               : null
+            // `last_reinforced_at` is not a recall timestamp: it records the
+            // last reinforcement window open, so re-indexing an unchanged
+            // entry preserves it while a new/changed entry starts unwindowed.
+            const lastReinforcedAt = unchanged
+              ? (old?.last_reinforced_at ?? null)
+              : null
             runtime.exec(
               `insert into memory_index
                (partition_key, memory_key, scope, assistant_id, local_id, category, sector, content, keywords_json,
-                content_hash, salience, last_recalled_at,
+                content_hash, salience, last_recalled_at, last_reinforced_at,
                 created_at, updated_at, source_path, source_file_fingerprint, entry_fingerprint, parser_version)
-               values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                on conflict(partition_key, local_id) do update set
                  memory_key = excluded.memory_key,
                  scope = excluded.scope,
@@ -774,6 +800,7 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
                  content_hash = excluded.content_hash,
                  salience = excluded.salience,
                  last_recalled_at = excluded.last_recalled_at,
+                 last_reinforced_at = excluded.last_reinforced_at,
                  updated_at = excluded.updated_at,
                  source_path = excluded.source_path,
                  source_file_fingerprint = excluded.source_file_fingerprint,
@@ -798,6 +825,7 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
                 contentHash,
                 salience,
                 lastRecalledAt,
+                lastReinforcedAt,
                 old?.created_at ?? timestamp,
                 timestamp,
                 snapshot.sourcePath,
@@ -948,11 +976,11 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
         return []
       const maxEntries = Math.max(
         0,
-        Math.min(DEFAULT_MAX_ENTRIES, Math.trunc(input.maxEntries)),
+        Math.min(MAX_QUERY_ENTRIES, Math.trunc(input.maxEntries)),
       )
       const maxChars = Math.max(
         0,
-        Math.min(DEFAULT_MAX_CHARS, Math.trunc(input.maxChars)),
+        Math.min(MAX_QUERY_CHARS, Math.trunc(input.maxChars)),
       )
       const categories =
         input.target.categories?.length > 0
@@ -1034,6 +1062,13 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
         result.push(rowToEntry(row))
         chars += row.content.length
       }
+      // Query layer observability (C1+C2): actual rows returned, the
+      // char-filtered keep count, and whether a safety cap was hit. The
+      // renderer's omitted/truncated stats stay separate at render time.
+      logFlightEvent('memory-index', 'query-candidates', {
+        detail: `rows=${rows.length} kept=${result.length} chars=${chars} capEntries=${rows.length >= maxEntries} capChars=${chars >= maxChars}`,
+        consoleOutput: 'none',
+      })
       return result
     } catch (error) {
       console.warn('[YOLO][MemoryIndex] query failed', error)
@@ -1077,10 +1112,41 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
   }): Promise<void> {
     return this.enqueue(async () => {
       const runtime = await this.getRuntime()
+      const intervalMs =
+        this.options.reinforcementIntervalMs ??
+        DEFAULT_MEMORY_REINFORCEMENT_INTERVAL_MS
+      // One atomic statement: the window decision and the timestamp writes
+      // share the UPDATE, so the salience CASE reads the row value at
+      // execution time instead of a stale app-level read-then-write.
+      // `last_recalled_at` still refreshes on every hit (decay and cold
+      // archive read only that column); `salience = 1` still records the
+      // open-window time so capped entries are not mistaken for first hits.
       runtime.exec(
-        `update memory_index set salience = min(1, salience + 0.05), last_recalled_at = ?, updated_at = ?
+        `update memory_index
+         set salience = case
+               when last_reinforced_at is null
+                 or last_reinforced_at <= ?
+                 then min(1, salience + 0.05)
+               else salience
+             end,
+             last_reinforced_at = case
+               when last_reinforced_at is null
+                 or last_reinforced_at <= ?
+                 then ?
+               else last_reinforced_at
+             end,
+             last_recalled_at = ?,
+             updated_at = ?
          where partition_key = ? and local_id = ?`,
-        [input.nowMs, input.nowMs, input.partition.partitionKey, input.localId],
+        [
+          input.nowMs - intervalMs,
+          input.nowMs - intervalMs,
+          input.nowMs,
+          input.nowMs,
+          input.nowMs,
+          input.partition.partitionKey,
+          input.localId,
+        ],
       )
     })
   }
@@ -1358,7 +1424,7 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
           Math.max(sourceScores.get(seed.id) ?? 0, seed.salience),
         )
       }
-      const sourceIds = [...sourceScores.keys()].slice(0, DEFAULT_MAX_ENTRIES)
+      const sourceIds = [...sourceScores.keys()].slice(0, MAX_QUERY_ENTRIES)
       if (sourceIds.length === 0) return input.seeds
       const rows = runtime.query<
         MemoryIndexRow & {
@@ -1385,7 +1451,7 @@ class SqliteMemoryIndexStore implements MemoryIndexMaintenanceStore {
           ...categories,
           COLD_ARCHIVE_SALIENCE,
           COLD_ARCHIVE_MS,
-          DEFAULT_MAX_ENTRIES * MAX_GRAPH_DEGREE,
+          MAX_QUERY_ENTRIES * MAX_GRAPH_DEGREE,
         ],
       )
       const seenKeys = new Set(input.seeds.map(({ memoryKey }) => memoryKey))

@@ -55,5 +55,20 @@ export type IndexedMemoryEntry = MemoryAgentEntry &
     contentHash: string
     salience: number
     lastRecalledAt: number | null
+    /** When the reinforcement window last opened (or null: never reinforced). */
+    lastReinforcedAt: number | null
     sourceFingerprint: string
   }>
+
+/**
+ * Final render outcome of the token packer (C1+C2). `content` is null when
+ * nothing could be rendered (empty candidate list, or the XML wrapper alone
+ * exceeds the token budget).
+ */
+export type MemoryRecallRenderResult = Readonly<{
+  content: string | null
+  tokenCount: number
+  selectedCount: number
+  truncatedCount: number
+  omittedCount: number
+}>

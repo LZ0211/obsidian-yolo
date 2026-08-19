@@ -155,6 +155,35 @@ export const rankMemoryEntries = (
 export const shouldProcessMemoryTurn = (userText: string): boolean =>
   Boolean(userText.trim())
 
+export type MemoryExtractionGateCandidate = Readonly<{
+  reason: 'empty' | 'control' | 'punctuation' | null
+  charCount: number
+}>
+
+/**
+ * Deterministic L1 gate run before the hidden memory-extraction LLM call
+ * (spec 8.1). Classifies the trimmed user text in order: empty, control/
+ * format/whitespace-only, then punctuation/symbol/whitespace-only; everything
+ * else stays an extraction candidate. The three-state setting decides whether
+ * a non-null reason skips the LLM (enabled), only records an outcome event
+ * (shadow), or is ignored (off). Deliberately no <3-char, cooldown, greeting
+ * blacklist, or language rules — short Chinese facts can carry durable
+ * preferences or corrections.
+ */
+export const classifyMemoryExtractionTurn = (
+  userText: string,
+): MemoryExtractionGateCandidate => {
+  const trimmed = userText.trim()
+  if (!trimmed) return { reason: 'empty', charCount: 0 }
+  if (/^[\p{Cc}\p{Cf}\s]+$/u.test(trimmed)) {
+    return { reason: 'control', charCount: trimmed.length }
+  }
+  if (/^[\p{P}\p{S}\s]+$/u.test(trimmed)) {
+    return { reason: 'punctuation', charCount: trimmed.length }
+  }
+  return { reason: null, charCount: trimmed.length }
+}
+
 const extractJsonCandidates = (content: string): string[] => {
   const candidates: string[] = []
   let start = -1
@@ -650,11 +679,27 @@ export const runMemoryAgentAfterTurn = async ({
   signal,
   onSourceCommitted,
 }: MemoryAgentTurnInput): Promise<MemoryAgentOperation[]> => {
+  if (!assistantText.trim() || signal?.aborted) return []
+
+  // Deterministic L1 quality gate (C5): classify before reading the mode so
+  // candidate events are recorded for every completed turn. Blank input keeps
+  // the historical shouldProcessMemoryTurn no-op contract in every mode while
+  // still recording the skip; only 'enabled' skips non-blank control/
+  // punctuation-only turns before the hidden extraction LLM call.
+  const candidate = classifyMemoryExtractionTurn(userText)
+  const gateMode = settings?.memoryExtractionQualityGate ?? 'shadow'
+  logFlightEvent('memory', 'extraction-candidate', {
+    id: assistantId ?? 'global',
+    detail: `mode=${gateMode} reason=${candidate.reason ?? 'none'} chars=${candidate.charCount}`,
+  })
   if (
-    !shouldProcessMemoryTurn(userText) ||
-    !assistantText.trim() ||
-    signal?.aborted
+    candidate.reason !== null &&
+    (candidate.reason === 'empty' || gateMode === 'enabled')
   ) {
+    logFlightEvent('memory', 'extraction-skipped', {
+      id: assistantId ?? 'global',
+      detail: `mode=${gateMode} reason=${candidate.reason}`,
+    })
     return []
   }
 
@@ -698,6 +743,14 @@ export const runMemoryAgentAfterTurn = async ({
     detail: `operations=${operations.length}`,
   })
   if (signal?.aborted) return []
+  if (gateMode === 'shadow' && candidate.reason !== null) {
+    // Shadow observability: the LLM ran, so no skip occurred; record what an
+    // enabled gate would have done so the default never changes behavior.
+    logFlightEvent('memory', 'extraction-quality-outcome', {
+      id: assistantId ?? 'global',
+      detail: `mode=${gateMode} wouldSkip=${candidate.reason} operations=${operations.length}`,
+    })
+  }
 
   const latestEntries = await loadMemoryAgentEntries({
     app,

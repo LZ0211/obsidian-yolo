@@ -12,11 +12,17 @@ jest.mock('./memoryManager', () => ({
   memoryUpdate: jest.fn(),
 }))
 
+import {
+  clearFlightLog,
+  getFlightEvents,
+  setFlightLogEnabled,
+} from '../../utils/debug/flightLog'
 import { executeSingleTurn } from '../ai/single-turn'
 
 import {
   type MemoryAgentEntry,
   buildBoundedMemoryExtractionContext,
+  classifyMemoryExtractionTurn,
   filterMemoryAgentOperationsForLatestState,
   parseMemoryAgentOperations,
   rankMemoryEntries,
@@ -27,18 +33,21 @@ import {
 import {
   getMemoryPromptContext,
   memoryAdd,
+  memoryDelete,
   memoryUpdate,
 } from './memoryManager'
 import { extractMemoryQueryKeywords } from './memoryTokenizer'
 
 const mockExecuteSingleTurn = jest.mocked(executeSingleTurn)
 const mockMemoryAdd = jest.mocked(memoryAdd)
+const mockMemoryDelete = jest.mocked(memoryDelete)
 const mockMemoryUpdate = jest.mocked(memoryUpdate)
 const mockGetMemoryPromptContext = jest.mocked(getMemoryPromptContext)
 
 beforeEach(() => {
   mockExecuteSingleTurn.mockReset()
   mockMemoryAdd.mockReset()
+  mockMemoryDelete.mockReset()
   mockMemoryUpdate.mockReset()
   mockGetMemoryPromptContext.mockReset()
   mockGetMemoryPromptContext.mockResolvedValue({ global: '', assistant: '' })
@@ -625,5 +634,204 @@ describe('MemoryAgent', () => {
     ).resolves.toEqual([])
 
     expect(mockExecuteSingleTurn).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('classifyMemoryExtractionTurn', () => {
+  it('keeps important short facts, preferences, and requests as extraction candidates', () => {
+    expect(
+      classifyMemoryExtractionTurn('以后请始终用中文回答').reason,
+    ).toBeNull()
+    expect(classifyMemoryExtractionTurn('请记住我住在上海').reason).toBeNull()
+    expect(classifyMemoryExtractionTurn('帮我打开这个文件').reason).toBeNull()
+  })
+
+  it('flags whitespace-padded punctuation as a punctuation-only turn', () => {
+    expect(classifyMemoryExtractionTurn('   !!!   ').reason).toBe('punctuation')
+  })
+
+  it('flags control characters as a control-only turn', () => {
+    expect(classifyMemoryExtractionTurn('\u0000\u0007').reason).toBe('control')
+  })
+
+  it('reports the trimmed length and distinguishes empty from control-only turns', () => {
+    expect(classifyMemoryExtractionTurn('   ')).toEqual({
+      reason: 'empty',
+      charCount: 0,
+    })
+    expect(classifyMemoryExtractionTurn('   !!!   ')).toEqual({
+      reason: 'punctuation',
+      charCount: 3,
+    })
+  })
+})
+
+describe('memory extraction quality gate', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'debug').mockImplementation(() => undefined)
+    setFlightLogEnabled(true)
+    clearFlightLog()
+  })
+
+  afterEach(() => {
+    setFlightLogEnabled(false)
+    clearFlightLog()
+    jest.restoreAllMocks()
+  })
+
+  it('off mode still calls the LLM once for punctuation-only turns (regression contract)', async () => {
+    mockExecuteSingleTurn.mockResolvedValue({
+      content: '{"operations":[]}',
+      toolCalls: [],
+    })
+
+    await runMemoryAgentAfterTurn({
+      app: {} as never,
+      userText: '   !!!   ',
+      assistantText: 'Understood.',
+      providerClient: {} as never,
+      model: { id: 'model', model: 'model' } as never,
+      settings: { memoryExtractionQualityGate: 'off' },
+    })
+
+    expect(mockExecuteSingleTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it('blank user text skips the LLM in off mode and records candidate plus skip events', async () => {
+    mockExecuteSingleTurn.mockResolvedValue({
+      content: '{"operations":[]}',
+      toolCalls: [],
+    })
+
+    await expect(
+      runMemoryAgentAfterTurn({
+        app: {} as never,
+        userText: '   ',
+        assistantText: 'Understood.',
+        providerClient: {} as never,
+        model: { id: 'model', model: 'model' } as never,
+        settings: { memoryExtractionQualityGate: 'off' },
+      }),
+    ).resolves.toEqual([])
+
+    expect(mockExecuteSingleTurn).not.toHaveBeenCalled()
+    const events = getFlightEvents()
+    expect(
+      events.some(
+        (event) =>
+          event.scope === 'memory' && event.event === 'extraction-skipped',
+      ),
+    ).toBe(true)
+    const candidateEvent = events.find(
+      (event) =>
+        event.scope === 'memory' && event.event === 'extraction-candidate',
+    )
+    expect(candidateEvent?.detail).toContain('mode=off')
+    expect(candidateEvent?.detail).toContain('reason=empty')
+  })
+
+  it('shadow mode still calls the LLM once and records an extraction-quality-outcome event', async () => {
+    mockExecuteSingleTurn.mockResolvedValue({
+      content: '{"operations":[]}',
+      toolCalls: [],
+    })
+
+    await runMemoryAgentAfterTurn({
+      app: {} as never,
+      userText: '   !!!   ',
+      assistantText: 'Understood.',
+      providerClient: {} as never,
+      model: { id: 'model', model: 'model' } as never,
+      settings: { memoryExtractionQualityGate: 'shadow' },
+    })
+
+    expect(mockExecuteSingleTurn).toHaveBeenCalledTimes(1)
+    expect(
+      getFlightEvents().some(
+        (event) =>
+          event.scope === 'memory' &&
+          event.event === 'extraction-quality-outcome',
+      ),
+    ).toBe(true)
+  })
+
+  it('enabled mode skips the LLM, emits extraction-skipped, and never writes or reconciles', async () => {
+    mockExecuteSingleTurn.mockResolvedValue({
+      content: '{"operations":[]}',
+      toolCalls: [],
+    })
+    const onSourceCommitted = jest.fn()
+
+    await runMemoryAgentAfterTurn({
+      app: {} as never,
+      userText: '   !!!   ',
+      assistantText: 'Understood.',
+      providerClient: {} as never,
+      model: { id: 'model', model: 'model' } as never,
+      settings: { memoryExtractionQualityGate: 'enabled' },
+      onSourceCommitted,
+    })
+
+    expect(mockExecuteSingleTurn).not.toHaveBeenCalled()
+    expect(mockMemoryAdd).not.toHaveBeenCalled()
+    expect(mockMemoryDelete).not.toHaveBeenCalled()
+    expect(mockMemoryUpdate).not.toHaveBeenCalled()
+    expect(onSourceCommitted).not.toHaveBeenCalled()
+    expect(
+      getFlightEvents().some(
+        (event) =>
+          event.scope === 'memory' && event.event === 'extraction-skipped',
+      ),
+    ).toBe(true)
+  })
+
+  it('enabled mode still calls the LLM for important short facts', async () => {
+    mockExecuteSingleTurn.mockResolvedValue({
+      content: '{"operations":[]}',
+      toolCalls: [],
+    })
+
+    await runMemoryAgentAfterTurn({
+      app: {} as never,
+      userText: '以后请始终用中文回答',
+      assistantText: '好的，我会始终用中文回答。',
+      providerClient: {} as never,
+      model: { id: 'model', model: 'model' } as never,
+      settings: { memoryExtractionQualityGate: 'enabled' },
+    })
+
+    expect(mockExecuteSingleTurn).toHaveBeenCalledTimes(1)
+    expect(
+      getFlightEvents().some(
+        (event) =>
+          event.scope === 'memory' && event.event === 'extraction-skipped',
+      ),
+    ).toBe(false)
+  })
+
+  it('enabled-mode skip returns [] without entering the fallback path', async () => {
+    mockExecuteSingleTurn.mockResolvedValue({
+      content: '{"operations":[]}',
+      toolCalls: [],
+    })
+
+    await expect(
+      runMemoryAgentWithFallback({
+        input: {
+          app: {} as never,
+          userText: '   !!!   ',
+          assistantText: 'Understood.',
+          providerClient: {} as never,
+          model: { id: 'memory-model', model: 'memory-model' } as never,
+          settings: { memoryExtractionQualityGate: 'enabled' },
+        },
+        fallback: {
+          providerClient: {} as never,
+          model: { id: 'chat-model', model: 'chat-model' } as never,
+        },
+      }),
+    ).resolves.toEqual([])
+
+    expect(mockExecuteSingleTurn).not.toHaveBeenCalled()
   })
 })

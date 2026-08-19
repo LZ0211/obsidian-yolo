@@ -659,6 +659,13 @@ export const yoloSettingsSchema = z.object({
   memoryAgentModelId: z.string().optional(), // model for hidden memory extraction
   advancedMemoryIndexEnabled: z.boolean().catch(true),
   memoryReflectionEnabled: z.boolean().catch(false),
+  // Deterministic pre-extraction quality gate (C5). Legacy configs without
+  // this field catch 'shadow': the hidden extraction LLM still runs and the
+  // gate only records quality-outcome events, so existing behavior is
+  // unchanged until the user opts into 'enabled'.
+  memoryExtractionQualityGate: z
+    .enum(['off', 'shadow', 'enabled'])
+    .catch('shadow'),
   embeddingModelId: z.string().catch(''), // model for embedding
 
   // CLI runtime 的 LLM 注入（cc-switch 式）：开启时 CLI runtime 使用
