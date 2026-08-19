@@ -1,6 +1,6 @@
 import type { SqliteNativeRuntimeFacade } from '../../database/sqlite/sqliteNativeRuntime'
 
-export const MEMORY_INDEX_SCHEMA_VERSION = 3
+export const MEMORY_INDEX_SCHEMA_VERSION = 4
 
 export class MemoryIndexUnavailableError extends Error {
   readonly code = 'memory_index_unavailable'
@@ -18,6 +18,11 @@ export const buildMemoryIndexSchemaSql = (): readonly string[] => [
     key text primary key,
     value text not null
   );`,
+  // v4: `last_reinforced_at` records the last successful reinforcement so
+  // recall hits inside the one-hour window only refresh `last_recalled_at`
+  // instead of bumping salience again. Existing v3 databases gain the column
+  // through the explicit migration, not this DDL (create table if not exists
+  // never alters an existing table).
   `create table if not exists memory_index (
     partition_key text not null,
     memory_key text not null unique,
@@ -31,6 +36,7 @@ export const buildMemoryIndexSchemaSql = (): readonly string[] => [
     content_hash text not null,
     salience real not null default 0.5 check (salience >= 0 and salience <= 1),
     last_recalled_at integer,
+    last_reinforced_at integer,
     created_at integer not null,
     updated_at integer not null,
     source_path text not null,
@@ -157,6 +163,28 @@ const dropLegacyMemoryIndexColumns = (
   }
 }
 
+/**
+ * v4 migration: add the nullable `last_reinforced_at` column to v3
+ * databases. `alter table add column` has no `if not exists` form, so probe
+ * `pragma table_info` first. Legacy rows read NULL (never reinforced),
+ * which opens the reinforcement window on the first hit — the same
+ * first-hit semantics a fresh v4 database gets from the DDL.
+ */
+const addLastReinforcedAtColumn = (
+  runtime: SqliteNativeRuntimeFacade,
+): void => {
+  const columns = new Set(
+    runtime
+      .query<{ name: string }>('pragma table_info(memory_index)')
+      .map(({ name }) => name),
+  )
+  if (!columns.has('last_reinforced_at')) {
+    runtime.exec(
+      'alter table memory_index add column last_reinforced_at integer',
+    )
+  }
+}
+
 export function initializeMemoryIndexSchema(
   runtime: SqliteNativeRuntimeFacade,
 ): void {
@@ -173,11 +201,13 @@ export function initializeMemoryIndexSchema(
     // Older versions migrate forward: every statement is `create table if not
     // exists`, so re-running the full DDL on a v1 database only adds the new
     // v2 tables and leaves existing data intact; the explicit column drops
-    // handle the v1/v2 → v3 dead-column removal that DDL re-run cannot.
+    // handle the v1/v2 → v3 dead-column removal that DDL re-run cannot, and
+    // the explicit column add handles the v3 → v4 reinforcement timestamp.
     runtime.transaction(() => {
       for (const sql of buildMemoryIndexSchemaSql()) runtime.exec(sql)
       if (current !== null && current < MEMORY_INDEX_SCHEMA_VERSION) {
         dropLegacyMemoryIndexColumns(runtime)
+        addLastReinforcedAtColumn(runtime)
       }
       runtime.exec(
         `insert into memory_schema_meta (key, value) values ('schema_version', ?)

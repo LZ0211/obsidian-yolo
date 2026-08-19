@@ -55,6 +55,8 @@ export type IndexedMemoryEntry = MemoryAgentEntry &
     contentHash: string
     salience: number
     lastRecalledAt: number | null
+    /** When the reinforcement window last opened (or null: never reinforced). */
+    lastReinforcedAt: number | null
     sourceFingerprint: string
   }>
 
