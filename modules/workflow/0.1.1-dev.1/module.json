@@ -13,8 +13,8 @@
           "role": "entry",
           "name": "entry.js",
           "path": "entry.js",
-          "byteSize": 255899,
-          "sha256": "201b9c63de575906dcd58cf55d7995f7b665ba479ca551754051f08e41540a49",
+          "byteSize": 255863,
+          "sha256": "e848de9bdb930fd3f15d0f63ae1faf550367c67b41c88d99d8aac4c3ea56e1f3",
           "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/entry.js",
           "storage": "module"
         },
@@ -118,8 +118,8 @@
           "role": "entry",
           "name": "entry.js",
           "path": "entry.js",
-          "byteSize": 255899,
-          "sha256": "201b9c63de575906dcd58cf55d7995f7b665ba479ca551754051f08e41540a49",
+          "byteSize": 255863,
+          "sha256": "e848de9bdb930fd3f15d0f63ae1faf550367c67b41c88d99d8aac4c3ea56e1f3",
           "url": "https://github.com/Lapis0x0/obsidian-yolo/releases/download/module-workflow-v0.1.1-dev.1/entry.js",
           "storage": "module"
         },
