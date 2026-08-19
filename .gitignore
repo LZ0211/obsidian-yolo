@@ -47,3 +47,4 @@ supabase/
 .tmp/
 # Playwright harness output
 scripts/qa-workflow-harness/test-results/
+scripts/qa-web-harness/test-results/

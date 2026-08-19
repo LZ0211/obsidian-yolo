@@ -1,3 +1,7 @@
+import type {
+  AssistantRenderStreamListener,
+  AssistantRenderStreamValue,
+} from '../../core/agent/assistantRenderStreamStore'
 import type { YoloPluginInfo, YoloRuntime } from '../yoloRuntime.types'
 
 const EMPTY_MODULE_CHAT_MODE_SNAPSHOT: readonly unknown[] = Object.freeze([])
@@ -52,6 +56,21 @@ export function createWebCompatPlugin({
         options?: { emitCurrent?: boolean },
       ) => agent.subscribe(id, listener as never, options),
       getMessages: (id: string) => agent.getMessages(id),
+      // 桌面 AgentService 的 AssistantRenderStreamAccess 成员：Chat.tsx 把
+      // plugin.getAgentService() 直接当作 AssistantRenderStreamProvider 的
+      // access——web 端必须提供，否则流式正文叶子调用
+      // access.getAssistantRenderStream 抛 TypeError，assistant 消息不渲染。
+      getAssistantRenderStream: (
+        id: string,
+        messageId: string,
+      ): AssistantRenderStreamValue | undefined =>
+        agent.getAssistantRenderStream(id, messageId),
+      subscribeAssistantRenderStream: (
+        id: string,
+        messageId: string,
+        listener: AssistantRenderStreamListener,
+      ): (() => void) =>
+        agent.subscribeAssistantRenderStream(id, messageId, listener),
       replaceConversationMessages: agent.replaceConversationMessages.bind(agent),
       run: (input: unknown) => agent.run(unwrapAgentRunInput(input) as never),
       abort: (id: string) => agent.abort(id),

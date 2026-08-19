@@ -3,6 +3,10 @@
 // 未移植（Task 6 同裁），会话网关类型收拢在 runtime/web/webConversationTypes，
 // agent 状态类型改由 master 的 core/agent/service 提供。
 import type { ContextBreakdownInputs } from '../components/chat-view/useContextBreakdown'
+import type {
+  AssistantRenderStreamListener,
+  AssistantRenderStreamValue,
+} from '../core/agent/assistantRenderStreamStore'
 import type { ContextBreakdown } from '../core/agent/contextBreakdown'
 import type {
   AgentConversationRunSummary,
@@ -253,6 +257,17 @@ export type YoloRuntime = YoloRuntimeCompatibilityBridge & {
     getState(conversationId: string): AgentConversationState
     getConversationRunSummary(conversationId: string): AgentConversationRunSummary
     getMessages(conversationId: string): ChatMessage[]
+    // 生成中 assistant 正文/思考展示流（桌面 AgentService 的
+    // AssistantRenderStreamAccess 同形访问面；web 端由 SSE `text` 事件喂入）。
+    getAssistantRenderStream(
+      conversationId: string,
+      messageId: string,
+    ): AssistantRenderStreamValue | undefined
+    subscribeAssistantRenderStream(
+      conversationId: string,
+      messageId: string,
+      listener: AssistantRenderStreamListener,
+    ): () => void
     replaceConversationMessages(
       conversationId: string,
       messages: ChatMessage[],

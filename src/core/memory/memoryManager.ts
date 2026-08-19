@@ -12,6 +12,14 @@ type AssistantLike = {
   systemPrompt?: string
 }
 
+/** workspace agent 的最小投影（unified 助理形态的另一种载体）。 */
+type WorkspaceAgentLike = {
+  id: string
+  name?: string
+  templateId?: string
+  disabled?: boolean
+}
+
 export type MemorySettingsLike = {
   advancedMemoryIndexEnabled?: boolean
   memoryReflectionEnabled?: boolean
@@ -29,6 +37,10 @@ export type MemorySettingsLike = {
   }
   currentAssistantId?: string
   assistants?: AssistantLike[]
+  /** workspace agent 清单：运行时 currentAssistantId 也可能是 workspace
+   * agent id（web 会话绑定 / 桌面 workspace agent 选择），assistant 作用域
+   * 的记忆解析必须能落到它们。 */
+  workspaceAgents?: WorkspaceAgentLike[]
 }
 
 export type MemoryScope = 'global' | 'assistant'
@@ -175,12 +187,18 @@ const getAssistantNameDuplicateIndex = ({
   assistant: AssistantLike
   baseFileName: string
 }): number => {
-  const assistants = settings?.assistants ?? []
-  if (assistants.length === 0) {
+  // workspace agent 与模板共享同一文件命名空间：getAssistantById 现在也能
+  // 解析 workspace agent，同名的模板/agent 必须一起参与去重索引，否则两个
+  // 助理会写同一个记忆文件。
+  const candidates = [
+    ...(settings?.assistants ?? []),
+    ...(settings?.workspaceAgents ?? []).filter((agent) => !agent.disabled),
+  ]
+  if (candidates.length === 0) {
     return 0
   }
 
-  const siblings = assistants
+  const siblings = candidates
     .filter((item) => {
       return (
         sanitizeAssistantNameForFileName(resolveAssistantDisplayName(item)) ===
@@ -217,9 +235,22 @@ const getAssistantById = (
   if (!targetId) {
     return null
   }
-  return (
-    settings?.assistants?.find((assistant) => assistant.id === targetId) ?? null
+  const assistant =
+    settings?.assistants?.find((candidate) => candidate.id === targetId) ?? null
+  if (assistant) {
+    return assistant
+  }
+  // workspace agent 兜底（unified 助理形态）：web 运行时的 currentAssistantId
+  // 是会话绑定的 workspace agent id，桌面 workspace agent 选择同理——只查
+  // assistants 会让 assistant 作用域的记忆源解析抛
+  // 'Assistant not found for assistant memory scope'，C4 动态召回被整体省略
+  // 且 salience 永远为空。workspace agent 的记忆文件按自身显示名命名。
+  const workspaceAgent = settings?.workspaceAgents?.find(
+    (candidate) => !candidate.disabled && candidate.id === targetId,
   )
+  return workspaceAgent
+    ? { id: workspaceAgent.id, name: workspaceAgent.name }
+    : null
 }
 
 const getAssistantMemoryPath = ({
@@ -326,7 +357,12 @@ const getPrimarySectionBlock = (
 
 const parseEntryLine = (
   line: string,
-): { id: string; content: string; keywords: string[]; reason?: string } | null => {
+): {
+  id: string
+  content: string
+  keywords: string[]
+  reason?: string
+} | null => {
   const match = line.match(ENTRY_LINE_REGEX)
   if (!match) {
     return null
@@ -642,10 +678,7 @@ type VaultFileCacheEntry = {
 // the last read instead of hitting disk, parsing, and hashing again. `purpose`
 // separates callers that cache different shapes for the same path (raw
 // content vs. parsed snapshot) — sharing one slot would poison the cache.
-const vaultFileReadCache = new WeakMap<
-  App,
-  Map<string, VaultFileCacheEntry>
->()
+const vaultFileReadCache = new WeakMap<App, Map<string, VaultFileCacheEntry>>()
 
 const readVaultFileCached = async <T>(
   app: App,
@@ -951,11 +984,13 @@ const renderBoundedMemoryContext = async ({
   if (!parsed.valid || parsed.entries.length === 0) return content
   const ordered = [...parsed.entries].sort((left, right) => {
     const weightDiff =
-      MEMORY_SECTION_WEIGHT[left.category] - MEMORY_SECTION_WEIGHT[right.category]
+      MEMORY_SECTION_WEIGHT[left.category] -
+      MEMORY_SECTION_WEIGHT[right.category]
     if (weightDiff !== 0) return weightDiff
     const leftSalience =
-      salienceByMemoryKey?.[buildMemoryKey(partition.partitionKey, left.localId)] ??
-      0
+      salienceByMemoryKey?.[
+        buildMemoryKey(partition.partitionKey, left.localId)
+      ] ?? 0
     const rightSalience =
       salienceByMemoryKey?.[
         buildMemoryKey(partition.partitionKey, right.localId)
@@ -1284,7 +1319,9 @@ export async function memoryAdd({
   const normalizedContent = normalizeMemoryContent(content, 'content')
   const normalizedKeywords = normalizeMemoryKeywords(keywords)
   const normalizedReason =
-    typeof reason === 'string' && reason.trim() ? reason.trim().slice(0, 200) : undefined
+    typeof reason === 'string' && reason.trim()
+      ? reason.trim().slice(0, 200)
+      : undefined
   const normalizedCategory = normalizeMemoryCategory(category)
   const normalizedScope = normalizeMemoryScope(scope)
   const {

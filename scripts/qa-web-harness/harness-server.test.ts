@@ -27,9 +27,16 @@ import type { Server as HttpServer } from 'node:http'
 import { AgentService } from '../../src/core/agent/service'
 import { createAgentConversationPersistence } from '../../src/core/agent/conversationPersistence'
 import { createAgentEventStore } from '../../src/core/agent/agentEventStore'
+import {
+  buildMemoryPartition,
+  type MemoryIndexMaintenanceStore,
+} from '../../src/core/memory/memoryIndex'
+import { getMemoryIndexRuntimeHandle } from '../../src/core/memory/memoryIndexRuntime'
+import { loadMemorySourceSnapshot } from '../../src/core/memory/memoryManager'
 import { DELEGATE_SUBAGENT_TOOL_SHORT_NAME } from '../../src/core/agent/subagent/tool-name-utils'
-import { callLocalFileTool } from '../../src/core/mcp/localFileTools'
 import { getLocalFileToolServerName } from '../../src/core/mcp/localFileToolNames'
+import { executeBuiltinTool } from '../../src/core/tools/dispatcher'
+import type { ToolContext } from '../../src/core/tools/types'
 import type { McpManager } from '../../src/core/mcp/mcpManager'
 import { getToolName, parseToolName } from '../../src/core/mcp/tool-name-utils'
 import { getYoloBaseDir } from '../../src/core/paths/yoloPaths'
@@ -41,7 +48,10 @@ import {
 } from '../../src/core/web-server/shareTokenCrypto'
 import { loadOrCreateShareTokenPepper } from '../../src/core/web-server/shareTokenPepperStore'
 import { registerWebServerRoutes } from '../../src/core/web-server/registerWebServerRoutes'
-import { WebHttpServer } from '../../src/core/web-server/WebHttpServer'
+import {
+  WebHttpServer,
+  writeJson,
+} from '../../src/core/web-server/WebHttpServer'
 import { WebServerLifecycle } from '../../src/core/web-server/WebServerLifecycle'
 import { WebSseHub } from '../../src/core/web-server/WebSseHub'
 import { ChatManager } from '../../src/database/json/chat/ChatManager'
@@ -64,6 +74,42 @@ jest.mock('../../src/core/llm/manager', () => {
     getProviderClient: jest.fn(() => getHarnessMockProvider()),
   }
 })
+
+// 记忆索引（sqlite + 向量召回）的确定性嵌入：文本含「数据库/迁移」形态映射
+// [0,1,…]，其余（含「极简」形态）映射 [1,0,…]——与
+// memoryProductionWiring.integration.test.ts 同款接缝，让 C4 动态召回按查询
+// 稳定排序（回合 1 极简条目在前，回合 2 数据库迁移条目在前）。
+jest.mock('../../src/core/rag/embedding', () => {
+  const vectorForRecallText = (text: string): number[] => {
+    if (text.includes('数据库') || text.includes('迁移')) {
+      return [0, 1, 0, 0, 0, 0, 0, 0]
+    }
+    return [1, 0, 0, 0, 0, 0, 0, 0]
+  }
+  return {
+    getEmbeddingModelClient: jest.fn(() => ({
+      getEmbedding: jest.fn(async (text: string) => vectorForRecallText(text)),
+    })),
+    withEmbeddingTimeout: jest.fn(
+      async (
+        client: { getEmbedding: (text: string) => Promise<number[]> },
+        text: string,
+      ) => client.getEmbedding(text),
+    ),
+  }
+})
+
+// 查询相关关键词的确定性 jieba（同款接缝）：含「数据库/迁移」→
+// ['数据库','迁移']，否则 ['极简']。避免依赖真实 jieba-engine 运行时组件
+// 的可用性，保证 C4 词法召回按最新查询稳定排序。
+jest.mock('../../src/core/memory/memoryJiebaTokenizer', () => ({
+  cutForSearchWithJieba: jest.fn(async (text: string) => {
+    if (text.includes('数据库') || text.includes('迁移')) {
+      return ['数据库', '迁移']
+    }
+    return ['极简']
+  }),
+}))
 
 import {
   HARNESS_TOOL_NAME,
@@ -215,25 +261,40 @@ function createMockMcpManager({
         }
         if (serverName === getLocalFileToolServerName()) {
           // 与生产 mcpManager.callTool 的本地分支逐字段同构（mcpManager.ts
-          // :1201-1242）：Success 包 data.text，Aborted 透传 data，其余状态
-          // 原样返回（PendingApproval 不在此路径出现——审批在 gateway 前置）。
-          const localResult = await callLocalFileTool({
-            app: app as never,
-            settings: getSettings(),
-            conversationId: params.conversationId,
-            conversationMessages: params.conversationMessages as never,
-            roundId: params.roundId,
-            toolCallId: params.id,
+          // :1288-1380）：D9 重构后本地工具经注册表 dispatcher
+          // （executeBuiltinTool）执行，旧 callLocalFileTool 分派已删除——
+          // Success 包 data.text，Aborted 透传 data，Rejected 透传 reason，
+          // 其余状态转 Error（PendingApproval 不在此路径出现——审批在
+          // gateway 前置）。
+          const localResult = await executeBuiltinTool(
             toolName,
-            args: (args ?? {}) as Record<string, unknown>,
-            requireReview: params.requireReview,
-            signal: params.signal,
-            chatModelId: params.chatModelId,
-            workspaceAccessPolicy: params.workspaceAccessPolicy as never,
-            allowedSkillPaths: params.allowedSkillPaths,
-            runContext: params.runContext as never,
-            subagentParentContext: params.subagentParentContext as never,
-          })
+            (args ?? {}) as Record<string, unknown>,
+            {
+              app: app as never,
+              settings: getSettings(),
+              openApplyReview: async () => true,
+              conversationId: params.conversationId,
+              conversationMessages: params.conversationMessages as never,
+              roundId: params.roundId,
+              toolCallId: params.id,
+              requireReview: params.requireReview,
+              signal: params.signal,
+              chatModelId: params.chatModelId,
+              workspaceAccessPolicy: params.workspaceAccessPolicy as never,
+              allowedSkillPaths: params.allowedSkillPaths,
+              // 与 mcpManager 同款注入：delegate_subagent 经 ToolContext
+              // 的 runSubagent 懒加载 runner（动态 import 避开模块初始化
+              // 顺序隐患——runner.ts 传递到达 tool-preferences.ts 的
+              // TOOL_NAME_DELIMITER 读取）。
+              runSubagent: async (input) => {
+                const { runSubagent } = await import(
+                  '../../src/core/agent/subagent/runner'
+                )
+                return (runSubagent as ToolContext['runSubagent'])!(input)
+              },
+              subagentParentContext: params.subagentParentContext,
+            },
+          )
           if (localResult.status === ToolCallResponseStatus.Success) {
             return {
               status: ToolCallResponseStatus.Success,
@@ -253,7 +314,18 @@ function createMockMcpManager({
               }),
             }
           }
-          return localResult
+          if (localResult.status === ToolCallResponseStatus.Rejected) {
+            return {
+              status: ToolCallResponseStatus.Rejected,
+              ...(localResult.reason !== undefined && {
+                reason: localResult.reason,
+              }),
+            }
+          }
+          return {
+            status: ToolCallResponseStatus.Error,
+            error: localResult.error,
+          }
         }
         return {
           status: ToolCallResponseStatus.Success,
@@ -357,6 +429,21 @@ async function startHarnessServer(): Promise<{
     /Summarize the quarterly report and return a concise bullet list/i,
     [textTurn(['Delegated result: ', 'quarterly summary done'])],
   )
+  // 记忆分层场景（C4）：回合 2 的请求带回合 1 全文历史（user 消息拼接后同时
+  // 命中两个查询文本），规则按消费顺序匹配——「数据库迁移」规则必须先注册，
+  // 否则回合 2 会误命中「极简」规则。
+  mockProvider.script(/请推荐数据库迁移方案/i, [
+    textTurn(['数据库迁移方案：', '分阶段执行', '完成']),
+  ])
+  mockProvider.script(/我喜欢极简设计/i, [
+    textTurn(['简约设计建议：', '遵循极简原则', '完成']),
+  ])
+
+  // 记忆分层（C4）e2e 数据：真实 fs 上先种好 YOLO/memory/global.md（生产
+  // markdown 格式，见 parseMemorySourceEntries），再经生产快照加载器 +
+  // 真实 sqlite 记忆索引做一次 reconcile——两个条目（极简设计偏好 + 数据库
+  // 迁移项目）落索引后，回合级动态召回才能按查询稳定排序。
+  await seedAndReconcileGlobalMemory(app, () => settings)
 
   const chatManager = new ChatManager(app, settings)
   const persistence = createAgentConversationPersistence(
@@ -442,6 +529,18 @@ async function startHarnessServer(): Promise<{
         getAgentService: () => agentService,
         getMcpManager: async () => mcpManager,
       })
+      // harness 专属调试路由：暴露 MockProvider 收到的 LLM 请求（含 C4 记忆
+      // 分层后的 system/user 消息），供 e2e 场景 g 断言稳定 <global> 快照与
+      // 查询相关的 <recalled_memory> 动态块。仅 loopback 可及，非生产路由。
+      server.router.get('/api/harness/mock-requests', async (_req, res) => {
+        writeJson(
+          res,
+          200,
+          getHarnessMockProvider().streamCalls.map((entry) => ({
+            requestMessages: entry.request.messages,
+          })),
+        )
+      })
 
       boundServer = server
       return server
@@ -467,6 +566,97 @@ async function startHarnessServer(): Promise<{
   )
 
   return { lifecycle, server: boundServer, info }
+}
+
+/**
+ * 真实生产 memory markdown 格式（与 memoryProductionWiring.integration.test.ts
+ * 的 TWO_ENTRY_GLOBAL_MEMORY 同构）：# Preferences 分节 + 行内 keywords。
+ */
+const GLOBAL_MEMORY_MARKDOWN = `# User Profile
+
+# Preferences
+- Preference_1: 用户偏好极简风格的设计 <!-- keywords: 极简风格,设计 -->
+- Preference_2: 用户负责数据库迁移项目 <!-- keywords: 数据库迁移 -->
+
+# Other Memory
+`
+
+/**
+ * 在 harness vault 的真实 fs 上种记忆文件并做一次生产路径 reconcile：
+ * getMemoryIndexRuntimeHandle（与 WebChatRuntimeAdapter 的 RCB 共享同一
+ * 单例）→ sqlite store → loadMemorySourceSnapshot（经 fs-vault-mock 的真实
+ * adapter 读盘）→ store.reconcilePartition（写 memory_index 行 + 确定性
+ * 嵌入向量）。reconcile 是同步等待的，浏览器回合开始前索引已就绪。
+ *
+ * 两个作用域都种：
+ * - global：稳定 <global> 快照（getMemoryPromptContext 无条件读 global.md）；
+ * - assistant（agent-1，记忆文件 YOLO/memory/Agent One.md，按 workspace
+ *   agent 显示名命名）：web 运行的 currentAssistantId 是会话绑定的
+ *   workspace agent id，C4 动态召回走 assistant 作用域（memoryManager 的
+ *   getAssistantById 已能解析 workspace agent）。
+ */
+async function seedAndReconcileGlobalMemory(
+  app: AppMock,
+  getSettings: () => YoloSettings,
+): Promise<void> {
+  const basePath = (
+    app.vault.adapter as { getBasePath(): string }
+  ).getBasePath()
+  const seedFile = (vaultRelativePath: string, content: string): string => {
+    const absolutePath = path.join(basePath, ...vaultRelativePath.split('/'))
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true })
+    fs.writeFileSync(absolutePath, content, 'utf8')
+    return vaultRelativePath
+  }
+  const globalMemoryVaultPath = seedFile(
+    'YOLO/memory/global.md',
+    GLOBAL_MEMORY_MARKDOWN,
+  )
+  const agentMemoryVaultPath = seedFile(
+    'YOLO/memory/Agent One.md',
+    GLOBAL_MEMORY_MARKDOWN,
+  )
+
+  const handle = getMemoryIndexRuntimeHandle(app as never, getSettings)
+  const store = await handle.getStore()
+  if (store.capability !== 'sqlite') {
+    throw new Error(
+      'harness: memory index store is not sqlite — C4 memory e2e cannot rank recall',
+    )
+  }
+
+  const reconcileSource = async (
+    scope: 'global' | 'assistant',
+    assistantId: string | undefined,
+    expectedSourcePath: string,
+  ): Promise<void> => {
+    const snapshot = await loadMemorySourceSnapshot({
+      app: app as never,
+      settings: getSettings(),
+      scope,
+      ...(scope === 'assistant' ? { assistantId } : {}),
+    })
+    if (snapshot.sourcePath !== expectedSourcePath) {
+      throw new Error(
+        `harness: memory snapshot resolved to ${snapshot.sourcePath}, expected ${expectedSourcePath}`,
+      )
+    }
+    if (snapshot.entries.length !== 2) {
+      throw new Error(
+        `harness: expected 2 memory entries for ${expectedSourcePath}, got ${snapshot.entries.length}`,
+      )
+    }
+    await (store as MemoryIndexMaintenanceStore).reconcilePartition({
+      partition: snapshot.partition,
+      sourcePath: snapshot.sourcePath,
+      sourceFileFingerprint: snapshot.sourceFileFingerprint,
+      parserVersion: snapshot.parserVersion,
+      entries: snapshot.entries,
+    } as never)
+  }
+
+  await reconcileSource('global', undefined, globalMemoryVaultPath)
+  await reconcileSource('assistant', 'agent-1', agentMemoryVaultPath)
 }
 
 function buildSettings(input: {
@@ -501,16 +691,37 @@ function buildSettings(input: {
     ],
     chatModelId: 'harness-model',
     chatTitleModelId: 'harness-model',
+    embeddingModels: [
+      {
+        id: 'harness-embedding',
+        providerId: 'harness-provider',
+        model: 'harness-embedding',
+        name: 'Harness Embedding',
+        // 8 维（与 embedding mock 的确定性向量同维）。
+        dimension: 8,
+      },
+    ],
+    embeddingModelId: 'harness-embedding',
     assistants: [
       {
         id: 'template-1',
         name: 'Template One',
         agentModeAllowed: true,
+        // D9（2026-08-15 工具注册表重构）之后，内置工具（含
+        // delegate_subagent）的启用/审批档位只读
+        // `builtinCapabilityPreferences`（capability 键），
+        // `toolPreferences` 仅承载远程 MCP 工具——harness 若仍把
+        // delegate_subagent 写在 toolPreferences，isAssistantToolEnabled /
+        // getEnabledAssistantToolNames 会按 capability 默认值
+        // （subagent_delegation defaultEnabled: false）解析，工具被 gateway
+        // 拒绝（Tool not available），场景 f 审批 UI 永不出现。
+        // delegate_subagent：full_access 免审批自动执行（mock 侧预允许），
+        // enabled 使父 run 的 allowedToolNames 含该工具（gateway isToolAllowed）
         toolPreferences: {
           [HARNESS_TOOL_NAME]: { enabled: true },
-          // delegate_subagent：full_access 免审批自动执行（mock 侧预允许），
-          // enabled 使父 run 的 allowedToolNames 含该工具（gateway isToolAllowed）
-          [DELEGATE_SUBAGENT_TOOL_NAME]: {
+        },
+        builtinCapabilityPreferences: {
+          subagent_delegation: {
             enabled: true,
             approvalMode: 'full_access',
           },
@@ -566,7 +777,12 @@ function buildSettings(input: {
       token: '',
       maxConcurrentAgentRuns: 12,
     },
-    advancedMemoryIndexEnabled: false,
+    // 记忆分层（C4）e2e 需要 sqlite 记忆索引：advancedMemoryIndexEnabled
+    // 打开后 getStore() 才返回 sqlite store，稳定 <global> 快照与查询相关
+    // 的 <recalled_memory> 动态块才走生产索引路径（否则回退 markdown 兜底，
+    // 块内容不随查询排序，场景 g 的断言不成立）。reflection 保持关闭
+    // （反射需要真实模型 runner，非本场景目标）。
+    advancedMemoryIndexEnabled: true,
     memoryReflectionEnabled: false,
   })
   return parsed

@@ -316,6 +316,101 @@ test.describe('web e2e harness', () => {
     )
   })
 
+  test('g: 记忆分层（C4）：稳定 <global> 快照 + 查询相关动态召回', async ({
+    page,
+  }) => {
+    const { child, ready } = startHarness()
+    const info = await ready
+    try {
+      await loginAndWaitReady(page, info)
+
+      // 回合 1：极简设计查询 → 召回把「极简」条目排前
+      await sendMessage(page, '我喜欢极简设计')
+      const assistant = page.locator('.yolo-chat-messages-assistant')
+      await expect(
+        assistant.filter({ hasText: '遵循极简原则' }).first(),
+      ).toBeVisible({ timeout: 30_000 })
+
+      // 回合 2：数据库迁移查询（同一会话）→ 召回把「数据库迁移」条目排前
+      await sendMessage(page, '请推荐数据库迁移方案')
+      await expect(
+        assistant.filter({ hasText: '分阶段执行' }).first(),
+      ).toBeVisible({ timeout: 30_000 })
+
+      // 服务端捕获的 LLM 请求（harness 调试路由暴露 MockProvider 收到的
+      // 请求消息；带浏览器 session id 走路由级会话校验，与 fetchJson 同款）。
+      const webSessionId = await page.evaluate(() => {
+        try {
+          return localStorage.getItem('yolo-web-session-id')
+        } catch {
+          return null
+        }
+      })
+      expect(typeof webSessionId).toBe('string')
+      const requests = (await fetchJson(
+        info.port,
+        '/api/harness/mock-requests',
+        webSessionId ?? undefined,
+      )) as Array<{
+        requestMessages: Array<{ role: string; content: unknown }>
+      }>
+
+      const findTurn = (
+        query: string,
+      ): Array<{ role: string; content: unknown }> => {
+        const matches = requests.filter((entry) =>
+          entry.requestMessages.some(
+            (message) =>
+              message.role === 'user' &&
+              joinUserContent(message.content).includes(query),
+          ),
+        )
+        expect(matches.length).toBeGreaterThan(0)
+        return matches[0]!.requestMessages
+      }
+      const turnOne = findTurn('我喜欢极简设计')
+      const turnTwo = findTurn('请推荐数据库迁移方案')
+
+      // (a) 稳定 <global> 快照：两回合 system 消息完全一致，且都携带全局记忆
+      const systemOne = turnOne.find((m) => m.role === 'system')?.content
+      const systemTwo = turnTwo.find((m) => m.role === 'system')?.content
+      expect(typeof systemOne).toBe('string')
+      expect(typeof systemTwo).toBe('string')
+      expect(systemOne).toBe(systemTwo)
+      expect(systemOne).toContain('<global>')
+      expect(systemOne).toContain('用户偏好极简风格的设计')
+      expect(systemOne).toContain('用户负责数据库迁移项目')
+
+      // (b) 动态召回：每回合最后一条 user 消息携带 <recalled_memory source=...>
+      // 块，两块内容不同（召回跟随最新查询排序）。
+      const userOne = getLastUserContent(turnOne)
+      const userTwo = getLastUserContent(turnTwo)
+      expect(userOne).toContain('<recalled_memory')
+      expect(userOne).toMatch(RECALLED_MEMORY_SOURCE_RE)
+      expect(userTwo).toContain('<recalled_memory')
+      expect(userTwo).toMatch(RECALLED_MEMORY_SOURCE_RE)
+      const blockOne = userOne.match(RECALLED_MEMORY_BLOCK_RE)?.[0]
+      const blockTwo = userTwo.match(RECALLED_MEMORY_BLOCK_RE)?.[0]
+      expect(blockOne).toBeDefined()
+      expect(blockTwo).toBeDefined()
+      expect(blockOne).not.toBe(blockTwo)
+      // 两块都含两个条目（召回返回全部候选，仅排序不同）——先断言存在，
+      // 避免 indexOf 比较空满足。
+      expect(blockOne).toContain('用户偏好极简风格的设计')
+      expect(blockOne).toContain('用户负责数据库迁移项目')
+      expect(blockTwo).toContain('用户偏好极简风格的设计')
+      expect(blockTwo).toContain('用户负责数据库迁移项目')
+      expect(blockOne!.indexOf('用户偏好极简风格的设计')).toBeLessThan(
+        blockOne!.indexOf('用户负责数据库迁移项目'),
+      )
+      expect(blockTwo!.indexOf('用户负责数据库迁移项目')).toBeLessThan(
+        blockTwo!.indexOf('用户偏好极简风格的设计'),
+      )
+    } finally {
+      await stopHarness(child)
+    }
+  })
+
   test('f: ephemeral delegate 全链（子 run 完成 → 卡片完成态 + 父会话 subagent_result）', async ({
     page,
   }) => {
@@ -473,3 +568,39 @@ function startHarnessWithTmpdir(tmpdir: string): {
     }
   }
 }
+
+// —— 记忆分层（C4）断言辅助：与 memoryProductionWiring.integration.test.ts
+// 的 getSystemContent / getLastUserContent / RECALLED_MEMORY_BLOCK_RE 同构，
+// 作用在 MockProvider 记录的 request.messages 上。 ——
+
+/** 与 C4 生产测试同款：任意形状的 user content 拼成纯文本。 */
+function joinUserContent(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .filter((part) => part?.type === 'text')
+      .map((part) => part.text ?? '')
+      .join('\n')
+  }
+  return ''
+}
+
+/** 最后一条 user 消息的纯文本（含 <recalled_memory> 动态块）。 */
+function getLastUserContent(
+  requestMessages: Array<{ role: string; content: unknown }>,
+): string {
+  const user = [...requestMessages]
+    .reverse()
+    .find((message) => message.role === 'user')
+  if (!user) {
+    throw new Error('Expected a user message')
+  }
+  return joinUserContent(user.content)
+}
+
+/** 动态块必须带 source 属性（渲染来源：记忆源文件路径）。 */
+const RECALLED_MEMORY_SOURCE_RE = /<recalled_memory\s+source="[^"]+">/
+
+/** 与 C4 生产测试同款：整块提取。 */
+const RECALLED_MEMORY_BLOCK_RE =
+  /<recalled_memory(?:\s[^>]*)?>[\s\S]*?<\/recalled_memory>/
