@@ -697,6 +697,39 @@ describe('memory extraction quality gate', () => {
     expect(mockExecuteSingleTurn).toHaveBeenCalledTimes(1)
   })
 
+  it('blank user text skips the LLM in off mode and records candidate plus skip events', async () => {
+    mockExecuteSingleTurn.mockResolvedValue({
+      content: '{"operations":[]}',
+      toolCalls: [],
+    })
+
+    await expect(
+      runMemoryAgentAfterTurn({
+        app: {} as never,
+        userText: '   ',
+        assistantText: 'Understood.',
+        providerClient: {} as never,
+        model: { id: 'model', model: 'model' } as never,
+        settings: { memoryExtractionQualityGate: 'off' },
+      }),
+    ).resolves.toEqual([])
+
+    expect(mockExecuteSingleTurn).not.toHaveBeenCalled()
+    const events = getFlightEvents()
+    expect(
+      events.some(
+        (event) =>
+          event.scope === 'memory' && event.event === 'extraction-skipped',
+      ),
+    ).toBe(true)
+    const candidateEvent = events.find(
+      (event) =>
+        event.scope === 'memory' && event.event === 'extraction-candidate',
+    )
+    expect(candidateEvent?.detail).toContain('mode=off')
+    expect(candidateEvent?.detail).toContain('reason=empty')
+  })
+
   it('shadow mode still calls the LLM once and records an extraction-quality-outcome event', async () => {
     mockExecuteSingleTurn.mockResolvedValue({
       content: '{"operations":[]}',
