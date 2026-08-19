@@ -682,7 +682,17 @@ const readVaultFileCached = async <T>(
     typeof adapter.stat === 'function' &&
     typeof adapter.read === 'function'
   ) {
-    const stat = await adapter.stat(canonicalPath)
+    let stat: { type: string } | null = null
+    try {
+      stat = await adapter.stat(canonicalPath)
+    } catch (error) {
+      // Real fs-backed adapters throw ENOENT for missing paths; a missing
+      // file is a valid empty snapshot, not a request-build failure.
+      if ((error as { code?: string } | null)?.code === 'ENOENT') {
+        return null
+      }
+      throw error
+    }
     if (stat && stat.type === 'file') {
       const content = await adapter.read(canonicalPath)
       return await read(content)

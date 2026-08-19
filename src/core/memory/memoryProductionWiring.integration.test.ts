@@ -38,6 +38,7 @@ import {
   closeMemoryIndexRuntime,
   getMemoryIndexRuntimeHandle,
 } from './memoryIndexRuntime'
+import { loadMemorySourceSnapshot } from './memoryManager'
 
 jest.mock('../../database/json/chat/promptSnapshotStore', () => ({
   readPromptSnapshotEntries: jest.fn(async () => ({})),
@@ -103,6 +104,33 @@ const MODEL = { id: 'test-model', model: 'test-model' } as never
 
 const globalPartition = buildMemoryPartition({ scope: 'global' })
 
+/** Faithful to the qa-web-harness fs-vault-mock: `stat` resolves through real
+ * `fs.stat`, which THROWS ENOENT for missing paths (unlike the forgiving
+ * TempFileSystemAdapter above, which resolves null). */
+class ENOENTThrowingAdapter {
+  constructor(private readonly basePath: string) {}
+  private resolve(vaultRelativePath: string): string {
+    return path.join(this.basePath, ...vaultRelativePath.split('/'))
+  }
+  async stat(vaultRelativePath: string): Promise<{
+    type: 'file' | 'folder'
+    ctime: number
+    mtime: number
+    size: number
+  }> {
+    const stats = await fs.promises.stat(this.resolve(vaultRelativePath))
+    return {
+      type: stats.isDirectory() ? 'folder' : 'file',
+      ctime: stats.ctimeMs,
+      mtime: stats.mtimeMs,
+      size: stats.size,
+    }
+  }
+  async read(vaultRelativePath: string): Promise<string> {
+    return await fs.promises.readFile(this.resolve(vaultRelativePath), 'utf8')
+  }
+}
+
 describe('memory production wiring integration (real disk + schema settings + real sqlite + real tokenizer)', () => {
   let rootDir: string
   let app: App
@@ -119,6 +147,25 @@ describe('memory production wiring integration (real disk + schema settings + re
   afterEach(async () => {
     await closeMemoryIndexRuntime(app)
     fs.rmSync(rootDir, { recursive: true, force: true })
+  })
+
+  it('treats a missing memory file as a valid empty snapshot when the adapter stat throws ENOENT', async () => {
+    // The qa-web-harness fs-vault-mock resolves adapter.stat through real
+    // fs.stat, which THROWS ENOENT for missing paths. A missing memory file is
+    // a valid empty snapshot — it must never reject the request build (this is
+    // the exact "This response failed to generate ENOENT" failure the browser
+    // e2e harness surfaces).
+    ;(app.vault as { adapter: unknown }).adapter = new ENOENTThrowingAdapter(
+      rootDir,
+    )
+    const snapshot = await loadMemorySourceSnapshot({
+      app,
+      settings: parseProductionSettings(),
+      scope: 'global',
+    })
+    expect(snapshot.valid).toBe(true)
+    expect(snapshot.entries).toEqual([])
+    expect(snapshot.content).toBe('')
   })
 
   it('parses the production settings schema with the legacy shadow default and realistic memory fields', () => {
