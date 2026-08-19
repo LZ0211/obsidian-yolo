@@ -30,6 +30,7 @@ type BackgroundActivitySnapshot = Readonly<{
   id: string
   title?: string
   status?: string
+  detail?: string
 }>
 
 type ConfirmCallSnapshot = Readonly<{ title: string; message: string }>
@@ -581,10 +582,16 @@ function createHost(): unknown {
     lifecycle: { add: () => undefined, onQuiesce: () => undefined },
     privateStorage: { deviceLocal: deviceLocalScope },
     background: {
-      upsert: (activity: { id: string; title?: string; status?: string }) => {
+      upsert: (activity: {
+        id: string
+        title?: string
+        status?: string
+        detail?: string
+      }) => {
         backgroundActivities.set(activity.id, {
           title: activity.title,
           status: activity.status,
+          ...(activity.detail !== undefined ? { detail: activity.detail } : {}),
         })
       },
       remove: (id: string) => {

@@ -1,5 +1,5 @@
 import { build } from 'esbuild'
-import { expect, test } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { createServer, type Server } from 'node:http'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
@@ -1037,6 +1037,701 @@ test('shows the failing agent error in the Error tab', async ({ page }) => {
   )
 })
 
+test('pauses an in-memory run and resumes it without confirmation', async ({
+  page,
+}) => {
+  const { pageErrors, consoleIssues } = trackPageIssues(page)
+  const runPanel = await openRunStudio(page)
+
+  await page.evaluate(() => {
+    if (window.__workflowE2E) window.__workflowE2E.holdRun = true
+  })
+  await page.getByRole('textbox', { name: 'Run input' }).fill('pause me')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'running',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Running',
+  )
+
+  const pause = runPanel.getByRole('button', { name: 'Pause', exact: true })
+  await expect(pause).toBeVisible()
+  await pause.click()
+  // The run stays running but the badge flips to Paused; Resume and Stop
+  // replace Pause while it is parked.
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'running',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Paused',
+  )
+  await expect(
+    runPanel.getByRole('button', { name: 'Resume', exact: true }),
+  ).toBeVisible()
+  await expect(
+    runPanel.getByRole('button', { name: 'Stop', exact: true }),
+  ).toBeVisible()
+  await expect(pause).toHaveCount(0)
+  // The mid-flight agent node stays running and the downstream node pending.
+  const agentNode = page.locator('.yolo-workflow-run-node', {
+    hasText: 'Agent',
+  })
+  const outputNode = page.locator('.yolo-workflow-run-node', {
+    hasText: 'Output',
+  })
+  await expect(agentNode.locator('.yolo-workflow-run-node__badge')).toHaveClass(
+    /badge--running/,
+  )
+  await expect(
+    outputNode.locator('.yolo-workflow-run-node__badge'),
+  ).toHaveClass(/badge--pending/)
+
+  // Releasing the held agent call parks the run at the next node boundary: the
+  // downstream node stays pending while the run is paused.
+  await page.evaluate(() => window.__workflowE2E?.releaseRun())
+  await expect(
+    outputNode.locator('.yolo-workflow-run-node__badge'),
+  ).toHaveClass(/badge--pending/)
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Paused',
+  )
+
+  // In-memory resume needs no confirmation: the same ActiveRun continues.
+  await runPanel.getByRole('button', { name: 'Resume', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'succeeded',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Succeeded',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__progress')).toHaveText(
+    '3/3',
+  )
+  expect(
+    await page.evaluate(() => window.__workflowE2E?.confirmCalls() ?? []),
+  ).toEqual([])
+  // The terminal record clears paused.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async (workflowPath) =>
+          (
+            (await window.__workflowE2E?.readRunFile(workflowPath)) as {
+              status?: string
+            } | null
+          )?.status,
+        DEMO_WORKFLOW_PATH,
+      ),
+    )
+    .toBe('succeeded')
+  expect(
+    await page.evaluate(
+      async (workflowPath) =>
+        (
+          (await window.__workflowE2E?.readRunFile(workflowPath)) as {
+            paused?: boolean
+          } | null
+        )?.paused,
+      DEMO_WORKFLOW_PATH,
+    ),
+  ).toBeUndefined()
+  expect(pageErrors).toEqual([])
+  expect(consoleIssues).toEqual([])
+})
+
+test('recovers a paused run and resumes it after side-effect confirmation', async ({
+  page,
+}) => {
+  const { pageErrors, consoleIssues } = trackPageIssues(page)
+  await page.goto(baseUrl)
+  await expect(page.locator('.yolo-workflow-module-root')).toBeVisible()
+
+  // A running+paused record with a mid-flight agent node and usage that must
+  // survive the reload's store validation.
+  await page.evaluate((workflowPath) => {
+    window.__workflowE2E?.seedRun(workflowPath, {
+      status: 'running',
+      paused: true,
+      usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+      nodes: {
+        // The completed input node keeps its output like a real persisted
+        // record, so the resumed agent has an active upstream source.
+        input: {
+          status: 'succeeded',
+          output: { ok: true },
+          usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+        },
+        agent: { status: 'running' },
+        output: { status: 'pending' },
+      },
+    })
+  }, DEMO_WORKFLOW_PATH)
+
+  await page.reload()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'running',
+  )
+  const runPanel = page.locator('.yolo-workflow-run-panel')
+  await page.getByRole('tab', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Paused',
+  )
+  const resume = runPanel.getByRole('button', { name: 'Resume', exact: true })
+  await expect(resume).toBeVisible()
+  await expect(
+    runPanel.getByRole('button', { name: 'Pause', exact: true }),
+  ).toHaveCount(0)
+  // The recovered paused run shows as a waiting reminder in the background.
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__workflowE2E?.backgroundActivities() ?? []),
+    )
+    .toEqual([
+      expect.objectContaining({ id: DEMO_RUN_ACTIVITY_ID, status: 'waiting' }),
+    ])
+  // The seeded usage survives the reload.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async (workflowPath) =>
+          (
+            (await window.__workflowE2E?.readRunFile(workflowPath)) as {
+              usage?: unknown
+            } | null
+          )?.usage,
+        DEMO_WORKFLOW_PATH,
+      ),
+    )
+    .toEqual({ inputTokens: 3, outputTokens: 1, totalTokens: 4 })
+
+  // A recovered pause has no ActiveRun, so resuming asks for the side-effect
+  // confirmation before rebuilding the run.
+  await resume.click()
+  await expect
+    .poll(() => page.evaluate(() => window.__workflowE2E?.confirmCalls() ?? []))
+    .toContainEqual(
+      expect.objectContaining({
+        title: 'Continue',
+        message:
+          'Continuing resumes the workflow from the first unfinished step; that step may re-apply side effects at least once.',
+      }),
+    )
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'succeeded',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Succeeded',
+  )
+  // The final record keeps the seeded input-node usage and adds the resumed
+  // agent round: 3/1/4 + 10/5/15 = 13/6/19.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async (workflowPath) =>
+          (await window.__workflowE2E?.readRunFile(workflowPath)) as {
+            status?: string
+            usage?: unknown
+            nodes?: Record<string, { usage?: unknown }>
+          } | null,
+        DEMO_WORKFLOW_PATH,
+      ),
+    )
+    .toEqual(
+      expect.objectContaining({
+        status: 'succeeded',
+        usage: { inputTokens: 13, outputTokens: 6, totalTokens: 19 },
+        nodes: expect.objectContaining({
+          input: expect.objectContaining({
+            usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+          }),
+          agent: expect.objectContaining({
+            usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+          }),
+        }),
+      }),
+    )
+  expect(pageErrors).toEqual([])
+  expect(consoleIssues).toEqual([])
+})
+
+test('renames a workflow and migrates its persisted run record', async ({
+  page,
+}) => {
+  const { pageErrors, consoleIssues } = trackPageIssues(page)
+  const runPanel = await openRunStudio(page)
+  const workflowSelect = page.locator('select[aria-label="Open workflow"]')
+  const renameButton = page.locator(
+    '.yolo-workflow-canvas-toolbar button[aria-label="Rename workflow"]',
+  )
+
+  // A run record exists for the demo path before the rename.
+  await page.getByRole('textbox', { name: 'Run input' }).fill('pre-rename run')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'succeeded',
+  )
+
+  await renameButton.click()
+  const renameInput = page.getByRole('textbox', { name: 'Rename workflow' })
+  await expect(renameInput).toBeVisible()
+  await renameInput.fill('Renamed Flow')
+  await renameInput.press('Enter')
+
+  // The new path is listed and the old one is gone; the folder subtree moved.
+  await expect(workflowSelect).toHaveValue('Renamed-Flow/WORKFLOW.md')
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        renamed: window.__workflowE2E?.hasFile(
+          'workflows/Renamed-Flow/WORKFLOW.md',
+        ),
+        old: window.__workflowE2E?.hasFile('workflows/demo/WORKFLOW.md'),
+        step: window.__workflowE2E?.hasFile(
+          'workflows/Renamed-Flow/steps/agent/STEP.md',
+        ),
+      })),
+    )
+    .toEqual({ renamed: true, old: false, step: true })
+
+  // The persisted run record migrated to the new path's key; the old key is
+  // gone.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async (workflowPath) =>
+          (await window.__workflowE2E?.readRunFile(workflowPath)) as {
+            workflowPath?: string
+            status?: string
+          } | null,
+        'Renamed-Flow/WORKFLOW.md',
+      ),
+    )
+    .toEqual(
+      expect.objectContaining({
+        workflowPath: 'Renamed-Flow/WORKFLOW.md',
+        status: 'succeeded',
+      }),
+    )
+  expect(
+    await page.evaluate(
+      async () =>
+        (await window.__workflowE2E?.readRunFile('demo/WORKFLOW.md')) ?? null,
+    ),
+  ).toBeNull()
+
+  // The frozen definition keeps running under the renamed path, and the
+  // background activity is re-keyed to the new path.
+  await page.evaluate(() => {
+    if (window.__workflowE2E) window.__workflowE2E.holdRun = true
+  })
+  await page.getByRole('textbox', { name: 'Run input' }).fill('post-rename run')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'running',
+  )
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__workflowE2E?.backgroundActivities() ?? []),
+    )
+    .toContainEqual(
+      expect.objectContaining({
+        id: 'workflow:run:Renamed-Flow/WORKFLOW.md',
+      }),
+    )
+  expect(
+    await page.evaluate(
+      () =>
+        window.__workflowE2E?.backgroundActivities() ??
+        ([] as readonly {
+          id: string
+        }[]),
+    ),
+  ).not.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: DEMO_RUN_ACTIVITY_ID }),
+    ]),
+  )
+  await page.evaluate(() => window.__workflowE2E?.releaseRun())
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'succeeded',
+  )
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async () =>
+          (
+            (await window.__workflowE2E?.readRunFile(
+              'Renamed-Flow/WORKFLOW.md',
+            )) as { input?: unknown } | null
+          )?.input,
+      ),
+    )
+    .toBe('post-rename run')
+  expect(pageErrors).toEqual([])
+  expect(consoleIssues).toEqual([])
+})
+
+test('gates rename while a run is active or the editor is dirty', async ({
+  page,
+}) => {
+  const runPanel = await openRunStudio(page)
+  const renameButton = page.locator(
+    '.yolo-workflow-canvas-toolbar button[aria-label="Rename workflow"]',
+  )
+  await expect(renameButton).toBeEnabled()
+
+  // A running snapshot disables rename.
+  await page.evaluate(() => {
+    if (window.__workflowE2E) window.__workflowE2E.holdRun = true
+  })
+  await page.getByRole('textbox', { name: 'Run input' }).fill('gate rename')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'running',
+  )
+  await expect(renameButton).toBeDisabled()
+  await expect(renameButton).toHaveAttribute(
+    'title',
+    'Stop or finish the run before renaming.',
+  )
+  await page.evaluate(() => window.__workflowE2E?.releaseRun())
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'succeeded',
+  )
+  await expect(renameButton).toBeEnabled()
+
+  // Dirty edits disable rename until applied.
+  await page.locator('[data-yolo-workflow-node="input"]').click()
+  await page
+    .locator('.yolo-workflow-node-inspector input')
+    .nth(1)
+    .fill('Input renamed')
+  await expect(renameButton).toBeDisabled()
+  await expect(renameButton).toHaveAttribute(
+    'title',
+    'Save or discard the current edits before renaming.',
+  )
+})
+
+test('repairs a rejected agent submission and sums usage across rounds', async ({
+  page,
+}) => {
+  const { pageErrors, consoleIssues } = trackPageIssues(page)
+  const runPanel = await openRunStudio(page)
+
+  await page.evaluate(() => {
+    const e2e = window.__workflowE2E
+    if (!e2e) return
+    e2e.setRunScript([
+      { rejectValue: { ok: 'not-a-boolean' } },
+      { acceptValue: { ok: true } },
+    ])
+    e2e.holdRun = true
+  })
+  await page.getByRole('textbox', { name: 'Run input' }).fill('repair me')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'running',
+  )
+  // Round 1 is rejected; the repair round starts and parks at the agent call,
+  // with the background activity carrying the repairing detail.
+  await page.evaluate(() => window.__workflowE2E?.releaseRun())
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__workflowE2E?.backgroundActivities() ?? []),
+    )
+    .toContainEqual(
+      expect.objectContaining({
+        id: DEMO_RUN_ACTIVITY_ID,
+        detail: 'Repairing output…',
+      }),
+    )
+
+  // Round 2 accepts the corrected value and the run succeeds.
+  await page.evaluate(() => window.__workflowE2E?.releaseRun())
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'succeeded',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Succeeded',
+  )
+  await expect(page.locator('.yolo-workflow-run-output__value')).toContainText(
+    '"ok": true',
+  )
+
+  // The repair round ran with the rejection feedback in its prompt.
+  const secondRequest = await page.evaluate(() =>
+    window.__workflowE2E?.lastAgentRequest(),
+  )
+  expect(secondRequest?.prompt).toContain(
+    'Your previous submission was rejected because it does not satisfy the node output schema',
+  )
+  expect(secondRequest?.prompt).toContain(
+    'Rejected value: {"ok":"not-a-boolean"}',
+  )
+  expect(secondRequest?.prompt).toContain(
+    'Schema errors: /value/ok must be boolean',
+  )
+
+  // The final record sums both rounds' usage: 10/5/15 per round.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async (workflowPath) =>
+          (await window.__workflowE2E?.readRunFile(workflowPath)) as {
+            status?: string
+            usage?: unknown
+            nodes?: Record<string, { usage?: unknown }>
+          } | null,
+        DEMO_WORKFLOW_PATH,
+      ),
+    )
+    .toEqual(
+      expect.objectContaining({
+        status: 'succeeded',
+        usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 },
+        nodes: expect.objectContaining({
+          agent: expect.objectContaining({
+            usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 },
+          }),
+        }),
+      }),
+    )
+  // The run activity is removed once the repaired run finishes.
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__workflowE2E?.backgroundActivities() ?? []),
+    )
+    .toEqual([])
+  expect(pageErrors).toEqual([])
+  expect(consoleIssues).toEqual([])
+})
+
+test('fails the run when the repair round is rejected too', async ({
+  page,
+}) => {
+  const { pageErrors, consoleIssues } = trackPageIssues(page)
+  const runPanel = await openRunStudio(page)
+
+  await page.evaluate(() => {
+    window.__workflowE2E?.setRunScript([
+      { rejectValue: { ok: 'not-a-boolean' } },
+      { rejectValue: { ok: 'still-not-a-boolean' } },
+    ])
+  })
+  await page.getByRole('textbox', { name: 'Run input' }).fill('fail repair')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'failed',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Failed',
+  )
+  const agentNode = page.locator('.yolo-workflow-run-node', {
+    hasText: 'Agent',
+  })
+  await expect(agentNode.locator('.yolo-workflow-run-node__badge')).toHaveClass(
+    /badge--failed/,
+  )
+
+  // The Error tab carries the round-1 Ajv rejection and the value preview.
+  await page.getByRole('tab', { name: 'Error', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-run-error')).toContainText(
+    'Agent output rejected twice',
+  )
+  await expect(page.locator('.yolo-workflow-run-error')).toContainText(
+    '/value/ok must be boolean',
+  )
+  await expect(page.locator('.yolo-workflow-run-error')).toContainText(
+    '{"ok":"not-a-boolean"}',
+  )
+
+  // The persisted record carries the agent-failed code on the run and node.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async (workflowPath) =>
+          (await window.__workflowE2E?.readRunFile(workflowPath)) as {
+            status?: string
+            error?: { code?: string }
+            nodes?: Record<string, { error?: { code?: string } }>
+          } | null,
+        DEMO_WORKFLOW_PATH,
+      ),
+    )
+    .toEqual(
+      expect.objectContaining({
+        status: 'failed',
+        error: expect.objectContaining({ code: 'agent-failed' }),
+        nodes: expect.objectContaining({
+          agent: expect.objectContaining({
+            error: expect.objectContaining({ code: 'agent-failed' }),
+          }),
+        }),
+      }),
+    )
+  expect(pageErrors).toEqual([])
+  expect(consoleIssues).toEqual([])
+})
+
+test('fails a hard verification mismatch with the verification message', async ({
+  page,
+}) => {
+  const { pageErrors, consoleIssues } = trackPageIssues(page)
+  const runPanel = await openRunStudio(page)
+
+  const verifiedManifestPath = await page.evaluate(
+    () => window.__workflowE2E?.verifiedManifestPath ?? '',
+  )
+  expect(verifiedManifestPath).toBe('workflows/verified/WORKFLOW.md')
+  const verifiedWorkflowPath = verifiedManifestPath.slice('workflows/'.length)
+  await page
+    .locator('select[aria-label="Open workflow"]')
+    .selectOption(verifiedWorkflowPath)
+  await page.evaluate(() => {
+    // Schema-valid but failing the hard verification postcondition (ok must
+    // be exactly true).
+    window.__workflowE2E?.setRunScript([{ acceptValue: { ok: false } }])
+  })
+  await page.getByRole('textbox', { name: 'Run input' }).fill('verify me')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'failed',
+  )
+  await expect(page.locator('.yolo-workflow-run-status__badge')).toHaveText(
+    'Failed',
+  )
+  const agentNode = page.locator('.yolo-workflow-run-node', {
+    hasText: 'Agent',
+  })
+  await expect(agentNode.locator('.yolo-workflow-run-node__badge')).toHaveClass(
+    /badge--failed/,
+  )
+  // The Error tab shows the verification verdict, not an agent failure.
+  await page.getByRole('tab', { name: 'Error', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-run-error')).toContainText(
+    'verification: /ok must be equal to constant',
+  )
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async (workflowPath) =>
+          (
+            (await window.__workflowE2E?.readRunFile(workflowPath)) as {
+              error?: { code?: string }
+            } | null
+          )?.error?.code,
+        verifiedWorkflowPath,
+      ),
+    )
+    .toBe('verification-failed')
+  expect(pageErrors).toEqual([])
+  expect(consoleIssues).toEqual([])
+})
+
+test('routes node model tiers through the module config', async ({ page }) => {
+  const { pageErrors, consoleIssues } = trackPageIssues(page)
+  const runPanel = await openRunStudio(page)
+
+  await page.locator('[data-yolo-workflow-node="agent"]').click()
+  const modelField = page
+    .locator('.yolo-workflow-node-inspector .yolo-workflow-inspector__field', {
+      hasText: 'Model',
+    })
+    .locator('input')
+  await modelField.fill('deep')
+  await page.evaluate(() => {
+    window.__workflowE2E?.setConfigData({ 'tier.deep': 'deepseek-model' })
+  })
+  await page.locator('button[aria-label="Apply changes"]').click()
+  await expect(page.locator('.yolo-workflow-canvas-toolbar__sync')).toHaveText(
+    'Markdown synced',
+  )
+
+  await page.getByRole('textbox', { name: 'Run input' }).fill('tier check')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    'succeeded',
+  )
+  // The agent request carried the configured tier mapping, not the alias.
+  await expect
+    .poll(() => page.evaluate(() => window.__workflowE2E?.lastAgentRequest()))
+    .toEqual(expect.objectContaining({ modelId: 'deepseek-model' }))
+  // The inspector shows the resolved tier for the run's definition.
+  await page.locator('[data-yolo-workflow-node="agent"]').click()
+  await expect(page.locator('.yolo-workflow-inspector__hint')).toContainText(
+    'Deep tier model',
+  )
+  await expect(page.locator('.yolo-workflow-inspector__hint')).toContainText(
+    'Resolves to: deepseek-model',
+  )
+  expect(pageErrors).toEqual([])
+  expect(consoleIssues).toEqual([])
+})
+
+test('rejects run start when the requested tier is not configured', async ({
+  page,
+}) => {
+  const { pageErrors, consoleIssues } = trackPageIssues(page)
+  const runPanel = await openRunStudio(page)
+
+  await page.locator('[data-yolo-workflow-node="agent"]').click()
+  const modelField = page
+    .locator('.yolo-workflow-node-inspector .yolo-workflow-inspector__field', {
+      hasText: 'Model',
+    })
+    .locator('input')
+  await modelField.fill('fast')
+  await page.evaluate(() => {
+    window.__workflowE2E?.setConfigData({})
+  })
+  await page.locator('button[aria-label="Apply changes"]').click()
+  await expect(page.locator('.yolo-workflow-canvas-toolbar__sync')).toHaveText(
+    'Markdown synced',
+  )
+
+  await page.getByRole('textbox', { name: 'Run input' }).fill('tier missing')
+  await runPanel.getByRole('button', { name: 'Run', exact: true }).click()
+  // Start bails with the tier-unavailable notice.
+  await expect
+    .poll(() => page.evaluate(() => window.__workflowE2E?.getNotice()))
+    .toBe('The requested model tier is not configured.')
+  // No run ever started: no record, no background activity, no status.
+  expect(
+    await page.evaluate(
+      async () =>
+        (await window.__workflowE2E?.readRunFile('demo/WORKFLOW.md')) ?? null,
+    ),
+  ).toBeNull()
+  expect(
+    await page.evaluate(
+      () => window.__workflowE2E?.backgroundActivities() ?? [],
+    ),
+  ).toEqual([])
+  await expect(page.locator('.yolo-workflow-module-root')).toHaveAttribute(
+    'data-yolo-run-status',
+    '',
+  )
+  expect(pageErrors).toEqual([])
+  expect(consoleIssues).toEqual([])
+})
+
 type LayoutBox = Readonly<{
   left: number
   right: number
@@ -1075,6 +1770,30 @@ async function readLayout(page: import('@playwright/test').Page) {
       inspector: box('.yolo-workflow-inspector'),
     }
   })
+}
+
+/** Boots the fixture and opens the Run studio tab, returning the run panel. */
+async function openRunStudio(page: Page): Promise<Locator> {
+  await page.goto(baseUrl)
+  await expect(page.locator('.yolo-workflow-module-root')).toBeVisible()
+  const runPanel = page.locator('.yolo-workflow-run-panel')
+  await page.getByRole('tab', { name: 'Run', exact: true }).click()
+  return runPanel
+}
+
+/** Records page errors and console error/warning messages for later assertions. */
+function trackPageIssues(page: Page): {
+  pageErrors: string[]
+  consoleIssues: string[]
+} {
+  const pageErrors: string[] = []
+  const consoleIssues: string[] = []
+  page.on('pageerror', (error) => pageErrors.push(error.message))
+  page.on('console', (message) => {
+    if (message.type() === 'error' || message.type() === 'warning')
+      consoleIssues.push(`${message.type()}: ${message.text()}`)
+  })
+  return { pageErrors, consoleIssues }
 }
 
 function assertAligned(layout: WorkflowLayout, state: string): void {
