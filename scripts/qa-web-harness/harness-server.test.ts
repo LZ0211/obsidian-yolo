@@ -132,6 +132,10 @@ export type HarnessInfo = {
   port: number
   shareToken: string
   shareTokenId?: string
+  /** 第二个 workspace agent（agent-2，根 '/work'）的 share token——场景 e
+   *  （不同 agent 会话隔离）用它开第二个浏览器会话。 */
+  shareToken2?: string
+  shareTokenId2?: string
   vaultIdentity: string
 }
 
@@ -390,12 +394,25 @@ async function startHarnessServer(): Promise<{
     info.shareToken = shareToken
     info.shareTokenId = shareTokenId
   }
+  // 第二个 workspace agent（agent-2，根 '/work'）的独立 share token——与
+  // agent-1 的 token 一样持久化进 harness-info.json（重启复用同一装配）。
+  let shareToken2 = info.shareToken2
+  let shareTokenId2 = info.shareTokenId2
+  if (!shareToken2) {
+    const created = createShareToken()
+    shareToken2 = created.plaintext
+    shareTokenId2 = created.publicTokenId
+    info.shareToken2 = shareToken2
+    info.shareTokenId2 = shareTokenId2
+  }
 
   let settings: YoloSettings = buildSettings({
     baseDir,
     vaultIdentity,
     shareToken,
     shareTokenId,
+    shareToken2,
+    shareTokenId2,
     pepper,
     port: await findFreePort(),
   })
@@ -408,8 +425,19 @@ async function startHarnessServer(): Promise<{
   //   （ephemeral：delegatedRoleId 命中 settings 的 delegatable assistant）→
   //   续答文本；子代理回合按 delegate prompt 文本匹配
   mockProvider.chunkDelayMs = 60
+  // 标题生成请求（服务端 /api/chat/generate-title → generateConversationTitleText
+  // → 标题模型）的 user 消息以 'User first message:' 开头——必须先于普通文本
+  // 规则注册，否则 'hello harness' 等标题输入会命中文本流规则。标题来自
+  // mock provider 的脚本文本（不是 A4 截断兜底）。
+  mockProvider.script(/^User first message:/i, [
+    textTurn(['Mock LLM generated title']),
+  ])
   mockProvider.script(/hello harness/i, [
     textTurn(['Hello from ', 'the mock LLM', '!']),
+  ])
+  // 场景 e（agent-2 会话）：与 'hello harness' 区分开的第二个文本流规则。
+  mockProvider.script(/agent two hello/i, [
+    textTurn(['Agent two reply', ' complete']),
   ])
   mockProvider.script(/use tool:echo/i, [
     toolCallTurn(undefined, { text: 'hello' }),
@@ -455,28 +483,55 @@ async function startHarnessServer(): Promise<{
   // webBinding 覆盖掉（真实生产竞态，见 e2e-report）。harness 在每次
   // persist 后校验并恢复 binding，确保审批/访问控制/历史列表读到的文件
   // 始终带 binding。
+  //
+  // 双 agent 装配下绝不能盖章错误的绑定（会把会话泄漏进另一个 agent 的
+  // 可见列表）：优先恢复 persist 前已有的 binding；其次按会话的
+  // agentInstanceId 派生（ensureConversation 创建会话时即带）；两者都没有
+  // 时保持原状——后续访问经 canUseOrRepairWebConversation 或路由补丁修复。
   const harnessRootHash = hashWorkspaceRoot('/', vaultIdentity)
+  const agentTwoRootHash = hashWorkspaceRoot('/work', vaultIdentity)
+  const rootHashByAgentId: Record<string, string> = {
+    'agent-1': harnessRootHash,
+    'agent-2': agentTwoRootHash,
+  }
   const basePersist = persistence.persistConversationMessages.bind(persistence)
   const persistWithBindingGuard: typeof basePersist = async (payload) => {
+    const before = (await chatManager.findById(payload.conversationId)) as
+      | (ChatManager extends never
+          ? never
+          : { webBinding?: unknown; agentInstanceId?: unknown })
+      | null
     await basePersist(payload)
     await ChatManager.withConversationLock(payload.conversationId, async () => {
       const chat = (await chatManager.findById(payload.conversationId)) as
-        | (ChatManager extends never ? never : { webBinding?: unknown })
+        | (ChatManager extends never
+            ? never
+            : { webBinding?: unknown; agentInstanceId?: unknown })
         | null
-      if (chat && !chat.webBinding) {
-        await chatManager.updateChat(
-          payload.conversationId,
-          {
-            agentInstanceId: 'agent-1',
-            webBinding: {
-              initialAgentId: 'agent-1',
-              activeAgentId: 'agent-1',
-              rootHash: harnessRootHash,
-            },
-          } as never,
-          { touchUpdatedAt: false },
-        )
-      }
+      if (!chat || chat.webBinding) return
+      const restoredBinding = before?.webBinding
+        ? (before.webBinding as {
+            initialAgentId: string
+            activeAgentId: string
+            rootHash: string
+          })
+        : typeof chat.agentInstanceId === 'string' &&
+            rootHashByAgentId[chat.agentInstanceId]
+          ? {
+              initialAgentId: chat.agentInstanceId,
+              activeAgentId: chat.agentInstanceId,
+              rootHash: rootHashByAgentId[chat.agentInstanceId],
+            }
+          : null
+      if (!restoredBinding) return
+      await chatManager.updateChat(
+        payload.conversationId,
+        {
+          agentInstanceId: restoredBinding.activeAgentId,
+          webBinding: restoredBinding,
+        } as never,
+        { touchUpdatedAt: false },
+      )
     })
   }
   const agentService = new AgentService({
@@ -664,10 +719,15 @@ function buildSettings(input: {
   vaultIdentity: string
   shareToken: string
   shareTokenId?: string
+  shareToken2: string
+  shareTokenId2?: string
   pepper: string
   port: number
 }): YoloSettings {
   const rootHash = hashWorkspaceRoot('/', input.vaultIdentity)
+  // agent-2 的 workspace 根 '/work'——与 agent-1 的 '/' 不同 rootHash，
+  // 会话绑定（webBinding.rootHash）据此隔离。
+  const rootHash2 = hashWorkspaceRoot('/work', input.vaultIdentity)
   const parsed = parseYoloSettings({
     version: SETTINGS_SCHEMA_VERSION,
     yolo: { baseDir: 'YOLO' },
@@ -761,6 +821,37 @@ function buildSettings(input: {
               kind: 'workspaceRoot',
               rootHash,
               issuedForAgentId: 'agent-1',
+            },
+            createdAt: 1,
+          },
+        ],
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      // 场景 e（会话过滤/不同 agent 隔离）：第二个 workspace agent，根
+      // '/work'（rootHash 与 agent-1 不同）→ 两个会话的 webBinding 互不可见。
+      {
+        id: 'agent-2',
+        name: 'Agent Two',
+        templateId: 'template-1',
+        workspacePolicy: {
+          workspaceRoot: '/work',
+          readAllowlist: [],
+          readDenylist: [],
+          writeDenylist: [],
+        },
+        shareTokens: [
+          {
+            id:
+              input.shareTokenId2 ??
+              parsePublicTokenId(input.shareToken2) ??
+              'harness-share-token-2',
+            tokenHash: hashShareToken(input.shareToken2, input.pepper),
+            tokenHashVersion: 'hmac-sha256-v1',
+            scope: {
+              kind: 'workspaceRoot',
+              rootHash: rootHash2,
+              issuedForAgentId: 'agent-2',
             },
             createdAt: 1,
           },

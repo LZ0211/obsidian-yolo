@@ -34,6 +34,21 @@ type YoloSettingsLike = {
   }
 }
 
+/**
+ * 浏览器 web 运行时标记：createWebYoloRuntime 在 bootstrap 时注入
+ * `app.__yoloWebChat`（useJsonManagers 用同一标记切换 web ChatManager）。
+ * 桌面端与 web 服务端（运行在 Obsidian 宿主进程里，vault 写入直连 adapter）
+ * 都没有该标记。
+ *
+ * 浏览器 web 会话里 vault 写入走 /api/vault/*，workspace 权限引擎按受保护
+ * 路径前缀拒绝 YOLO 托管区（protectedPaths）——桌面数据目录迁移/快照仓库
+ * 是桌面-only 路径，在浏览器里必然 403。快照 JSON 在 web 架构下只落服务端
+ * （服务端 AgentService 持久化在宿主侧执行，adapter 直写）；浏览器侧跳过
+ * 整个快照仓库，消息原样通过。
+ */
+const isBrowserWebRuntime = (app: App): boolean =>
+  (app as { __yoloWebChat?: unknown }).__yoloWebChat !== undefined
+
 const getSnapshotDirPath = async (
   app: App,
   settings?: YoloSettingsLike | null,
@@ -135,6 +150,13 @@ export const compactConversationMessagesForStorage = async ({
   previousMessages?: SerializedChatMessage[]
   settings?: YoloSettingsLike | null
 }): Promise<SerializedChatMessage[]> => {
+  if (isBrowserWebRuntime(app)) {
+    // 浏览器 web：快照仓库是桌面本地 JSON 仓库概念（落 YOLO 托管区），服务端
+    // AgentService 持久化在宿主侧做同款压缩。浏览器侧原样通过——既不触发
+    // ensureUserDataRootDir 的桌面迁移路径（web 权限引擎 403），也不丢失
+    // promptContent（服务端压缩会负责它）。
+    return messages
+  }
   const store = await readSnapshotStore(app, conversationId, settings)
   const nextEntries = { ...store.entries }
   const usedHashes = new Set<string>()
@@ -249,6 +271,9 @@ export const readPromptSnapshotContent = async ({
   hash: string
   settings?: YoloSettingsLike | null
 }): Promise<string | ContentPart[] | null> => {
+  if (isBrowserWebRuntime(app)) {
+    return null
+  }
   const store = await readSnapshotStore(app, conversationId, settings)
   return store.entries[hash]?.content ?? null
 }
@@ -262,6 +287,11 @@ export const readPromptSnapshotEntries = async ({
   conversationId: string
   settings?: YoloSettingsLike | null
 }): Promise<Record<string, string | ContentPart[]>> => {
+  if (isBrowserWebRuntime(app)) {
+    // 空 entries → requestContextBuilder 对带 snapshotRef 的历史 user 消息
+    // 走 compileUserMessagePrompt 重建（与快照缺失语义一致），而非 403。
+    return {}
+  }
   const store = await readSnapshotStore(app, conversationId, settings)
   const entries: Record<string, string | ContentPart[]> = {}
   Object.keys(store.entries).forEach((hash) => {
@@ -275,6 +305,9 @@ export const deletePromptSnapshotStore = async (
   conversationId: string,
   settings?: YoloSettingsLike | null,
 ): Promise<void> => {
+  if (isBrowserWebRuntime(app)) {
+    return
+  }
   const filePath = await getSnapshotFilePath(app, conversationId, settings)
   if (await app.vault.adapter.exists(filePath)) {
     await app.vault.adapter.remove(filePath)
@@ -285,6 +318,9 @@ export const clearAllPromptSnapshotStores = async (
   app: App,
   settings?: YoloSettingsLike | null,
 ): Promise<void> => {
+  if (isBrowserWebRuntime(app)) {
+    return
+  }
   const snapshotDir = await getSnapshotDirPath(app, settings)
   if (!(await app.vault.adapter.exists(snapshotDir))) {
     return
