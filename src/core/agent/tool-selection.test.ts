@@ -1,5 +1,10 @@
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import type { McpTool } from '../../types/mcp.types'
+import {
+  clearFlightLog,
+  getFlightEvents,
+  setFlightLogEnabled,
+} from '../../utils/debug/flightLog'
 
 import {
   buildRequestTools,
@@ -453,5 +458,67 @@ describe('selectAllowedTools', () => {
     expect(result.requestTools?.[0]?.function.description).not.toContain(
       'Allowed modelIds',
     )
+  })
+})
+
+describe('selectAllowedTools: flight log filter events', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'debug').mockImplementation(() => undefined)
+    setFlightLogEnabled(true)
+    clearFlightLog()
+  })
+
+  afterEach(() => {
+    setFlightLogEnabled(false)
+    clearFlightLog()
+    jest.restoreAllMocks()
+  })
+
+  it('records a tools:filtered event for each tool dropped by the allow list', async () => {
+    const availableTools: McpTool[] = [
+      {
+        name: 'server__tool_a',
+        description: 'Tool A',
+        inputSchema: { type: 'object' },
+      },
+      {
+        name: 'server__tool_b',
+        description: 'Tool B',
+        inputSchema: { type: 'object' },
+      },
+    ]
+
+    await selectAllowedTools({
+      availableTools,
+      allowedToolNames: ['server__tool_a'],
+    })
+
+    const filtered = getFlightEvents().filter(
+      (event) => event.event === 'filtered',
+    )
+    expect(filtered).toHaveLength(1)
+    expect(filtered[0]).toMatchObject({
+      scope: 'tools',
+      detail: 'name=server__tool_b reason=not-allowed',
+    })
+  })
+
+  it('does not record filter events when every tool is allowed', async () => {
+    const availableTools: McpTool[] = [
+      {
+        name: 'server__tool_a',
+        description: 'Tool A',
+        inputSchema: { type: 'object' },
+      },
+    ]
+
+    await selectAllowedTools({
+      availableTools,
+      allowedToolNames: ['server__tool_a'],
+    })
+
+    expect(
+      getFlightEvents().filter((event) => event.event === 'filtered'),
+    ).toHaveLength(0)
   })
 })

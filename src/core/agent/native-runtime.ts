@@ -189,6 +189,10 @@ export class NativeAgentRuntime implements AgentRuntime {
   }
 
   async run(input: AgentRuntimeRunInput): Promise<void> {
+    logFlightEvent('run', 'start', {
+      id: input.conversationId,
+      detail: `assistant=${input.assistantId ?? 'global'} branch=${input.branchId ?? ''}`,
+    })
     const inputRequestMessages = input.requestMessages ?? input.messages
     const resumeAssistantMessage = input.continueAssistantMessageId
       ? inputRequestMessages.find(

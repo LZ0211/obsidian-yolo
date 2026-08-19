@@ -12,6 +12,11 @@ import { App } from 'obsidian'
 
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import { ToolCallResponseStatus } from '../../types/tool-call.types'
+import {
+  clearFlightLog,
+  getFlightEvents,
+  setFlightLogEnabled,
+} from '../../utils/debug/flightLog'
 
 import { executeBuiltinTool } from './dispatcher'
 import { memoryAddDefinition } from './memory_add/definition'
@@ -216,5 +221,68 @@ describe('executeBuiltinTool: normalizes a thrown tool error', () => {
       status: ToolCallResponseStatus.Error,
       error: 'content or items is required.',
     })
+  })
+})
+
+describe('executeBuiltinTool: flight log span', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'debug').mockImplementation(() => undefined)
+    setFlightLogEnabled(true)
+    clearFlightLog()
+  })
+
+  afterEach(() => {
+    setFlightLogEnabled(false)
+    clearFlightLog()
+    jest.restoreAllMocks()
+  })
+
+  it('records a tool span with start and done for a successful call', async () => {
+    const executeSpy = jest
+      .spyOn(memoryAddDefinition, 'execute')
+      .mockResolvedValue({ status: 'success', text: 'ok' } as never)
+
+    const result = await executeBuiltinTool('memory_add', {}, makeCtx())
+
+    expect(result.status).toBe(ToolCallResponseStatus.Success)
+    executeSpy.mockRestore()
+    const events = getFlightEvents()
+    expect(events.map((event) => event.event)).toEqual([
+      'span:memory_add:start',
+      'span:memory_add:done',
+    ])
+    expect(events[1]).toMatchObject({
+      scope: 'tool',
+      detail: expect.stringMatching(/^status=success \d+ms$/),
+    })
+  })
+
+  it('records a done span with error detail for an unknown tool', async () => {
+    const result = await executeBuiltinTool('no_such_tool', {}, makeCtx())
+
+    expect(result.status).toBe(ToolCallResponseStatus.Error)
+    const events = getFlightEvents()
+    expect(events.map((event) => event.event)).toEqual([
+      'span:no_such_tool:start',
+      'span:no_such_tool:done',
+    ])
+    expect(events[1]?.detail).toContain('status=error')
+  })
+
+  it('records a cancelled span when the call is aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+
+    const result = await executeBuiltinTool(
+      'memory_add',
+      { content: 'x' },
+      makeCtx({ signal: controller.signal }),
+    )
+
+    expect(result.status).toBe(ToolCallResponseStatus.Aborted)
+    expect(getFlightEvents().map((event) => event.event)).toEqual([
+      'span:memory_add:start',
+      'span:memory_add:cancelled',
+    ])
   })
 })

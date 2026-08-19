@@ -1,4 +1,5 @@
 import { ToolCallResponseStatus } from '../../types/tool-call.types'
+import { startFlightSpan } from '../../utils/debug/flightLog'
 
 import { getToolDefinition } from './registry'
 import { enforceBuiltinToolSecurityBoundary } from './security-boundary'
@@ -21,7 +22,13 @@ export const executeBuiltinTool = async (
   args: Record<string, unknown>,
   ctx: ToolContext,
 ): Promise<LocalToolCallResult> => {
+  const startedAt = Date.now()
+  const span = startFlightSpan('tool', name, {
+    id: ctx.conversationId,
+    detail: `toolCallId=${ctx.toolCallId ?? ''}`,
+  })
   if (ctx.signal?.aborted) {
+    span.cancel()
     return { status: ToolCallResponseStatus.Aborted }
   }
 
@@ -33,8 +40,15 @@ export const executeBuiltinTool = async (
       throw new Error(`Unknown local file tool: ${name}`)
     }
 
-    return await definition.execute(args, ctx)
+    const result = await definition.execute(args, ctx)
+    if (result.status === ToolCallResponseStatus.Aborted) {
+      span.cancel()
+    } else {
+      span.finish(`status=${result.status} ${Date.now() - startedAt}ms`)
+    }
+    return result
   } catch (error) {
+    span.finish(`status=error ${asErrorMessage(error)}`)
     return {
       status: ToolCallResponseStatus.Error,
       error: asErrorMessage(error),

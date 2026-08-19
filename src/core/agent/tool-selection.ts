@@ -11,6 +11,7 @@ import {
   truncateJsonStrings,
 } from '../../utils/chat/contextBudget'
 import { estimateJsonTokens } from '../../utils/llm/contextTokenEstimate'
+import { logFlightEvent } from '../../utils/debug/flightLog'
 import { type JsSandboxSettings } from '../mcp/jsSandboxSettings'
 import { getJsSandboxTool } from '../mcp/jsSandboxTool'
 import { JS_SANDBOX_TOOL_NAME } from '../mcp/localFileToolNames'
@@ -274,12 +275,20 @@ export const selectAllowedTools = async ({
     : undefined
 
   const baseFiltered = applyDynamicToolDescriptions(
-    availableTools.filter((tool) =>
-      isToolAllowed({
+    availableTools.filter((tool) => {
+      const allowed = isToolAllowed({
         toolName: tool.name,
         allowedToolNames: normalizedAllowedToolNames,
-      }),
-    ),
+      })
+      if (!allowed) {
+        // A tool silently missing from the model's tool list is a broken
+        // chain: emit why so a flight log can show the drop.
+        logFlightEvent('tools', 'filtered', {
+          detail: `name=${tool.name} reason=not-allowed`,
+        })
+      }
+      return allowed
+    }),
     { jsSandboxSettings, settings },
   )
   const assistantLike = {
