@@ -3,6 +3,7 @@ import type {
   Assistant,
   AssistantToolPreference,
 } from '../../../types/assistant.types'
+import { resolveVisionFallbackEngines } from '../../../utils/llm/visionFallbackEngines'
 
 export type DelegatableAssistantRole = {
   id: string
@@ -129,9 +130,48 @@ Answer only from retrieved vault evidence. If the vault does not contain enough 
   } satisfies Assistant),
 ])
 
-const BUILTIN_SUBAGENT_ASSISTANT_IDS = new Set(
-  BUILTIN_SUBAGENT_ASSISTANTS.map((assistant) => assistant.id),
-)
+/**
+ * Built-in Image Reader subagent: delegated reads of image files by a
+ * vision-capable model. Conditionally listed in the delegatable catalogue —
+ * only when a vision engine is configured or discoverable (see
+ * `resolveVisionFallbackEngines`) — and its `modelId` is resolved at
+ * delegation time to the first available engine, so the child actually runs
+ * on a model that can see the image.
+ */
+export const IMAGE_READER_SUBAGENT_ID = '__builtin_subagent_image_reader__'
+
+const IMAGE_READER_ASSISTANT_TEMPLATE: Assistant = Object.freeze({
+  id: IMAGE_READER_SUBAGENT_ID,
+  name: 'Image Reader',
+  description:
+    'Built-in delegated subagent for reading and describing image files.',
+  systemPrompt: `You are a built-in Image Reader subagent.
+
+Your job is to read image files and describe what they contain. Use fs_read on the image path — the file is delivered to you as an image you can see directly. Report visible text verbatim, and note charts, diagrams, layout, colors, and any details relevant to the delegated question. If the image cannot be read, say so explicitly.`,
+  delegatable: true,
+  enableTools: true,
+  includeBuiltinTools: true,
+  enabledToolNames: [],
+  toolPreferences: localToolPreferences(['fs_read', 'conversation_history']),
+  toolServerPreferences: {},
+  enabledSkills: [],
+  skillPreferences: {},
+})
+
+const BUILTIN_SUBAGENT_ASSISTANT_IDS = new Set([
+  ...BUILTIN_SUBAGENT_ASSISTANTS.map((assistant) => assistant.id),
+  IMAGE_READER_SUBAGENT_ID,
+])
+
+const resolveImageReaderAssistant = (settings: YoloSettings): Assistant => {
+  const engine = resolveVisionFallbackEngines(settings)[0]
+  if (!engine) {
+    throw new Error(
+      'The Image Reader subagent is unavailable: no vision engine is configured. Configure a fallback vision model or add a vision-capable chat model.',
+    )
+  }
+  return { ...IMAGE_READER_ASSISTANT_TEMPLATE, modelId: engine.id }
+}
 
 export function listDelegatableAssistantRoles(
   settings: YoloSettings,
@@ -149,6 +189,14 @@ export function listDelegatableAssistantRoles(
     roles.push({ id, name })
   }
 
+  // The Image Reader role is only advertised when a vision engine exists.
+  if (resolveVisionFallbackEngines(settings).length > 0) {
+    roles.push({
+      id: IMAGE_READER_SUBAGENT_ID,
+      name: IMAGE_READER_ASSISTANT_TEMPLATE.name,
+    })
+  }
+
   return roles
 }
 
@@ -157,6 +205,9 @@ export function resolveDelegatableAssistant(
   assistantId: string,
 ): Assistant {
   const requestedId = assistantId.trim()
+  if (requestedId === IMAGE_READER_SUBAGENT_ID) {
+    return resolveImageReaderAssistant(settings)
+  }
   const builtInAssistant = BUILTIN_SUBAGENT_ASSISTANTS.find(
     (candidate) => candidate.id === requestedId,
   )

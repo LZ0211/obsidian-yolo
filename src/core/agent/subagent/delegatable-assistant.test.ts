@@ -4,6 +4,7 @@ import type { Assistant } from '../../../types/assistant.types'
 
 import {
   BUILTIN_SUBAGENT_ASSISTANTS,
+  IMAGE_READER_SUBAGENT_ID,
   listDelegatableAssistantRoles,
   resolveDelegatableAssistant,
 } from './delegatable-assistant'
@@ -244,5 +245,75 @@ describe('delegatable assistant roles', () => {
         JSON.stringify(builtIn.toolPreferences ?? {}),
       )
     }
+  })
+})
+
+describe('built-in image reader subagent', () => {
+  const withVisionModels = (): YoloSettings => {
+    const settings = makeSettings()
+    settings.chatModels = [
+      {
+        id: 'qwen-vl',
+        providerId: 'p',
+        model: 'qwen-vl',
+        enable: true,
+        modalities: ['text', 'vision'],
+      },
+      {
+        id: 'gemini',
+        providerId: 'p',
+        model: 'gemini',
+        enable: true,
+        modalities: ['text', 'vision', 'pdf'],
+      },
+    ]
+    return settings
+  }
+
+  it('injects the Image Reader role at the end of the catalogue when a vision engine is available', () => {
+    const roles = listDelegatableAssistantRoles(withVisionModels())
+
+    expect(roles.at(-1)).toEqual({
+      id: IMAGE_READER_SUBAGENT_ID,
+      name: 'Image Reader',
+    })
+  })
+
+  it('omits the Image Reader role when no vision engine is available', () => {
+    const roles = listDelegatableAssistantRoles(makeSettings())
+
+    expect(roles.map((role) => role.id)).not.toContain(IMAGE_READER_SUBAGENT_ID)
+  })
+
+  it('resolves the Image Reader role with the first explicit vision engine as its model', () => {
+    const settings = withVisionModels()
+    settings.chatOptions = {
+      ...settings.chatOptions,
+      imageReadingFallbackModelIds: ['gemini', 'qwen-vl'],
+    }
+
+    const assistant = resolveDelegatableAssistant(
+      settings,
+      IMAGE_READER_SUBAGENT_ID,
+    )
+
+    expect(assistant.modelId).toBe('gemini')
+  })
+
+  it('auto-discovers the first vision engine model when no explicit list is configured', () => {
+    const assistant = resolveDelegatableAssistant(
+      withVisionModels(),
+      IMAGE_READER_SUBAGENT_ID,
+    )
+
+    expect(assistant.modelId).toBe('qwen-vl')
+  })
+
+  it('throws when resolving the Image Reader role without any vision engine', () => {
+    expect(
+      getThrownMessage(() =>
+        resolveDelegatableAssistant(makeSettings(), IMAGE_READER_SUBAGENT_ID),
+      ),
+    ).toMatch(/Image Reader.*vision engine/)
   })
 })
