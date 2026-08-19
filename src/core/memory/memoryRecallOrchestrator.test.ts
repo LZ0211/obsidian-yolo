@@ -412,4 +412,40 @@ describe('MemoryRecallOrchestrator token packer (C1+C2)', () => {
     expect(result.tokenCount).toBe(limits.maxTokens)
     expect(result.truncatedCount).toBe(1)
   })
+
+  it('smoke: the steal/truncation path holds the budget under the real cl100k tokenizer', async () => {
+    // Task 9 carry: exercise the packer with the REAL production tokenizer
+    // (the gpt-tokenizer cl100k bundle behind the runtime component; the
+    // global test setup wires it, so resetting the seam routes here). The
+    // seam's code-point arithmetic is exact; cl100k BPE counting is
+    // non-additive across merges, which is exactly the case the steal-refine
+    // path (longestFittingPrefixOfEntry) exists for.
+    setTokenizerProviderForTests(null)
+    try {
+      const limits = { maxTokens: 110 }
+      const result = await makeOrchestrator().render(
+        renderContext([
+          // 119 tokens alone: cannot fit next to the wrapper, so it must be
+          // truncated (and later give space back to the second entry).
+          makeEntry('a-long', 'a'.repeat(800)),
+          // 33 tokens alone: only enters FULL LENGTH by stealing space from
+          // the truncated 'a' entry; a failed steal would truncate it.
+          makeEntry('b-full', 'b'.repeat(60)),
+        ]),
+        translate,
+        limits,
+      )
+      expect(result.content).toContain(`[other] ${'b'.repeat(60)}`)
+      expect(result.truncatedCount).toBe(1)
+      expect(result.omittedCount).toBe(0)
+      expect(result.tokenCount).toBe(
+        await estimateTextTokens(result.content ?? ''),
+      )
+      expect(result.tokenCount).toBeLessThanOrEqual(limits.maxTokens)
+    } finally {
+      setTokenizerProviderForTests({
+        count: async (text: string) => countCodePoints(text),
+      })
+    }
+  })
 })
