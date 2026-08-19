@@ -603,13 +603,15 @@ export function createWorkflowRunCoordinator(
     const built = await createWorkflowDefinition(
       input.bundle,
       input.modelSnapshot,
+      input.tierMap,
     )
     if (!built.ok) {
       if (activeRuns.get(workflowPath) === run) activeRuns.delete(workflowPath)
       return {
         ok: false,
-        reason:
-          built.error.code === 'model-unavailable'
+        reason: built.tierUnavailable
+          ? 'tier-unavailable'
+          : built.error.code === 'model-unavailable'
             ? 'model-unavailable'
             : 'invalid-definition',
         error: built.error,

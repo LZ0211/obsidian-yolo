@@ -182,6 +182,13 @@ export const it = {
     noModel: 'Nessun modello di esecuzione configurato.',
     dirty: 'Salva o scarta le modifiche correnti prima di eseguire.',
     invalidDefinition: 'Risolvi i rilievi del flusso prima di eseguire.',
+    modelTier: {
+      fast: 'Modello veloce',
+      balanced: 'Modello bilanciato',
+      deep: 'Modello profondo',
+    },
+    modelTierResolved: 'Risolve in',
+    modelTierUnavailable: 'Il livello di modello richiesto non è configurato.',
     alreadyRunning: 'Questo flusso è già in esecuzione.',
     status: {
       running: 'In esecuzione',
@@ -212,5 +219,13 @@ export const it = {
       'Interrompi o termina l’esecuzione prima di rinominare.',
     cannotRenameWhileDirty:
       'Salva o scarta le modifiche correnti prima di rinominare.',
+  },
+  settings: {
+    title: 'Workflow',
+    tier: {
+      fast: 'Livello veloce',
+      balanced: 'Livello bilanciato',
+      deep: 'Livello profondo',
+    },
   },
 } as const satisfies WorkflowCopy

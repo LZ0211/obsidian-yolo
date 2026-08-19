@@ -174,6 +174,9 @@ export type WorkflowCopy = Readonly<{
     dirty: string
     invalidDefinition: string
     alreadyRunning: string
+    modelTier: Readonly<Record<'fast' | 'balanced' | 'deep', string>>
+    modelTierResolved: string
+    modelTierUnavailable: string
     status: Readonly<
       Record<
         | 'running'
@@ -201,6 +204,10 @@ export type WorkflowCopy = Readonly<{
     cannotRenameWhileRunning: string
     cannotRenameWhileDirty: string
   }>
+  settings: Readonly<{
+    title: string
+    tier: Readonly<Record<'fast' | 'balanced' | 'deep', string>>
+  }>
 }>
 
 export type WorkflowLocale = 'en' | 'zh' | 'it'
@@ -208,6 +215,10 @@ export type WorkflowLocalizedTextKey =
   | 'module.name'
   | 'module.open'
   | 'mode.description'
+  | 'settings.title'
+  | 'settings.tier.fast'
+  | 'settings.tier.balanced'
+  | 'settings.tier.deep'
 
 import { en } from './en'
 import { it } from './it'
@@ -238,9 +249,14 @@ export function createWorkflowLocalizedText(
 
 function textFor(copy: WorkflowCopy, key: WorkflowLocalizedTextKey): string {
   const [section, field] = key.split('.') as [
-    'module' | 'mode',
-    'name' | 'open' | 'description',
+    'module' | 'mode' | 'settings',
+    'name' | 'open' | 'description' | 'title' | 'tier',
   ]
+  if (section === 'settings') {
+    if (field === 'title') return copy.settings.title
+    const tier = key.split('.')[2] as 'fast' | 'balanced' | 'deep'
+    return copy.settings.tier[tier]
+  }
   return copy[section][field as never] as string
 }
 

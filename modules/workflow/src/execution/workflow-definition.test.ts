@@ -14,6 +14,7 @@ import { createWorkflowDefinition } from './workflow-definition'
 import type {
   WorkflowModelSnapshot,
   WorkflowRunSnapshot,
+  WorkflowTierMap,
 } from './workflow-run-types'
 
 const modelSnapshot = (): WorkflowModelSnapshot => ({
@@ -135,10 +136,12 @@ const bundle = (): WorkflowBundle => {
 const build = async (overrides?: {
   bundle?: WorkflowBundle
   modelSnapshot?: WorkflowModelSnapshot
+  tierMap?: WorkflowTierMap
 }) => {
   const result = await createWorkflowDefinition(
     overrides?.bundle ?? bundle(),
     overrides?.modelSnapshot ?? modelSnapshot(),
+    overrides?.tierMap,
   )
   if (!result.ok) return result
   return { ok: true as const, definition: result.definition }
@@ -512,6 +515,137 @@ describe('workflow definition', () => {
     if (!literalDefault.ok)
       throw new Error('literal default model must resolve')
     expect(literalDefault.definition.modelByNodeId.draft).toBe('default')
+  })
+
+  it('resolves a tier alias through the tier map', async () => {
+    const withModelIds = (
+      modelIds: Readonly<Record<string, string | undefined>>,
+    ) =>
+      bundle().document.topology!.nodes.map((node) => ({
+        ...node,
+        ...(modelIds[node.id] === undefined
+          ? {}
+          : { modelId: modelIds[node.id] }),
+      }))
+
+    const result = await build({
+      bundle: {
+        ...bundle(),
+        document: {
+          ...bundle().document,
+          topology: {
+            ...bundle().document.topology!,
+            nodes: withModelIds({ draft: 'fast' }),
+          },
+        },
+      },
+      tierMap: { fast: 'model-a' },
+    })
+    if (!result.ok) throw new Error('fast tier must resolve via the tier map')
+    expect(result.definition.modelByNodeId.draft).toBe('model-a')
+  })
+
+  it('prefers an exact model id over a tier alias', async () => {
+    const withModelIds = (
+      modelIds: Readonly<Record<string, string | undefined>>,
+    ) =>
+      bundle().document.topology!.nodes.map((node) => ({
+        ...node,
+        ...(modelIds[node.id] === undefined
+          ? {}
+          : { modelId: modelIds[node.id] }),
+      }))
+
+    const result = await build({
+      bundle: {
+        ...bundle(),
+        document: {
+          ...bundle().document,
+          topology: {
+            ...bundle().document.topology!,
+            nodes: withModelIds({ draft: 'fast' }),
+          },
+        },
+      },
+      modelSnapshot: {
+        defaultModelId: 'model-a',
+        models: [
+          ...modelSnapshot().models,
+          { id: 'fast', name: 'Literal Fast', providerId: 'provider' },
+        ],
+      },
+      tierMap: { fast: 'model-a' },
+    })
+    if (!result.ok) throw new Error('literal model id must win')
+    expect(result.definition.modelByNodeId.draft).toBe('fast')
+  })
+
+  it('fails preflight with tier-unavailable when the tier map lacks the alias', async () => {
+    const withModelIds = (
+      modelIds: Readonly<Record<string, string | undefined>>,
+    ) =>
+      bundle().document.topology!.nodes.map((node) => ({
+        ...node,
+        ...(modelIds[node.id] === undefined
+          ? {}
+          : { modelId: modelIds[node.id] }),
+      }))
+
+    const result = await build({
+      bundle: {
+        ...bundle(),
+        document: {
+          ...bundle().document,
+          topology: {
+            ...bundle().document.topology!,
+            nodes: withModelIds({ draft: 'fast' }),
+          },
+        },
+      },
+      tierMap: {},
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.tierUnavailable).toBe(true)
+    expect(result.error).toMatchObject({
+      code: 'model-unavailable',
+      nodeId: 'draft',
+    })
+    expect(result.error.message).toMatch(/tier/i)
+  })
+
+  it('fails preflight when the tier-mapped id is not in the snapshot', async () => {
+    const withModelIds = (
+      modelIds: Readonly<Record<string, string | undefined>>,
+    ) =>
+      bundle().document.topology!.nodes.map((node) => ({
+        ...node,
+        ...(modelIds[node.id] === undefined
+          ? {}
+          : { modelId: modelIds[node.id] }),
+      }))
+
+    const result = await build({
+      bundle: {
+        ...bundle(),
+        document: {
+          ...bundle().document,
+          topology: {
+            ...bundle().document.topology!,
+            nodes: withModelIds({ draft: 'fast' }),
+          },
+        },
+      },
+      tierMap: { fast: 'missing' },
+    })
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'model-unavailable',
+        nodeId: 'draft',
+        message: expect.any(String),
+      },
+    })
   })
 
   it('rejects empty or unknown snapshot default model ids', async () => {

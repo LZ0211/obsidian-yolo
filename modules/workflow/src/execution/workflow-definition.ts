@@ -3,21 +3,24 @@ import type { WorkflowTopology } from '../domain/workflow-model'
 import type { WorkflowBundle } from '../domain/workflow-repository'
 
 import { canonicalJsonStringify } from './workflow-run-graph'
-import type {
-  WorkflowDefinitionSnapshot,
-  WorkflowExecutionPolicy,
-  WorkflowModelSnapshot,
-  WorkflowRunError,
+import {
+  WORKFLOW_TIERS,
+  type WorkflowDefinitionSnapshot,
+  type WorkflowExecutionPolicy,
+  type WorkflowModelSnapshot,
+  type WorkflowRunError,
+  type WorkflowTierMap,
 } from './workflow-run-types'
 import { isJsonSchema } from './workflow-schema'
 
 export type WorkflowDefinitionBuildResult =
   | Readonly<{ ok: true; definition: WorkflowDefinitionSnapshot }>
-  | Readonly<{ ok: false; error: WorkflowRunError }>
+  | Readonly<{ ok: false; error: WorkflowRunError; tierUnavailable?: true }>
 
 export async function createWorkflowDefinition(
   bundle: WorkflowBundle,
   modelSnapshot: WorkflowModelSnapshot,
+  tierMap: WorkflowTierMap = {},
 ): Promise<WorkflowDefinitionBuildResult> {
   const invalid = (
     message: string,
@@ -35,6 +38,19 @@ export async function createWorkflowDefinition(
     nodeId?: string,
   ): WorkflowDefinitionBuildResult => ({
     ok: false,
+    error: {
+      code: 'model-unavailable',
+      message,
+      ...(nodeId ? { nodeId } : {}),
+    },
+  })
+  /** A tier-alias failure: the start layer maps it to `tier-unavailable`. */
+  const tierUnavailable = (
+    message: string,
+    nodeId?: string,
+  ): WorkflowDefinitionBuildResult => ({
+    ok: false,
+    tierUnavailable: true,
     error: {
       code: 'model-unavailable',
       message,
@@ -97,7 +113,22 @@ export async function createWorkflowDefinition(
   const modelByNodeId: Record<string, string> = {}
   for (const node of topology.nodes) {
     const requested = node.modelId ?? ''
-    const resolved = requested === '' ? modelSnapshot.defaultModelId : requested
+    let resolved: string
+    if (requested === '') {
+      resolved = modelSnapshot.defaultModelId
+    } else if (modelIds.has(requested)) {
+      resolved = requested
+    } else if ((WORKFLOW_TIERS as readonly string[]).includes(requested)) {
+      const mapped = tierMap[requested as keyof WorkflowTierMap]
+      if (mapped === undefined)
+        return tierUnavailable(
+          `Model tier "${requested}" is not configured; set it in the Workflow module settings`,
+          node.id,
+        )
+      resolved = mapped
+    } else {
+      return unavailable(`Model "${requested}" is unavailable`, node.id)
+    }
     if (!modelIds.has(resolved))
       return unavailable(`Model "${resolved}" is unavailable`, node.id)
     modelByNodeId[node.id] = resolved

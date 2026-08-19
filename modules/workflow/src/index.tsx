@@ -15,6 +15,8 @@ import type {
   WorkflowRunSnapshot,
   WorkflowRunStartFailureReason,
   WorkflowRunStore,
+  WorkflowTier,
+  WorkflowTierMap,
 } from './execution/workflow-run-types'
 import type { WorkflowCopy } from './i18n'
 import { createWorkflowCopy, createWorkflowLocalizedText } from './i18n'
@@ -101,6 +103,53 @@ function workflowRunActivityId(workflowPath: string): string {
   return `${RUN_ACTIVITY_ID_PREFIX}${workflowPath}`
 }
 
+/**
+ * Reads the flat `tier.<fast|balanced|deep>` settings values out of the
+ * module config document; missing or non-string values contribute nothing,
+ * so an unconfigured module behaves exactly like a module without settings.
+ */
+function readWorkflowTierMap(
+  snapshot: Readonly<{ schemaVersion: number; data: unknown }>,
+): WorkflowTierMap {
+  const data = snapshot.data
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return {}
+  const record = data as Readonly<Record<string, unknown>>
+  const tierMap: Partial<Record<WorkflowTier, string>> = {}
+  for (const tier of ['fast', 'balanced', 'deep'] as const) {
+    const value = record[`tier.${tier}`]
+    if (typeof value === 'string' && value.trim().length > 0)
+      tierMap[tier] = value
+  }
+  return tierMap
+}
+
+/**
+ * Localized settings contribution for the fast/balanced/deep tier model
+ * pickers; the English fallback is mandatory for host-side snapshotting.
+ */
+function workflowSettingsLocalizations(): YoloModuleHostSettingsContributionV1['localizations'] {
+  const title = createWorkflowLocalizedText('settings.title')
+  const tierNames = {
+    fast: createWorkflowLocalizedText('settings.tier.fast'),
+    balanced: createWorkflowLocalizedText('settings.tier.balanced'),
+    deep: createWorkflowLocalizedText('settings.tier.deep'),
+  }
+  const localizations: Record<string, unknown> = {}
+  for (const locale of ['en', 'zh', 'it'] as const) {
+    localizations[locale] = Object.freeze({
+      title: title[locale],
+      fields: Object.freeze({
+        'tier.fast': Object.freeze({ name: tierNames.fast[locale] }),
+        'tier.balanced': Object.freeze({ name: tierNames.balanced[locale] }),
+        'tier.deep': Object.freeze({ name: tierNames.deep[locale] }),
+      }),
+    })
+  }
+  return Object.freeze(
+    localizations,
+  ) as YoloModuleHostSettingsContributionV1['localizations']
+}
+
 function workflowRunActivity(
   workflowPath: string,
   status: BackgroundActivity['status'],
@@ -133,6 +182,36 @@ yolo.registerModule({
   async activate(host) {
     const repository = createWorkflowRepository(host)
     const getCopy = () => createWorkflowCopy(host.i18n.getSnapshot().locale)
+    // Base field strings are the English fallback; localizations carry the
+    // per-locale names (en is mandatory for host-side snapshotting). The
+    // optional call keeps activation on hosts without the settings capability.
+    host.settings.contribute?.({
+      id: MODULE_ID,
+      icon: 'git-branch',
+      title: createWorkflowLocalizedText('settings.title').en,
+      fields: [
+        {
+          key: 'tier.fast',
+          type: 'model',
+          name: createWorkflowLocalizedText('settings.tier.fast').en,
+        },
+        {
+          key: 'tier.balanced',
+          type: 'model',
+          name: createWorkflowLocalizedText('settings.tier.balanced').en,
+        },
+        {
+          key: 'tier.deep',
+          type: 'model',
+          name: createWorkflowLocalizedText('settings.tier.deep').en,
+        },
+      ],
+      localizations: workflowSettingsLocalizations(),
+    })
+    // Long-lived getter: tier settings are read at run start, so config
+    // changes apply without re-activating the module.
+    const getTierMap = (): WorkflowTierMap =>
+      readWorkflowTierMap(host.config.getSnapshot())
     const editors = new Map<
       string,
       ReturnType<typeof createWorkflowEditorModel>
@@ -251,6 +330,7 @@ yolo.registerModule({
           agent={host.agent}
           getModelSnapshot={host.settings.getModelSnapshot}
           subscribeModels={host.settings.subscribeModels}
+          getTierMap={getTierMap}
           readStyle={readStyle}
           openFile={async (path) => {
             await host.ui.openFileAt({ path })
@@ -307,6 +387,7 @@ function WorkflowModuleView({
   agent,
   getModelSnapshot,
   subscribeModels,
+  getTierMap,
   readStyle,
   openFile,
   notice,
@@ -324,6 +405,7 @@ function WorkflowModuleView({
   agent: YoloModuleHostApiV1['agent']
   getModelSnapshot(): YoloModuleHostModelSnapshotV1
   subscribeModels(listener: () => void): () => void
+  getTierMap(): WorkflowTierMap
   readStyle(): Promise<string>
   openFile(path: string): void | Promise<void>
   notice(message: string): void
@@ -372,6 +454,7 @@ function WorkflowModuleView({
           workflowPath: snapshot.path,
           bundle: snapshot.bundle,
           modelSnapshot: { ...models, defaultModelId: modelId },
+          tierMap: getTierMap(),
           input,
         })
         .then((result) => {
@@ -384,7 +467,7 @@ function WorkflowModuleView({
           notice(error instanceof Error ? error.message : String(error)),
         )
     },
-    [coordinator, editor, getCopy, models, notice],
+    [coordinator, editor, getCopy, getTierMap, models, notice],
   )
   const pauseRun = useCallback((): void => {
     const path = editor.getSnapshot().path
@@ -555,6 +638,7 @@ function runStartFailureMessage(
 ): string {
   if (reason === 'already-running') return copy.run.alreadyRunning
   if (reason === 'model-unavailable') return copy.run.noModel
+  if (reason === 'tier-unavailable') return copy.run.modelTierUnavailable
   if (reason === 'invalid-definition') return copy.run.invalidDefinition
   return error?.message ?? copy.run.error
 }

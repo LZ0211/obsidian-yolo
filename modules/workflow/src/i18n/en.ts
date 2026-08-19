@@ -178,6 +178,13 @@ export const en = {
     dirty: 'Save or discard the current edits before running.',
     invalidDefinition: 'Resolve the workflow findings before running.',
     alreadyRunning: 'This workflow is already running.',
+    modelTier: {
+      fast: 'Fast tier model',
+      balanced: 'Balanced tier model',
+      deep: 'Deep tier model',
+    },
+    modelTierResolved: 'Resolves to',
+    modelTierUnavailable: 'The requested model tier is not configured.',
     status: {
       running: 'Running',
       paused: 'Paused',
@@ -206,5 +213,13 @@ export const en = {
     cannotRenameWhileRunning: 'Stop or finish the run before renaming.',
     cannotRenameWhileDirty:
       'Save or discard the current edits before renaming.',
+  },
+  settings: {
+    title: 'Workflow',
+    tier: {
+      fast: 'Fast tier',
+      balanced: 'Balanced tier',
+      deep: 'Deep tier',
+    },
   },
 } as const satisfies WorkflowCopy

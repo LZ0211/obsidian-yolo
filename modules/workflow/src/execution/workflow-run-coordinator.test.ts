@@ -1095,6 +1095,26 @@ describe('workflow run coordinator', () => {
     })
   })
 
+  it('returns tier-unavailable reason when the definition build reports it', async () => {
+    const topology: WorkflowTopology = {
+      ...runnableTopology(),
+      nodes: runnableTopology().nodes.map((node) =>
+        node.id === 'draft' ? { ...node, modelId: 'fast' } : node,
+      ),
+    }
+    const { coordinator, input } = makeHarness({ topology })
+
+    const start = await coordinator.start({ ...input, tierMap: {} })
+
+    expect(start.ok).toBe(false)
+    if (start.ok) return
+    expect(start.reason).toBe('tier-unavailable')
+    expect(start.error).toMatchObject({
+      code: 'model-unavailable',
+      nodeId: 'draft',
+    })
+  })
+
   it('surfaces preflight failures without reserving the path', async () => {
     const { coordinator, store, input } = makeHarness({})
     const bad = await coordinator.start({
