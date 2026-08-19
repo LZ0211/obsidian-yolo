@@ -34,6 +34,24 @@ type BackgroundActivitySnapshot = Readonly<{
 
 type ConfirmCallSnapshot = Readonly<{ title: string; message: string }>
 
+/**
+ * One scripted agent call on the run path. A reject entry hands the
+ * run-scoped submit_workflow_output tool a value it must refuse (repair
+ * round 1); an accept entry hands it the accepted value (round 2). The fake
+ * agent consumes one entry per agent stream call.
+ */
+type RunScriptEntry = Readonly<{
+  rejectValue?: unknown
+  acceptValue?: unknown
+}>
+
+/** Token usage reported on the fake agent's completed events. */
+type RunUsageSnapshot = Readonly<{
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+}>
+
 type E2EState = {
   files: Map<string, string>
   folders: Set<string>
@@ -66,6 +84,13 @@ type E2EState = {
     workflowPath: string,
     patch: Readonly<Record<string, unknown>>,
   ): Promise<void>
+  // Phase-3 run harness: scriptable submission rounds (repair), usage, and
+  // module config (tier routing).
+  setRunScript(script: readonly RunScriptEntry[]): void
+  setRunUsage(usage: RunUsageSnapshot | null): void
+  setConfigData(partial: Readonly<Record<string, unknown>>): void
+  /** Path of the seeded workflow whose agent node carries verification. */
+  verifiedManifestPath: string
 }
 
 let assistantRelease: (() => void) | null = null
@@ -77,6 +102,14 @@ const backgroundActivities = new Map<
   { title?: string; status?: string }
 >()
 const confirmCalls: ConfirmCallSnapshot[] = []
+let runScript: readonly RunScriptEntry[] = []
+const DEFAULT_RUN_USAGE: RunUsageSnapshot = Object.freeze({
+  inputTokens: 10,
+  outputTokens: 5,
+  totalTokens: 15,
+})
+let runUsage: RunUsageSnapshot | null = DEFAULT_RUN_USAGE
+let configData: Record<string, unknown> = {}
 
 const copy = createWorkflowCopy('en')
 const localeSnapshot = { locale: 'en' }
@@ -103,6 +136,58 @@ const topology: WorkflowTopology = {
         properties: { ok: { type: 'boolean' } },
         required: ['ok'],
         additionalProperties: false,
+      },
+    },
+    {
+      id: 'output',
+      kind: 'output',
+      label: 'Output',
+      stepPath: 'steps/output/STEP.md',
+      position: { x: 560, y: 90 },
+    },
+  ],
+  edges: [
+    { id: 'input-agent', source: 'input', target: 'agent' },
+    { id: 'agent-output', source: 'agent', target: 'output' },
+  ],
+}
+
+/** The seeded alternate workflow: same shape as the demo, plus a hard
+ * verification postcondition on its agent node so verification runs are
+ * scriptable through the default run output. The verification schema is
+ * stricter than the output schema (ok must be true), so a schema-valid
+ * submission can still fail verification: `{ ok: false }` passes the output
+ * schema but trips the hard postcondition. */
+const VERIFIED_MANIFEST_PATH = 'workflows/verified/WORKFLOW.md'
+const verifiedTopology: WorkflowTopology = {
+  revision: 1,
+  nodes: [
+    {
+      id: 'input',
+      kind: 'input',
+      label: 'Input',
+      stepPath: 'steps/input/STEP.md',
+      position: { x: 70, y: 90 },
+    },
+    {
+      id: 'agent',
+      kind: 'agent',
+      label: 'Agent',
+      stepPath: 'steps/agent/STEP.md',
+      position: { x: 315, y: 90 },
+      outputSchema: {
+        type: 'object',
+        properties: { ok: { type: 'boolean' } },
+        required: ['ok'],
+        additionalProperties: false,
+      },
+      verification: {
+        schema: {
+          type: 'object',
+          properties: { ok: { type: 'boolean', const: true } },
+          required: ['ok'],
+        },
+        mode: 'hard',
       },
     },
     {
@@ -155,6 +240,16 @@ const state: E2EState = {
   listRunFiles: () => listRunFiles(),
   readRunFile: (workflowPath) => readRunFile(workflowPath),
   seedRun: (workflowPath, patch) => seedRun(workflowPath, patch),
+  setRunScript: (script) => {
+    runScript = [...script]
+  },
+  setRunUsage: (usage) => {
+    runUsage = usage
+  },
+  setConfigData: (partial) => {
+    configData = { ...configData, ...partial }
+  },
+  verifiedManifestPath: VERIFIED_MANIFEST_PATH,
 }
 
 let openFilePath: string | null = null
@@ -275,6 +370,11 @@ async function seedRun(
     nodes,
     outputs: patch.outputs ?? {},
     ...(patch.error !== undefined ? { error: patch.error } : {}),
+    // Carry the phase-3 run fields through: a recovered paused run (legal
+    // only on a running record) and seeded token usage must survive the
+    // store validator on reload.
+    ...(patch.paused !== undefined ? { paused: patch.paused } : {}),
+    ...(patch.usage !== undefined ? { usage: patch.usage } : {}),
     startedAt:
       typeof patch.startedAt === 'number' ? patch.startedAt : Date.now(),
   }
@@ -286,6 +386,15 @@ putFile(state.manifestPath, manifest)
 putFile('workflows/demo/steps/input/STEP.md', '# Input\n')
 putFile('workflows/demo/steps/agent/STEP.md', '# Agent\n')
 putFile('workflows/demo/steps/output/STEP.md', '# Output\n')
+const verifiedManifest = updateWorkflowManagedBlocks(
+  '# Verified\n',
+  verifiedTopology,
+  copy,
+)
+putFile(VERIFIED_MANIFEST_PATH, verifiedManifest)
+putFile('workflows/verified/steps/input/STEP.md', '# Input\n')
+putFile('workflows/verified/steps/agent/STEP.md', '# Agent\n')
+putFile('workflows/verified/steps/output/STEP.md', '# Output\n')
 hydrateBlobs()
 
 async function mount(): Promise<void> {
@@ -413,6 +522,32 @@ function createHost(): unknown {
           return
         }
         if (tool) {
+          // Scripted submission rounds (phase-3 repair): one entry is
+          // consumed per agent stream call. A reject entry submits a value
+          // the run-scoped submit_workflow_output tool refuses, mirrors the
+          // host dispatcher by surfacing a `tool` error event for that call,
+          // and still ends the stream normally so the executor's repair
+          // predicate sees round 1 end cleanly with rejections; an accept
+          // entry submits the accepted value in the following call.
+          const entry: RunScriptEntry | undefined =
+            tool.name === 'submit_workflow_output' ? runScript[0] : undefined
+          if (entry !== undefined) {
+            runScript = runScript.slice(1)
+            const value =
+              'rejectValue' in entry ? entry.rejectValue : entry.acceptValue
+            const scripted = await tool.handler({ value })
+            yield {
+              type: 'tool',
+              name: tool.name,
+              status: scripted.isError ? 'error' : 'completed',
+            }
+            yield {
+              type: 'completed',
+              text: '',
+              ...(runUsage ? { usage: runUsage } : {}),
+            }
+            return
+          }
           const input =
             tool.name === 'submit_workflow_condition'
               ? conditionSubmission(request.prompt)
@@ -423,7 +558,11 @@ function createHost(): unknown {
             return
           }
           yield { type: 'tool', name: tool.name, status: 'completed' }
-          yield { type: 'completed', text: '' }
+          yield {
+            type: 'completed',
+            text: '',
+            ...(runUsage ? { usage: runUsage } : {}),
+          }
           return
         }
         yield {
@@ -432,6 +571,7 @@ function createHost(): unknown {
             typeof state.runOutput === 'string'
               ? state.runOutput
               : JSON.stringify(state.runOutput),
+          ...(runUsage ? { usage: runUsage } : {}),
         }
       },
     },
@@ -462,8 +602,8 @@ function createHost(): unknown {
     config: {
       // The run path reads the tier model map from the module config
       // document; an unconfigured document behaves exactly like a host
-      // without settings.
-      getSnapshot: () => ({ schemaVersion: 1, data: {} }),
+      // without settings. Tests configure tier routing with setConfigData.
+      getSnapshot: () => ({ schemaVersion: 1, data: configData }),
     },
     i18n: {
       getSnapshot: () => localeSnapshot,
@@ -531,6 +671,27 @@ function createHost(): unknown {
         return matches.length > 0
       },
       removeFileExact: async (filePath: string) => state.files.delete(filePath),
+      // File-only move, like the real host API: the destination parent must
+      // already exist (the repository ensures it before each call), and
+      // putFile keeps the folder state consistent for the target side.
+      renamePath: async (oldPath: string, newPath: string) => {
+        const content = state.files.get(oldPath)
+        if (content === undefined)
+          throw new Error(`renamePath: source file not found: ${oldPath}`)
+        state.files.delete(oldPath)
+        putFile(newPath, content)
+      },
+      // Removes a folder only when it has no file or folder children.
+      removeEmptyFolderExact: async (folder: string) => {
+        if (!state.folders.has(folder)) return false
+        const prefix = `${folder}/`
+        const hasChildren = [...state.folders, ...state.files.keys()].some(
+          (candidate) => candidate.startsWith(prefix) && candidate !== folder,
+        )
+        if (hasChildren) return false
+        state.folders.delete(folder)
+        return true
+      },
       subscribe: () => () => undefined,
     },
   }
