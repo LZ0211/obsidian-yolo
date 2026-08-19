@@ -464,6 +464,9 @@ export function createWorkflowRunCoordinator(
     const { workflowPath } = input
     if (activeRuns.has(workflowPath))
       return { ok: false, reason: 'already-running' }
+    // A full run supersedes every pending node test, in every view: a stale
+    // test result must never land while the run is executing.
+    for (const controller of activeNodeTests.values()) controller.abort()
     let materialize!: () => void
     const run: ActiveRun = {
       workflowPath,

@@ -1165,6 +1165,47 @@ describe('workflow studio UI interactions', () => {
     expect(addNode).toHaveBeenCalledTimes(1)
   })
 
+  it('disables workflow deletion during an active run and restores it after', async () => {
+    const { model, trashCurrent } = createModel({ bundle: createValidBundle() })
+    await renderStudio(
+      model,
+      jest.fn(),
+      jest.fn(async () => true),
+      {
+        run: createRunSnapshot({ status: 'running' }),
+      },
+    )
+
+    const deleteButton = testContainer.querySelector<HTMLButtonElement>(
+      'button[aria-label="Delete workflow"]',
+    )
+    expect(deleteButton).not.toBeNull()
+    expect(deleteButton!.disabled).toBe(true)
+
+    await act(async () => {
+      deleteButton!.click()
+      await Promise.resolve()
+    })
+    expect(trashCurrent).not.toHaveBeenCalled()
+
+    act(() => testRoot.unmount())
+    testRoot = createRoot(testContainer)
+
+    await renderStudio(
+      model,
+      jest.fn(),
+      jest.fn(async () => true),
+      {
+        run: createRunSnapshot({ status: 'succeeded' }),
+      },
+    )
+    expect(
+      testContainer.querySelector<HTMLButtonElement>(
+        'button[aria-label="Delete workflow"]',
+      )!.disabled,
+    ).toBe(false)
+  })
+
   it('reuses the editor selection when a run node is clicked', async () => {
     const { model, selectNode } = createModel({ bundle: createValidBundle() })
     await renderStudio(

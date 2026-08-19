@@ -23,6 +23,40 @@ describe('parseWorkflowRunInput', () => {
     })
   })
 
+  it('passes through sentences whose first letters could start JSON values', () => {
+    // 't' also starts `true`, 'f' starts `false`, 'n' starts `null`, and a
+    // leading digit or minus could open a number; none of these are JSON.
+    expect(
+      parseWorkflowRunInput('to the point: keep the answer short'),
+    ).toEqual({
+      ok: true,
+      value: 'to the point: keep the answer short',
+    })
+    expect(parseWorkflowRunInput('from the demo vault')).toEqual({
+      ok: true,
+      value: 'from the demo vault',
+    })
+    expect(parseWorkflowRunInput('nothing to add here')).toEqual({
+      ok: true,
+      value: 'nothing to add here',
+    })
+    expect(parseWorkflowRunInput('-1.5x growth is expected')).toEqual({
+      ok: true,
+      value: '-1.5x growth is expected',
+    })
+  })
+
+  it('passes through sentences that start with a digit', () => {
+    expect(parseWorkflowRunInput('2 quick steps to clarity')).toEqual({
+      ok: true,
+      value: '2 quick steps to clarity',
+    })
+    expect(parseWorkflowRunInput('42 is the answer')).toEqual({
+      ok: true,
+      value: '42 is the answer',
+    })
+  })
+
   it('parses a JSON string', () => {
     expect(parseWorkflowRunInput('"hello"')).toEqual({
       ok: true,
@@ -59,6 +93,9 @@ describe('parseWorkflowRunInput', () => {
     const result = parseWorkflowRunInput('{"topic":')
     expect(result).toEqual({ ok: false, message: expect.any(String) })
     expect(result.ok).toBe(false)
+    const arrayResult = parseWorkflowRunInput('[1, 2,')
+    expect(arrayResult).toEqual({ ok: false, message: expect.any(String) })
+    expect(arrayResult.ok).toBe(false)
   })
 
   it('rejects non-finite numbers produced by JSON.parse', () => {

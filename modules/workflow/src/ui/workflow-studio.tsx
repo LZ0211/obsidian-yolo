@@ -566,6 +566,7 @@ export function WorkflowStudio({
 
   const deleteWorkflow = useCallback(() => {
     void (async () => {
+      if (runActive) return
       if (!snapshot.path) return
       if (snapshot.dirty) {
         showNotice(copy.state.conflict)
@@ -584,7 +585,15 @@ export function WorkflowStudio({
     })().catch((error: unknown) =>
       showNotice(error instanceof Error ? error.message : String(error)),
     )
-  }, [confirm, copy, model, showNotice, snapshot.dirty, snapshot.path])
+  }, [
+    confirm,
+    copy,
+    model,
+    runActive,
+    showNotice,
+    snapshot.dirty,
+    snapshot.path,
+  ])
 
   const deleteNode = useCallback(
     (nodeId: string) => {
@@ -1032,7 +1041,7 @@ export function WorkflowStudio({
             <CanvasToolbarButton
               icon={<Trash2 size={13} />}
               label={copy.toolbar.delete}
-              disabled={!snapshot.path}
+              disabled={runActive || !snapshot.path}
               onClick={deleteWorkflow}
             />
             <span

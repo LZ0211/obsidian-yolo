@@ -4,12 +4,14 @@ import { isJsonValue } from '../execution/workflow-run-types'
 /**
  * Parses the Run panel input before it reaches the Coordinator.
  *
- * Blank input is rejected. Text that looks like JSON is parsed and only
+ * Blank input is rejected. The trimmed text is parsed first, and only
  * accepted when the parsed value is JSON-compatible (non-finite numbers such
- * as `Infinity` from `JSON.parse('1e999')` are rejected); JSON-shaped text
- * that fails to parse is rejected instead of silently becoming a string, so a
- * mistyped value never turns into a different object. Any other text is
- * passed through as the trimmed string.
+ * as `Infinity` from `JSON.parse('1e999')` are rejected). Text that fails to
+ * parse is rejected only when it starts with `{` or `[` — a structural JSON
+ * attempt that must not silently become a string — while any other text is
+ * passed through as the trimmed string, even when its first character could
+ * also open a JSON value (a sentence starting with "t" is not a mistyped
+ * `true`).
  */
 export function parseWorkflowRunInput(
   text: string,
@@ -17,12 +19,13 @@ export function parseWorkflowRunInput(
   const trimmed = text.trim()
   if (trimmed.length === 0)
     return { ok: false, message: 'Workflow run input is empty' }
-  if (!looksLikeJson(trimmed)) return { ok: true, value: trimmed }
   let parsed: unknown
   try {
     parsed = JSON.parse(trimmed)
   } catch {
-    return { ok: false, message: 'Workflow run input is not valid JSON' }
+    if (/^[[{]/.test(trimmed))
+      return { ok: false, message: 'Workflow run input is not valid JSON' }
+    return { ok: true, value: trimmed }
   }
   if (!isJsonValue(parsed))
     return {
@@ -30,9 +33,4 @@ export function parseWorkflowRunInput(
       message: 'Workflow run input is not JSON-compatible',
     }
   return { ok: true, value: parsed }
-}
-
-/** First characters a JSON document can start with, once trimmed. */
-function looksLikeJson(trimmed: string): boolean {
-  return /^[[{0-9tfn"-]/.test(trimmed)
 }

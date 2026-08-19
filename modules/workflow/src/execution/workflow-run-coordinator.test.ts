@@ -1107,6 +1107,47 @@ describe('workflow run coordinator', () => {
     expect(await retest).toEqual({ value: 'late-draft' })
   })
 
+  it('aborts pending node tests in every view when a full run starts', async () => {
+    const executor = new FakeExecutor()
+    executor.testHold('draft')
+    const { coordinator, store, input } = makeHarness({ executor })
+    await coordinator.start(input)
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+
+    const first = coordinator.testNode('view-1', {
+      workflowPath: 'demo/WORKFLOW.md',
+      nodeId: 'draft',
+      input: 'one',
+    })
+    const second = coordinator.testNode('view-2', {
+      workflowPath: 'demo/WORKFLOW.md',
+      nodeId: 'draft',
+      input: 'two',
+    })
+    await until(() => executor.testCalls.length === 2)
+    expect(executor.testCalls[0].signal.aborted).toBe(false)
+    expect(executor.testCalls[1].signal.aborted).toBe(false)
+
+    // Starting a full run supersedes the pending tests in every view: a stale
+    // test result must never land while the run is executing.
+    const start = await coordinator.start(input)
+    expect(start.ok).toBe(true)
+    expect(executor.testCalls[0].signal.aborted).toBe(true)
+    expect(executor.testCalls[1].signal.aborted).toBe(true)
+
+    executor.testReleaseAll()
+    await expect(first).rejects.toMatchObject({ code: 'cancelled' })
+    await expect(second).rejects.toMatchObject({ code: 'cancelled' })
+
+    await until(
+      async () =>
+        (await store.read('demo/WORKFLOW.md'))?.status === 'succeeded',
+    )
+  })
+
   it('rejects a node test while a full run is active for the same workflow', async () => {
     const executor = new FakeExecutor()
     executor.hold('draft')

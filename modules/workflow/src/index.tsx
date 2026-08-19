@@ -380,8 +380,9 @@ function WorkflowModuleView({
   }, [coordinator, editor, getCopy, notice])
   const testNode = useCallback(
     // The second parameter is optional so the handler stays assignable to the
-    // Studio's pass-through `(nodeId) => void` prop; the Run panel always
-    // passes the parsed input, and a missing value is a deterministic null.
+    // Studio's pass-through `(nodeId, input?) => Promise<...> | undefined`
+    // prop; the Run panel always passes the parsed input, and a missing value
+    // is a deterministic null.
     (
       nodeId: string,
       input?: JsonValue,
