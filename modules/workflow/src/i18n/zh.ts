@@ -211,7 +211,6 @@ export const zh = {
     testNode: '测试节点',
     testing: '测试中…',
     repairing: '正在修复输出…',
-    repairAttempted: '修复尝试后',
     verificationWarn: '验证警告：',
     rename: '重命名工作流',
     renamePlaceholder: '新工作流名称',
