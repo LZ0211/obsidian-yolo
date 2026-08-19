@@ -1,8 +1,8 @@
 # Workflow 执行质量与模型路由 Spec（Output Repair / Verification / Model Tier）
 
-> 日期：2026-08-19（2026-08-19 盲审修订版）
+> 日期：2026-08-19（2026-08-19 二轮盲审修订版）
 >
-> 状态：设计草案，已过 3 人盲审并修订，尚未实施
+> 状态：设计草案，已过两轮盲审（每轮 3 人）并修订，尚未实施
 >
 > 范围：`modules/workflow` 的结构化输出修复、节点级验证后置条件与模型分层路由
 >
@@ -16,7 +16,7 @@
 2. **Verification 后置条件**：`WorkflowNode` 增加可选 `verification`（JSON Schema + `warn`/`hard` 档位）。统一在 Coordinator 侧、持久化前断言；`hard` 失败使节点 `failed`（新错误码 `verification-failed`），`warn` 失败节点成功且警告在 Run 面板可见（新增警告显示面）。
 3. **Model Tier 路由**：节点 `modelId` 支持 `fast` / `balanced` / `deep` 三层别名，在定义构建时解析到具体模型 id。tier 映射放模块设置（经 `host.config` 读取，见 §4.3），无法解析的 tier 在 preflight 拒绝，不静默降级。
 
-三者都在模块内实现，不修改 Host Core、不扩 Host API。
+三者都在模块内实现，不修改 Host Core。**Host API 调整许可**（用户确认）：允许增加/调整最小简单接口——本 spec 仅有的候选是 `host.settings.getContributionValues(moduleId)`（tier 读取，§4.3；仅当 `host.config` 读路径有阻塞时启用），其余不引入任何 Host API 变更。
 
 ## 2. 目标与非目标
 
@@ -52,29 +52,37 @@
 
 ### 4.1 Output Repair
 
-**触发条件（唯一，可机械判定）：**
+**触发条件（唯一，精确谓词，可机械判定）：**
 
-> 首轮 `host.agent.stream` **正常结束**（非 error、非 aborted），且**至少一次** `submit_workflow_output` 提交被 handler 拒绝（schema 校验失败）。
+> 首轮 `host.agent.stream` **正常结束**（非 error、非 aborted），且**至少一次** schema 校验被拒（`handler` 拒绝了提交值）、**且没有任何一次提交被接受**。
 
-为支持该判定，executor 的提交 handler 需要捕获被拒提交的 Ajv 错误消息（当前实现直接丢弃）。其余三种情形**绝不触发**修复轮：
+精确谓词的两侧都必要（盲审修订）："先无效后有效"的混合情形下，首轮已有有效提交 → 节点正常成功，**绝不发起修复轮**（否则修复轮的第二份输出会覆盖首轮已接受的输出）。为此 executor 的提交 handler 需要区分三种 isError 来源（当前实现直接丢弃，需重构捕获）：
+
+- **schema 拒绝**（`validateValue` 失败）→ 计入修复触发计数器，捕获 Ajv 错误与**被拒值**；
+- **重复提交**（已有有效值后再次提交，executor.ts:309-314 也返回 isError）→ 不计入（该分支只在首轮已成功时可达，谓词第二侧已排除）；
+- 其他工具错误 → 不计入。
+
+其余情形**绝不触发**修复轮：
 
 - 流以 `error` 或 `aborted` 结束 → 维持现有稳定错误码（error→`agent-failed`、aborted→`cancelled`）；
 - 流正常结束但模型从未调用提交工具（no-submission）→ 直接 `agent-failed`——模型没有理解提交要求，重复同样指令是纯重试，不做；
-- 首轮已有有效提交 → 正常成功。
+- 首轮已有有效提交（含先无效后有效）→ 正常成功。
 
-这一不变量是代码审查可执行的边界：reviewer 无需读 spec 即可验证"修复轮只在 handler 记录了被拒提交时发起"。
+这一不变量是代码审查可执行的边界：reviewer 无需读 spec 即可验证"修复轮只在 handler 记录了 schema 拒绝且无有效提交时发起"。
 
 **修复轮构造：**
 
 - 同一 `modelId`、同一 `capability: 'vault-write'`、同一 `activity` 与 `signal`；
-- `systemPrompt` 与首轮相同；`prompt` 在首轮动态输入上附一条修复说明：首轮被拒提交的 Ajv 错误消息 + "提交必须通过 schema 校验"；
-- 仍携带 `submit_workflow_output` 工具；被拒提交的错误同样被捕获（若修复轮再失败，两条错误都进入最终消息）。
+- `systemPrompt` 与首轮相同；`prompt` 在首轮动态输入上附一条修复说明：**最后一条被拒的 Ajv 错误消息 + 被拒值（有界截断，如 2 KiB JSON 预览）** + "提交必须通过 schema 校验"。携带被拒值让模型能看到自己提交了什么（盲审修订：仅错误消息时模型看不到实际值，如 pattern 不匹配却不知值为何）。
+- 仍携带 `submit_workflow_output` 工具；修复轮内的 schema 拒绝同样被捕获（若修复轮再失败，两轮的错误与被拒值都进入最终消息）。
 
 **结果判定：**
 
 - 修复轮提交通过 `validateValue` → 作为节点输出返回（与首轮成功路径完全相同）。
 - 修复轮流结束仍无有效提交 → `agent-failed`；`error`/`aborted` → 现有稳定错误码。
-- **错误保真**：最终错误的 `message` 必须包含首轮被拒原因与修复轮结果（"schema rejection (round 1): <ajv>; after repair attempt: <round-2 outcome>"），第一轮失败原因不得丢失。
+- **错误保真**：最终错误的 `message` 必须包含首轮被拒原因（Ajv 错误 + 被拒值预览）与修复轮结果（"schema rejection (round 1): <ajv>; value: <preview>; after repair attempt: <round-2 outcome>"），第一轮失败原因不得丢失。
+
+**可见性（盲审修订）：** 修复轮期间节点状态仍是 `running`（设计上无中间状态），但用户应能看出修复在进行：executor 通过现有 `onAgentEvent` 钩子把活动 detail 更新为 `repairing`（i18n `run.repairing`），背景活动 detail 同步。这是显示细节，不新增持久状态。
 
 **实现边界：**
 
@@ -82,6 +90,7 @@
 - 与 cancel 的关系：修复轮与首轮共享同一 `signal`，abort 后走 `cancelled`。
 - 修复轮可能触发第二次工具审批（`vault-write` 审批策略）——接受，因为首轮已审批过同一次运行的同节点工具；若 Host 审批策略导致每次调用都询问，用户看到的是同一次运行的第二次询问，语义一致。
 - 与 testNode 的关系：testNode 复用同一 executor，**同样享受修复轮**（与 full run 行为一致，符合 Phase 2 复用原则）。
+- 成本护栏：每 schema agent 节点最多 2 次 `host.agent.stream` 调用（结构性上限，非配置）。
 - 若实施评审判定该机制与"禁重试"不可调和，按 §5 降级：退化为"首轮错误消息直接进入最终 error"，不引入任何第二轮调用。
 
 ### 4.2 Verification 后置条件
@@ -95,21 +104,31 @@ verification?: Readonly<{
 }>
 ```
 
-- 适用节点：`agent`、`mapAgent`、`output`。`input`/`condition`/`merge` 不接受该字段（白名单外即校验失败）。
+- 适用节点：`agent`、`mapAgent`、`output`。`input`/`condition`/`merge` 不接受该字段——**显式例外**：现有 `parseNode` 对未知字段是"静默丢弃"（workflow-model.ts:394-411），`verification` 需要在白名单构造中显式声明"适用节点白名单 + 其余节点拒绝"，即该字段不是被丢弃而是被拒绝（`invalidDefinition` 类 issue）。实现上是白名单构造里对 `verification` 加 kind 条件分支。
 - `mode` 只接受 `warn`/`hard`；schema 必须在定义构建期通过 `validateSchema`，否则 `invalidDefinition` 类 issue。
 - 分层：`parseNode`（domain 层）只校验 JSON-compatible 与 mode 白名单；Ajv 编译留在 `workflow-definition.ts`（execution 层）——domain 不 import execution，维持现有分层。
 
-**执行位置（统一 Coordinator 侧，覆盖所有节点路径）：**
+**执行位置（统一 Coordinator 侧，共享 finalize 辅助）：**
 
-- 节点结果（executor 返回值或 Coordinator 直接计算值）形成后、持久化节点终态前，调用 `validateValue(verification.schema, value)`。该位置天然覆盖 agent/mapAgent（executor 路径）、output（Coordinator 直算路径）与 testNode（Coordinator 内部路径），三处行为一致。
-- 通过：节点正常进入终态，detail 记录 `verified`。
+- **新增一个共享的 `finalizeNodeResult(node, value)` 辅助**（coordinator 内部函数）：执行 verification 校验并返回结果/警告。它在三个调用点生效，保证行为一致：
+  1. executor 路径（agent/mapAgent，executeAgent 内输出 schema 校验之后）；
+  2. Coordinator 直算路径（output 节点，processNode 内）；
+  3. testNode 路径（Coordinator 内部，见下方 warn 通道）。
+- 通过：节点正常进入终态，`detail` 记录 `verified`（编码见下）。
 - `hard` 失败：节点 `failed`，**新错误码 `verification-failed`**（不复用 `invalid-output`——后置条件失败与输出 schema 失败是两件事，UI 文案区分；Phase 2 的"少量稳定错误分类"允许新增一个），message 附验证错误。
 - `warn` 失败：节点成功，`detail` 记录验证警告。
+- `skipped` 节点（output 无活跃来源被跳过）：不执行 verification（无输出可断言，`markSkipped` 路径不变）。
 
-**warn 的显示面（本期范围内的新 UI）：**
+**warn 的编码约定与显示面（盲审修订：detail 是自由字符串，必须约定格式）：**
 
-- Run 面板节点详情增加警告渲染：选中节点时，若 `node.detail` 含验证警告，在 output 区顶部显示警告条（`yolo-` 前缀样式，i18n 三语 `run.verificationWarn`）。
+- `detail` 命名空间格式：`verification: <message>`（通过时为 `verification: ok`）。面板渲染器按前缀识别，不解析 prose。
+- Run 面板节点详情增加警告渲染：选中节点时，若 `node.detail` 以 `verification:` 开头且非 ok，在 output 区顶部显示警告条（`yolo-` 前缀样式，i18n 三语 `run.verificationWarn`）。detail 区已按 `selectedNodeId` 键控，节点切换自然清态；多警告合并为一条（`detail` 是单字符串字段，spec 不新增快照字段）。
 - background 不受 warn 影响（节点仍 succeeded）。
+
+**testNode 的 warn 通道（盲审修订：testNode 无快照无 detail，三处一致性对 warn 不成立）：**
+
+- `WorkflowNodeExecutionResult` 增加可选 `warnings?: readonly string[]`（契约扩展；full run 路径 coordinator 把它并入 `detail` 编码，testNode 路径 UI 直接渲染）。这样"同一 finalize 辅助"在三条路径都成立：full run 侧 warnings → detail；testNode 侧 warnings → 结果字段 → 面板测试输出区。
+- full run 的 `detail` 仍是单字符串（`verification: <msg1>; <msg2>`），不新增快照字段。
 
 **与 outputSchema 的关系：** outputSchema 先于 verification（outputSchema 失败 → 修复轮 → 仍失败则终止；verification 只作用于最终通过 outputSchema 的值）。两者职责不同：outputSchema 约束"提交的形状"，verification 断言"业务后置条件"（可在 outputSchema 之外断言值域、互斥关系等）。
 
@@ -117,12 +136,13 @@ verification?: Readonly<{
 
 **别名集合：** `fast` / `balanced` / `deep`，仅这三个字符串；其余一律按具体 model id 处理（维持精确匹配语义）。
 
-**tier 映射的存放与读取（盲审修正：settings 是 write-only，读路径是 config）：**
+**tier 映射的存放与读取（二轮盲审修订 + Host API 调整许可）：**
 
 - 模块新增 settings contribution（本期范围内，模块目前未注册任何设置）：
-  - `tier.fast` / `tier.balanced` / `tier.deep` 三个**扁平**字段（`Record<key, string>`，值 = 具体 model id；localizations 三语；en 为 fallback 强制）。
-- 读取：`host.config.getSnapshot()` 在**定义构建时**取值，随 `createWorkflowDefinition` 的参数传入（签名从 `(bundle, modelSnapshot)` 扩展为 `(bundle, modelSnapshot, config)`）；模块接线层（index.tsx）组装参数。`WorkflowRunStartInput` 与 testNode 的路径同步携带该参数。
-- **冷启动语义**：tier 别名存在但对应配置为空/缺失 → preflight 失败（`model-unavailable`），消息指明是 tier 未配置。不使用 run 默认模型静默兜底（KodaX 规则 2）。
+  - `tier.fast` / `tier.balanced` / `tier.deep` 三个**扁平**字段。字段类型用 **`model` 类型（picker，下拉模型快照）** 而非自由文本——Host settings 机制已支持该类型（moduleSettingsContributions.ts），避免手输 id 出错。localizations 三语；en 为 fallback 强制。
+- 读取：优先走**现有 `host.config.getSnapshot()`**（settings contribution 与 config 共享同一后端，flat key 往返一致，零 Host API 变更）。若实现发现 config 读路径有阻塞（如激活时序问题），**允许增加一个最小 Host API 简单接口**（例如 `host.settings.getContributionValues(moduleId)` 返回扁平贡献值）——用户已确认 Host API 可以增加简单接口，本 spec 只约定"不引入 provider 选择/模型快照结构变更"，不禁止读取类小接口。
+- 取值时机：**定义构建时**，随 `createWorkflowDefinition` 的参数传入（签名从 `(bundle, modelSnapshot)` 扩展为 `(bundle, modelSnapshot, tierMap)`）；模块接线层（index.tsx）组装参数。`WorkflowRunStartInput` 与 testNode 的路径同步携带该参数。
+- **冷启动语义**：tier 别名存在但对应配置为空/缺失 → preflight 失败（`model-unavailable`），消息指明是 tier 未配置并给出 settings 入口路径。不使用 run 默认模型静默兜底（KodaX 规则 2）。
 
 **定义构建时的解析顺序（workflow-definition.ts）：**
 
@@ -136,15 +156,17 @@ verification?: Readonly<{
 
 **UI：**
 
-- 节点检查器模型字段（已存在）接受 tier 别名输入；解析后的具体 id 以只读提示展示（`run.modelTierResolved` 文案）。
-- preflight 失败经现有 notice 通道（index.tsx 的 start 失败通知），文案区分"默认模型未配置"（现有 `run.noModel`）与"tier 未解析"（新 `run.modelTierUnavailable`）——两个语义不得混用。
+- 节点检查器模型字段（已存在）接受 tier 别名输入；解析后的具体 id 以只读提示展示（`run.modelTierResolved` 文案）。提示数据源是**最近一次冻结的 definition.modelByNodeId**（若有）；未运行过或 tier 配置变更后提示可能过期——显示时标注"上次运行解析"，不作为运行时事实（运行时以冻结定义为准）。
+- preflight 失败经现有 notice 通道（index.tsx 的 start 失败通知），文案区分"默认模型未配置"（现有 `run.noModel`）与"tier 未解析"（新 `run.modelTierUnavailable`）——**区分机制不得靠 message 字符串嗅探**：`WorkflowRunStartResult` 的 reason 联合新增 `tier-unavailable` 成员（现有 `model-unavailable` 语义是"默认模型不可用"，两者分开），模块接线层按 reason 映射 i18n 文案。
 
 ### 4.4 数据与契约
 
 - `WorkflowNode` 新增 `verification?`；run 快照不新增字段（verification 警告走节点 `detail`；修复轮无持久化痕迹，仅最终错误 message 注明）。
+- `WorkflowNodeExecutionResult` 新增可选 `warnings?: readonly string[]`（testNode 的 warn 通道；full run 侧由 Coordinator 并入 `detail` 编码）。
+- `WorkflowRunStartResult` 的 reason 联合新增 `tier-unavailable`（与 `model-unavailable` 区分，模块接线层按 reason 映射文案，不靠 message 嗅探）。
 - 新错误码 `verification-failed`（`WorkflowRunError.code` 联合 + store validator 同步）。
-- i18n 新增（en/zh/it 三语 + settings localizations）：`run.repairAttempted`（错误消息内用）、`run.verificationWarn` / `run.verificationFailed`、`run.modelTier.fast/balanced/deep`、`run.modelTierResolved`、`run.modelTierUnavailable`、inspector 相关文案。
-- settings contribution 三个扁平字段的 localizations 三语，en fallback 强制。
+- i18n 新增（en/zh/it 三语 + settings localizations）：`run.repairAttempted` / `run.repairing`（错误消息与 activity detail 用）、`run.verificationWarn` / `run.verificationFailed`、`run.modelTier.fast/balanced/deep`、`run.modelTierResolved`、`run.modelTierUnavailable`、inspector 相关文案。
+- settings contribution 三个 `model` 类型字段的 localizations 三语，en fallback 强制。
 
 ## 5. 与 Phase 2 非目标的边界
 
@@ -156,19 +178,24 @@ verification?: Readonly<{
 ## 6. 测试要点
 
 ```text
-修复轮触发：首轮正常结束 + 至少一次提交被拒 → 修复轮发起，提交有效值 → 节点成功
-修复轮再失败 → agent-failed，message 含首轮 Ajv 错误与修复轮结果
+修复轮触发（精确谓词）：首轮正常结束 + 至少一次 schema 被拒 + 无任何提交被接受 → 修复轮发起，提交有效值 → 节点成功
+先无效后有效（混合情形）：绝不发起修复轮，首轮已接受的值保留且不被覆盖
+重复提交（已有有效值后再次提交）不计入 schema 被拒计数
+修复轮再失败 → agent-failed，message 含首轮 Ajv 错误 + 被拒值预览 + 修复轮结果
 no-submission 绝不发起修复轮（直接 agent-failed，agent 调用次数 == 1）
 error / aborted 绝不发起修复轮（现有错误码不变）
-修复轮期间 abort → cancelled（共享 signal）
+修复轮期间 abort → cancelled（共享 signal）；修复轮期间 activity detail 显示 repairing
 每 schema 节点最多 2 次 agent 调用（成本护栏断言）
 testNode 同样享受修复轮（与 full run 行为一致）
-verification hard 失败 → failed + verification-failed；warn 失败 → succeeded + detail 警告 + 面板警告条可见
+verification hard 失败 → failed + verification-failed；warn 失败 → succeeded + detail（verification: 前缀）+ 面板警告条可见
+verification 通过 → detail 记录 verification: ok
 verification schema 不可编译 → 定义构建期拒绝
-input/condition/merge 不接受 verification 字段
+input/condition/merge 的 verification 字段被拒绝（非丢弃）
 output 节点 verification 在 Coordinator 直算路径生效（与 executor 路径一致）
+skipped 节点不执行 verification
+testNode 的 warn 经 WorkflowNodeExecutionResult.warnings 返回并在测试输出区显示
 tier 别名解析到配置的具体 id；精确 id 优先于 tier 别名（真实模型名为 fast 时）
-tier 未配置或配置 id 不可用 → preflight model-unavailable（不静默兜底默认模型）
+tier 未配置或配置 id 不可用 → preflight 返回 tier-unavailable reason（不静默兜底默认模型，不靠 message 嗅探）
 definitionHash 记录解析后的具体 id；运行中途改 tier 配置不影响冻结运行
 DSH 导入导出往返保持 verification 字段
 ```
@@ -177,9 +204,10 @@ DSH 导入导出往返保持 verification 字段
 
 | 要求 | 覆盖 |
 | --- | --- |
-| 修复轮机械可判定、恰好一次、非重试状态机 | 4.1 + 5 |
-| 修复轮不解析文本 JSON、只走提交工具 | 4.1 修复轮构造 + 测试 |
-| 首轮失败原因不丢失 | 4.1 结果判定 + 测试 |
-| verification 确定性可观察（warn 有显示面/hard 有专属错误码） | 4.2 + 测试 |
-| tier 不能接受则拒绝，无静默降级 | 4.3 解析顺序 + 测试 |
-| 不改 Host Core/Host API/快照结构 | 2.2 + 4.4 + 5 |
+| 修复轮机械可判定（精确谓词）、恰好一次、非重试状态机 | 4.1 + 5 |
+| 修复轮不解析文本 JSON、只走提交工具；被拒值携带进修复 prompt | 4.1 修复轮构造 + 测试 |
+| 首轮失败原因与被拒值不丢失 | 4.1 结果判定 + 测试 |
+| 修复轮可见性（repairing detail） | 4.1 可见性 + 测试 |
+| verification 确定性可观察（warn 有显示面/hard 有专属错误码/testNode 有 warnings 通道） | 4.2 + 测试 |
+| tier 不能接受则拒绝（tier-unavailable reason，非 message 嗅探） | 4.3 解析顺序 + 测试 |
+| Host Core 不变；Host API 仅 §1 许可的最小读取接口 | 2.2 + 4.3 + 5 |
